@@ -72,6 +72,27 @@ Holding multiple permissions never bypasses separation of duties.
 - [DECISIONS](../DECISIONS.md), D-384–D-433; spec means `docs/superpowers/specs/2026-09-24-pricebook-model-design.md` in the main checkout.
 - Source: spec §2 decisions 4–8, 13–17, §2.2, §5–§8, §10, §12–§13; the phase 2 plan supplies delivery boundaries and D-399/D-400.
 
+D-502: a plan item remains a SKU and its selected entry (D-467), with no policy override,
+treatment, included quantity or minimum quantity. Copy/clone within a book preserves entry IDs.
+Changing a draft's book matches the full (SKU, charge kind, normalized period, model, policy digest)
+key and an equal dimension key. With no equivalent target, the item retains the old entry and
+ITEM_BOOK_FOREIGN blocks publication. An hourly entry never silently becomes monthly, and an absent
+legacy policy never becomes a new policy. Explicit item selection chooses the replacement entry.
+
+D-503 validates a usage entry's policy at price and plan-revision submit and final apply.
+Products and meter reads happen outside Pricing transactions, as the acting caller. The subjects
+consume captured results, recheck the entry identity/version in their existing transaction and keep
+provider evidence digests in approval snapshots. Dependency failures remain typed observations until
+the engine reaches a semantic gate, preserving non-final votes, rejects and withdrawals. Authorized
+successful command replay precedes dependency observations.
+
+The revision fingerprint now includes each selected entry ID and its policy ID/version/digest,
+read from entry rows in the same transaction. Policy content remains entry-owned; no plan-item
+column or override is added. Changed selection refreshes the approval generation (`UNIT_STALE`)
+and an old approval cannot publish it. A scheduled revision is checked at approval; D-450's later
+switch does not revalidate dependencies. New usage approvals require a policy-bearing entry;
+legacy approved prices and published revisions remain readable.
+
 ## 2. Actor Flows (CDSL)
 
 ### Prepare and publish a revision
@@ -227,3 +248,24 @@ Requirement: `cpt-cf-bss-pricing-fr-plans`; PRD AC #15.
 | `cpt-cf-bss-pricing-dod-plan-retire-migration` | AC #15; `cpt-cf-bss-pricing-fr-plans` | Deferred (D-410). Given subscriptions pinned to a retiring plan, when only the request is approved then movement is not reported complete; an invalid target blocks the request. |
 
 Verification uses domain tests, scoped repository tests on both backends and REST positive/denial/precondition probes as applicable. Phase 2 checks must not mark later-phase behavior implemented. Golden consumer contracts belong to phase 4.
+
+
+**Final seam conformance (D-510).** Items select entries and expose immutable policy only by projection. Mixed-window plans preserve each
+item's policy; reusing an entry across plans never pools subscription-line usage. Copy/clone keeps entry
+identity; book remapping matches SKU/kind/period/model, dimension and policy digest. Submit and final
+apply bind the exact selected entry/policy version and validate authoritative meter evidence. Concurrent
+scheduled promotion has one durable published revision while existing acceptance and holds preserve
+the old entry/policy/price. Orders supplies explicit versioned BillingTerms independently of usage period
+(null); Pricing never infers a month or normalizes an anchor. Subscriptions owns order/version/attempt
+fencing and activates within accepted bounds; a hold is never a reusable eligibility token.
+
+The final seven typed signatures, CommercialReason mappings, PDP authorization, indefinite receipt
+retention, supported-model matrix and provider-test links are consolidated in
+[DESIGN](../DESIGN.md#executable-seam-fixture-boundary-d-509) and [PRD](../PRD.md). Acceptance and hold
+commands are SDK-only; historical replay never refreshes the original 24-hour seller-policy deadline.
+E1a (real raw meter declarations/adapter/provenance), E2 (resolved terms, authenticated market and
+consumer fencing), E3 (runtime PDP grants) and E4 (source history and safe policy transitions) remain
+external; E1b (Products' derived usage types) is provided by Products (products P-D-233).
+E1 = E1a (raw meters, the usage collector / types registry; external) + E1b (derived meters, provided by Products since P-D-233).
+The atlas owner reconciles C00/C01/C10; downstream Rating scheduling and Billing invoicing remain
+unexecuted integration obligations, even when Pricing provider parity is green.

@@ -15,7 +15,8 @@ use bss_pricing::infra::storage::{
 };
 use bss_products_sdk::models::SkuType;
 use plan_support::{
-    Catalog, Fixture, book, entry, entry_support, holding, id_of, item, plan, scope, setup,
+    Catalog, Fixture, book, entry_support, holding, id_of, item, plan, policy_entry as entry,
+    scope, setup,
 };
 use serde_json::{Value, json};
 use std::sync::Arc;

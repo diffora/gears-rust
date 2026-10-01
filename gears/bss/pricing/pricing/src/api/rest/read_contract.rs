@@ -22,8 +22,8 @@
 //! @cpt-dod:cpt-cf-bss-pricing-dod-price-read-forever:p1
 pub mod dto;
 use super::authoring::{
-    AuthoringState, configuration,
-    support::{self, DoorError, authz_failure, require_authenticated},
+    AuthoringState,
+    support::{self, DoorError, require_authenticated},
 };
 use super::closed_sets::{
     PricingChargeKind, PricingEligibility, PricingModel, PricingPeriod,
@@ -33,21 +33,14 @@ use crate::{
     authz::{self, ResourceRef, actions, resource_types},
     domain::{
         book, dimension,
-        plan::RevisionState,
-        price::PriceState,
-        price_book_entry::ChargeKind,
-        resolve::{self, ItemResolution, Pin, ResolveContext, Resolved, TenantDefaults},
+        resolve::{ItemResolution, Pin, Resolved},
     },
     infra::{
-        reference_registry, reference_ticker, reference_work,
-        storage::{
-            RepoError,
-            entity::{plan_revision, price},
-            repo::{
-                book_repo, dimension_repo, plan_item_repo, plan_repo, plan_revision_repo,
-                price_book_entry_repo, price_repo,
-            },
+        pricing_reads::{
+            PriceResource, PriceSnapshot, ReadSnapshot, load_legacy_resolution, load_price,
+            plan_denied, plan_invalid, price_conflict, price_denied, read_failure,
         },
+        storage::RepoError,
     },
 };
 use authz_resolver_sdk::PolicyEnforcer;
@@ -58,69 +51,13 @@ use dto::{
     PricingResolveInputDto, PricingResolveItemDto, PricingResolveMeterDto, PricingResolveQuery,
     PricingResolveSkuVersionDto,
 };
-use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 use time::Date;
-use toolkit::api::{
-    OpenApiRegistry, canonical_prelude::resource_error, operation_builder::OperationBuilder,
-};
+use toolkit::api::{OpenApiRegistry, operation_builder::OperationBuilder};
 use toolkit_canonical_errors::CanonicalError;
-use toolkit_db::secure::{AccessScope, DBRunner};
+use toolkit_db::secure::AccessScope;
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
-
-/// What `GET /resolve` refuses: a plan revision, its items, the pins judged against them.
-#[resource_error(gts_id!("cf.bss.pricing.plan.v1~"))]
-struct PlanResource;
-/// What `GET /prices/{id}` refuses: a price.
-#[resource_error(gts_id!("cf.bss.pricing.price.v1~"))]
-struct PriceResource;
-
-/// A 400 of `GET /resolve`, with its code.
-fn plan_invalid(field: &str, code: &str) -> CanonicalError {
-    PlanResource::invalid_argument()
-        .with_field_violation(field, code, code)
-        .create()
-}
-/// A 404 of `GET /resolve`: the plan revision or item the caller's tenant does not hold.
-fn plan_missing(what: &str) -> CanonicalError {
-    PlanResource::not_found(format!("{what} not found"))
-        .with_resource(what)
-        .create()
-}
-/// A 409 of `GET /resolve`, with its code.
-fn plan_conflict(code: &str) -> CanonicalError {
-    PlanResource::aborted(code).with_reason(code).create()
-}
-/// `plan:read` denied; an unreachable PDP stays 503.
-fn plan_denied(error: authz::AuthzError) -> CanonicalError {
-    match error {
-        authz::AuthzError::Denied(d) => PlanResource::permission_denied()
-            .with_reason(d.reason)
-            .create(),
-        unavailable @ authz::AuthzError::Unavailable(_) => authz_failure(unavailable),
-    }
-}
-/// `price:read` denied; an unreachable PDP stays 503.
-fn price_denied(error: authz::AuthzError) -> CanonicalError {
-    match error {
-        authz::AuthzError::Denied(d) => PriceResource::permission_denied()
-            .with_reason(d.reason)
-            .create(),
-        unavailable @ authz::AuthzError::Unavailable(_) => authz_failure(unavailable),
-    }
-}
-/// A read transaction's failure: exhausted contention is a `plan` or `price` conflict like every
-/// other refusal of the door; anything else as the doors render it.
-fn read_failure(error: DoorError, conflict: fn(&str) -> CanonicalError) -> CanonicalError {
-    match error {
-        DoorError::Repo(RepoError::Conflict { code }) => conflict(code),
-        other => other.into(),
-    }
-}
-fn price_conflict(code: &str) -> CanonicalError {
-    PriceResource::aborted(code).with_reason(code).create()
-}
 
 /// Mount the consumer reads.
 pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Router {
@@ -229,7 +166,11 @@ async fn get_price(
     let tenant = ctx.subject_tenant_id();
     let body = support::transaction_door(&state.db.db(), move |tx| {
         let scope = scope.clone();
-        Box::pin(async move { pinned_price(tx, &scope, tenant, id).await })
+        Box::pin(async move {
+            load_price(tx, &scope, tenant, id)
+                .await
+                .and_then(render_price)
+        })
     })
     .await
     .map_err(|e| read_failure(e, price_conflict))?;
@@ -239,28 +180,9 @@ async fn get_price(
 /// # Errors
 /// One and the same 404 for a draft, pending or rejected price, an unknown id and another
 /// tenant's id.
-async fn pinned_price(
-    tx: &impl DBRunner,
-    scope: &AccessScope,
-    tenant: Uuid,
-    id: Uuid,
-) -> Result<PricingPinnedPriceDto, DoorError> {
-    // @cpt-begin:cpt-cf-bss-pricing-flow-read-contract-events:p1:inst-read-contract-events-flow-5
-    let row = price_repo::find(tx, scope, tenant, id)
-        .await?
-        .filter(|p| p.state == PriceState::Approved.as_str())
-        .ok_or_else(|| {
-            PriceResource::not_found("price not found")
-                .with_resource("price")
-                .create()
-        })?;
-    let children = AccessScope::for_tenant(tenant);
-    let entry = price_book_entry_repo::find(tx, &children, tenant, row.price_book_entry_id)
-        .await?
-        .ok_or_else(|| corrupt(format!("price {id} has no entry")))?;
-    let book = book_repo::find(tx, &children, tenant, entry.book_id)
-        .await?
-        .ok_or_else(|| corrupt(format!("entry {} has no book", entry.id)))?;
+fn render_price(snapshot: PriceSnapshot) -> Result<PricingPinnedPriceDto, DoorError> {
+    let PriceSnapshot { row, entry, book } = snapshot;
+    let id = row.id;
     let e = entry.id;
     Ok(PricingPinnedPriceDto {
         price_id: row.id,
@@ -296,7 +218,6 @@ async fn pinned_price(
         approved_by_unit_id: row.approved_by_unit_id,
         approved_at: row.approved_at,
     })
-    // @cpt-end:cpt-cf-bss-pricing-flow-read-contract-events:p1:inst-read-contract-events-flow-5
 }
 
 /// A parsed `GET /resolve` query.
@@ -354,234 +275,25 @@ fn pin(text: &str) -> Result<Pin, CanonicalError> {
     })
 }
 
-/// Everything the transaction reads, as the pure model and the renderer take it.
-struct Stored {
-    revision: plan_revision::Model,
-    /// The revision's state as it reads today (D-447): published, superseded or scheduled.
-    state: RevisionState,
-    currency: String,
-    context: ResolveContext,
-    /// Every price of the entries the items name, as stored: a binding renders its row.
-    rows: BTreeMap<Uuid, price::Model>,
-    defaults: TenantDefaults,
-    rounding: String,
-}
-
-/// `GET /resolve` below its door (D-419, D-420, D-421, D-454).
-/// # Errors
-/// 404 for a revision the tenant does not hold or an `item_id` the revision lacks; 409
-/// `REVISION_NOT_PUBLISHED` or `REVISION_NOT_YET_AVAILABLE`; 400 for the pins; Products' definite
-/// refusal as it gave it; 503 `REGISTRY_UNAVAILABLE` when Products cannot answer.
 async fn resolution(
     state: &AuthoringState,
     scope: AccessScope,
     ctx: &SecurityContext,
     request: ResolveRequest,
 ) -> Result<Response, CanonicalError> {
-    let tenant = ctx.subject_tenant_id();
-    let (revision, item, date) = (request.revision, request.item, request.date);
-    let stored = support::transaction_door(&state.db.db(), move |tx| {
-        let scope = scope.clone();
-        Box::pin(async move { read_stored(tx, &scope, tenant, revision, item, date).await })
-    })
-    .await
-    .map_err(|e| read_failure(e, plan_conflict))?;
-    let resolved: Vec<ItemResolution> =
-        resolve::matrix(&stored.context, request.date, &request.pins)
-            .map_err(|e| plan_invalid("pins", e.code))?
-            .into_iter()
-            .filter(|r| item.is_none_or(|id| r.item_id == id))
-            .collect();
-    // @cpt-begin:cpt-cf-bss-pricing-flow-read-contract-events:p1:inst-read-contract-events-flow-4
-    let versions = versions_as_of(
-        &state.hub,
-        tenant,
-        resolved.iter().map(|r| r.sku_id),
-        request.date,
-    )
-    .await?;
-    let body = render(&stored, request.date, resolved, &versions)?;
-    // @cpt-end:cpt-cf-bss-pricing-flow-read-contract-events:p1:inst-read-contract-events-flow-4
+    let date = request.date;
+    let query = bss_pricing_sdk::read::ResolveQuery {
+        catalog: bss_pricing_sdk::read::CatalogRef {
+            tenant_id: ctx.subject_tenant_id(),
+        },
+        revision_id: request.revision,
+        date,
+        item_id: request.item,
+        pins: Vec::new(),
+    };
+    let stored = load_legacy_resolution(state, scope, ctx, query, &request.pins).await?;
+    let body = render(&stored, date, stored.resolved.clone(), &stored.versions)?;
     support::response(StatusCode::OK, &body, None)
-}
-
-fn corrupt(what: String) -> DoorError {
-    RepoError::CorruptRow(what).into()
-}
-/// The one read transaction of a resolve. The revision is judged by the state it reads today
-/// among its plan's revisions (D-447): a published or superseded one resolves on every date
-/// (D-419) — a scheduled one whose date has come reads published, so its answer does not change
-/// when the switch is persisted — and a scheduled one still waiting resolves from its sale date
-/// on (D-454).
-async fn read_stored(
-    tx: &impl DBRunner,
-    scope: &AccessScope,
-    tenant: Uuid,
-    id: Uuid,
-    item: Option<Uuid>,
-    date: Date,
-) -> Result<Stored, DoorError> {
-    // @cpt-begin:cpt-cf-bss-pricing-flow-read-contract-events:p1:inst-read-contract-events-flow-2
-    let children = AccessScope::for_tenant(tenant);
-    let revision = plan_revision_repo::find(tx, scope, tenant, id)
-        .await?
-        .ok_or_else(|| plan_missing("plan_revision"))?;
-    plan_repo::find(tx, &children, tenant, revision.plan_id)
-        .await?
-        .ok_or_else(|| corrupt(format!("revision {id} has no plan")))?;
-    // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-switch:p1:inst-plans-revision-switch-5
-    let siblings = plan_revision_repo::for_plan(tx, &children, tenant, revision.plan_id).await?;
-    let today = time::OffsetDateTime::now_utc().date();
-    let state = crate::infra::plan_revisions::effective_revisions(&siblings, today)?
-        .into_iter()
-        .find(|e| e.id == id)
-        .map(|e| e.state)
-        .ok_or_else(|| corrupt(format!("revision {id} is not among its plan's")))?;
-    match state {
-        RevisionState::Published | RevisionState::Superseded => {}
-        RevisionState::Scheduled => {
-            if revision.available_from.is_none_or(|from| date < from) {
-                return Err(plan_conflict("REVISION_NOT_YET_AVAILABLE").into());
-            }
-        }
-        RevisionState::Draft | RevisionState::Pending => {
-            return Err(plan_conflict("REVISION_NOT_PUBLISHED").into());
-        }
-    }
-    // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-switch:p1:inst-plans-revision-switch-5
-    let rows = plan_item_repo::for_revision(tx, &children, tenant, revision.id).await?;
-    if item.is_some_and(|wanted| !rows.iter().any(|r| r.id == wanted)) {
-        return Err(plan_missing("plan_item").into());
-    }
-    let book = book_repo::find(tx, &children, tenant, revision.book_id)
-        .await?
-        .ok_or_else(|| corrupt(format!("revision {id} has no book")))?;
-    let mut registry = BTreeMap::new();
-    for d in dimension_repo::list(tx, &children, tenant).await? {
-        let values: Vec<String> = serde_json::from_value(d.values)
-            .map_err(|_| corrupt(format!("dimension {} values", d.key)))?;
-        registry.insert(d.key, values);
-    }
-    let mut entries: BTreeMap<Uuid, resolve::Entry> = BTreeMap::new();
-    let mut prices = BTreeMap::new();
-    let mut keep_for_bound = BTreeSet::new();
-    // The items' entries and all their prices in two statements, whatever the number of items
-    // (PS-15).
-    let wanted: Vec<Uuid> = rows
-        .iter()
-        .filter_map(|r| r.price_book_entry_id)
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect();
-    let found = price_book_entry_repo::find_many(tx, &children, tenant, &wanted).await?;
-    let held: BTreeSet<Uuid> = found.iter().map(|e| e.id).collect();
-    if let Some(lost) = wanted.iter().find(|w| !held.contains(w)) {
-        return Err(corrupt(format!("entry {lost} of revision {id}")));
-    }
-    let mut grouped =
-        price_repo::by_entry(price_repo::for_entries(tx, &children, tenant, &wanted).await?);
-    for e in found {
-        let of_entry = grouped.remove(&e.id).unwrap_or_default();
-        keep_for_bound.extend(of_entry.iter().filter(|p| p.keep_for_bound).map(|p| p.id));
-        let model = price_book_entry_repo::model_of(&e)?;
-        let domain = of_entry
-            .iter()
-            .map(|p| price_repo::to_domain(p, model))
-            .collect::<Result<Vec<_>, _>>()?;
-        prices.extend(of_entry.into_iter().map(|p| (p.id, p)));
-        let values = e
-            .dimension_key
-            .as_ref()
-            .and_then(|key| registry.get(key))
-            .cloned()
-            .unwrap_or_default();
-        let charge_kind: ChargeKind = e
-            .charge_kind
-            .parse()
-            .map_err(|_| corrupt(format!("entry {} charge_kind", e.id)))?;
-        entries.insert(
-            e.id,
-            resolve::Entry {
-                id: e.id,
-                charge_kind,
-                period: e.period,
-                model,
-                invoice_line_override: e.invoice_line_override,
-                values,
-                prices: domain,
-            },
-        );
-    }
-    let mut items = Vec::with_capacity(rows.len());
-    for row in rows {
-        items.push(resolve::Item {
-            id: row.id,
-            sku_id: row.sku_id,
-            entry: row
-                .price_book_entry_id
-                .and_then(|entry| entries.get(&entry).cloned()),
-        });
-    }
-    let settings = configuration::settings(tx, &children, tenant).await?;
-    let invoice_line_templates =
-        serde_json::from_value(settings.invoice_line_templates).map_err(|_| {
-            corrupt(format!(
-                "settings of tenant {tenant} invoice_line_templates"
-            ))
-        })?;
-    Ok(Stored {
-        revision,
-        state,
-        currency: book.currency,
-        context: ResolveContext {
-            items,
-            keep_for_bound,
-        },
-        rows: prices,
-        defaults: TenantDefaults {
-            default_timing: settings.default_timing.as_str().to_owned(),
-            default_gl: settings.default_gl,
-            default_tax_category: settings.default_tax_category,
-            invoice_line_templates,
-        },
-        rounding: settings.default_rounding,
-    })
-    // @cpt-end:cpt-cf-bss-pricing-flow-read-contract-events:p1:inst-read-contract-events-flow-2
-}
-
-/// D-421: each SKU version as of `date`, one read per distinct SKU, through the detached
-/// registry as pricing's system actor for `tenant` (D-424); the door calls it only after the
-/// caller passed `plan:read` and the revision was found in the caller's tenant. A SKU Products
-/// does not know (404) has no version.
-/// # Errors
-/// Any other definite refusal as Products gave it; 503 `REGISTRY_UNAVAILABLE` when Products
-/// cannot answer.
-async fn versions_as_of(
-    hub: &toolkit::ClientHub,
-    tenant: Uuid,
-    skus: impl IntoIterator<Item = Uuid>,
-    date: Date,
-) -> Result<BTreeMap<Uuid, SkuVersion>, CanonicalError> {
-    let wanted: BTreeSet<Uuid> = skus.into_iter().collect();
-    let mut found = BTreeMap::new();
-    if wanted.is_empty() {
-        return Ok(found);
-    }
-    let registry =
-        reference_registry::resolve(hub).map_err(|e| support::registry_unavailable(&e))?;
-    let actor = reference_ticker::system_actor(tenant)?;
-    for sku in wanted {
-        match registry.sku_version_as_of(&actor, tenant, sku, date).await {
-            Ok(Some(version)) => {
-                found.insert(sku, version);
-            }
-            Ok(None) => {}
-            Err(error) if error.status_code() == 404 => {}
-            Err(error) if reference_work::definite_refusal(&error) => return Err(error),
-            Err(error) => return Err(support::registry_unavailable(&error)),
-        }
-    }
-    Ok(found)
 }
 
 fn input(resolved: Resolved) -> PricingResolveInputDto {
@@ -596,7 +308,7 @@ fn stored_failure(error: RepoError) -> CanonicalError {
 }
 /// The response, field by field as slice 07 §6 lists it.
 fn render(
-    stored: &Stored,
+    stored: &ReadSnapshot,
     date: Date,
     resolved: Vec<ItemResolution>,
     versions: &BTreeMap<Uuid, SkuVersion>,
@@ -604,15 +316,11 @@ fn render(
     let mut items = Vec::with_capacity(resolved.len());
     for r in resolved {
         let version = versions.get(&r.sku_id);
-        let entry_override = stored
-            .context
-            .items
-            .iter()
-            .find(|i| i.id == r.item_id)
-            .and_then(|i| i.entry.as_ref())
-            .and_then(|e| e.invoice_line_override.as_deref());
-        let inputs =
-            resolve::invoice_inputs(entry_override, version, &stored.defaults, r.charge_kind);
+        let inputs = stored
+            .inputs
+            .get(&r.item_id)
+            .ok_or_else(|| CanonicalError::internal("resolved inputs missing").create())?
+            .clone();
         let mut chains = Vec::with_capacity(r.chains.len());
         for chain in r.chains {
             let uncovered = chain.uncovered();
@@ -648,6 +356,9 @@ fn render(
             });
         }
         items.push(PricingResolveItemDto {
+            usage_rating_policy: r
+                .price_book_entry_id
+                .and_then(|id| stored.policies.get(&id).cloned()),
             item_id: r.item_id,
             sku_id: r.sku_id,
             price_book_entry_id: r.price_book_entry_id,

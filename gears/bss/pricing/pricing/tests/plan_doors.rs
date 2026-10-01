@@ -5,6 +5,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 mod plan_support;
 use bss_products_sdk::models::{ReferenceKind, SkuType};
+use plan_support::entry_support::policy_support;
 use plan_support::{
     book, entry, holding, id_of, item, items, lock, ops_for, plan, publish, raw, request, setup,
     stranger, text,
@@ -1019,7 +1020,7 @@ async fn a_rest_caller_asserting_pricings_system_actor_never_reaches_the_registr
         &actor,
         "POST",
         &format!("/price-books/{eur}/entries"),
-        json!({"sku_id":sku,"model":"per_unit"}),
+        json!({"usage_rating_policy":policy_support::input(),"sku_id":sku,"model":"per_unit"}),
         None,
         Some("asserted"),
     )

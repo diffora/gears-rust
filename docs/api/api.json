@@ -319,6 +319,13 @@
         ],
         "type": "object"
       },
+      "AggregationScope": {
+        "enum": [
+          "subscription_line",
+          "resource"
+        ],
+        "type": "string"
+      },
       "AgingBucketDto": {
         "description": "One aged AR grain in the `GET /balances/ar-aging` response: the outstanding\nreceivable for a `(payer, currency, bucket)`.",
         "properties": {
@@ -5355,6 +5362,12 @@
         ],
         "type": "object"
       },
+      "Fold": {
+        "enum": [
+          "SUM"
+        ],
+        "type": "string"
+      },
       "FreezeDto": {
         "description": "One scope-freeze row in a tamper-status read.",
         "properties": {
@@ -7380,6 +7393,22 @@
         ],
         "type": "object"
       },
+      "MeterRef": {
+        "additionalProperties": false,
+        "properties": {
+          "usage_type_id": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "usage_type_id",
+          "version"
+        ],
+        "type": "object"
+      },
       "MigrateBackendReq": {
         "description": "Request to migrate a file's content to a different storage backend.\n\n@cpt-cf-file-storage-fr-backend-migration",
         "properties": {
@@ -8938,6 +8967,24 @@
         ],
         "type": "object"
       },
+      "Page_ProductsDerivedUsageTypeItem": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ProductsDerivedUsageTypeItem"
+            },
+            "type": "array"
+          },
+          "page_info": {
+            "$ref": "#/components/schemas/PageInfo"
+          }
+        },
+        "required": [
+          "items",
+          "page_info"
+        ],
+        "type": "object"
+      },
       "Page_ProductsSkuHistoryEntry": {
         "properties": {
           "items": {
@@ -9584,6 +9631,12 @@
           "blocks"
         ],
         "type": "object"
+      },
+      "PartialWindow": {
+        "enum": [
+          "actual_quantity_full_thresholds"
+        ],
+        "type": "string"
       },
       "PassthroughMode": {
         "enum": [
@@ -11778,7 +11831,7 @@
       },
       "PricingPlanRevisionPatch": {
         "additionalProperties": false,
-        "description": "`PATCH /plan-revisions/{id}`, draft only: the book and the sale date, never an item list\n(D-407). A book change remaps each item to the new book's entry of the same (SKU, charge kind,\nperiod); an unmatched item keeps its entry and the checks show it foreign.",
+        "description": "`PATCH /plan-revisions/{id}`, draft only: the book and the sale date, never an item list\n(D-407). A book change remaps each item to the new book's entry of the same (SKU, charge kind,\nperiod, model, policy digest) and equal dimension key (D-502); an unmatched item keeps its\nentry and the checks show it foreign.",
         "properties": {
           "available_from": {
             "type": [
@@ -11858,6 +11911,17 @@
           "sku_id": {
             "format": "uuid",
             "type": "string"
+          },
+          "usage_rating_policy": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/UsageRatingPolicyInput",
+                "description": "Required for usage entries; immutable after creation. Identity is server assigned."
+              }
+            ]
           }
         },
         "required": [
@@ -11927,6 +11991,17 @@
           "updated_at": {
             "format": "date-time",
             "type": "string"
+          },
+          "usage_rating_policy": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/UsageRatingPolicy",
+                "description": "Immutable policy materialized from the entry; null for legacy/non-usage entries."
+              }
+            ]
           },
           "version": {
             "format": "int64",
@@ -12830,6 +12905,17 @@
           "tax_category": {
             "$ref": "#/components/schemas/PricingResolveInputDto",
             "description": "The SKU version's, else the tenant `default_tax_category`."
+          },
+          "usage_rating_policy": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/UsageRatingPolicy",
+                "description": "Immutable policy projected from the selected entry; null for legacy entries."
+              }
+            ]
           }
         },
         "required": [
@@ -13411,6 +13497,390 @@
           "reject"
         ],
         "type": "string"
+      },
+      "ProductsDerivedDeclaration": {
+        "description": "A derived usage type's declaration (P-D-229, P-D-230): its inputs, the formula applied to one\ngranule's folded inputs, and the output's unit, scale and rounding.",
+        "properties": {
+          "formula": {
+            "$ref": "#/components/schemas/ProductsDerivedExpr"
+          },
+          "granularity": {
+            "description": "`hour`, the one granularity of v1.",
+            "type": "string"
+          },
+          "inputs": {
+            "items": {
+              "$ref": "#/components/schemas/ProductsDerivedInput"
+            },
+            "type": "array"
+          },
+          "output_round": {
+            "description": "`half_even`, `half_up`, `up` or `down`.",
+            "type": "string"
+          },
+          "output_scale": {
+            "description": "0 to 12.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "output_unit": {
+            "description": "The selling SKU's unit, e.g. `cloudlet·hour`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "output_unit",
+          "granularity",
+          "inputs",
+          "formula",
+          "output_scale",
+          "output_round"
+        ],
+        "type": "object"
+      },
+      "ProductsDerivedExpr": {
+        "description": "One node of a derived usage type's formula, in the shape the SDK's canonical bytes encode it.\n`op` names the node, and each operator carries its own fields and no other:\n- `input`: `name`, an input's name;\n- `const`: `value`, a decimal string;\n- `add`, `sub`, `mul`: `left` and `right`;\n- `div_const`: `arg`, and `divisor`, a non-zero decimal string;\n- `max`, `min`: `args`, at least two;\n- `ceil`, `floor`: `arg`;\n- `round`: `arg`, `scale` (0 to 12) and `mode` (`half_even`, `half_up`, `up`, `down`).\n\nEvery token is a plain string (P-D-217), so the door refuses an unknown one with its own code.",
+        "properties": {
+          "arg": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ProductsDerivedExpr"
+              }
+            ]
+          },
+          "args": {
+            "items": {
+              "$ref": "#/components/schemas/ProductsDerivedExpr"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "divisor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "left": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ProductsDerivedExpr"
+              }
+            ]
+          },
+          "mode": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "op": {
+            "type": "string"
+          },
+          "right": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ProductsDerivedExpr"
+              }
+            ]
+          },
+          "scale": {
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "value": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "op"
+        ],
+        "type": "object"
+      },
+      "ProductsDerivedInput": {
+        "description": "One input of a derived usage type: a raw GTS usage type, folded over one granule.",
+        "properties": {
+          "granule_fold": {
+            "description": "`sum`, `peak` or `time_weighted`.",
+            "type": "string"
+          },
+          "max_hold_seconds": {
+            "description": "Required for `time_weighted` (1 to 86 400 seconds) and refused otherwise; absent when none.",
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "`^[a-z][a-z0-9_]{0,31}$`, what the formula's `input` nodes name.",
+            "type": "string"
+          },
+          "unit": {
+            "type": "string"
+          },
+          "usage_type_ref": {
+            "description": "A GTS usage type id; never a `products.derived/` id.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "usage_type_ref",
+          "granule_fold",
+          "unit"
+        ],
+        "type": "object"
+      },
+      "ProductsDerivedMeterRef": {
+        "description": "What a pricing usage policy names as its meter (O-2, H1).",
+        "properties": {
+          "usage_type_id": {
+            "description": "`products.derived/<code>@<n>`.",
+            "type": "string"
+          },
+          "version": {
+            "description": "`<n>`, a canonical decimal.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "usage_type_id",
+          "version"
+        ],
+        "type": "object"
+      },
+      "ProductsDerivedUsageType": {
+        "description": "A derived usage type with its versions' headers, oldest first.",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "created_by": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "versions": {
+            "items": {
+              "$ref": "#/components/schemas/ProductsDerivedVersionHeader"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "name",
+          "created_by",
+          "created_at",
+          "versions"
+        ],
+        "type": "object"
+      },
+      "ProductsDerivedUsageTypeItem": {
+        "description": "A derived usage type as the list pages it.",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "created_by": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "latest_version": {
+            "description": "The highest version.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "name",
+          "latest_version",
+          "created_by",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "ProductsDerivedUsageTypeRequest": {
+        "description": "`POST /derived-usage-types`: a new type and its version 1.",
+        "properties": {
+          "code": {
+            "description": "`^[a-z0-9][a-z0-9._-]{0,63}$`, unique in the tenant.",
+            "type": "string"
+          },
+          "declaration": {
+            "$ref": "#/components/schemas/ProductsDerivedDeclaration"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "name",
+          "declaration"
+        ],
+        "type": "object"
+      },
+      "ProductsDerivedUsageTypeVersion": {
+        "description": "One version of a derived usage type, with what a pricing author copies into a usage policy.",
+        "properties": {
+          "accrual_policy_version": {
+            "description": "`derived-v1:<digest>`.",
+            "type": "string"
+          },
+          "canonical_unit": {
+            "description": "The declaration's `output_unit`.",
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "created_by": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "declaration": {
+            "$ref": "#/components/schemas/ProductsDerivedDeclaration"
+          },
+          "digest": {
+            "description": "The stored SHA-256 of the declaration's canonical bytes, 64 lowercase hex digits.",
+            "type": "string"
+          },
+          "id": {
+            "description": "The type's id.",
+            "format": "uuid",
+            "type": "string"
+          },
+          "meter_ref": {
+            "$ref": "#/components/schemas/ProductsDerivedMeterRef"
+          },
+          "name": {
+            "type": "string"
+          },
+          "version": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "name",
+          "version",
+          "declaration",
+          "digest",
+          "meter_ref",
+          "canonical_unit",
+          "accrual_policy_version",
+          "created_by",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "ProductsDerivedUsageTypeVersionRequest": {
+        "description": "`POST /derived-usage-types/{code}/versions`: the next version.",
+        "properties": {
+          "declaration": {
+            "$ref": "#/components/schemas/ProductsDerivedDeclaration"
+          }
+        },
+        "required": [
+          "declaration"
+        ],
+        "type": "object"
+      },
+      "ProductsDerivedVersionHeader": {
+        "description": "A version as the type read lists it.",
+        "properties": {
+          "accrual_policy_version": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "created_by": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "digest": {
+            "type": "string"
+          },
+          "meter_ref": {
+            "$ref": "#/components/schemas/ProductsDerivedMeterRef"
+          },
+          "version": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "digest",
+          "meter_ref",
+          "accrual_policy_version",
+          "created_by",
+          "created_at"
+        ],
+        "type": "object"
       },
       "ProductsLifecycle": {
         "description": "A SKU's lifecycle. A retire under review is `retire_pending`, not a lifecycle (P-D-248).",
@@ -14052,6 +14522,30 @@
         ],
         "type": "object"
       },
+      "QuantitySemantics": {
+        "additionalProperties": false,
+        "properties": {
+          "accrual_policy_version": {
+            "type": "string"
+          },
+          "fold": {
+            "$ref": "#/components/schemas/Fold"
+          },
+          "meter": {
+            "$ref": "#/components/schemas/MeterRef"
+          },
+          "unit": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "meter",
+          "unit",
+          "fold",
+          "accrual_policy_version"
+        ],
+        "type": "object"
+      },
       "QueryAggregatedUsageRecordsRequest": {
         "additionalProperties": false,
         "description": "Aggregated-query request body for\n`POST /usage-collector/v1/records/aggregate`. The typed `gts_id`, the\n`OData` `$filter`, and the `metadata.<key>` side-channel remain query\nparameters (mirroring `GET /usage-collector/v1/records`); only the\naggregation spec (operator + group-by dimensions) ships in the body.",
@@ -14291,6 +14785,42 @@
           "degrade"
         ],
         "type": "string"
+      },
+      "RatingWindow": {
+        "oneOf": [
+          {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "billing_cycle"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "calendar_hour"
+                ],
+                "type": "string"
+              },
+              "timezone": {
+                "$ref": "#/components/schemas/Timezone"
+              }
+            },
+            "required": [
+              "timezone",
+              "kind"
+            ],
+            "type": "object"
+          }
+        ]
       },
       "ReactionKindDto": {
         "description": "Reaction value.",
@@ -15748,6 +16278,12 @@
           "ref_id"
         ],
         "type": "object"
+      },
+      "Reset": {
+        "enum": [
+          "rating_window_start"
+        ],
+        "type": "string"
       },
       "ResolveExceptionRequest": {
         "description": "Resolve-exception request body.",
@@ -18763,6 +19299,12 @@
         ],
         "type": "object"
       },
+      "Timezone": {
+        "enum": [
+          "UTC"
+        ],
+        "type": "string"
+      },
       "ToolData": {
         "description": "Tool lifecycle event.",
         "properties": {
@@ -19683,6 +20225,61 @@
         "required": [
           "input_tokens",
           "output_tokens"
+        ],
+        "type": "object"
+      },
+      "UsageRatingPolicy": {
+        "additionalProperties": false,
+        "description": "Materialized immutable policy. Version is an exact decimal string on the wire.",
+        "properties": {
+          "content": {
+            "$ref": "#/components/schemas/UsageRatingPolicyInput"
+          },
+          "digest": {
+            "type": "string"
+          },
+          "policy_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "policy_id",
+          "version",
+          "digest",
+          "content"
+        ],
+        "type": "object"
+      },
+      "UsageRatingPolicyInput": {
+        "additionalProperties": false,
+        "description": "Author input contains no server-assigned policy identity.",
+        "properties": {
+          "aggregation_scope": {
+            "$ref": "#/components/schemas/AggregationScope"
+          },
+          "partial_window": {
+            "$ref": "#/components/schemas/PartialWindow"
+          },
+          "quantity_semantics": {
+            "$ref": "#/components/schemas/QuantitySemantics"
+          },
+          "rating_window": {
+            "$ref": "#/components/schemas/RatingWindow"
+          },
+          "reset": {
+            "$ref": "#/components/schemas/Reset"
+          }
+        },
+        "required": [
+          "rating_window",
+          "aggregation_scope",
+          "reset",
+          "quantity_semantics",
+          "partial_window"
         ],
         "type": "object"
       },
@@ -36411,7 +37008,7 @@
         ]
       },
       "patch": {
-        "description": "Changes a draft revision's book or its sale date, by its author at the version the author read (If-Match). A new book remaps each item to the new book's entry of the same SKU, charge kind, period and model (D-427), and an item with no such entry keeps its own, so its checks show ITEM_BOOK_FOREIGN; book_id omitted or null leaves the book unchanged. A named book needs the caller's price_book read on it (D-456). Refusals: 400 DATE_INVALID; 403 NOT_DRAFT_AUTHOR; 404; 409 REVISION_NOT_DRAFT or STALE_REVISION; 403 PRICE_BOOK_READ_REQUIRED for a book the caller may not read; 503 when that grant cannot be judged.",
+        "description": "Changes a draft revision's book or its sale date, by its author at the version the author read (If-Match). A new book remaps each item to the new book's entry of the same SKU, charge kind, period, model and policy digest with an equal dimension key (D-502), and an item with no such entry keeps its own, so its checks show ITEM_BOOK_FOREIGN; book_id omitted or null leaves the book unchanged. A named book needs the caller's price_book read on it (D-456). Refusals: 400 DATE_INVALID; 403 NOT_DRAFT_AUTHOR; 404; 409 REVISION_NOT_DRAFT or STALE_REVISION; 403 PRICE_BOOK_READ_REQUIRED for a book the caller may not read; 503 when that grant cannot be judged.",
         "operationId": "bss_pricing.patch_plan_revision",
         "parameters": [
           {
@@ -39612,7 +40209,7 @@
         ]
       },
       "post": {
-        "description": "Adds an entry for a SKU to a book in a model fixed for the entry's life (D-427), reserving the SKU reference in Products before the write and confirming it after; the Idempotency-Key replays the receipt. The invoice-line override is at most 2000 characters (D-457). Refusals: 400 MODEL_INVALID, MODEL_KIND_CHARGEKIND_MISMATCH (judged at the door and again after the reservation), ENTRY_PERIOD_INVALID, DIM_NOT_DECLARED, or FIELD_TOO_LONG on an override over its cap; 409 ENTRY_KEY_TAKEN (the SKU, charge kind, period and model are taken in the book), SKU_DRAFT, SKU_DEPRECATED, SKU_RETIRING, SKU_FENCED, BUNDLE_SKU_NOT_PRICEABLE or CHARGE_KIND_SKU_TYPE; 503 REGISTRY_UNAVAILABLE.",
+        "description": "Adds an entry for a SKU to a book in a model fixed for the entry's life (D-427), reserving the SKU reference in Products before the write and confirming it after; the Idempotency-Key replays the receipt. The invoice-line override is at most 2000 characters (D-457). Usage entries require an immutable usage_rating_policy; other charge kinds refuse one. Policy identity is server-issued (D-502). Refusals: 400 MISSING_RATING_POLICY, UNEXPECTED_RATING_POLICY, METER_POLICY_MISMATCH, MODEL_INVALID, MODEL_KIND_CHARGEKIND_MISMATCH (judged at the door and again after the reservation), ENTRY_PERIOD_INVALID, DIM_NOT_DECLARED, or FIELD_TOO_LONG on an override over its cap; 409 ENTRY_KEY_TAKEN (the SKU, charge kind, normalized period, model and policy digest are taken in the book), SKU_DRAFT, SKU_DEPRECATED, SKU_RETIRING, SKU_FENCED, BUNDLE_SKU_NOT_PRICEABLE or CHARGE_KIND_SKU_TYPE; 503 REGISTRY_UNAVAILABLE.",
         "operationId": "bss_pricing.create_entry",
         "parameters": [
           {
@@ -41869,7 +42466,7 @@
     },
     "/bss-products/v1/approval-units/{id}/approve": {
       "post": {
-        "description": "Approves the unit at the generation its reviewer saw. The note is at most 2000 characters (the approval engine's cap). Refusals include 400 NOTE_TOO_LONG on a longer note, 400 GENERATION_MISMATCH, 400 UNIT_STALE after a refresh, 403 SOD_VIOLATION and 409 DUPLICATE_VOTE.",
+        "description": "Approves the unit at the generation its reviewer saw. The note is at most 2000 characters (the approval engine's cap). The apply judges the SKU as it is then: a change that would move a derived pin, or leave a unit other than the pinned version's output unit, is refused (P-D-232). Refusals include 400 NOTE_TOO_LONG on a longer note, 400 GENERATION_MISMATCH, 400 UNIT_STALE after a refresh, 403 SOD_VIOLATION, 409 DUPLICATE_VOTE, and the apply's 409 DERIVED_PIN_IMMUTABLE, DERIVED_UNIT_MISMATCH or DERIVED_USAGE_TYPE_UNKNOWN.",
         "operationId": "bss_products.approve_unit",
         "parameters": [
           {
@@ -42964,6 +43561,523 @@
         ]
       }
     },
+    "/bss-products/v1/derived-usage-types": {
+      "get": {
+        "description": "One page of the tenant's derived usage types by code (tie-break id), each with its latest version: `$top` (alias `limit`; default 50, clamped at 200) and `cursor` (alias `$skiptoken`) from `page_info`, as the SKU list pages. Asks `sku:read` (O-3). Any other key, `$filter`, `$orderby` and `$select` are 400 UNSUPPORTED_QUERY_PARAM; a malformed cursor, or one another list cut, is 400.",
+        "operationId": "bss_products.list_derived_usage_types",
+        "parameters": [
+          {
+            "description": "Page size, alias of $top (default 50, clamped at 200)",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Continuation from page_info (alias $skiptoken)",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_ProductsDerivedUsageTypeItem"
+                }
+              }
+            },
+            "description": "One page of derived usage types, by code."
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "List derived usage types",
+        "tags": [
+          "Derived usage types"
+        ]
+      },
+      "post": {
+        "description": "A derived usage type and its version 1 (P-D-229, P-D-231): a `code` unique in the tenant (`^[a-z0-9][a-z0-9._-]{0,63}$`), a `name`, and a `declaration` — at least two raw GTS usage-type inputs, the formula one granule's folded inputs give, and the output's unit, scale and rounding. Each input resolves through the usage-type catalog. The version is append-only and needs no approval (O-1); pricing names it as `products.derived/<code>@1`. Asks `author` on `derived_usage_type`. Refusals: 400 VALIDATION on a code off its pattern or a blank name, FIELD_TOO_LONG on a code over 64 or a name over 200 characters (P-D-225); 400 DERIVED_DECLARATION_INVALID when the declaration breaks a rule, its detail led by the rule's name (`empty_unit`, `unit_too_long`, `scale_too_large`, `too_few_inputs`, `invalid_input_name`, `duplicate_input`, `empty_input_ref`, `input_ref_too_long`, `derived_input`, `hold_missing`, `hold_not_allowed`, `hold_out_of_range`, `unknown_input`, `unused_input`, `division_by_zero`, `too_few_operands`, `too_deep`, `too_many_nodes`, and the shape's `unknown_granularity`, `unknown_fold`, `unknown_round_mode`, `unknown_operator`, `invalid_decimal`, `malformed_expression`); 400 USAGE_TYPE_UNRESOLVED on each input the usage-type catalog does not know; 403 USAGE_TYPE_FORBIDDEN when the catalog refuses the caller (it is read as the caller, P-D-207); 409 IDEMPOTENCY_CONFLICT for a key replayed with another body, IDEMPOTENCY_KEY_IN_FLIGHT while its first request runs; 503 USAGE_TYPE_UNAVAILABLE when the catalog does not answer or none is configured; 409 DERIVED_CODE_TAKEN when the tenant has the code.",
+        "operationId": "bss_products.create_derived_usage_type",
+        "parameters": [
+          {
+            "description": "Replay this endpoint's original receipt within the retention period",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProductsDerivedUsageTypeRequest"
+              }
+            }
+          },
+          "description": "code, name, declaration",
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductsDerivedUsageTypeVersion"
+                }
+              }
+            },
+            "description": "The type's version 1, with its meter reference and accrual policy version."
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Create a derived usage type",
+        "tags": [
+          "Derived usage types"
+        ]
+      }
+    },
+    "/bss-products/v1/derived-usage-types/{code}": {
+      "get": {
+        "description": "The type with its versions' headers, oldest first: each version's digest, meter reference and accrual policy version. Asks `sku:read` (O-3). 404 when the tenant has no type with the code.",
+        "operationId": "bss_products.get_derived_usage_type",
+        "parameters": [
+          {
+            "description": "The derived usage type's code",
+            "in": "path",
+            "name": "code",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductsDerivedUsageType"
+                }
+              }
+            },
+            "description": "The type and its versions."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Read a derived usage type",
+        "tags": [
+          "Derived usage types"
+        ]
+      }
+    },
+    "/bss-products/v1/derived-usage-types/{code}/versions": {
+      "post": {
+        "description": "The type's next version, n + 1, with its own declaration; every earlier version stays as it was (P-D-231). A published usage SKU keeps the version it was published on: a new version is sold through a new SKU (M1). Asks `author` on `derived_usage_type`. Refusals: 404 when the tenant has no type with the code; 400 DERIVED_DECLARATION_INVALID when the declaration breaks a rule, its detail led by the rule's name (`empty_unit`, `unit_too_long`, `scale_too_large`, `too_few_inputs`, `invalid_input_name`, `duplicate_input`, `empty_input_ref`, `input_ref_too_long`, `derived_input`, `hold_missing`, `hold_not_allowed`, `hold_out_of_range`, `unknown_input`, `unused_input`, `division_by_zero`, `too_few_operands`, `too_deep`, `too_many_nodes`, and the shape's `unknown_granularity`, `unknown_fold`, `unknown_round_mode`, `unknown_operator`, `invalid_decimal`, `malformed_expression`); 400 USAGE_TYPE_UNRESOLVED on each input the usage-type catalog does not know; 403 USAGE_TYPE_FORBIDDEN when the catalog refuses the caller (it is read as the caller, P-D-207); 409 IDEMPOTENCY_CONFLICT for a key replayed with another body, IDEMPOTENCY_KEY_IN_FLIGHT while its first request runs; 503 USAGE_TYPE_UNAVAILABLE when the catalog does not answer or none is configured; 409 CONTENDED when a concurrent write took the number first.",
+        "operationId": "bss_products.create_derived_usage_type_version",
+        "parameters": [
+          {
+            "description": "The derived usage type's code",
+            "in": "path",
+            "name": "code",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Replay this endpoint's original receipt within the retention period",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProductsDerivedUsageTypeVersionRequest"
+              }
+            }
+          },
+          "description": "declaration",
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductsDerivedUsageTypeVersion"
+                }
+              }
+            },
+            "description": "The new version, with its meter reference and accrual policy version."
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Add a version to a derived usage type",
+        "tags": [
+          "Derived usage types"
+        ]
+      }
+    },
+    "/bss-products/v1/derived-usage-types/{code}/versions/{n}": {
+      "get": {
+        "description": "The version's declaration, its stored digest, and what a pricing usage policy names (O-2): `meter_ref` `{usage_type_id: \"products.derived/<code>@<n>\", version: \"<n>\"}`, `canonical_unit` (the declaration's output unit) and `accrual_policy_version` (`derived-v1:<digest>`). Asks `sku:read` (O-3). 404 when the tenant has no type with the code, or the type no such version; an `n` that is not a canonical decimal names no version.",
+        "operationId": "bss_products.get_derived_usage_type_version",
+        "parameters": [
+          {
+            "description": "The derived usage type's code",
+            "in": "path",
+            "name": "code",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The version, a canonical decimal from 1",
+            "in": "path",
+            "name": "n",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductsDerivedUsageTypeVersion"
+                }
+              }
+            },
+            "description": "The version."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Read one version of a derived usage type",
+        "tags": [
+          "Derived usage types"
+        ]
+      }
+    },
     "/bss-products/v1/references/{id}": {
       "delete": {
         "description": "Releases a reference: its owner gear releases its own, and an operator forces the release with `force: true` and a reason of at most 2000 characters (P-D-225), which the audit row and the `ReferenceForceReleased` event carry. Refusals: 400 for a forced release without a reason, 400 FIELD_TOO_LONG on a reason over its cap; 403 REFERENCE_OWNER_MISMATCH; 404.",
@@ -43408,7 +44522,7 @@
         }
       },
       "post": {
-        "description": "Creates a draft SKU of the tenant. Its texts have explicit caps, in characters (P-D-225): code 64, name 200, description 2000, gl_code, tax_category and unit 64, invoice_line_template 2000, usage_type_ref 512. Refusals: 400 VALIDATION, or 400 FIELD_TOO_LONG on a text over its cap; 404 for a category the tenant does not hold; 409 SKU_CODE_TAKEN, SKU_NAME_TAKEN or CATEGORY_RETIRED.",
+        "description": "Creates a draft SKU of the tenant. Its texts have explicit caps, in characters (P-D-225): code 64, name 200, description 2000, gl_code, tax_category and unit 64, invoice_line_template 2000, usage_type_ref 512. A usage_type_ref of the form `products.derived/<code>@<n>` names one version of the tenant's derived usage type, read from this gear's store; the usage-type catalog is never asked for it (P-D-232). Refusals: 400 VALIDATION, or 400 FIELD_TOO_LONG on a text over its cap; 400 USAGE_TYPE_UNRESOLVED for a GTS ref the configured catalog does not know; 400 DERIVED_USAGE_TYPE_UNKNOWN for a derived ref the tenant does not hold, or one not in that form; 400 DERIVED_UNIT_MISMATCH for a unit other than that version's output unit; 404 for a category the tenant does not hold; 409 SKU_CODE_TAKEN, SKU_NAME_TAKEN or CATEGORY_RETIRED.",
         "operationId": "bss_products.create_sku",
         "parameters": [
           {
@@ -43900,7 +45014,7 @@
         ]
       },
       "patch": {
-        "description": "Edits a draft SKU under If-Match; a field the body leaves out is unchanged. The texts it carries have the caps of the create (P-D-225). Refusals include 400 VALIDATION, 400 FIELD_TOO_LONG on a text over its cap, 404, and 409 NOT_A_DRAFT, ROW_LOCKED_PENDING, STALE_REVISION, SKU_NAME_TAKEN or CATEGORY_RETIRED.",
+        "description": "Edits a draft SKU under If-Match; a field the body leaves out is unchanged. The texts it carries have the caps of the create (P-D-225). A draft never published may move its derived usage type to another version (P-D-232). Refusals include 400 VALIDATION, 400 FIELD_TOO_LONG on a text over its cap, 400 USAGE_TYPE_UNRESOLVED, 400 DERIVED_USAGE_TYPE_UNKNOWN and DERIVED_UNIT_MISMATCH as at the create, 404, and 409 NOT_A_DRAFT, ROW_LOCKED_PENDING, STALE_REVISION, SKU_NAME_TAKEN or CATEGORY_RETIRED.",
         "operationId": "bss_products.update_sku_draft",
         "parameters": [
           {
@@ -44028,7 +45142,7 @@
     },
     "/bss-products/v1/skus/{id}/changes": {
       "post": {
-        "description": "Submits a change of a published SKU for approval, effective from `effective_from`. The texts it carries have the caps of the create (P-D-225), and the note at most 2000 characters. Refusals include 400 FIELD_TOO_LONG on a text over its cap and 400 NOTE_TOO_LONG on the note.",
+        "description": "Submits a change of a published SKU for approval, effective from `effective_from`. The texts it carries have the caps of the create (P-D-225), and the note at most 2000 characters. A usage SKU keeps the derived usage type it was first published on (P-D-232): a change that moves it to another version, to a GTS ref, from a GTS ref, or drops it (a type change included) is refused before any catalog is asked. Refusals include 400 FIELD_TOO_LONG on a text over its cap, 400 NOTE_TOO_LONG on the note, 400 DERIVED_PIN_IMMUTABLE, and 400 DERIVED_UNIT_MISMATCH for a unit other than the pinned version's output unit.",
         "operationId": "bss_products.change_sku",
         "parameters": [
           {
@@ -44641,6 +45755,7 @@
     },
     "/bss-products/v1/skus/{id}/submit": {
       "post": {
+        "description": "Submits a draft SKU for publication; at quorum 0 the submit is the publish. A usage SKU's GTS ref is resolved through the usage-type catalog (P-D-184); a derived ref (`products.derived/<code>@<n>`) is read from this gear's store, never from the catalog, and the first publish pins it (P-D-232). Refusals include 400 USAGE_NEEDS_METER, USAGE_TYPE_UNRESOLVED, DERIVED_USAGE_TYPE_UNKNOWN and DERIVED_UNIT_MISMATCH, 400 NOTE_TOO_LONG, 403 USAGE_TYPE_FORBIDDEN, 409 NOT_A_DRAFT and 503 USAGE_TYPE_UNAVAILABLE.",
         "operationId": "bss_products.submit_sku",
         "parameters": [
           {

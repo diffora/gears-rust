@@ -150,6 +150,15 @@ pub fn idempotency_key(headers: &HeaderMap) -> Result<String, DomainError> {
     let key = raw
         .to_str()
         .map_err(|_| refuse("the header value is not valid UTF-8"))?;
+    validate_idempotency_key(key)?;
+    Ok(key.to_owned())
+}
+
+/// Validate the same stored command key for REST and SDK callers.
+/// # Errors
+/// Refuses empty, oversized or non-printable ASCII keys as an invalid request.
+pub fn validate_idempotency_key(key: &str) -> Result<(), DomainError> {
+    let refuse = |why: &str| DomainError::InvalidRequest(format!("Idempotency-Key: {why}"));
     if key.is_empty() {
         return Err(refuse("an empty key names nothing"));
     }
@@ -163,7 +172,7 @@ pub fn idempotency_key(headers: &HeaderMap) -> Result<String, DomainError> {
             "the key must be printable ASCII; it is stored and echoed in refusals",
         ));
     }
-    Ok(key.to_owned())
+    Ok(())
 }
 
 /// Parse JSON while keeping malformed bodies in the canonical 400 envelope.

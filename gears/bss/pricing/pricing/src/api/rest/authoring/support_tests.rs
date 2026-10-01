@@ -32,11 +32,15 @@ async fn run(unit: bool, error: fn() -> DoorError) -> (CanonicalError, u32) {
         )
         .await
         .unwrap();
-        unit_transaction_with_events(&state.db.db(), &state.outbox, move |_, _| {
-            seen.fetch_add(1, Ordering::SeqCst);
-            Box::pin(async move { Err::<(), _>(error()) })
+        let db = state.db.db();
+        retry_unit_capture(&db, || {
+            unit_transaction_observed_with_events(&db, &state.outbox, |_, _| {
+                seen.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async move { Err::<(), _>(error()) })
+            })
         })
         .await
+        .map_err(Into::into)
     } else {
         transaction(&db, move |_| {
             seen.fetch_add(1, Ordering::SeqCst);

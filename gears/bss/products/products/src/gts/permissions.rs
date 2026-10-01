@@ -1,4 +1,5 @@
-//! The sixteen grantable Products permissions, registered as GTS instances.
+//! The seventeen grantable Products permissions, registered as GTS instances. A derived usage type
+//! has one, `author` (P-D-231): its reads are `sku:read` (O-3).
 #![allow(unknown_lints)]
 #![allow(de0901_gts_string_pattern)]
 use crate::authz::{actions, labels};
@@ -164,6 +165,16 @@ gts_instance! {
     }
 }
 
+gts_instance! {
+    #[gts_static(DERIVED_USAGE_TYPE_AUTHOR)]
+    AuthzPermissionV1 {
+        id:gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.derived_usage_type_author.v1"),
+        resource_type:labels::DERIVED_USAGE_TYPE.to_owned(),
+        action:actions::AUTHOR.to_owned(),
+        display_name:"Author derived usage type".to_owned(),
+    }
+}
+
 /// Enumerate the exact typed permissions registered by this catalog.
 #[must_use]
 pub fn all() -> Vec<&'static AuthzPermissionV1> {
@@ -184,5 +195,6 @@ pub fn all() -> Vec<&'static AuthzPermissionV1> {
         &APPROVAL_UNIT_SUBMIT,
         &APPROVAL_UNIT_APPROVE,
         &APPROVAL_UNIT_SETTINGS,
+        &DERIVED_USAGE_TYPE_AUTHOR,
     ]
 }

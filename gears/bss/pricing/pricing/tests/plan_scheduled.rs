@@ -13,8 +13,8 @@ use bss_pricing::infra::{
 };
 use bss_products_sdk::models::{Lifecycle, SkuType};
 use plan_support::{
-    Catalog, Fixture, book, entry, entry_support, entry_support::outbox_events, holding, id_of,
-    item, items, plan, scope, setup, text,
+    Catalog, Fixture, book, entry_support, entry_support::outbox_events, holding, id_of, item,
+    items, plan, policy_entry as entry, scope, setup, text,
 };
 use serde_json::{Value, json};
 use std::sync::Arc;

@@ -449,36 +449,57 @@ async fn record_prices(
 /// # Errors
 /// Returns the canonical refusal.
 pub async fn submit_price(db: &Db, cmd: Command, id: Uuid) -> Result<Response, CanonicalError> {
-    let sink = cmd.outbox.clone();
-    support::unit_transaction_with_events(db, &sink, move |tx, outbox| {
+    support::retry_unit_capture(db, || async {
+        if let Some(replay) = support::replay(
+            db,
+            cmd.tenant(),
+            &format!("/bss-pricing/v1/prices/{id}/submit"),
+            &cmd.key,
+            &cmd.digest,
+        )
+        .await?
+        {
+            return Ok(replay);
+        }
+
+        let observations = observe_prices(db, &cmd, &[id]).await?;
+        let sink = cmd.outbox.clone();
         let cmd = cmd.clone();
-        Box::pin(async move {
-            let endpoint = format!("/bss-pricing/v1/prices/{id}/submit");
-            if let Some(replay) =
-                support::claim(tx, cmd.tenant(), &endpoint, &cmd.key, &cmd.digest).await?
-            {
-                return Ok(replay);
-            }
-            let price = price_repo::find(tx, &cmd.scope, cmd.tenant(), id)
+        support::unit_transaction_observed_with_events(db, &sink, move |tx, outbox| {
+            let observations = observations.clone();
+            let cmd = cmd.clone();
+            Box::pin(async move {
+                let endpoint = format!("/bss-pricing/v1/prices/{id}/submit");
+                if let Some(replay) =
+                    support::claim(tx, cmd.tenant(), &endpoint, &cmd.key, &cmd.digest).await?
+                {
+                    return Ok(replay);
+                }
+                observations.check_local(tx, cmd.tenant()).await?;
+                let price = price_repo::find(tx, &cmd.scope, cmd.tenant(), id)
+                    .await?
+                    .ok_or_else(|| support::missing_what("price"))?;
+                if price.paired_price_id.is_some() {
+                    return Err(support::invalid("price_ids", "PAIR_SPLIT").into());
+                }
+                let entry = price_book_entry_repo::find(
+                    tx,
+                    &AccessScope::for_tenant(cmd.tenant()),
+                    cmd.tenant(),
+                    price.price_book_entry_id,
+                )
                 .await?
-                .ok_or_else(|| support::missing_what("price"))?;
-            if price.paired_price_id.is_some() {
-                return Err(support::invalid("price_ids", "PAIR_SPLIT").into());
-            }
-            let entry = price_book_entry_repo::find(
-                tx,
-                &AccessScope::for_tenant(cmd.tenant()),
-                cmd.tenant(),
-                price.price_book_entry_id,
-            )
-            .await?
-            .ok_or_else(support::missing_entry)?;
-            let subject =
-                PricesSubject::new(cmd.ctx.clone(), cmd.hub.clone(), entry.book_id, cmd.now());
-            record_prices(tx, &outbox, &cmd, &endpoint, (subject, None), &[id]).await
+                .ok_or_else(support::missing_entry)?;
+                let mut subject =
+                    PricesSubject::new(cmd.ctx.clone(), cmd.hub.clone(), entry.book_id, cmd.now());
+                subject.meter_observations = observations;
+                record_prices(tx, &outbox, &cmd, &endpoint, (subject, None), &[id]).await
+            })
         })
+        .await
     })
     .await
+    .map_err(Into::into)
 }
 
 /// `POST /plan-revisions/{id}/submit`: one unlocked draft revision whose checks are all green
@@ -495,73 +516,96 @@ pub async fn submit_revision(
     id: Uuid,
     note: Option<String>,
 ) -> Result<Response, CanonicalError> {
-    let sink = cmd.outbox.clone();
-    support::unit_transaction_with_events(db, &sink, move |tx, outbox| {
-        let (cmd, note) = (cmd.clone(), note.clone());
-        Box::pin(async move {
-            let endpoint = format!("/bss-pricing/v1/plan-revisions/{id}/submit");
-            if let Some(replay) =
-                support::claim(tx, cmd.tenant(), &endpoint, &cmd.key, &cmd.digest).await?
-            {
-                return Ok(replay);
-            }
-            let r = plans::find_revision(tx, &cmd.scope, cmd.tenant(), id).await?;
-            if !plans::open_draft(&r) {
-                return Err(support::conflict("REVISION_NOT_DRAFT").into());
-            }
-            let now = cmd.now();
-            // @cpt-begin:cpt-cf-bss-pricing-flow-plans:p1:inst-plans-flow-4
-            let subject = PlanRevisionSubject::new(cmd.ctx.clone(), cmd.hub.clone(), id, now);
-            let submission = Submission {
-                ref_id: id,
-                common_effective_date: None,
-                note,
-                now,
-            };
-            let submitted = record(
-                tx,
-                &outbox,
-                &cmd,
-                &Subject::PlanRevision(subject),
-                submission,
-                &[id],
-            )
-            .await?;
-            // @cpt-end:cpt-cf-bss-pricing-flow-plans:p1:inst-plans-flow-4
-            let children = AccessScope::for_tenant(cmd.tenant());
-            let r = plans::find_revision(tx, &children, cmd.tenant(), id).await?;
-            let items = plan_item_repo::for_revision(tx, &children, cmd.tenant(), id).await?;
-            // A write answers what it wrote (D-453): the unit in hand names its instants (D-461)
-            // and, still pending, its progress (D-462). Its item authors and its decisions are
-            // read once each, and both the progress and the unit are built from them (the phase
-            // 9 review's R45).
-            let (authors, decisions) = rows_of(tx, &cmd.store(), submitted.unit.id).await?;
-            let approval = plans::progress_of(&submitted.unit, &decisions);
-            let revision = PricingPlanRevisionDto::of(&r, items)?
-                .with_units(&plans::instants_of(&submitted.unit), approval);
-            let receipt = PricingPlanRevisionSubmitReceipt {
-                applied: submitted.applied,
-                unit: PricingApprovalUnitDto::of(
-                    submitted.unit,
-                    &authors,
-                    decisions,
-                    cmd.ctx.subject_id(),
-                )?,
-                revision,
-            };
-            support::answer(
-                tx,
-                cmd.tenant(),
-                &endpoint,
-                &cmd.key,
-                StatusCode::CREATED,
-                &receipt,
-                None,
-            )
-            .await
+    support::retry_unit_capture(db, || async {
+        if let Some(replay) = support::replay(
+            db,
+            cmd.tenant(),
+            &format!("/bss-pricing/v1/plan-revisions/{id}/submit"),
+            &cmd.key,
+            &cmd.digest,
+        )
+        .await?
+        {
+            return Ok(replay);
+        }
+
+        let observations = observe_revision(db, &cmd, id).await?;
+        let sink = cmd.outbox.clone();
+        let cmd = cmd.clone();
+        let note = note.clone();
+        support::unit_transaction_observed_with_events(db, &sink, move |tx, outbox| {
+            let observations = observations.clone();
+            let (cmd, note) = (cmd.clone(), note.clone());
+            Box::pin(async move {
+                let endpoint = format!("/bss-pricing/v1/plan-revisions/{id}/submit");
+                if let Some(replay) =
+                    support::claim(tx, cmd.tenant(), &endpoint, &cmd.key, &cmd.digest).await?
+                {
+                    return Ok(replay);
+                }
+                observations.check_local(tx, cmd.tenant()).await?;
+                let r = plans::find_revision(tx, &cmd.scope, cmd.tenant(), id).await?;
+                if !plans::open_draft(&r) {
+                    return Err(support::conflict("REVISION_NOT_DRAFT").into());
+                }
+                let now = cmd.now();
+                // @cpt-begin:cpt-cf-bss-pricing-flow-plans:p1:inst-plans-flow-4
+                let mut subject =
+                    PlanRevisionSubject::new(cmd.ctx.clone(), cmd.hub.clone(), id, now);
+                subject.meter_observations = observations;
+                let submission = Submission {
+                    ref_id: id,
+                    common_effective_date: None,
+                    note,
+                    now,
+                };
+                let submitted = record(
+                    tx,
+                    &outbox,
+                    &cmd,
+                    &Subject::PlanRevision(subject),
+                    submission,
+                    &[id],
+                )
+                .await?;
+                // @cpt-end:cpt-cf-bss-pricing-flow-plans:p1:inst-plans-flow-4
+                let children = AccessScope::for_tenant(cmd.tenant());
+                let r = plans::find_revision(tx, &children, cmd.tenant(), id).await?;
+                let items = plan_item_repo::for_revision(tx, &children, cmd.tenant(), id).await?;
+                // A write answers what it wrote (D-453): the unit in hand names its instants (D-461)
+                // and, still pending, its progress (D-462). Its item authors and its decisions are
+                // read once each, and both the progress and the unit are built from them (the phase
+                // 9 review's R45).
+                let (authors, decisions) = rows_of(tx, &cmd.store(), submitted.unit.id).await?;
+                let approval = plans::progress_of(&submitted.unit, &decisions);
+                let revision = PricingPlanRevisionDto::of(&r, items)?
+                    .with_units(&plans::instants_of(&submitted.unit), approval);
+                let receipt = PricingPlanRevisionSubmitReceipt {
+                    applied: submitted.applied,
+                    unit: PricingApprovalUnitDto::of(
+                        submitted.unit,
+                        &authors,
+                        decisions,
+                        cmd.ctx.subject_id(),
+                    )?,
+                    revision,
+                };
+                support::answer(
+                    tx,
+                    cmd.tenant(),
+                    &endpoint,
+                    &cmd.key,
+                    StatusCode::CREATED,
+                    &receipt,
+                    None,
+                )
+                .await
+            })
         })
+        .await
     })
     .await
+    .map_err(Into::into)
 }
 
 /// Every draft price of a book with its entry, chain and predecessor, in proposal order.
@@ -591,6 +635,8 @@ async fn proposals(
             stored.insert(m.id, m);
         }
     }
+    let policies =
+        crate::infra::storage::repo::usage_policy_repo::for_entries(tx, tenant, &entries).await?;
     let by_id: BTreeMap<Uuid, &entity::price_book_entry::Model> =
         entries.iter().map(|p| (p.id, p)).collect();
     let owners: Vec<(Uuid, Uuid)> = entries.iter().map(|p| (p.id, p.book_id)).collect();
@@ -612,9 +658,13 @@ async fn proposals(
             .cloned()
             .map(|b| PricingPriceDto::of(b, &entry.model))
             .transpose()?;
+        let price = PricingPriceDto::of(m.clone(), &entry.model)?;
+        let policy = policies.get(&entry.id).cloned();
+        let mut entry = PricingPriceBookEntryDto::try_from(entry)?;
+        entry.usage_rating_policy = policy;
         out.push(PricingProposedPrice {
-            price: PricingPriceDto::of(m.clone(), &entry.model)?,
-            entry: PricingPriceBookEntryDto::try_from(entry)?,
+            price,
+            entry,
             chain: r.dim_value.clone().unwrap_or_else(|| "default".into()),
             before,
             pair_partner_id: r.paired_price_id,
@@ -659,81 +709,136 @@ pub async fn publish(
     book: Uuid,
     input: PricingPublishChangesRequest,
 ) -> Result<Response, CanonicalError> {
-    let date = support::date(input.common_effective_date.clone(), "common_effective_date")?;
-    let sink = cmd.outbox.clone();
-    support::unit_transaction_with_events(db, &sink, move |tx, outbox| {
-        let (cmd, input) = (cmd.clone(), input.clone());
-        Box::pin(async move {
-            let endpoint = format!("/bss-pricing/v1/price-books/{book}/publish-changes");
-            if let Some(replay) =
-                support::claim(tx, cmd.tenant(), &endpoint, &cmd.key, &cmd.digest).await?
-            {
-                return Ok(replay);
-            }
-            book_repo::find(tx, &cmd.scope, cmd.tenant(), book)
-                .await?
-                .ok_or_else(support::missing)?;
-            let children = AccessScope::for_tenant(cmd.tenant());
-            // The book's prices in ONE statement, in the order its entries list them (PS-16).
-            let entries =
-                price_book_entry_repo::for_book(tx, &children, cmd.tenant(), book).await?;
-            let mut grouped = price_repo::by_entry(
-                price_repo::for_entries(
-                    tx,
-                    &children,
-                    cmd.tenant(),
-                    &entries.iter().map(|p| p.id).collect::<Vec<_>>(),
-                )
-                .await?,
-            );
-            let owned: Vec<entity::price::Model> = entries
-                .iter()
-                .flat_map(|p| grouped.remove(&p.id).unwrap_or_default())
-                .collect();
-            let draft = |m: &entity::price::Model| {
-                m.state == PriceState::Draft.as_str() && m.pending_unit_id.is_none()
-            };
-            let selected: Vec<Uuid> = match input.price_ids {
-                None => owned.iter().filter(|m| draft(m)).map(|m| m.id).collect(),
-                Some(ids) => {
-                    for id in &ids {
-                        let Some(m) = owned.iter().find(|m| m.id == *id) else {
-                            return Err(support::invalid("price_ids", "PRICE_NOT_IN_BOOK").into());
-                        };
-                        if !draft(m) {
-                            return Err(support::conflict("PRICE_NOT_DRAFT").into());
-                        }
-                    }
-                    ids
-                }
-            };
-            if selected.is_empty() {
-                return Err(support::invalid("price_ids", "NO_DRAFT_PRICES").into());
-            }
-            let chosen: BTreeSet<Uuid> = selected.iter().copied().collect();
-            let mut added: Vec<Uuid> = owned
-                .iter()
-                .filter(|m| chosen.contains(&m.id))
-                .filter_map(|m| m.paired_price_id)
-                .filter(|partner| !chosen.contains(partner))
-                .collect();
-            added.sort_unstable();
-            added.dedup();
-            let mut subject = PricesSubject::new(cmd.ctx.clone(), cmd.hub.clone(), book, cmd.now());
-            subject.common_effective_date = date;
-            subject.added_partner = added;
-            record_prices(
-                tx,
-                &outbox,
-                &cmd,
-                &endpoint,
-                (subject, input.note.clone()),
-                &selected,
-            )
+    support::retry_unit_capture(db, || async {
+        if let Some(replay) = support::replay(
+            db,
+            cmd.tenant(),
+            &format!("/bss-pricing/v1/price-books/{book}/publish-changes"),
+            &cmd.key,
+            &cmd.digest,
+        )
+        .await?
+        {
+            return Ok(replay);
+        }
+
+        let date = support::date(input.common_effective_date.clone(), "common_effective_date")?;
+        let conn = db.conn().map_err(DoorError::from)?;
+        book_repo::find(&conn, &cmd.scope, cmd.tenant(), book)
             .await
+            .map_err(DoorError::from)?
+            .ok_or_else(support::missing)?;
+        let children = AccessScope::for_tenant(cmd.tenant());
+        let entries = price_book_entry_repo::for_book(&conn, &children, cmd.tenant(), book)
+            .await
+            .map_err(DoorError::from)?;
+        let prices = price_repo::for_entries(
+            &conn,
+            &children,
+            cmd.tenant(),
+            &entries.iter().map(|e| e.id).collect::<Vec<_>>(),
+        )
+        .await
+        .map_err(DoorError::from)?;
+        let selected =
+            crate::infra::meter_semantics::publish_selection(prices, input.price_ids.as_deref());
+        let mut observations = observe_entries(
+            db,
+            &cmd,
+            selected.iter().map(|p| p.price_book_entry_id).collect(),
+            Vec::new(),
+        )
+        .await?;
+        observations.selection = crate::infra::meter_semantics::Selection::Publish {
+            book,
+            ids: input.price_ids.clone(),
+            rows: selected,
+        };
+        let sink = cmd.outbox.clone();
+        let cmd = cmd.clone();
+        let input = input.clone();
+        support::unit_transaction_observed_with_events(db, &sink, move |tx, outbox| {
+            let observations = observations.clone();
+            let (cmd, input) = (cmd.clone(), input.clone());
+            Box::pin(async move {
+                let endpoint = format!("/bss-pricing/v1/price-books/{book}/publish-changes");
+                if let Some(replay) =
+                    support::claim(tx, cmd.tenant(), &endpoint, &cmd.key, &cmd.digest).await?
+                {
+                    return Ok(replay);
+                }
+                observations.check_local(tx, cmd.tenant()).await?;
+                book_repo::find(tx, &cmd.scope, cmd.tenant(), book)
+                    .await?
+                    .ok_or_else(support::missing)?;
+                let children = AccessScope::for_tenant(cmd.tenant());
+                // The book's prices in ONE statement, in the order its entries list them (PS-16).
+                let entries =
+                    price_book_entry_repo::for_book(tx, &children, cmd.tenant(), book).await?;
+                let mut grouped = price_repo::by_entry(
+                    price_repo::for_entries(
+                        tx,
+                        &children,
+                        cmd.tenant(),
+                        &entries.iter().map(|p| p.id).collect::<Vec<_>>(),
+                    )
+                    .await?,
+                );
+                let owned: Vec<entity::price::Model> = entries
+                    .iter()
+                    .flat_map(|p| grouped.remove(&p.id).unwrap_or_default())
+                    .collect();
+                let draft = |m: &entity::price::Model| {
+                    m.state == PriceState::Draft.as_str() && m.pending_unit_id.is_none()
+                };
+                let selected: Vec<Uuid> = match input.price_ids {
+                    None => owned.iter().filter(|m| draft(m)).map(|m| m.id).collect(),
+                    Some(ids) => {
+                        for id in &ids {
+                            let Some(m) = owned.iter().find(|m| m.id == *id) else {
+                                return Err(
+                                    support::invalid("price_ids", "PRICE_NOT_IN_BOOK").into()
+                                );
+                            };
+                            if !draft(m) {
+                                return Err(support::conflict("PRICE_NOT_DRAFT").into());
+                            }
+                        }
+                        ids
+                    }
+                };
+                if selected.is_empty() {
+                    return Err(support::invalid("price_ids", "NO_DRAFT_PRICES").into());
+                }
+                let chosen: BTreeSet<Uuid> = selected.iter().copied().collect();
+                let mut added: Vec<Uuid> = owned
+                    .iter()
+                    .filter(|m| chosen.contains(&m.id))
+                    .filter_map(|m| m.paired_price_id)
+                    .filter(|partner| !chosen.contains(partner))
+                    .collect();
+                added.sort_unstable();
+                added.dedup();
+                let mut subject =
+                    PricesSubject::new(cmd.ctx.clone(), cmd.hub.clone(), book, cmd.now());
+                subject.meter_observations = observations;
+                subject.common_effective_date = date;
+                subject.added_partner = added;
+                record_prices(
+                    tx,
+                    &outbox,
+                    &cmd,
+                    &endpoint,
+                    (subject, input.note.clone()),
+                    &selected,
+                )
+                .await
+            })
         })
+        .await
     })
     .await
+    .map_err(Into::into)
 }
 
 /// A known unit state filter.
@@ -954,10 +1059,73 @@ pub async fn vote(
     action: Vote,
     body: Option<PricingVoteRequest>,
 ) -> Result<Response, CanonicalError> {
-    let sink = cmd.outbox.clone();
-    let result = support::unit_transaction_door_with_events(db, &sink, move |tx, outbox| {
-        let (cmd, body) = (cmd.clone(), body.clone());
-        Box::pin(async move { vote_in(tx, &outbox, &cmd, id, action, body).await })
+    let result = support::retry_unit_capture(db, || async {
+        if let Some(replay) = support::replay(
+            db,
+            cmd.tenant(),
+            &format!("/bss-pricing/v1/approval-units/{id}/{}", action.path()),
+            &cmd.key,
+            &cmd.digest,
+        )
+        .await?
+        {
+            return Ok(replay);
+        }
+
+        let observations = if action == Vote::Withdraw {
+            crate::infra::meter_semantics::Observations::default()
+        } else {
+            let conn = db.conn().map_err(DoorError::from)?;
+            let store = PricingApprovalStore {
+                scope: cmd.scope.clone(),
+                tenant_id: cmd.tenant(),
+            };
+            let unit = crate::infra::storage::repo::approval_repo::find_unit(
+                &conn,
+                &store.scope,
+                store.tenant_id,
+                id,
+            )
+            .await
+            .map_err(approval_failure)?
+            .ok_or_else(|| support::missing_what("approval_unit"))?;
+            if unit.state == UnitState::Pending {
+                match Kind::of(&unit).map_err(DoorError::from)? {
+                    Kind::PlanRevision => observe_revision(db, &cmd, unit.ref_id).await?,
+                    Kind::Prices => {
+                        let items = crate::infra::storage::repo::approval_repo::items_of_units(
+                            &conn,
+                            &store.scope,
+                            store.tenant_id,
+                            &[id],
+                        )
+                        .await
+                        .map_err(DoorError::from)?
+                        .remove(&id)
+                        .unwrap_or_default();
+                        observe_prices(
+                            db,
+                            &cmd,
+                            &items.iter().map(|i| i.item_id).collect::<Vec<_>>(),
+                        )
+                        .await?
+                    }
+                }
+            } else {
+                crate::infra::meter_semantics::Observations::default()
+            }
+        };
+        let sink = cmd.outbox.clone();
+        let cmd = cmd.clone();
+        let body = body.clone();
+        support::unit_transaction_observed_with_events(db, &sink, move |tx, outbox| {
+            let observations = observations.clone();
+            let (cmd, body) = (cmd.clone(), body.clone());
+            Box::pin(
+                async move { vote_in(tx, &outbox, &cmd, id, action, body, observations).await },
+            )
+        })
+        .await
     })
     .await;
     match result {
@@ -974,6 +1142,7 @@ async fn vote_in(
     id: Uuid,
     action: Vote,
     body: Option<PricingVoteRequest>,
+    observations: crate::infra::meter_semantics::Observations,
 ) -> Result<Response, DoorError> {
     let endpoint = format!("/bss-pricing/v1/approval-units/{id}/{}", action.path());
     let store = PricingApprovalStore {
@@ -988,8 +1157,13 @@ async fn vote_in(
     if unit.state != UnitState::Pending {
         return Err(support::conflict("UNIT_ALREADY_DECIDED").into());
     }
+    observations.check_local(tx, cmd.tenant()).await?;
     let now = cmd.now();
-    let subject = subject_of(cmd, &unit, action, now)?;
+    let mut subject = subject_of(cmd, &unit, action, now)?;
+    match &mut subject {
+        Subject::Prices(s) => s.meter_observations = observations,
+        Subject::PlanRevision(s) => s.meter_observations = observations,
+    }
     let actor = cmd.ctx.subject_id();
     let seen = || {
         body.as_ref()
@@ -1203,4 +1377,84 @@ pub async fn put_policy(
         &PricingApprovalPolicyDto::from(policy),
         Some(tag),
     )?)
+}
+
+/// Detach the local entry selection before resolving E1. The subject rechecks it in its
+/// existing transaction. This helper is invoked only after the door's authorization.
+async fn observe_entries(
+    db: &Db,
+    cmd: &Command,
+    ids: Vec<Uuid>,
+    extra_skus: Vec<Uuid>,
+) -> Result<crate::infra::meter_semantics::Observations, CanonicalError> {
+    let conn = db.conn().map_err(DoorError::from)?;
+    let entries = price_book_entry_repo::find_many(
+        &conn,
+        &AccessScope::for_tenant(cmd.tenant()),
+        cmd.tenant(),
+        &ids,
+    )
+    .await
+    .map_err(DoorError::from)?;
+    let mut observations = crate::infra::meter_semantics::Observations::capture(
+        &conn, &cmd.hub, &cmd.ctx, entries, extra_skus,
+    )
+    .await?;
+    observations.verify(&cmd.hub, &cmd.ctx).await;
+    Ok(observations)
+}
+async fn observe_revision(
+    db: &Db,
+    cmd: &Command,
+    id: Uuid,
+) -> Result<crate::infra::meter_semantics::Observations, CanonicalError> {
+    let conn = db.conn().map_err(DoorError::from)?;
+    let revision = plans::find_revision(&conn, &cmd.scope, cmd.tenant(), id).await?;
+    if revision.state != "draft" && revision.state != "pending" {
+        return Ok(crate::infra::meter_semantics::Observations::default());
+    }
+    let items = plan_item_repo::for_revision(
+        &conn,
+        &AccessScope::for_tenant(cmd.tenant()),
+        cmd.tenant(),
+        id,
+    )
+    .await
+    .map_err(DoorError::from)?;
+    let mut observations = observe_entries(
+        db,
+        cmd,
+        items.iter().filter_map(|i| i.price_book_entry_id).collect(),
+        items.iter().map(|i| i.sku_id).collect(),
+    )
+    .await?;
+    observations.selection = crate::infra::meter_semantics::Selection::Revision { id, items };
+    Ok(observations)
+}
+async fn observe_prices(
+    db: &Db,
+    cmd: &Command,
+    ids: &[Uuid],
+) -> Result<crate::infra::meter_semantics::Observations, CanonicalError> {
+    let conn = db.conn().map_err(DoorError::from)?;
+    let prices = price_repo::find_many(&conn, &cmd.scope, cmd.tenant(), ids)
+        .await
+        .map_err(DoorError::from)?;
+    let mut observations = observe_entries(
+        db,
+        cmd,
+        prices
+            .iter()
+            .filter(|p| p.state == "draft" || p.state == "pending")
+            .map(|p| p.price_book_entry_id)
+            .collect(),
+        Vec::new(),
+    )
+    .await?;
+    observations.selection = crate::infra::meter_semantics::Selection::Prices {
+        ids: ids.to_vec(),
+        scope: cmd.scope.clone(),
+        rows: prices,
+    };
+    Ok(observations)
 }

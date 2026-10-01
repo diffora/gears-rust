@@ -1,4 +1,4 @@
-//! SKU, category and approval-unit authorization catalog and shared PEP gate.
+//! SKU, category, approval-unit and derived-usage-type authorization catalog and shared PEP gate.
 use authz_resolver_sdk::PolicyEnforcer;
 use authz_resolver_sdk::pep::{AccessRequest, ResourceType};
 use toolkit_security::{AccessScope, SecurityContext, pep_properties};
@@ -9,7 +9,10 @@ pub mod labels {
     pub const SKU: &str = gts_id!("cf.bss.products.sku.v1~");
     pub const CATEGORY: &str = gts_id!("cf.bss.products.category.v1~");
     pub const APPROVAL_UNIT: &str = gts_id!("cf.bss.products.approval_unit.v1~");
-    pub const ALL: &[&str] = &[SKU, CATEGORY, APPROVAL_UNIT];
+    /// A derived usage type (P-D-231): its writes ask `author` here; its reads ask `sku:read`
+    /// (O-3).
+    pub const DERIVED_USAGE_TYPE: &str = gts_id!("cf.bss.products.derived_usage_type.v1~");
+    pub const ALL: &[&str] = &[SKU, CATEGORY, APPROVAL_UNIT, DERIVED_USAGE_TYPE];
 }
 /// Independent grants; reference is reserved for the gear-to-gear registry protocol.
 pub mod actions {
@@ -32,6 +35,8 @@ pub mod resource_types {
         ResourceType::from_static(labels::CATEGORY, SUPPORTED_PROPERTIES);
     pub const APPROVAL_UNIT: ResourceType =
         ResourceType::from_static(labels::APPROVAL_UNIT, SUPPORTED_PROPERTIES);
+    pub const DERIVED_USAGE_TYPE: ResourceType =
+        ResourceType::from_static(labels::DERIVED_USAGE_TYPE, SUPPORTED_PROPERTIES);
 }
 /// Error from the registry's PEP gate.
 ///

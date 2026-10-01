@@ -6,240 +6,18 @@
 //! reads go through the doors only. The Products double answers dated SKU versions when armed.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 mod plan_support;
-use bss_pricing::infra::storage::{
-    entity::{price, price_book_entry},
-    repo::{price_book_entry_repo, price_repo},
-};
 use bss_products_sdk::models::{BillingTiming, SkuType};
 use plan_support::{
-    Catalog, Fixture, book, holding, id_of, item, lock, plan, publish, scope, setup, stranger, text,
+    Fixture, book, holding, id_of, item, lock, plan, publish, setup, stranger, text,
 };
 use serde_json::{Value, json};
-use std::sync::{Arc, atomic::Ordering::SeqCst};
+use std::sync::atomic::Ordering::SeqCst;
 use uuid::Uuid;
 
-fn date(text: &str) -> time::Date {
-    time::Date::parse(text, &time::format_description::well_known::Iso8601::DATE).unwrap()
-}
-/// One stored price row; the defaults are an approved open flat price of the default chain. Its
-/// model is its entry's (D-427): `entry_of` gives a recurring entry `flat`, a usage one `per_unit`.
-#[derive(Clone)]
-struct Row {
-    dim: Option<&'static str>,
-    price: Value,
-    min_fee: Option<&'static str>,
-    from: &'static str,
-    to: Option<&'static str>,
-    eligibility: &'static str,
-    state: &'static str,
-    keep: bool,
-    closed: bool,
-    temporary_until: Option<&'static str>,
-    version_no: i32,
-}
-impl Default for Row {
-    fn default() -> Self {
-        Self {
-            dim: None,
-            price: json!({"amount":"30.00"}),
-            min_fee: None,
-            from: "2026-09-01",
-            to: None,
-            eligibility: "all",
-            state: "approved",
-            keep: false,
-            closed: false,
-            temporary_until: None,
-            version_no: 1,
-        }
-    }
-}
-fn flat(amount: &str) -> Value {
-    json!({ "amount": amount })
-}
-/// Write one price of `entry` straight through the repository.
-async fn put(f: &Fixture, entry: Uuid, row: Row) -> Uuid {
-    let now = time::OffsetDateTime::now_utc();
-    let pending_unit_id = if row.state == "pending" {
-        Some(plan_support::unit_of_kind(f, "prices").await)
-    } else {
-        None
-    };
-    price_repo::insert(
-        &f.db.conn().unwrap(),
-        &scope(f),
-        price::Model {
-            id: Uuid::now_v7(),
-            tenant_id: f.ctx.subject_tenant_id(),
-            price_book_entry_id: entry,
-            version_no: row.version_no,
-            dim_value: row.dim.map(str::to_owned),
-            price_json: row.price,
-            min_fee: row.min_fee.map(str::to_owned),
-            eligibility: row.eligibility.into(),
-            effective_from: date(row.from),
-            effective_to: row.to.map(date),
-            keep_for_bound: row.keep,
-            closed_explicitly: row.closed,
-            temporary_until: row.temporary_until.map(date),
-            paired_price_id: None,
-            return_of_price_id: None,
-            state: row.state.into(),
-            pending_unit_id,
-            approved_by_unit_id: None,
-            note: Some("authoring note".into()),
-            created_by: f.ctx.subject_id(),
-            approved_at: None,
-            version: 3,
-            created_at: now,
-            updated_at: now,
-        },
-    )
-    .await
-    .unwrap()
-    .id
-}
-/// An entry of `book` for `sku`, written directly, with a dimension key and an invoice-line
-/// override when asked.
-async fn entry_of(
-    f: &Fixture,
-    book: Uuid,
-    sku: Uuid,
-    kind: &str,
-    shape: (Option<&str>, Option<&str>, Option<&str>),
-) -> Uuid {
-    let (period, key, line) = shape;
-    let now = time::OffsetDateTime::now_utc();
-    price_book_entry_repo::insert(
-        &f.db.conn().unwrap(),
-        &scope(f),
-        price_book_entry::Model {
-            id: Uuid::now_v7(),
-            tenant_id: f.ctx.subject_tenant_id(),
-            book_id: book,
-            sku_id: sku,
-            charge_kind: kind.into(),
-            period: period.map(str::to_owned),
-            model: bss_pricing::domain::price_book_entry::default_model(kind.parse().unwrap())
-                .as_str()
-                .into(),
-            dimension_key: key.map(str::to_owned),
-            invoice_line_override: line.map(str::to_owned),
-            reservation_id: Uuid::new_v4(),
-            reference_state: "confirmed".into(),
-            version: 1,
-            created_at: now,
-            updated_at: now,
-        },
-    )
-    .await
-    .unwrap()
-    .id
-}
-/// Register one dimension key through its door.
-async fn dimension(f: &Fixture, key: &str, values: &[&str]) {
-    let (_, _, tag) = f
-        .call("GET", "/dimension-keys", json!({}), None, None)
-        .await;
-    let (s, b, _) = f
-        .call(
-            "PUT",
-            "/dimension-keys",
-            json!({"items":[{"key":key,"values":values}]}),
-            Some(&tag),
-            None,
-        )
-        .await;
-    assert_eq!(s, 200, "{b}");
-}
-/// Write the tenant settings through their door.
-async fn settings(f: &Fixture, body: Value) {
-    let (_, _, tag) = f.call("GET", "/settings", json!({}), None, None).await;
-    let (s, b, _) = f.call("PUT", "/settings", body, Some(&tag), None).await;
-    assert_eq!(s, 200, "{b}");
-}
-async fn resolve(f: &Fixture, query: &str) -> (u16, Value) {
-    let (s, b, tag) = f
-        .call("GET", &format!("/resolve?{query}"), json!({}), None, None)
-        .await;
-    assert_eq!(tag, "", "a resolve answer carries no ETag");
-    (s, b)
-}
-async fn resolve_as(
-    f: &Fixture,
-    ctx: &toolkit_security::SecurityContext,
-    query: &str,
-) -> (u16, Value) {
-    let (s, b, _) = f
-        .call_as(
-            ctx,
-            "GET",
-            &format!("/resolve?{query}"),
-            json!({}),
-            None,
-            None,
-        )
-        .await;
-    (s, b)
-}
-/// Rows of the tables a mutation writes: audit, idempotency, outbox and reference ops.
-async fn written(f: &Fixture) -> Vec<i64> {
-    use sea_orm::{ConnectionTrait, Database, DbBackend, Statement};
-    let db = Database::connect(&f.dsn).await.unwrap();
-    let mut counts = Vec::new();
-    for table in [
-        "pricing_audit",
-        "pricing_idempotency",
-        "bss_pricing_outbox_body",
-        "pricing_reference_op",
-    ] {
-        let row = db
-            .query_one_raw(Statement::from_string(
-                DbBackend::Sqlite,
-                format!("SELECT COUNT(*) AS n FROM {table}"),
-            ))
-            .await
-            .unwrap()
-            .unwrap();
-        counts.push(row.try_get::<i64>("", "n").unwrap());
-    }
-    counts
-}
-
-/// A published plan: one monthly recurring SKU priced €30 from 2026-09-01, as one paid item.
-struct World {
-    f: Fixture,
-    catalog: Arc<Catalog>,
-    book: Uuid,
-    plan: Uuid,
-    revision: Uuid,
-    sku: Uuid,
-    entry: Uuid,
-    item: Uuid,
-    price: Uuid,
-}
-async fn world() -> World {
-    let (f, catalog) = setup().await;
-    let book = book(&f, "eur").await;
-    let sku = catalog.sku(SkuType::Recurring);
-    let entry = entry_of(&f, book, sku, "recurring", (Some("month"), None, None)).await;
-    let price = put(&f, entry, Row::default()).await;
-    let (created, revision) = plan(&f, "pro", book).await;
-    let plan = id_of(&created["id"]);
-    let item = item(&f, revision, sku, Some(entry), "paid").await.id;
-    publish(&f, plan, revision).await;
-    World {
-        f,
-        catalog,
-        book,
-        plan,
-        revision,
-        sku,
-        entry,
-        item,
-        price,
-    }
-}
+mod seam_support;
+use seam_support::{
+    Row, World, date, dimension, entry_of, flat, put, resolve, resolve_as, settings, world, written,
+};
 
 // ------------------------------------------------------------------ Task 4.3.1: the answer
 
@@ -262,6 +40,7 @@ async fn a_published_revision_resolves_every_item_in_the_frozen_shape_and_writes
         "keep_for_bound": false
     });
     let item = json!({
+        "usage_rating_policy": null,
         "item_id": w.item, "sku_id": w.sku, "price_book_entry_id": w.entry,
         "charge_kind": "recurring",
         "period": "month", "model": "flat", "sku_version": null,

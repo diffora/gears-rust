@@ -19,6 +19,7 @@
         "date": "2026-10-05",
         "items": [
           {
+            "usage_rating_policy": null,
             "item_id": "<item:pro-1/pro>",
             "sku_id": "<sku:pro>",
             "price_book_entry_id": "<entry:pro>",

@@ -24,8 +24,8 @@ const DESIGN_INDEXES: &[(&str, &str)] = &[
     ),
     (
         "pricing_price_book_entry_key",
-        // D-427: the model joined the key (m20260926_000013).
-        "(book_id, sku_id, charge_kind, COALESCE(period, ''::text), model)",
+        // D-427 added model; migration 18 added the immutable policy digest (DESIGN §3.7).
+        "(book_id, sku_id, charge_kind, COALESCE(period, ''::text), model, COALESCE(usage_policy_digest, ''::text))",
     ),
     (
         "pricing_price_approved_start",
@@ -178,6 +178,9 @@ async fn postgres_one_approved_start_per_chain_and_only_among_approved_prices() 
                     charge_kind: "usage".into(),
                     period: None,
                     model: "per_unit".into(),
+                    usage_policy_id: None,
+                    usage_policy_version: None,
+                    usage_policy_digest: None,
                     dimension_key: None,
                     invoice_line_override: None,
                     reservation_id: Uuid::new_v4(),

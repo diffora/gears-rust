@@ -14,6 +14,7 @@
   - [2.2 SKU & Categories - HIGH](#22-sku--categories---high)
   - [2.3 Lifecycle & Approvals - HIGH](#23-lifecycle--approvals---high)
   - [2.4 Read Model & Events - MEDIUM](#24-read-model--events---medium)
+  - [2.5 Derived Usage Types - MEDIUM](#25-derived-usage-types---medium)
 - [3. Feature Dependencies](#3-feature-dependencies)
 
 <!-- /toc -->
@@ -21,9 +22,10 @@
 ## 1. Overview
 
 Four features, one per design slice, implement the SKU registry in dependency order after the phase 1b
-structural rewrite, during phase 1c of the PriceBook programme. Phase 1a supplies `bss-approval`.
+structural rewrite, during phase 1c of the PriceBook programme. A fifth, derived usage types, implements P-D-229 on
+DESIGN §3 directly, with no slice of its own. Phase 1a supplies `bss-approval`.
 [DESIGN §3](DESIGN.md#3-technical-architecture) defines the architecture and schema; the features
-own the 31 implementation DoDs. The source is `docs/superpowers/specs/2026-09-24-pricebook-model-design.md`
+own the 36 implementation DoDs (31 in the four slices' features, 5 in derived usage types). The source is `docs/superpowers/specs/2026-09-24-pricebook-model-design.md`
 (spec §2.2, §4, §6, §7.2–§7.3 and §13), with the amendments recorded in [DECISIONS](DECISIONS.md).
 Phase 0 and phase 1 remain unmerged until the phase 2 integration gate (spec §11).
 
@@ -85,9 +87,25 @@ Phase 0 and phase 1 remain unmerged until the phase 2 integration gate (spec §1
 - **Requirements**: `cpt-cf-bss-products-fr-read-model`, `cpt-cf-bss-products-fr-reference-registry`, `cpt-cf-bss-products-fr-events`.
 - **Architecture**: `cpt-cf-bss-products-component-read-model`, `cpt-cf-bss-products-component-references`, `cpt-cf-bss-products-component-events`; `cpt-cf-bss-products-seq-reserve-write-confirm`.
 
+### 2.5 [Derived Usage Types](features/derived-usage-types.md) - MEDIUM
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-feature-derived-usage-types`
+
+- **Type**: Supporting
+- **Phases**: the derived usage types plan (P-D-229), on the seam branch, after phase 1c
+- **Depends On**: `cpt-cf-bss-products-feature-foundation`; the SDK's `derived` module (P-D-230).
+- **Purpose**: Store derived usage types and their append-only versions, serve them to catalog and pricing authors, let a usage SKU pin one at its first publish, and answer pricing's meter semantics for them.
+- **Scope**: Migration `000012`; the type and version repository; the declaration's door rules, digest and input resolution; five REST doors, the `derived_usage_type` PDP resource and the audit rows (P-D-231); a usage SKU's derived ref, judged from the store before any catalog call, and its pin (P-D-232); the meter-semantics dispatcher registered for pricing, answering derived meters from the store and every other meter as unconfigured (P-D-233).
+- **Out of scope**: The raw-meter provider (E1a), which the dispatcher would call; Rating's evaluation.
+- **Design slice**: none; [DESIGN](DESIGN.md) §3.1, §3.3, §3.5 and §3.7 design it.
+- **Requirements**: `cpt-cf-bss-products-fr-derived-usage-type`.
+- **Architecture**: `cpt-cf-bss-products-component-registry`, `cpt-cf-bss-products-component-events`; `cpt-cf-bss-products-constraint-two-backends`.
+
 ## 3. Feature Dependencies
 
 foundation → sku-categories → lifecycle-approvals → read-model-events
+
+foundation → derived-usage-types
 
 This is implementation order, not independent release order. Type changes and retirement require both
 the local registry and reciprocal guards from the last feature; a remote count is never a substitute.

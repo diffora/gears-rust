@@ -21,7 +21,7 @@ use crate::{
             change::SkuChange, publish::SkuPublish, retire::SkuRetire,
         },
         error::DomainError,
-        recognized::UsageTypeAnswer,
+        recognized::UsageRefAnswer,
         sku::SkuPatch,
     },
     infra::{
@@ -202,9 +202,12 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .summary("approve_unit")
         .description(
             "Approves the unit at the generation its reviewer saw. The note is at most 2000 \
-             characters (the approval engine's cap). Refusals include 400 NOTE_TOO_LONG on a \
-             longer note, 400 GENERATION_MISMATCH, 400 UNIT_STALE after a refresh, 403 \
-             SOD_VIOLATION and 409 DUPLICATE_VOTE.",
+             characters (the approval engine's cap). The apply judges the SKU as it is then: a \
+             change that would move a derived pin, or leave a unit other than the pinned \
+             version's output unit, is refused (P-D-232). Refusals include 400 NOTE_TOO_LONG on \
+             a longer note, 400 GENERATION_MISMATCH, 400 UNIT_STALE after a refresh, 403 \
+             SOD_VIOLATION, 409 DUPLICATE_VOTE, and the apply's 409 DERIVED_PIN_IMMUTABLE, \
+             DERIVED_UNIT_MISMATCH or DERIVED_USAGE_TYPE_UNKNOWN.",
         )
         .tag("Approval units")
         .authenticated()
@@ -286,7 +289,17 @@ async fn approve(
     )
     .await?;
     let body = json_body(body)?;
-    vote(state, scope, ctx, id, Vote::Approve, Some(body), headers).await
+    vote(
+        &enforcer,
+        state,
+        scope,
+        ctx,
+        id,
+        Vote::Approve,
+        Some(body),
+        headers,
+    )
+    .await
 }
 async fn reject(
     Extension(state): Extension<Arc<ApiState>>,
@@ -305,7 +318,17 @@ async fn reject(
     )
     .await?;
     let body = json_body(body)?;
-    vote(state, scope, ctx, id, Vote::Reject, Some(body), headers).await
+    vote(
+        &enforcer,
+        state,
+        scope,
+        ctx,
+        id,
+        Vote::Reject,
+        Some(body),
+        headers,
+    )
+    .await
 }
 async fn withdraw(
     Extension(state): Extension<Arc<ApiState>>,
@@ -322,7 +345,17 @@ async fn withdraw(
         actions::SUBMIT,
     )
     .await?;
-    vote(state, scope, ctx, id, Vote::Withdraw, None, headers).await
+    vote(
+        &enforcer,
+        state,
+        scope,
+        ctx,
+        id,
+        Vote::Withdraw,
+        None,
+        headers,
+    )
+    .await
 }
 async fn list(
     Extension(state): Extension<Arc<ApiState>>,
@@ -677,7 +710,7 @@ async fn subject(
     store: &repo::ProductsApprovalStore,
     ctx: &SecurityContext,
     unit: &Unit,
-    usage: Option<UsageTypeAnswer>,
+    usage: Option<UsageRefAnswer>,
 ) -> Result<Subject, TxError> {
     let sku_scope = AccessScope::for_tenant(store.tenant_id);
     let base = SkuPublish {
@@ -748,7 +781,12 @@ async fn proposed(subject: &Subject, tx: &DbTx<'_>, unit: &Unit) -> Result<SkuCo
     }
 }
 /// @cpt-cf-bss-products-fr-concurrency-idempotency
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the derived pin needs the same enforcer the door already judged"
+)]
 async fn vote(
+    enforcer: &PolicyEnforcer,
     state: Arc<ApiState>,
     scope: AccessScope,
     ctx: SecurityContext,
@@ -797,7 +835,7 @@ async fn vote(
         let content = review_content(&state, &scope, &ctx, id).await?;
         if let Some(content) = content {
             resolved_ref = content.usage_type_ref.clone();
-            usage = g::resolve(&state, &ctx, &content).await?;
+            usage = g::resolve(&state, enforcer, &ctx, &content).await?;
         }
     }
     let seen = body.as_ref().map(|b| b.generation);

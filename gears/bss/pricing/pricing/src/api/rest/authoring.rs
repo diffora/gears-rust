@@ -382,10 +382,13 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
             "Adds an entry for a SKU to a book in a model fixed for the entry's life (D-427), \
              reserving the SKU reference in Products before the write and confirming it after; \
              the Idempotency-Key replays the receipt. The invoice-line override is at most 2000 \
-             characters (D-457). Refusals: 400 MODEL_INVALID, MODEL_KIND_CHARGEKIND_MISMATCH \
+             characters (D-457). Usage entries require an immutable usage_rating_policy; other \
+             charge kinds refuse one. Policy identity is server-issued (D-502). Refusals: \
+             400 MISSING_RATING_POLICY, UNEXPECTED_RATING_POLICY, METER_POLICY_MISMATCH, \
+             MODEL_INVALID, MODEL_KIND_CHARGEKIND_MISMATCH \
              (judged at the door and again after the reservation), ENTRY_PERIOD_INVALID, \
              DIM_NOT_DECLARED, or FIELD_TOO_LONG on an override over its cap; 409 ENTRY_KEY_TAKEN \
-             (the SKU, charge kind, period and model are taken in the book), SKU_DRAFT, \
+             (the SKU, charge kind, normalized period, model and policy digest are taken in the book), SKU_DRAFT, \
              SKU_DEPRECATED, SKU_RETIRING, SKU_FENCED, BUNDLE_SKU_NOT_PRICEABLE or \
              CHARGE_KIND_SKU_TYPE; 503 REGISTRY_UNAVAILABLE.",
         )
@@ -2161,7 +2164,14 @@ async fn create_entry(
     let key = preconditions::idempotency_key(&headers)?;
     let payload: serde_json::Value = preconditions::parse_body(&body)?;
     let digest = preconditions::request_digest(&payload)?;
-    let input: dto::PricingPriceBookEntryCreate = preconditions::parse_body(&body)?;
+    // The generic parser above validates text/NULs and supplies the replay projection. Decode
+    // policy-bearing input from the original bytes as well: a Value would discard duplicate
+    // keys before the closed typed policy can refuse them (D-502 canonical profile).
+    let input: dto::PricingPriceBookEntryCreate = serde_json::from_slice(&body).map_err(|e| {
+        crate::infra::error_mapping::DomainError::InvalidRequest(format!(
+            "the request body is not readable: {e}"
+        ))
+    })?;
     input.caps()?;
     price_book_entries::create(state, scope, ctx, id, correlation, key, digest, input).await
 }

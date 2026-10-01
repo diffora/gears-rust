@@ -146,7 +146,8 @@ consumer contracts; quote is not built (D-415).
 
 **Dropped, spec §3 A–C item numbers:** 1 phases/trials; 2 overlays; 4 region market axis; 5 brand axis now;
 6 cohort (eligibility stays as a price flag); 8 PlanTier; 9 net/gross market display; 10 plan minimum/cap
-(minimum moves to prices, cap is dropped); 11 derived meters/level aggregation; 13 bundle-of-plans;
+(minimum moves to prices, cap is dropped); 11 derived meters/level aggregation (derived meters: see E1b
+under `fr-entry-key`); 13 bundle-of-plans;
 14 structural schedules; 15 materiality; 18 CatalogVersion; 29 bulk import; 30 mass repricing.
 Allowance compiled to zero-price bands, prepaid grants, FixtureGate and per-row frozen descriptors are removed.
 
@@ -180,7 +181,117 @@ A book has a tenant-unique code, name, immutable currency and optional valid_fro
 
 **Phase:** 2. **Source:** spec §2.2, §5–§7, §12–§13; phase 2 plan for delivery details.
 
-Inside a book there is one entry per (sku_id, charge_kind, period, model), with null period normalized for uniqueness. Charge kind is derived from SKU type: recurring uses month or year, usage and one_time have no period. The entry's model is required at its create and fixed for its life: usage takes per_unit, graduated, volume or package, and recurring and one_time take flat or per_unit; an unknown model is MODEL_INVALID and one the charge kind does not allow is MODEL_KIND_CHARGEKIND_MISMATCH, both 400 (D-427). Another model for the same SKU, charge kind and period is another entry of the book. A bundle is never priced. An entry can override invoice-line text and change dimension_key only while no price carries a value. New entries require a published, unfenced SKU, with type re-read after reservation. The reads of one entry and of a book's entries carry the entry's usage: its prices by state (approved, pending, draft; a rejected price is not counted), the distinct plans whose draft, pending, scheduled or published revisions name it, and the distinct plans that name it only through superseded revisions (D-428).
+Inside a book there is one entry per (sku_id, charge_kind, period, model, usage_policy_digest), with null period normalized for uniqueness. Charge kind is derived from SKU type: recurring uses month or year, usage and one_time have no period. The entry's model is required at its create and fixed for its life: usage takes per_unit, graduated, volume or package, and recurring and one_time take flat or per_unit; an unknown model is MODEL_INVALID and one the charge kind does not allow is MODEL_KIND_CHARGEKIND_MISMATCH, both 400 (D-427). Another model for the same SKU, charge kind and period is another entry of the book. A bundle is never priced. An entry can override invoice-line text and change dimension_key only while no price carries a value. New entries require a published, unfenced SKU, with type re-read after reservation. The reads of one entry and of a book's entries carry the entry's usage: its prices by state (approved, pending, draft; a rejected price is not counted), the distinct plans whose draft, pending, scheduled or published revisions name it, and the distinct plans that name it only through superseded revisions (D-428).
+
+D-503 validates a usage entry's policy at price and plan-revision submit and final apply.
+Products and meter reads happen outside Pricing transactions, as the acting caller. The subjects
+consume captured results, recheck the entry identity/version in their existing transaction and keep
+provider evidence digests in approval snapshots. Dependency failures remain typed observations until
+the engine reaches a semantic gate, preserving non-final votes, rejects and withdrawals. Authorized
+successful command replay precedes dependency observations.
+
+The revision fingerprint now includes each selected entry ID and its policy ID/version/digest,
+read from entry rows in the same transaction. Policy content remains entry-owned; no plan-item
+column or override is added. Changed selection refreshes the approval generation (`UNIT_STALE`)
+and an old approval cannot publish it. A scheduled revision is checked at approval; D-450's later
+switch does not revalidate dependencies. New usage approvals require a policy-bearing entry;
+legacy approved prices and published revisions remain readable.
+
+D-503 projects the entry's optional typed `usage_rating_policy` on each REST resolve item
+and each SDK binding. The materialized identity/content is loaded from local policy storage alongside
+the selected entry; historical reads never call the meter provider. SDK bindings retain the same
+`price_book_entry_id` as their price. Entry reads and exports retain D-502's optional projection.
+A BillingCycle VM entry beside a CalendarHour cloudlet entry keeps two independent policies;
+there is no plan-wide window or aggregation across subscription lines. Missing legacy policy is null.
+
+**External production dependency E1 (not delivered by Pricing).** Types Registry owns immutable
+meter declaration storage/lifecycle; Usage Collector owns the semantic read adapter; source/IRM
+owners supply accrual-definition provenance. Their delivery is separate from this Pricing work.
+The consumer port, validation and contract-test provider do not establish authoritative production
+meter semantics. ClientHub must supply a real `UsageMeterSemanticsV1`; there is no successful
+production fallback. Its absence is typed `UnconfiguredMeterSemantics` with canonical
+`UNCONFIGURED_DEPENDENCY`; a configured outage is 503, and denial is 403. None becomes
+`MISSING_RATING_POLICY` or an empty semantic result.
+
+E1 blocks real usage-entry creation, new price/plan publication and usage sales at their semantic
+gates until the authoritative provider is wired. Delivery must identify the implementing gear/adapter
+and its tracked work item, and demonstrate exact-version resolution, canonical unit matching,
+declared SUM/additivity, source integration provenance, historical immutability, caller authorization,
+outage behavior and VM/cloudlet contract vectors against the real provider. These responsibilities
+are required ownership for handoff, not evidence that another team has accepted or implemented the
+work. Pricing's contract tests certify its consumer behavior only; production readiness remains
+blocked until that external evidence exists.
+E1 = E1a (raw meters, the usage collector / types registry; external) + E1b (derived meters, provided by Products since P-D-233).
+
+**Owner amendment of D-503, 2026-10-01: E1 has a raw and a derived kind.** A derived (composite)
+usage meter computes one quantity from other usage; a cloudlet is 128 MB of RAM and 400 MHz of CPU.
+Products declares it as a derived usage type with an immutable version: its inputs at exact versions,
+the formula as data, the granularity it applies at and its output unit. Rating evaluates it per
+subscription line and rating window. The usage collector reports raw meters only. These are
+products P-D-229 and rating T-D-39, decisions made on branch `bss/pricebook-meters` (`d8f78cf9b`)
+and carried onto this branch by the derived usage types plan. E1 therefore has two parts:
+
+- **E1a, raw meters:** Types Registry declarations answer through the Usage Collector's semantic
+  adapter, with source/IRM accrual provenance, as above.
+- **E1b, derived meters:** Products' derived usage type at its exact version answers: its
+  canonical output unit and the digest of its stored declaration, which names the inputs at their
+  exact versions and the formula (products P-D-233).
+
+A policy's `MeterRef` names either kind. `UsageMeterSemanticsV1`, `validate_meter_policy` and the
+publication and acceptance gates do not change: one provider behind the port answers both kinds,
+and each kind owes the delivery evidence above against its own source. Pricing computes no derived
+quantity.
+E1 = E1a (raw meters, the usage collector / types registry; external) + E1b (derived meters, provided by Products since P-D-233).
+For derived meters, P-D-229 supersedes the disposition of spec §3 item 11 that §4.2 lists as dropped;
+Pricing still computes none.
+
+**Amended 2026-10-01 by products P-D-233: E1b is provided; E1a is still external.** Products registers
+the one `UsageMeterSemanticsV1` in the ClientHub. For a derived meter, named
+`MeterRef { usage_type_id: "products.derived/<code>@<n>", version: "<n>" }`, it answers from its own
+store, in the caller's tenant and under products `sku:read`: `canonical_unit` the version's output
+unit, `fold` SUM, `accrual_policy_version` `derived-v1:<stored digest hex>`, `source_integrated` true,
+and `digest` the stored SHA-256 of the declaration's canonical bytes. A `version` that is not canonical
+or disagrees with `@<n>` is 400 `METER_POLICY_MISMATCH`; an unknown code, version or tenant is one 400
+`METER_VERSION_UNKNOWN`; a store outage is 503 and a denial 403. Every other meter answers exactly as an
+absent provider does (`UNCONFIGURED_DEPENDENCY`): the raw-meter provider (E1a) is not built, so raw usage
+stays blocked at its semantic gates. A derived meter is sellable: products' `tests/derived_meter_e2e.rs`
+sells a cloudlet through Pricing's entry, price, plan and sellability gates with no test provider.
+Pricing's checks do not change.
+E1 = E1a (raw meters, the usage collector / types registry; external) + E1b (derived meters, provided by Products since P-D-233).
+
+D-502 binds an immutable UsageRatingPolicy to each new usage entry. The create requires
+`usage_rating_policy` for usage (`MISSING_RATING_POLICY` otherwise) and refuses it for recurring
+or one-time entries (`UNEXPECTED_RATING_POLICY`). The closed input contains rating_window
+(BillingCycle or CalendarHour with UTC), aggregation_scope (subscription_line or resource),
+reset (rating_window_start), quantity_semantics (meter usage_type_id/version, unit, SUM fold,
+accrual_policy_version), and partial_window (actual_quantity_full_thresholds). Empty or whitespace-only
+meter identifiers, versions, units or accrual versions are `METER_POLICY_MISMATCH`. The server assigns
+policy_id, version 1 and the lowercase SHA-256 canonical content digest; author input refuses these
+identity fields. The entry PATCH cannot change or clear policy. Item and price requests refuse policy
+fields. Changed content requires a new entry, then a revision explicitly selecting it.
+
+Policy rows are append-only on both databases and deduplicate by (tenant_id, digest), checking stored
+content on every reuse. Migration 18 adds the nullable entry reference (id, version, digest), an
+all-null-or-all-present check, and a tenant-qualified composite foreign key including digest. The entry
+key is (book_id, sku_id, charge_kind, coalesce(period, ''), model, coalesce(usage_policy_digest, ''));
+only absent policy uses the empty index token. Hourly and billing-cycle variants coexist; equal content
+cannot evade uniqueness through a new UUID. Entry reads, export, write answers and durable create
+receipts materialize policy content with its identity; legacy/non-usage entries return null.
+
+Tx A persists typed content (schema version 1 in D-502, version 2 with meter evidence in D-503) before the remote reserve. Tx B
+inserts or reuses the policy and writes the entry atomically. A crash cannot change content; replay
+returns the confirmed receipt. Unversioned persisted creates decode as legacy and may recover with
+null policy; new versioned usage creates cannot take that path. Re-reserve and delete preserve the
+original entry reference. Migration assigns no policy to old entries, including published plans;
+they continue to read and resolve. D-503 adds meter verification, publication gates and resolve
+policy projection. E1 = E1a (raw meters, the usage collector / types registry; external) + E1b (derived meters, provided by Products since P-D-233).
+
+D-502: a plan item remains a SKU and its selected entry (D-467), with no policy override,
+treatment, included quantity or minimum quantity. Copy/clone within a book preserves entry IDs.
+Changing a draft's book matches the full (SKU, charge kind, normalized period, model, policy digest)
+key and an equal dimension key. With no equivalent target, the item retains the old entry and
+ITEM_BOOK_FOREIGN blocks publication. An hourly entry never silently becomes monthly, and an absent
+legacy policy never becomes a new policy. Explicit item selection chooses the replacement entry.
 
 #### `fr-price`
 
@@ -302,6 +413,11 @@ An approved migration_request records target plan/revision, subscription ids, ne
 
 GET /bss-pricing/v1/resolve (spec §7.1's /pricing/v1/resolve, D-419) accepts plan_revision_id, date, an optional item_id and optional pins (price_id, or price_id:dim_value for a default-chain price a value was bound to) and returns, for a published or superseded revision, or a scheduled one on or after its sale date (D-454), each item's full default/value chain matrix without totals; the active promotion (id, version) is deferred with promotions (D-409). New subscriptions bind the price in force, the value's own chain else the default. Renewal walks a pinned chain through all successors, stopping before the first new successor; a binding is always a price in force on the date, and a default-chain pin moves to the value's own later all price (D-420). Each binding carries ends_on, its own end (a temporary price's end or an explicit close, else null), and the consumer slices a period at ends_on, never at the stored effective_to (D-425). A chain that no price covers is explicit uncovered, never refused and never an invented price. Usage binds lazily per (item, dim_value); at a binding's ends_on inside a period the consumer resolves again with the pin on that date. Each item binds its SKU version from Products versions?as_of at the date, read as pricing's system actor, so a consumer needs only pricing's grants (D-424), and resolved invoice inputs with their source (entry, SKU or tenant): invoice-line template, GL code, tax category and billing timing, with rounding policy and currency scale (D-421). Each item carries its entry's model, null without an entry; a binding carries none (D-427).
 
+D-501 delivers the matching authorized SDK matrix through `PricingReadV1::resolve`, with an explicit
+catalog tenant and typed complete bindings. Missing priced-cell commercial inputs are a typed failure;
+REST's nullable preview stays compatible. `current_revision` returns the revision in effect after
+persisting any due approved switch. Acceptance and consumer integration remain separate work.
+
 #### `fr-price-read`
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-fr-price-read`
@@ -309,6 +425,10 @@ GET /bss-pricing/v1/resolve (spec §7.1's /pricing/v1/resolve, D-419) accepts pl
 **Phase:** 4. **Source:** spec §2.2, §5–§7, §12–§13; D-422.
 
 GET /bss-pricing/v1/prices/{id} (spec §7.1's /pricing/v1/prices/{id}, D-422) serves an approved price forever, including closed, superseded and keep_for_bound prices, with its entry's SKU, charge kind, period, model (D-427), book and currency: stored facts only, nothing computed from today. A draft, pending or rejected price, an unknown id and another tenant's id answer the same 404. The consumer retains price id, dimension value and used chain, SKU version/meter/unit, descriptors, timing, rounding, currency scale and promotion version (deferred with promotions, D-409) in its binding; later descriptor changes do not rewrite earlier pins.
+
+`PricingReadV1::price` (D-501) exposes these approved facts as exact decimal models with a financial
+content digest that excludes mutable closure metadata. The selected-binding digest separately freezes
+the dated unit, entry and requested dimension, policy projection and complete invoice inputs.
 
 #### `fr-quote`
 
@@ -389,6 +509,72 @@ phase 4 must explicitly wire that public surface. Wire fields and query paramete
 Doors use headers + Bytes and preconditions::parse_body with correlation::establish on mutations. Errors expose
 code/field/message through canonical RFC-9457 Problem responses. Reads expose ETag, and so does every write answer that sets one, declared in the served contract; mutation preconditions are required. Every operation declares its 503, and the operations that read Products hard name REGISTRY_UNAVAILABLE (D-469).
 
+D-504 defines the pure new-sale profile, narrower than the readable catalog:
+
+| Selected binding | Supported profile | Stable refusal |
+| --- | --- | --- |
+| Recurring | Flat or PerUnit; month/year equal to BillingTerms | UnsupportedModel / BillingCycleMismatch |
+| One-time | Flat or PerUnit; no recurring period or usage policy | UnsupportedModel / UnsupportedTerms |
+| Usage BillingCycle | PerUnit, Volume or Graduated; period null; immutable explicit policy | MissingRatingPolicy / MeterPolicyMismatch |
+| Usage CalendarHour | Same usage models; UTC, SUM, subscription_line or resource scope; no minimum fee, including zero | UnsupportedTerms |
+| BillingCycle minimum fee | SubscriptionLine only; any Resource-scoped floor is refused | UnsupportedTerms |
+| FX / cross-currency sale | Currency must equal the selected price currency | CURRENCY_MISMATCH |
+| Package, promotions, phases, allowances, quarter | Not part of new-sale terms; historical catalog reads remain intact | UnsupportedModel / UnsupportedTerms |
+
+Invoice terms must be schema version 1, month/year and UTC, with explicit order or positive,
+non-nil seller-policy provenance. Orders resolves this Subscriptions-owned snapshot before Pricing
+is called. Calendar anchors are the first day at midnight UTC (January 1 for a year). Hourly usage
+requires an hour-aligned SubscriptionStart anchor; BillingCycle-only usage allows a 10:30 anniversary.
+A 10:30 activation with a valid calendar invoice anchor is supported. Pricing never chooses, shifts
+or rounds an anchor. Different entries in one plan may retain different rating windows.
+
+Quantity and fixed period count must be positive. Selected bindings must cover exactly one cell per
+item, with no duplicate/foreign selection, and agree on requested dimensions and binding/price entry
+identity. Every price currency must equal the market currency; a region dimension must equal the
+market region, including when the price came via the default chain. Invoice inputs require dated SKU
+identity/version/code/name, the unit for PerUnit/usage, nonempty template/GL/tax, the existing book
+currency scale and HalfEven. The existing book currency spelling/minor-digit rules apply; this slice
+adds neither a currency registry nor FX. Money is nonnegative and tier validation delegates to
+`domain::money::validate_tiers`. BillingTerms, policy, money and template digests are recomputed;
+policy unit must equal the dated binding unit. No second tier interpreter is introduced.
+
+The deterministic VM fixture uses entry 2, EUR, no dimension/region, 2026-10-01T00:00Z, monthly
+calendar invoice terms, Rolling, quantity 1, VM BillingCycle policy, SKU v3, VM-2CPU-4GB,
+VM 2 vCPU / 4 GB, VM·hour, PerUnit 0.047, no floor, VM_REVENUE, cloud-services, VM usage,
+scale 2 and HalfEven. Supported test variants recertify altered content digests; integrity tests
+intentionally retain a stale digest. Exact threshold 10 exercises the existing half-open arithmetic.
+
+Pure SaleObservation is the specified five booleans, derived from verified live reads. Non-current or
+unavailable revisions and inactive/unsellable SKUs return NotSellable; missing coverage returns
+ResolutionChanged. That shape intentionally does not distinguish retired from deprecated or off-sale.
+Provider failures are not observations of commercial ineligibility: missing E1 remains 400
+UNCONFIGURED_DEPENDENCY naming UsageMeterSemanticsV1, configured outage remains 503 and denial 403.
+E1 = E1a (raw meters, the usage collector / types registry; external) + E1b (derived meters, provided by Products since P-D-233).
+
+Commercial RuleError carries a typed reason alongside its stable uppercase code. Canonical invalid
+arguments retain the concrete reason in field-violation metadata (400); resolution/payload/expiry/
+eligibility changes use aborted reason metadata (409); denial is permission denied (403), and an
+authorized missing receipt is not found (404). The existing Toolkit RFC 9457 conversion is reused.
+Wire scalars retain unsupported values in typed errors; strict BillingTerms decoding rejects missing
+snapshots, unknown/duplicate fields, numeric versions, unsupported schema, cycles and timezone.
+The SDK stays free of serde/storage types. The pure layer exposes no NewSale HTTP route; D-507 implements the authorized SDK acceptance command.
+
+The SDK adds bss.billing-terms.v1, pricing.request.v1 and pricing.terms.v1 canonical JSON projections.
+BillingTerms excludes its own digest; requests include all commercial intent and exclude command
+metadata; accepted terms include query plus sorted complete bindings, including entry/policy identity,
+without receipt identity/server timestamps. Exact decimals and all integers are strings; instants
+normalize to UTC with nine fractional digits. Four new frozen vectors are verified in Rust and Node.
+
+Task 5c supplies the complete live item universe, re-resolves selections and compares the caller's
+selected-binding digest independently, validates authoritative meter observations outside transactions,
+and preserves the accepted snapshot. The pure terms function cannot detect an item omitted from both
+its query and its binding arguments. D-505–D-507 deliver migration 19, the shared authorized service,
+immutable receipt reads and atomic acceptance/command/audit persistence. Successful replay preserves
+the original deadline, including another command key for identical order/line/version intent.
+Changed content conflicts; changed commercial intent needs a new order version. Provider failure
+leaves no acceptance or poisoned command. D-508 supplies hold/live fulfilment, and acceptance alone
+does not authorize activation. No downstream Rating/Billing scheduler is delivered here.
+
 ### 7.2 External Integration Contracts
 
 ProductsClient supplies SKUs and reference receipts; Products versions?as_of supplies dated snapshots.
@@ -398,6 +584,17 @@ ProductCatalogClientV1 transport exists for compatibility until later demolition
 Pricing fills Products' SkuUsageV1 port, which gives each SKU read its count of entries, their currencies, prices
 by state and distinct plans (D-428, Products P-D-197), and the priced and in-plan SKU sets the Products list
 filters by (Products P-D-212).
+
+D-508 delivers the SDK hold and fresh fulfilment capabilities. Accepting EUR 10/SKU v3 then publishing
+EUR 12/SKU v4 retains the old entry, policy, money, descriptors and invoice inputs in the hold, even
+after deprecation/off-sale or a successor revision. Retirement, explicit/temporary price ends and
+server-time expiry refuse fresh eligibility at their boundary; successor effective_to is ignored.
+A first activation may occur later than submit inside the accepted window and is pinned permanently.
+Exact successful hold replay remains historical; new keys cannot extend TTL. Subscriptions owns
+committed order/version and attempt fencing and checks immediately before its first activation
+intent: no eligibility observation is a reusable admission token. G3 release validation and external
+E1/consumer integration are separate obligations.
+E1 = E1a (raw meters, the usage collector / types registry; external) + E1b (derived meters, provided by Products since P-D-233).
 
 ## 8. Use Cases
 
@@ -479,3 +676,51 @@ remain later decisions, not implicit requirements of this rewrite.
 Content authority: spec §2 decisions 4–7, 13–17, §2.2, §3 A–C, §5–§8 and §12–§13.
 [DESIGN](DESIGN.md) supplies the drivers and transactions; ADRs record four structural decisions;
 [DECISIONS](DECISIONS.md) records D-384 onward. Slices and FEATUREs carry phase-specific implementation obligations.
+
+D-509 supplies reusable executable Pricing provider fixtures for F07/F22/F31 and the Pricing-input
+portions of F02/F23/F24 in `pricing/tests/seam_fixtures`. Each schema-1 envelope has explicit given and
+expected typed values; complete commercial pins must survive resolve, acceptance and hold. Mixed VM
+BillingCycle/cloudlet CalendarHour plans and entry reuse do not pool independent subscription lines.
+The cloudlet profile is monthly billing, period=null, CalendarHour UTC, SubscriptionLine, SUM of
+integrated cloudlet·hour v1 quantities, integrated-v1 accrual, full thresholds on partial windows,
+volume bands 10 @ 0.02 then 0.015, and no minimum fee. Q=8 and Q=12 independently yield 0.34 rather
+than combined-volume 0.30; graduated(12)=0.23 and the Q=10 boundary is volume 0.15/graduated 0.20.
+These are existing money-helper representation checks, not executed hourly scheduler or invoice tests.
+
+Acceptance provisions nothing. The new commercial commands remain on the authorized SDK ports;
+there is no new public HTTP command API. A future remote transport binds the same ports and services.
+Production meter declarations, Rating scheduling/roll-up and Billing invoice assertions remain external
+obligations. Illustrative meter names are registered only by the contract-test provider. Task 8 and G4
+are still required for the complete implementation handoff.
+
+
+**Final commercial provider acceptance criteria (D-510).** The seven typed methods, canonical refusal
+classes, indefinite retention and database evidence are consolidated in
+[DESIGN](DESIGN.md#executable-seam-fixture-boundary-d-509). An SDK preview does not accept an order;
+SellabilityV1::check issues the immutable receipt, PricingAcceptanceV1::acceptance reads it, hold freezes
+the first eligible activation, and check_fulfilment rechecks current eligibility. Orders must retain the
+receipt; Subscriptions retains accepted entry/policy/price, dated descriptors and BillingTerms. Existing
+recurring/one-time Flat/PerUnit and usage PerUnit/Volume/Graduated support remains exactly the D-504
+matrix above. No Package sale, allowance, FX, promotional phase, cross-line pooling or hourly minimum fee
+is admitted. Approval submit and final apply revalidate authoritative meter evidence and local entry
+identity. Different plan items may use different entry-owned windows; a book change must match the
+policy digest and dimension key as well as SKU/kind/period/model, retaining an unmatched old entry for
+explicit repair. Legacy policy-less reads remain valid while new usage sales fail closed.
+
+**External production obligations remain open.** E1 = E1a (raw meters, the usage collector / types registry; external) + E1b (derived meters, provided by Products since P-D-233). E1a (raw meters): Types Registry owns immutable
+declarations, Usage Collector the authorized exact-version semantic adapter, and source/IRM owners
+the accrual provenance. E1b (derived meters; products P-D-229 and rating T-D-39) is delivered by
+Products (products P-D-233): the one provider behind `UsageMeterSemanticsV1` answers a derived usage
+type at its exact version with its canonical output unit and the digest of its stored declaration,
+which names the inputs at their exact versions and the formula, and answers every raw meter as
+unconfigured until E1a is delivered behind it. Delivery must identify the implementation and tracked
+work and prove, for each kind, canonical units, SUM/additivity, source integration, historical
+immutability, authorization, outage behavior and real VM/cloudlet vectors; for E1b that evidence is
+products' meter-semantics tests and its `tests/derived_meter_e2e.rs`.
+E2: Orders resolves Subscriptions-owned versioned BillingTerms and authenticates
+payer/market; Subscriptions checks committed order/version and attempt fencing immediately before
+activation. E3: deployment grants scoped actions to Orders, Subscriptions and Rating; names confer no
+privilege. E4: Collector retains immutable source history, Subscriptions schedules incompatible policy
+changes at the next UTC hour boundary, and Rating consumes the original history. Rating owns hourly
+scheduling/reset/catch-up and exact amounts; Billing sums exact contributions before HALF_EVEN invoice
+rounding. Pricing tests do not certify those downstream behaviors.

@@ -48,6 +48,7 @@ pub struct Entry {
     pub r#type: SkuType,
     pub lifecycle: Lifecycle,
     pub meter: Option<String>,
+    pub unit: Option<String>,
     pub name: String,
     /// The SKU's current GL code, a descriptor (D-408): information, never content.
     pub gl_code: Option<String>,
@@ -58,6 +59,7 @@ pub struct Entry {
 pub struct Catalog {
     pub skus: Mutex<BTreeMap<Uuid, Entry>>,
     pub down: AtomicBool,
+    pub contended: AtomicBool,
     /// Every `sku_for_write` call, answered or not.
     pub reads: AtomicUsize,
     pub reserve_kinds: Mutex<Vec<ReferenceKind>>,
@@ -134,7 +136,7 @@ impl Catalog {
             invoice_line_template: None,
             billing_timing: None,
             usage_type_ref: entry.meter,
-            unit: None,
+            unit: entry.unit,
         }
     }
     /// Only these principals may read SKUs from now on (products `read`).
@@ -208,6 +210,7 @@ impl Catalog {
                 r#type,
                 lifecycle,
                 meter: meter.map(str::to_owned),
+                unit: (r#type == SkuType::Usage).then(|| "VM\u{b7}hour".into()),
                 name: format!("sku-{}", &id.to_string()[..8]),
                 gl_code: None,
             },
@@ -220,7 +223,12 @@ impl Catalog {
     /// A new published SKU of a type.
     pub fn sku(&self, r#type: SkuType) -> Uuid {
         let id = Uuid::new_v4();
-        self.put(id, r#type, Lifecycle::Published, None);
+        self.put(
+            id,
+            r#type,
+            Lifecycle::Published,
+            (r#type == SkuType::Usage).then_some("vm-hours"),
+        );
         id
     }
     /// Age a declared SKU.
@@ -331,6 +339,11 @@ impl ReferenceRegistryV1 for Catalog {
         tenant: Uuid,
         id: Uuid,
     ) -> Result<Sku, CanonicalError> {
+        if self.contended.load(Ordering::SeqCst) {
+            return Err(SkuResource::aborted("contended")
+                .with_reason("CONTENDED")
+                .create());
+        }
         self.reads.fetch_add(1, Ordering::SeqCst);
         self.calls.fetch_add(1, Ordering::SeqCst);
         self.read_denied(ctx)?;
@@ -359,7 +372,7 @@ impl ReferenceRegistryV1 for Catalog {
             invoice_line_template: None,
             billing_timing: None,
             usage_type_ref: entry.meter,
-            unit: None,
+            unit: entry.unit,
             type_change_pending: false,
             retire_pending: false,
             lifecycle_next: None,
@@ -465,6 +478,17 @@ pub async fn entry_in(
     period: Option<&str>,
     model: &str,
 ) -> Uuid {
+    entry_with_policy(f, book, sku, charge_kind, period, model, None).await
+}
+pub async fn entry_with_policy(
+    f: &Fixture,
+    book: Uuid,
+    sku: Uuid,
+    charge_kind: &str,
+    period: Option<&str>,
+    model: &str,
+    policy: Option<bss_pricing::infra::usage_policy_wire::UsageRatingPolicy>,
+) -> Uuid {
     let now = time::OffsetDateTime::now_utc();
     price_book_entry_repo::insert(
         &f.db.conn().unwrap(),
@@ -477,6 +501,9 @@ pub async fn entry_in(
             charge_kind: charge_kind.into(),
             period: period.map(str::to_owned),
             model: model.into(),
+            usage_policy_id: policy.as_ref().map(|p| p.policy_id),
+            usage_policy_version: policy.as_ref().map(|_| 1),
+            usage_policy_digest: policy.as_ref().map(|p| p.digest.clone()),
             dimension_key: None,
             invoice_line_override: None,
             reservation_id: Uuid::new_v4(),
@@ -687,4 +714,32 @@ pub async fn raw(f: &Fixture, sql: &str) {
 /// The problem body's text, where a code is looked for.
 pub fn text(b: &Value) -> String {
     b.to_string()
+}
+
+/// A modern fixture entry, with policy evidence required by new publication.
+pub async fn policy_entry(
+    f: &Fixture,
+    book: Uuid,
+    sku: Uuid,
+    kind: &str,
+    period: Option<&str>,
+) -> Uuid {
+    let policy = if kind == "usage" {
+        let content = serde_json::from_value(entry_support::policy_support::input()).unwrap();
+        Some(
+            bss_pricing::infra::storage::repo::usage_policy_repo::intern(
+                &f.db.conn().unwrap(),
+                &scope(f),
+                f.ctx.subject_tenant_id(),
+                f.ctx.subject_id(),
+                &content,
+                time::OffsetDateTime::now_utc(),
+            )
+            .await
+            .unwrap(),
+        )
+    } else {
+        None
+    };
+    entry_with_policy(f, book, sku, kind, period, "per_unit", policy).await
 }

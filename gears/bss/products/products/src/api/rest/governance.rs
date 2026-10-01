@@ -1,10 +1,16 @@
 //! @cpt-dod:cpt-cf-bss-products-dod-usage-type-resolves:p1
 //! @cpt-dod:cpt-cf-bss-products-dod-terminal-audit-and-event:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-derived-usage-type-pin:p1
 //! Shared scoped transaction plumbing for approval and reference operations.
 use super::{ApiState, TxError, authz_error_to_canonical, contention_db_err, tx_to_canonical};
 use crate::{
     authz::{access_scope, actions, labels, resource_types},
-    domain::{error::DomainError, recognized::UsageTypeAnswer, validation::ValidationReport},
+    domain::{
+        derived,
+        error::DomainError,
+        recognized::{UsageRefAnswer, UsageTypeAnswer},
+        validation::ValidationReport,
+    },
     infra::{broker, events, storage::repo},
 };
 use authz_resolver_sdk::{PolicyEnforcer, pep::ResourceType};
@@ -91,12 +97,21 @@ pub(super) fn recorded_lifecycle(sku: &Sku) -> bss_products_sdk::models::Lifecyc
 }
 pub(super) async fn resolve(
     state: &ApiState,
+    enforcer: &PolicyEnforcer,
     ctx: &SecurityContext,
     content: &SkuContent,
-) -> Result<Option<UsageTypeAnswer>, CanonicalError> {
+) -> Result<Option<UsageRefAnswer>, CanonicalError> {
     let Some(reference) = content.usage_type_ref.as_deref() else {
         return Ok(None);
     };
+    // P-D-232: a derived ref comes first, from this gear's own store, and the catalog is never
+    // asked for it, configured or not.
+    if derived::is_derived_ref(reference) {
+        let pin = super::derived_usage_types::pin(state, enforcer, ctx, reference).await?;
+        return Ok(Some(
+            pin.map_or(UsageRefAnswer::DerivedUnknown, UsageRefAnswer::Derived),
+        ));
+    }
     let answer = state.usage_type_catalog.resolve(ctx, reference).await;
     match answer {
         UsageTypeAnswer::Unavailable => {
@@ -104,7 +119,9 @@ pub(super) async fn resolve(
         }
         // P-D-207: read as the caller; a denial is the caller's 403, not an outage.
         UsageTypeAnswer::Forbidden => Err(DomainError::UsageTypeForbidden(reference.into()).into()),
-        UsageTypeAnswer::Resolved(_) | UsageTypeAnswer::Unresolved => Ok(Some(answer)),
+        UsageTypeAnswer::Resolved(_) | UsageTypeAnswer::Unresolved => {
+            Ok(Some(UsageRefAnswer::Catalog(answer)))
+        }
     }
 }
 /// Maintenance never releases a pending unit's fence and compares the observed operation; a fence
@@ -318,3 +335,7 @@ pub(super) async fn settings_read(
         })
     })
 }
+
+#[cfg(test)]
+#[path = "derived_binding_tests.rs"]
+mod derived_binding_tests;

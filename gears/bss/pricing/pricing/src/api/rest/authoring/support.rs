@@ -166,6 +166,38 @@ pub fn stored_status(status: i32) -> Result<StatusCode, CanonicalError> {
         .and_then(|s| StatusCode::from_u16(s).ok())
         .ok_or_else(|| CanonicalError::internal("invalid stored status").create())
 }
+/// Replay a completed command before detached dependency observations.
+/// # Errors
+/// A conflicting payload or live claim retains its usual canonical refusal.
+pub async fn replay(
+    db: &Db,
+    tenant: Uuid,
+    endpoint: &str,
+    key: &str,
+    digest: &[u8],
+) -> Result<Option<Response>, DoorError> {
+    let conn = db.conn()?;
+    let Some(claim) = repo::idempotency_repo::lookup_idempotency_key(
+        &conn,
+        &AccessScope::for_tenant(tenant),
+        tenant,
+        endpoint,
+        key,
+        crate::infra::storage::stored_now(),
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    let Some((status, body)) = held(claim, digest)? else {
+        return Ok(None);
+    };
+    Ok(Some(response(
+        stored_status(status)?,
+        &body["body"],
+        body["etag"].as_u64(),
+    )?))
+}
 /// Claim a POST's key inside the mutation transaction, or replay its stored answer.
 /// # Errors
 /// A different payload under the key is `IDEMPOTENCY_CONFLICT`; a live claim is in flight.
@@ -232,6 +264,9 @@ pub async fn answer<T: serde::Serialize>(
 }
 #[derive(Debug, thiserror::Error)]
 pub enum DoorError {
+    /// Detached observations no longer describe the local selection; recapture after rollback.
+    #[error("the detached selection moved")]
+    SelectionMoved,
     #[error(transparent)]
     Repo(#[from] RepoError),
     #[error(transparent)]
@@ -369,6 +404,7 @@ impl From<DoorError> for CanonicalError {
     fn from(e: DoorError) -> Self {
         match e {
             DoorError::Api(e) => e,
+            DoorError::SelectionMoved => conflict(UNIT_CONTENDED),
             DoorError::Generation { .. } => invalid("generation", "GENERATION_MISMATCH"),
             DoorError::Repo(RepoError::Conflict { code }) => conflict(code),
             DoorError::Repo(e) => {
@@ -468,28 +504,33 @@ pub async fn transaction_door_with_events<T: Send + 'static>(
 ) -> Result<T, DoorError> {
     events_coded(db, sink, CONTENDED, work).await
 }
-/// [`transaction_with_events`] for an approval-unit door, every one of which enqueues
-/// `ApprovalUnitDecided` when it decides: exhausted contention is `UNIT_CONTENDED`.
+/// Retry the entire detached capture and single transaction against the existing attempt budget.
+/// Only local selection drift and driver contention are retryable; provider refusals are not.
 /// # Errors
-/// Returns the last attempt's refusal or storage failure.
-pub async fn unit_transaction_with_events<T: Send + 'static>(
-    db: &Db,
-    sink: &EventSink,
-    work: impl for<'a> FnMut(
-        &'a DbTx<'a>,
-        TxOutbox,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<T, DoorError>> + Send + 'a>,
-    > + Send,
-) -> Result<T, CanonicalError> {
-    events_coded(db, sink, UNIT_CONTENDED, work)
-        .await
-        .map_err(Into::into)
+/// The original refusal, or `UNIT_CONTENDED` when the shared attempt budget is exhausted.
+pub async fn retry_unit_capture<T, F, Fut>(db: &Db, mut attempt: F) -> Result<T, DoorError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, DoorError>>,
+{
+    for _ in 0..toolkit_db::DEFAULT_TX_RETRY_ATTEMPTS {
+        match attempt().await {
+            Err(DoorError::SelectionMoved) => {}
+            Err(error)
+                if driver_source(&error).is_some_and(|source| {
+                    toolkit_db::contention::is_retryable_contention(db.backend(), source)
+                }) => {}
+            other => return other,
+        }
+    }
+    Err(conflict(UNIT_CONTENDED).into())
 }
-/// [`unit_transaction_with_events`] keeping the door's typed refusal.
+
+/// One event-bearing transaction within [`retry_unit_capture`]. The outer loop owns the entire
+/// budget so database retries cannot reuse a stale capture or multiply the attempt limit.
 /// # Errors
-/// Returns the last attempt's refusal or storage failure.
-pub async fn unit_transaction_door_with_events<T: Send + 'static>(
+/// The original typed refusal or driver error, after rollback and discarding event wakes.
+pub async fn unit_transaction_observed_with_events<T: Send + 'static>(
     db: &Db,
     sink: &EventSink,
     work: impl for<'a> FnMut(
@@ -499,8 +540,17 @@ pub async fn unit_transaction_door_with_events<T: Send + 'static>(
         Box<dyn std::future::Future<Output = Result<T, DoorError>> + Send + 'a>,
     > + Send,
 ) -> Result<T, DoorError> {
-    events_coded(db, sink, UNIT_CONTENDED, work).await
+    events::transaction_with_attempts(
+        db,
+        sink,
+        toolkit_db::secure::TxConfig::serializable(),
+        1,
+        driver_source,
+        work,
+    )
+    .await
 }
+
 /// [`transaction_coded`] through [`events::transaction`]: the same isolation, retries and
 /// exhausted-contention code, with the attempt's [`TxOutbox`] fired after the commit.
 async fn events_coded<T: Send + 'static>(

@@ -66,6 +66,60 @@ Holding multiple permissions never bypasses separation of duties.
 - [DECISIONS](../DECISIONS.md), D-384–D-444; spec means `docs/superpowers/specs/2026-09-24-pricebook-model-design.md` in the main checkout.
 - Source: spec §2 decisions 4–8, 13–17, §2.2, §5–§8, §10, §12–§13; the phase 2 plan supplies delivery boundaries and D-399/D-400.
 
+D-502 binds an immutable UsageRatingPolicy to each new usage entry. The create requires
+`usage_rating_policy` for usage (`MISSING_RATING_POLICY` otherwise) and refuses it for recurring
+or one-time entries (`UNEXPECTED_RATING_POLICY`). The closed input contains rating_window
+(BillingCycle or CalendarHour with UTC), aggregation_scope (subscription_line or resource),
+reset (rating_window_start), quantity_semantics (meter usage_type_id/version, unit, SUM fold,
+accrual_policy_version), and partial_window (actual_quantity_full_thresholds). Empty or whitespace-only
+meter identifiers, versions, units or accrual versions are `METER_POLICY_MISMATCH`. The server assigns
+policy_id, version 1 and the lowercase SHA-256 canonical content digest; author input refuses these
+identity fields. The entry PATCH cannot change or clear policy. Item and price requests refuse policy
+fields. Changed content requires a new entry, then a revision explicitly selecting it.
+
+Policy rows are append-only on both databases and deduplicate by (tenant_id, digest), checking stored
+content on every reuse. Migration 18 adds the nullable entry reference (id, version, digest), an
+all-null-or-all-present check, and a tenant-qualified composite foreign key including digest. The entry
+key is (book_id, sku_id, charge_kind, coalesce(period, ''), model, coalesce(usage_policy_digest, ''));
+only absent policy uses the empty index token. Hourly and billing-cycle variants coexist; equal content
+cannot evade uniqueness through a new UUID. Entry reads, export, write answers and durable create
+receipts materialize policy content with its identity; legacy/non-usage entries return null.
+
+Tx A persists typed content (schema version 1 in D-502, version 2 with meter evidence in D-503) before the remote reserve. Tx B
+inserts or reuses the policy and writes the entry atomically. A crash cannot change content; replay
+returns the confirmed receipt. Unversioned persisted creates decode as legacy and may recover with
+null policy; new versioned usage creates cannot take that path. Re-reserve and delete preserve the
+original entry reference. Migration assigns no policy to old entries, including published plans;
+they continue to read and resolve. D-503 adds meter verification, publication gates and resolve
+policy projection. E1 = E1a (raw meters, the usage collector / types registry; external) + E1b (derived meters, provided by Products since P-D-233).
+
+D-503 adds exact-version semantic validation to D-502. Pricing consumes
+`pricing-sdk::meter_semantics::UsageMeterSemanticsV1::resolve(ctx, MeterRef)` as the authorized
+caller, before opening a Pricing transaction. `MeterSemantics` carries the exact meter identity
+and version, canonical unit, SUM fold, accrual-policy version, source-integrated flag and provider
+evidence digest. All quantity fields and the SKU's unit and usage-type identity must agree;
+otherwise `METER_POLICY_MISMATCH` refuses the write. There is no substitution of a latest version.
+
+**Owner amendment of D-503, 2026-10-01.** A `MeterRef` names a raw or a derived meter, and one provider
+behind the port answers both kinds. E1a, raw meters: Types Registry declarations through the Usage
+Collector. E1b, derived meters: Products' derived usage type at its exact version (its canonical output
+unit and the digest of its stored declaration, which names the inputs at their exact versions and the
+formula; products P-D-229 and rating T-D-39). The port, `validate_meter_policy` and the publication and
+acceptance gates do not change.
+
+**Amended 2026-10-01 by products P-D-233: E1b is provided; E1a is still external.** Products registers the
+one provider. It answers a derived meter from its own store, in the caller's tenant: the version's output
+unit, SUM, `derived-v1:<stored digest hex>`, source integrated, and the stored digest. It answers every raw
+meter exactly as an absent provider does (`UNCONFIGURED_DEPENDENCY`). A derived meter is sellable; a raw
+one stays blocked at its semantic gates until E1a is delivered.
+E1 = E1a (raw meters, the usage collector / types registry; external) + E1b (derived meters, provided by Products since P-D-233).
+
+New entry-create work uses schema version 2 and persists the captured declaration before reservation.
+Recovery validates that captured evidence against the reservation's SKU without another meter lookup.
+Unversioned and version-1 work keep their original recovery rules; they acquire no invented evidence.
+The existing D-401 cancellation of unreserved abandoned creates remains unchanged. A later fresh
+request must resolve its own evidence. Confirmation recovery preserves the original entry and policy.
+
 ## 2. Actor Flows (CDSL)
 
 ### Author a book and entry
@@ -86,7 +140,7 @@ Holding multiple permissions never bypasses separation of duties.
 
 1. [ ] - `p1` - Validate currency and nonempty validity interval; scope code uniqueness to tenant. - `inst-books-entries-book-and-key-1`
 2. [ ] - `p1` - Derive charge_kind from the current SKU; recurring accepts month/year, usage and one_time require null period; the model must be one the charge kind allows (D-386, D-427). - `inst-books-entries-book-and-key-2`
-3. [ ] - `p1` - Enforce the book/SKU/kind/coalesced-period/model unique index and map races to a conflict. - `inst-books-entries-book-and-key-3`
+3. [ ] - `p1` - Enforce the book/SKU/kind/coalesced-period/model/policy-digest unique index and map races to a conflict. - `inst-books-entries-book-and-key-3`
 4. [ ] - `p1` - PATCH name/validity or permitted entry overrides conditionally; reject currency edits and dimension changes after valued prices exist. - `inst-books-entries-book-and-key-4`
 
 ### dimension-registry
@@ -131,8 +185,7 @@ Requirement: `cpt-cf-bss-pricing-fr-price-book`; PRD AC #2.
 
 - [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-entry-key-unique`
 
-The database enforces SKU × charge kind × normalized period × model uniqueness inside a book (D-427). Charge kind follows the re-read SKU; a bundle, an invalid period or a model the charge kind does not allow is rejected (spec §5, D-386). GET /price-book-entries?sku_id= narrows, orders and pages one SKU's entries in memory (D-486): book_id (1 to 50), currency, q, status (priced, scheduled, unpriced) and changing; book_name or status, the id breaking a tie the same way; 500 per page by default and at most 500. The read makes seven statements for a SKU in 5 books and in 50. A SKU in more than 500 entries returns the first page.
-
+The database enforces SKU × charge kind × normalized period × model × policy digest uniqueness inside a book (D-427, D-502). Charge kind follows the re-read SKU; a bundle, an invalid period or a model the charge kind does not allow is rejected (spec §5, D-386). GET /price-book-entries?sku_id= narrows, orders and pages one SKU's entries in memory (D-486): book_id (1 to 50), currency, q, status (priced, scheduled, unpriced) and changing; book_name or status, the id breaking a tie the same way; 500 per page by default and at most 500. The read makes seven statements for a SKU in 5 books and in 50. A SKU in more than 500 entries returns the first page.
 Requirement: `cpt-cf-bss-pricing-fr-entry-key`; PRD AC #3.
 
 ### Restricted entry metadata edits
@@ -188,3 +241,24 @@ Requirement: `cpt-cf-bss-pricing-fr-entry-key`; PRD AC #3.
 | `cpt-cf-bss-pricing-dod-entry-reference-handoff` | AC #3; `cpt-cf-bss-pricing-fr-entry-key` | Given Products unavailable before reserve, when an entry is created then REGISTRY_UNAVAILABLE leaves no entry; a successful create retains its live receipt. |
 
 Verification uses domain tests, scoped repository tests on both backends and REST positive/denial/precondition probes as applicable. Phase 2 checks must not mark later-phase behavior implemented. Golden consumer contracts belong to phase 4.
+
+
+**Final seam conformance (D-510).** Immutable UsageRatingPolicy remains owned by PriceBookEntry, with no item/price override. The
+semantic key is book, SKU, charge kind, normalized period, model and canonical policy-content digest;
+the policy reference is tenant-qualified `(tenant_id, policy_id, version, digest)`. Book remapping also
+matches dimension key, and preserves an unmatched source selection for explicit repair. Changed policy
+requires a new entry and revision. Creation verifies exact immutable meter evidence before reservation;
+price/plan submit and final apply recheck it. Legacy entries remain policy-less/readable; new usage
+creates require explicit policy. Shared backend tests prove upgrade preservation, content deduplication
+and concurrent identical/different-policy creation. No policy column is added to items or prices.
+
+The final seven typed signatures, CommercialReason mappings, PDP authorization, indefinite receipt
+retention, supported-model matrix and provider-test links are consolidated in
+[DESIGN](../DESIGN.md#executable-seam-fixture-boundary-d-509) and [PRD](../PRD.md). Acceptance and hold
+commands are SDK-only; historical replay never refreshes the original 24-hour seller-policy deadline.
+E1a (real raw meter declarations/adapter/provenance), E2 (resolved terms, authenticated market and
+consumer fencing), E3 (runtime PDP grants) and E4 (source history and safe policy transitions) remain
+external; E1b (Products' derived usage types) is provided by Products (products P-D-233).
+E1 = E1a (raw meters, the usage collector / types registry; external) + E1b (derived meters, provided by Products since P-D-233).
+The atlas owner reconciles C00/C01/C10; downstream Rating scheduling and Billing invoicing remain
+unexecuted integration obligations, even when Pricing provider parity is green.

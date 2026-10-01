@@ -49,6 +49,8 @@ impl From<entity::price_book::Model> for PriceBookDto {
 }
 #[toolkit_macros::api_dto(response)]
 pub struct PricingPriceBookEntryDto {
+    /// Immutable policy materialized from the entry; null for legacy/non-usage entries.
+    pub usage_rating_policy: Option<crate::infra::usage_policy_wire::UsageRatingPolicy>,
     pub id: Uuid,
     pub tenant_id: Uuid,
     pub book_id: Uuid,
@@ -72,6 +74,7 @@ impl TryFrom<entity::price_book_entry::Model> for PricingPriceBookEntryDto {
     fn try_from(m: entity::price_book_entry::Model) -> Result<Self, RepoError> {
         let id = m.id;
         Ok(Self {
+            usage_rating_policy: None,
             id,
             tenant_id: m.tenant_id,
             book_id: m.book_id,
@@ -97,6 +100,26 @@ impl TryFrom<entity::price_book_entry::Model> for PricingPriceBookEntryDto {
             created_at: m.created_at,
             updated_at: m.updated_at,
         })
+    }
+}
+impl PricingPriceBookEntryDto {
+    /// Materialize immutable policy content along with an entry.
+    /// # Errors
+    /// Refuses corrupt or dangling policy references and storage failures.
+    pub async fn load(
+        tx: &impl toolkit_db::secure::DBRunner,
+        m: entity::price_book_entry::Model,
+    ) -> Result<Self, RepoError> {
+        let policy = crate::infra::storage::repo::usage_policy_repo::for_entries(
+            tx,
+            m.tenant_id,
+            std::slice::from_ref(&m),
+        )
+        .await?
+        .remove(&m.id);
+        let mut dto = Self::try_from(m)?;
+        dto.usage_rating_policy = policy;
+        Ok(dto)
     }
 }
 /// An entry's prices by state; a rejected price is not counted (D-428). The approved ones are
@@ -509,6 +532,8 @@ pub struct PricingSettingsDto {
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PricingPriceBookEntryCreate {
+    /// Required for usage entries; immutable after creation. Identity is server assigned.
+    pub usage_rating_policy: Option<crate::infra::usage_policy_wire::UsageRatingPolicyInput>,
     pub sku_id: Uuid,
     /// Required and fixed for the entry's life (D-427): `flat`, `per_unit`, `graduated`,
     /// `volume` or `package`, one the SKU's charge kind allows.
@@ -960,7 +985,8 @@ impl PricingPlanRevisionDto {
 }
 /// `PATCH /plan-revisions/{id}`, draft only: the book and the sale date, never an item list
 /// (D-407). A book change remaps each item to the new book's entry of the same (SKU, charge kind,
-/// period); an unmatched item keeps its entry and the checks show it foreign.
+/// period, model, policy digest) and equal dimension key (D-502); an unmatched item keeps its
+/// entry and the checks show it foreign.
 #[toolkit_macros::api_dto(request)]
 #[derive(Clone)]
 #[serde(deny_unknown_fields)]

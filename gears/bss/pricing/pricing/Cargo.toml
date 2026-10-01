@@ -20,6 +20,7 @@ workspace = true
 test-support = []
 
 [dependencies]
+bss-pricing-sdk = { workspace = true }
 utoipa = { workspace = true }
 toolkit-db-macros = { workspace = true }
 rust_decimal = { workspace = true }
@@ -57,6 +58,7 @@ toolkit-gts = { workspace = true }
 toolkit-canonical-errors = { workspace = true }
 
 [dev-dependencies]
+parking_lot = { workspace = true }
 # The usage reads prove a fixed statement count with toolkit-db's `QueryRecorder` (D-428).
 toolkit-db = { workspace = true, features = ["pg", "sqlite", "test-support"] }
 # The events suite decodes the interim envelope with the broker SDK's own decoder

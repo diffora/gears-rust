@@ -32,3 +32,5 @@ toolkit-gts = { workspace = true }
 # to every consumer. `time::OffsetDateTime` rather than chrono: one instant type
 # across the gear, and the one the platform's OData cursor codec decodes to.
 time = { workspace = true }
+# A derived declaration's constants and quantities are exact decimals (P-D-230); no float.
+rust_decimal = { workspace = true }

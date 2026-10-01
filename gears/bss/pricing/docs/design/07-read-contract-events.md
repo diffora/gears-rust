@@ -35,6 +35,13 @@ Requirements: `cpt-cf-bss-pricing-fr-resolve`, `cpt-cf-bss-pricing-fr-price-read
 Dependencies: `cpt-cf-bss-pricing-feature-plans`, `cpt-cf-bss-pricing-feature-promotions-migrations`, `cpt-cf-bss-pricing-feature-approvals`.
 Source: PriceBook spec §2.2, §5–§8, §12–§13 and [DECISIONS](../DECISIONS.md) D-384–D-433.
 
+D-503 projects the entry's optional typed `usage_rating_policy` on each REST resolve item
+and each SDK binding. The materialized identity/content is loaded from local policy storage alongside
+the selected entry; historical reads never call the meter provider. SDK bindings retain the same
+`price_book_entry_id` as their price. Entry reads and exports retain D-502's optional projection.
+A BillingCycle VM entry beside a CalendarHour cloudlet entry keeps two independent policies;
+there is no plan-wide window or aggregation across subscription lines. Missing legacy policy is null.
+
 ## 2. Actor Flows (CDSL)
 
 ### Resolve a renewal and preserve invoice inputs
@@ -95,6 +102,62 @@ GET /pricing/v1/quote is a Studio preview with quantities (no plan item is optio
 [DESIGN §3.3](../DESIGN.md#33-api-contracts) fixes canonical errors and route prefixes.
 Each mounted route must appear in all four censuses with authz and precondition expectations.
 
+The delivered in-process surface (D-501) is `pricing-sdk::read::PricingReadV1`, registered as
+`dyn PricingReadV1` in ClientHub beside Products' existing `SkuUsageV1` provider:
+
+```rust
+async fn resolve(&self, ctx: &SecurityContext, query: ResolveQuery)
+    -> Result<ResolvedBindings, CanonicalError>;
+async fn price(&self, ctx: &SecurityContext, query: PriceQuery)
+    -> Result<ImmutablePrice, CanonicalError>;
+async fn current_revision(&self, ctx: &SecurityContext, query: PlanQuery)
+    -> Result<RevisionRef, CanonicalError>;
+```
+
+Every query carries `catalog: CatalogRef { tenant_id }`. This is the target catalog, not an
+assertion of permission or a replacement for the caller's tenant. The provider authenticates the
+context and obtains PDP constraints for `plan:read` (resolve/current revision) or `price:read`.
+The gate checks the explicit catalog tenant against those constraints; unknown/nonapproved/foreign
+price IDs disclose no price. A system-looking subject has no authorization bypass. Configured PDP
+or Products unavailability remains 503; definite Products denials retain their canonical error.
+
+`ResolveQuery` names revision, date, optional item and `PricePin { item_id, dimension_value,
+price_id }` values. Its result is a matrix of `ResolvedCell { selection, binding }`; an uncovered
+cell has `binding=None`. Complete bindings carry entry identity, dimension key/requested value,
+dated SKU version/code/name/unit, typed exact-decimal money, invoice inputs with template provenance,
+and `via_default`. Legacy entries carry `usage_rating_policy=None`. D-502 stores immutable entry policies and D-503 projects their materialized
+content here; the semantic provider is required only at new-entry and publication gates. Missing priced-cell descriptors or a rounding value not representable by the initial
+`HalfEven` projection returns the typed `IncompleteCommercialInputs` canonical precondition violation.
+REST retains nullable descriptors and its existing rounding vocabulary and goldens. Neither transport
+computes totals. Both adapters map the shared local snapshot, matrix and invoice inputs explicitly;
+dated Products reads occur only after the local read transaction finishes.
+
+`current_revision` catches up a due scheduled revision using the existing atomic switch/audit/outbox
+path before reading `published_rev`. A future revision stays scheduled. Retries announce a switch only
+once; no running ticker is required. It is classified `SafeRead` (no commercial command or idempotency
+key), although catch-up may persist the already-approved switch. Other read methods write nothing.
+
+The digest helpers implement restricted RFC 8785 canonical JSON, wrapped as `{domain,payload}` before
+SHA-256. Domains delivered here are `pricing.money.v1`, `pricing.bindings.v1`, `pricing.policy.v1` and
+`pricing.template.v1`. Money payload is `{currency, model, minimum_fee}` with every model operand,
+excluding IDs, all dates, closing observations and its own digest. Binding payload is
+`{plan_id, revision_id, bindings:[{selection,binding}]}` and contains every declared binding field,
+including entry, requested dimensions, dated unit, complete price observation, policy identity/version/
+content and invoice template/digest/provenance. Policy payload is its content, excluding record ID and
+version. Template payload is the exact string. `selected_bindings_digest` rejects duplicate, unknown,
+uncovered or inconsistent selections, then sorts by item UUID and requested dimension (null first).
+
+All numeric meaning uses strings: normalized plain decimals, base-10 integer versions, lowercase UUIDs
+and lowercase hexadecimal digest references. Optional fields are explicit null. Objects sort keys by
+UTF-16 code units; arrays preserve order (tier order is significant); strings use JSON escaping without
+Unicode normalization. Rust types exclude malformed Unicode and numeric JSON from the private encoder;
+no public untyped evidence or new REST wire DTO is introduced. Future wire adapters must reject duplicate
+keys and invalid typed values before projection. A single checked-in fixture contains canonical text
+and SHA-256 vectors verified independently by Rust and Node, including full bindings, policy versions,
+changed units/templates, maximum u64, control characters and supplementary Unicode keys. Timestamp
+normalization vectors specify UTC RFC3339 with nine fractional digits for later timestamp-bearing types;
+Task 1 itself introduces no acceptance or BillingTerms methods.
+
 ## 6. Data Model
 
 Resolution is a per-item matrix of default and value chains (D-420) with each item's SKU version and resolved invoice inputs (D-421); it carries no totals, and the active promotion (id, version) is deferred with promotions (D-409). The resolve response, field by field (the golden contracts freeze it):
@@ -108,6 +171,7 @@ Resolution is a per-item matrix of default and value chains (D-420) with each it
 | revision | items | One per item of the revision, or the one item_id names. |
 | item | item_id, sku_id | The item and its SKU; since D-467 an item carries no treatment, included_qty or qty_min. |
 | item | price_book_entry_id, charge_kind, period, model | The item's entry and its key, model included (the entry's, fixed for its life, D-427); null for a legacy item stored without an entry (D-467), which has no chains. |
+| item | usage_rating_policy | Optional typed entry policy: policy_id, exact version string, digest and content; null for legacy/non-usage entries (D-503). |
 | item | sku_version | { published_version, effective_from } of the SKU version in force on date; null when Products has no version on that date or does not know the SKU. |
 | item | invoice_line_template | { value, source }: the entry's invoice_line_override (source entry), else the SKU version's template (sku), else the tenant template for the charge kind (tenant; an item without an entry takes its SKU version's type); { null, null } when none. |
 | item | gl_code | { value, source }: the SKU version's (sku), else the tenant default_gl (tenant), else { null, null }. |
@@ -183,3 +247,134 @@ versions, required POST replay and PATCH/PUT preconditions; PostgreSQL serializa
 writer serialization preserve the same invariants. A failed audit/outbox write cannot leave a committed act.
 No timeout releases a live reference. Review and apply retain typed database failures for bounded retry.
 Implementation gates cover both backends and route censuses; document gates cover toc, language and identifier ownership.
+
+### Durable commercial persistence — Task 5a (D-505)
+
+The SDK declares `PricingAcceptanceV1::{acceptance, hold}` and
+`SellabilityV1::{check, check_fulfilment}` with SecurityContext and the plan's exact typed arguments
+and results. CommandMeta carries only the idempotency key. Caller tenant/id is an authenticated
+provider input, never a supplied command field. Signature availability does not imply a registered
+provider: PDP, Contract IR and ClientHub delivery remain Task 5b; acceptance commit orchestration is
+Task 5c; hold/live eligibility delivery is Task 6.
+
+Migration 19 creates `pricing_acceptance`, `pricing_hold` and `pricing_commercial_command` on SQLite
+and PostgreSQL. Each entity is Scopable by catalog tenant and row identity. The repositories require
+AccessScope for every insert/read and additionally filter the explicit catalog tenant. The acceptance
+business key is `(tenant_id, order_id, order_version, line_id)`; the hold key is
+`(tenant_id, acceptance_id)`; the command key includes catalog tenant, caller tenant/id, operation and
+idempotency key. Reusing a key under another caller is a different scope. A hold references its
+acceptance by a composite tenant-qualified FK. Command kind/id selects exactly one of two nullable
+FK targets guarded by a CHECK, preventing dangling or cross-tenant receipt references.
+
+The acceptance primary key indexes tenant/acceptance lookup. Its business unique index indexes order
+lookup; the hold unique index and command target indexes support receipt recovery. Exact u64 order
+versions use bounded canonical decimal strings. Timestamps use fixed-width UTC nanosecond strings,
+including relational columns, for identical precision on both databases. Receipt JSON is stored as
+TEXT without database JSON reformatting. No expiry column or cleanup path exists for commands.
+`hold_until` is an eligibility boundary, never a deletion deadline.
+
+`infra/commercial_terms/wire.rs` owns versioned, typed persistence decoding, separate from Task 4's
+new-sale BillingTerms validation adapter. Acceptance schema 1 stores the full query, including the
+BillingTerms snapshot's own schema version, accepted/deadline timestamps, digests and all selected
+bindings. Hold schema 1 stores its frozen bindings and activation; the retained acceptance supplies
+the referenced BillingTerms. The v1 reader is frozen: a later additive format gets another explicit
+version reader without changing stored digest meaning or supplying missing historical fields.
+Exact decimal/time adapters reject lossy input. Receipt reading does not recalculate digests, choose
+anchors, replace descriptors or require currently sellable catalog content.
+
+Insert-or-get executes scoped INSERT ON CONFLICT DO NOTHING against the specific unique business
+key, then rereads and compares the winner. A different request digest yields ACCEPTANCE_MISMATCH;
+a different command payload/target yields IDEMPOTENCY_CONFLICT. Holds also compare first activation.
+The caller owns the transaction and bounded contention retry; atomic acceptance/command/audit writes
+and authorization-before-replay are application-layer work in the subsequent chunks. No public
+commercial endpoint or partially implemented success response is introduced by persistence alone.
+
+### Commercial provider boundary — Task 5b (D-506)
+
+ClientHub now registers three independent SDK capabilities. PricingReadV1 keeps only
+resolve/price/current_revision. SellabilityProvider and PricingAcceptanceProvider share one
+CommercialTermsService with AuthoringState, PolicyEnforcer, Clock and SellerHoldPolicy. Explicit
+Contract IR marks check/hold IdempotentWrite; every other C01 method is SafeRead.
+
+| Method | PDP resource/action | Current delivery |
+| --- | --- | --- |
+| SellabilityV1::check | acceptance:create, catalog collection | Atomic acceptance/command/audit transaction (D-507) |
+| SellabilityV1::check_fulfilment | acceptance:read, receipt id | Fresh original-binding eligibility (D-508) |
+| PricingAcceptanceV1::acceptance | acceptance:read, receipt id | Stored immutable receipt read |
+| PricingAcceptanceV1::hold | acceptance:hold, receipt id | Atomic frozen first hold and command replay (D-508) |
+
+The resource label is `gts.cf.bss.pricing.acceptance.v1~`. SecurityContext supplies caller identity;
+CommandMeta has only an idempotency key. The requested seller/catalog must belong to the PDP scope,
+and the repository filters that exact tenant in addition to all returned tenant/resource predicates.
+Even a two-catalog grant cannot reveal another catalog's receipt through the requested one. Receipt
+reading preserves the 5a versioned snapshot and never re-evaluates expiry or live sale policy.
+
+The gear's `seller_hold_policy` defaults to `{version: 1, duration_seconds: 86400}`. Explicit policies
+require both positive integer fields; startup rejects invalid values before provider registration.
+No issued receipt changes when deployment configuration changes. `infra::clock::{Clock,SystemClock}`
+reuses the reference recovery Clock/WallClock implementation, including its harmless default jitter
+hook; it introduces no second server-time source. Tests inject an explicitly advanced FixedClock.
+Acceptance and hold sample it inside the final transaction; receipt reads require no clock observation.
+
+Canonical failures preserve typed commercial reasons: invalid argument 400, conflict 409, permission
+denied 403 and authorized not found 404. Configured PDP/storage outages are 503; a missing required
+provider names its UNCONFIGURED_DEPENDENCY. Tests pin identity,
+actions, multi-tenant filtering, unknown ids, byte-identical restart reads and separate registrations.
+The complete G3 controller gate remains required before public release.
+
+### Acceptance transaction — Task 5c (D-507)
+
+The shared service now implements check in the specified order: authorize catalog/caller, canonical
+request digest, scoped command replay, business-identity replay/command attachment, due promotion
+and local snapshot, detached resolution/live SKU/meter reads, complete-selection/profile/digest
+validation, then serializable generation recheck and receipt commit. New resolution also requires
+plan/price read grants. Exact authorized replay never consults live dependencies or refreshes TTL.
+
+The snapshot records all revision/price generations and the local inputs used to project bindings.
+Recheck covers entries, policies, dimensions and settings too. A local change rolls back and uses
+the G2 bounded capture loop; repeated change returns ResolutionChanged. Server time is sampled only
+after rechecking command/business uniqueness and generations in the final transaction. A revision
+becoming due during provider work forces recapture. Price windows are UTC and half-open; temporary
+promotional prices and wrong seller-policy versions refuse new acceptance.
+
+The same commit freezes entry IDs, exact policy references/content, prices, SKU descriptors, invoice
+inputs and supplied BillingTerms; accepted_at plus the configured duration yields hold_until. It
+inserts the immutable receipt, successful command mapping and local audit with observed meter
+provenance. Targeted insert-or-get rereads unique winners; no persistent in-flight claim is needed.
+A crash before commit rolls back all three records; restart after commit returns the original v1
+receipt even with providers down. Changing seller TTL or selecting another entry in a successor
+revision cannot rewrite it. D-508 supplies holds and live fulfilment eligibility.
+
+### Frozen holds and fresh fulfilment — Task 6 (D-508)
+
+check_fulfilment always performs an authorized acceptance lookup, exact terms-digest/tenant-axis/
+current-market comparison, frozen BillingTerms compatibility, live Products retirement check and
+original-price metadata reads. Retirement, explicit close/end, temporary end and server-time TTL
+expiry refuse eligibility. Deprecation, off-sale and revision supersession are allowed. There is no
+renewal resolution, successor traversal, historical meter refresh or current descriptor substitution.
+A successor-induced effective_to is not an end. Future original ends bound valid_before at 00:00Z.
+Both server time and requested activation must precede price ends and hold_until; activation cannot
+precede original price effectiveness or accepted start_at.
+
+hold authorizes and finds the exact acceptance under the full PDP scope before exact command replay.
+Its related hold/command rows use the PDP-derived tenant_only scope after that parent check, since
+their primary keys are different resources. A revoked receipt-ID grant cannot replay an old command.
+Without a replay, it performs these fresh checks,
+rereads original price generations and samples Clock inside its serializable commit transaction.
+Hold and command mapping commit together. Unique-key winners preserve the original hold; another
+key with identical activation passes fresh checks and cannot extend TTL. The first chosen activation
+instant is pinned. Another activation conflicts, while a 10:00 submission may first hold at 10:03.
+Exact successful commands replay after expiry; new keys and check_fulfilment cannot use that replay
+as fresh eligibility. Local drift recaptures within the existing bounded retry budget.
+
+Eligibility is never a reusable admission token. Subscriptions must fence its committed order
+version and attempt, revalidate immediately before its first activation intent, and own actual
+served intervals. Entry ID, immutable policy, original money, SKU v3 descriptors and invoice inputs
+survive successor prices and revisions. Historical receipt reads remain independent of eligibility.
+
+
+D-511 tightens the command boundary: check reads each selected price under its compiled price-read
+scope; a price outside that scope yields 403, as do fresh hold/check_fulfilment reads. A foreign
+receipt reference remains 404. At commit, start_at >= hold_until yields
+ActivationOutsideAcceptedWindow before any acceptance or command is stored. SDK command keys use
+the same bounded printable-ASCII invalid-argument rule as REST. Products contention maps to 503.

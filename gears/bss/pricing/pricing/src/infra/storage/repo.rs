@@ -168,3 +168,11 @@ fn matched(rows: u64, code: &'static str) -> Result<(), RepoError> {
         Err(RepoError::Conflict { code })
     }
 }
+
+pub mod usage_policy_repo;
+
+pub mod acceptance_repo;
+
+pub mod hold_repo;
+
+pub mod commercial_command_repo;

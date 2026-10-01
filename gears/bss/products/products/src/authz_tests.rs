@@ -53,20 +53,23 @@ fn every_declared_label_joins_all_and_each_resource_type_names_one() {
         resource_types::SKU,
         resource_types::CATEGORY,
         resource_types::APPROVAL_UNIT,
+        resource_types::DERIVED_USAGE_TYPE,
     ] {
         assert!(labels::ALL.contains(&rt.name()), "{}", rt.name());
     }
 }
+/// Five actions on the SKU, the category and the approval unit, `reference` on the SKU, and one,
+/// `author`, on the derived usage type, whose reads are `sku:read` (P-D-231, O-3).
 #[test]
-fn sixteen_permissions_cover_exactly_the_declared_pairs_and_inventory() {
+fn seventeen_permissions_cover_exactly_the_declared_pairs_and_inventory() {
     let all = crate::gts::permissions::all();
-    assert_eq!(all.len(), 16);
+    assert_eq!(all.len(), 17);
     let actual = all
         .iter()
         .map(|p| (p.resource_type.as_str(), p.action.as_str()))
         .collect::<std::collections::BTreeSet<_>>();
     let mut expected = std::collections::BTreeSet::new();
-    for label in labels::ALL {
+    for label in [labels::SKU, labels::CATEGORY, labels::APPROVAL_UNIT] {
         for action in [
             actions::READ,
             actions::AUTHOR,
@@ -74,10 +77,11 @@ fn sixteen_permissions_cover_exactly_the_declared_pairs_and_inventory() {
             actions::APPROVE,
             actions::SETTINGS,
         ] {
-            expected.insert((*label, action));
+            expected.insert((label, action));
         }
     }
     expected.insert((labels::SKU, actions::REFERENCE));
+    expected.insert((labels::DERIVED_USAGE_TYPE, actions::AUTHOR));
     assert_eq!(actual, expected);
     let prefix = gts_id!("cf.toolkit.authz.permission.v1~");
     let inventory = toolkit_gts::inventory::iter::<toolkit_gts::InventoryInstance>
@@ -87,7 +91,7 @@ fn sixteen_permissions_cover_exactly_the_declared_pairs_and_inventory() {
                 .starts_with(&format!("{prefix}cf.bss.products."))
         })
         .collect::<Vec<_>>();
-    assert_eq!(inventory.len(), 16);
+    assert_eq!(inventory.len(), 17);
     for p in all {
         let id = p.id.to_string();
         let entry = inventory.iter().find(|e| e.instance_id == id).unwrap();

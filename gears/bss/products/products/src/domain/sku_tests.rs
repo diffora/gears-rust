@@ -124,11 +124,13 @@ fn has(r: &crate::domain::validation::ValidationReport, subject: &str, code: &st
         .any(|v| v.subject == subject && v.code == code)
 }
 
-fn resolved_answer() -> UsageTypeAnswer {
-    UsageTypeAnswer::Resolved(crate::test_support::probe_binding())
+fn resolved_answer() -> UsageRefAnswer {
+    UsageRefAnswer::Catalog(UsageTypeAnswer::Resolved(
+        crate::test_support::probe_binding(),
+    ))
 }
-fn unresolved_answer() -> UsageTypeAnswer {
-    UsageTypeAnswer::Unresolved
+fn unresolved_answer() -> UsageRefAnswer {
+    UsageRefAnswer::Catalog(UsageTypeAnswer::Unresolved)
 }
 
 #[test]
@@ -136,7 +138,10 @@ fn unavailable_is_not_an_unknown_usage_type() {
     let mut c = content(SkuType::Usage);
     c.usage_type_ref = Some("meter".into());
     c.unit = Some("GB".into());
-    let report = validate_publish(&c, Some(&UsageTypeAnswer::Unavailable));
+    let report = validate_publish(
+        &c,
+        Some(&UsageRefAnswer::Catalog(UsageTypeAnswer::Unavailable)),
+    );
     assert!(has(&report, "usage_type_ref", "USAGE_TYPE_UNAVAILABLE"));
     assert!(!has(&report, "usage_type_ref", "USAGE_TYPE_UNRESOLVED"));
     let canonical =
@@ -239,4 +244,51 @@ fn a_patch_clears_or_sets_the_category_and_the_diff_names_it() {
     );
     assert_eq!(again.category_id, Some(set));
     assert_eq!(changed_fields(&cleared, &again), ["category_id"]);
+}
+
+/// P-D-232: a derived ref publishes on its stored version, whose output unit the SKU sells; it is
+/// judged first, and no catalog answer, not even `Resolved`, binds it. A derived answer binds no
+/// GTS ref either.
+#[test]
+fn a_derived_ref_publishes_on_its_version_and_never_on_a_catalog_answer() {
+    use crate::domain::derived::DerivedPin;
+    let pin = DerivedPin {
+        meter: "products.derived/cloudlets@1".into(),
+        output_unit: "cloudlet\u{b7}hour".into(),
+    };
+    let mut c = content(SkuType::Usage);
+    c.usage_type_ref = Some(pin.meter.clone());
+    c.unit = Some(pin.output_unit.clone());
+    assert!(validate_publish(&c, Some(&UsageRefAnswer::Derived(pin.clone()))).is_empty());
+    for answer in [
+        None,
+        Some(UsageRefAnswer::DerivedUnknown),
+        Some(resolved_answer()),
+        Some(UsageRefAnswer::Catalog(UsageTypeAnswer::Unavailable)),
+        Some(UsageRefAnswer::Derived(DerivedPin {
+            meter: "products.derived/cloudlets@2".into(),
+            output_unit: pin.output_unit.clone(),
+        })),
+    ] {
+        let report = validate_publish(&c, answer.as_ref());
+        assert!(
+            has(&report, "usage_type_ref", "DERIVED_USAGE_TYPE_UNKNOWN"),
+            "{answer:?}"
+        );
+        assert_eq!(report.violations().len(), 1, "{answer:?}");
+    }
+    c.unit = Some("GB".into());
+    assert!(has(
+        &validate_publish(&c, Some(&UsageRefAnswer::Derived(pin.clone()))),
+        "unit",
+        "DERIVED_UNIT_MISMATCH"
+    ));
+    let mut g = content(SkuType::Usage);
+    g.usage_type_ref = Some("usage:storage".into());
+    g.unit = Some("GB".into());
+    assert!(has(
+        &validate_publish(&g, Some(&UsageRefAnswer::Derived(pin))),
+        "usage_type_ref",
+        "USAGE_TYPE_UNRESOLVED"
+    ));
 }

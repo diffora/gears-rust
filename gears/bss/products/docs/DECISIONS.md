@@ -62,6 +62,10 @@
 | P-D-227 | M | The approval units are counted by state and kind and list newest first on request (twin of pricing D-470) | DECIDED 2026-09-30 · Owner, 2026-09-30 (the approvals option 1, "ok"); pricing phase 9 plan rev 2 (decision 10; plan review M4, L11); amends P-D-224; amended by the phase 9 review (C, R32; fix run 9.5d-1) |
 | P-D-228 | M | A unit says whether its reader may approve it (twin of pricing D-471) | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 4, "ok"); pricing phase 9 plan rev 2 (decision 11; W2; plan review H1, M2); amends P-D-224; amended by the phase 9 review (E, fix run 9.5d-1) |
 | P-D-229 | H | A derived usage meter is a catalog declaration that Rating evaluates | DECIDED 2026-10-01 · Owner, 2026-10-01 (who computes a cloudlet from RAM and CPU); supersedes the PriceBook spec §3 item 11 disposition for derived meters; rating T-D-39 |
+| P-D-230 | H | A derived usage type is versioned data with one evaluator, in the SDK | DECIDED 2026-10-01 · Derived usage types plan rev 3 (design decisions 1–4, run 1); implements P-D-229 and its amendment |
+| P-D-231 | H | Derived usage types are stored append-only and served by five doors | DECIDED 2026-10-01 · Owner, 2026-10-01 (O-1, O-2, O-3); derived usage types plan rev 3 (design decisions 4, 8, 9, run 2); implements P-D-229 and P-D-230 |
+| P-D-232 | H | A usage SKU pins a derived usage type at its first publish | DECIDED 2026-10-01 · Owner, 2026-10-01 (M1, O-2); derived usage types plan rev 3 (design decision 7, run 3); implements P-D-229's pin; amends P-D-184, P-D-207, P-D-231 |
+| P-D-233 | H | Products answers pricing's meter semantics for its derived usage types (E1b) | DECIDED 2026-10-01 · Derived usage types plan rev 3 (design decisions 5 and 6, run 4); implements P-D-229's pricing reference; amends P-D-229, P-D-230, P-D-231, P-D-232; pricing D-503 and D-510 amended |
 | P-D-248 | H | A retire under review keeps the SKU's lifecycle; `retire_pending` is the fence | DECIDED 2026-10-01 · Owner, 2026-10-01; phase 9 plan rev 4 run 9.8d; amends P-D-189, P-D-208, P-D-211, P-D-213 |
 | P-D-249 | H | A lifecycle change honours its date | DECIDED 2026-10-01 · Owner, 2026-10-01; phase 9 plan rev 4 run 9.8d; amends P-D-191 |
 
@@ -79,6 +83,12 @@ not a blanket 503 on authoring. Submit validates the proposed metering and `appl
 publication or change. Publication requires both `usage_type_ref` and `unit` and fails closed: an
 unresolvable ref is `USAGE_TYPE_UNRESOLVED`, an unreachable configured catalog is 503. P-D-207 amends this
 entry: a catalog that refuses the caller is 403 `USAGE_TYPE_FORBIDDEN`, and the picker is `GET /usage-types`.
+
+**Amended by P-D-232 (2026-10-01): the catalog port has a derived sibling.** A ref `products.derived/<code>@<n>` names
+the tenant's derived usage type version (P-D-231) and is read from this gear's own store. It is judged first, at draft
+save, submit and apply, before the unconfigured catalog's early answer and before any catalog call: the catalog is never
+asked for it, configured or not. Its refusals are 400 `DERIVED_USAGE_TYPE_UNKNOWN` and `DERIVED_UNIT_MISMATCH`. A GTS
+ref keeps everything above.
 
 **Traceability:** [PRD `fr-sku-metering`](PRD.md#fr-sku-metering); spec §4, §6 and §15
 (the usage-type catalog design remains in force, with the picker's path and gate changed by P-D-207).
@@ -510,6 +520,11 @@ role; without it submit and approve answer 403 `USAGE_TYPE_FORBIDDEN`.
 
 **Source:** Owner, 2026-09-27 (option b); phase 6 plan rev 2 (validation D5, asks 6 and 13; plan review H2, L9);
 the `q` search, 2026-09-28 (the collector's plugin takes no `contains`).
+
+**Amended by P-D-232 (2026-10-01).** The picker `GET /usage-types` lists GTS usage types only, the catalog's. Derived
+usage types have their own list, `GET /derived-usage-types`, under `sku:read` (P-D-231). A derived ref is never read
+through the catalog, so a catalog that refuses the caller, or does not answer, neither refuses nor delays a usage SKU on
+a derived version.
 
 #### P-D-208 [M] A retired SKU no longer keeps its category in use
 
@@ -1249,7 +1264,6 @@ items with their before and after content; still three statements per page. The 
 change and retire receipts and the vote receipts) read their unit's item authors the same way, beside its decisions;
 the engine's own approve still reads its items. `api/rest/sku_governance_tests.rs`: the list's statement test pins the
 projection, and the card, the submit receipt and the vote receipt read the authors alone.
-
 #### P-D-229 [H] A derived usage meter is a catalog declaration that Rating evaluates
 
 **Status:** DECIDED 2026-10-01.
@@ -1294,6 +1308,326 @@ evaluates, the usage collector stays raw").
   `products.derived/<code>@<n>`, version `<n>`.
 - **The pin.** A usage SKU's derived ref is fixed at its first publish. A new formula version is sold through a new SKU, as a
   usage chain's metering is fixed (pricing D-402).
+
+**Amended by P-D-233 (2026-10-01).**
+- **The derived half of the provider is built.** Products answers pricing's meter semantics for its derived usage types
+  (E1b), and a derived meter can be sold; the "Not built yet" line above is done for it. The raw half (E1a), the collector's
+  and the types registry's, is still to come.
+- **What the answer carries.** It does not carry "the canonical unit, the inputs and their versions, the formula version":
+  pricing's `MeterSemantics` has no field for inputs or a formula. It carries the canonical unit (the version's output
+  unit), the fold (`Sum`), the accrual `derived-v1:<digest>` and the digest of the STORED declaration. That declaration,
+  which names the inputs at their exact versions and the formula, is what the digest identifies, and
+  `GET /derived-usage-types/{code}/versions/{n}` serves it.
+
+#### P-D-230 [H] A derived usage type is versioned data with one evaluator, in the SDK
+
+**Status:** DECIDED 2026-10-01.
+
+P-D-229 has Products declare a derived usage meter and Rating evaluate it. This entry fixes what a declaration is, how it is
+checked, how it computes, and how it is encoded. All of it lives in `bss_products_sdk::derived`, which is pure: no I/O, no
+serde, no hashing. Rating evaluates through the same function Products validates with, so a declaration Products accepts is
+the declaration Rating computes.
+- **The declaration.** `DerivedUsageDeclaration` names:
+  - `output_unit` (the selling SKU's unit equals it), `granularity` (`Hour` only), `output_scale` and `output_round`;
+  - `inputs`, each a `DerivedInput`: a `name` (`^[a-z][a-z0-9_]{0,31}$`), a raw GTS `usage_type_ref` at its exact version, a
+    `granule_fold` (`Sum`, `Peak` or `TimeWeighted`), a `max_hold_seconds` for a time-weighted input only, and a `unit`;
+  - `formula`, an `Expr`.
+- **The grammar.** `Expr` is `Input`, `Const`, `Add`, `Sub`, `Mul`, `DivConst` (by a constant only, so nothing divides by a
+  quantity), `Max` and `Min` (two or more operands), `Ceil`, `Floor` and `Round` (a scale and a mode). `RoundMode` is
+  `HalfEven` (a midpoint goes to the even neighbour), `HalfUp` (a midpoint goes away from zero), `Up` (away from zero) and
+  `Down` (toward zero).
+- **`validate` refuses**, with one `DeclarationError` variant per rule, so Products can name the rule in its 400:
+  - an unknown input name, an unused input, a duplicate name, fewer than two inputs, a derived input (`products.derived/…`);
+  - a `DivConst` by zero, a `Max` or `Min` with fewer than two operands;
+  - a formula deeper than 32 (a leaf is depth 1) or of more than 256 nodes (every `Expr` counts), a scale above 12 (the
+    output's or a `Round`'s);
+  - a `max_hold_seconds` missing on `TimeWeighted`, present on `Sum` or `Peak`, or outside `1..=86_400` (rating T-D-17);
+  - an empty or blank unit, or one over 64 characters (the SKU unit cap, P-D-225);
+  - an input name off its pattern, and an empty input ref or one over 512 characters (the SKU usage-type ref cap). These two
+    are not in the plan's list; the pattern is its type comment, and P-D-225 caps every text a request writes.
+
+  The walk over the formula is iterative, so an unbounded formula is refused at its bound and never overflows the stack.
+- **`evaluate`** answers one granule's output. It validates first (`EvalError::Invalid`). Its map holds the granule's folded
+  input quantities by name: a missing name is `MissingInput`, an extra one `ExtraInput`, a value below zero `NegativeInput`.
+  `Add`, `Sub`, `Mul`, `DivConst`, `Ceil` and `Floor` are checked: `Overflow`, never a panic. A rounding only lowers a scale
+  and cannot overflow (measured at the extremes of the range). The result is rounded to `output_scale` by `output_round`,
+  then normalized (`-0` → `0`, trailing zeros dropped); a negative result is `NegativeResult`.
+- **The window.** `evaluate_window` sums a window's granule outputs, checked and normalized. The formula applies per granule,
+  never to the window's summed inputs (P-D-229's amendment): RAM 256 MB with no CPU in one hour and 800 MHz with no RAM in the
+  next are 2 + 2 = 4 cloudlet-hours, where the summed hours would give 2. The plan has Rating sum; this function is that sum
+  written once, so the order is code and not only prose. Rating may call it or sum `evaluate`'s outputs itself.
+- **The canonical bytes.** `canonical_bytes` writes canonical JSON (RFC 8785 strings, keys in byte order) of
+  `{"domain":"products.derived_usage_declaration.v1","payload":…}`:
+  - a decimal is its normalized text, so `128` and `128.0` give the same bytes;
+  - the inputs are in name order, because the formula reads an input by name, never by position;
+  - every field is written, an absent hold as `null`.
+
+  A golden test pins the cloudlet's bytes. A change to the encoding is a new domain tag, because stored digests hash these
+  bytes. The products runtime hashes them (SHA-256 through `aws-lc-rs`) and stores the digest; the SDK does not hash.
+- **The meter id.** `MeterId` parses and formats `products.derived/<code>@<n>`: the code is `^[a-z0-9][a-z0-9._-]{0,63}$`;
+  `<n>` is a canonical decimal (digits only, no leading zero, from 1 to `u32::MAX`). `meter_ref()` is pricing's pair
+  `("products.derived/<code>@<n>", "<n>")`, and `parse_version` judges a version string alone. Its fields are private and
+  `MeterId::new` checks them, so `format` always writes an id `parse` reads back.
+- **Measured.** `rust_decimal` 1.41 already rounds -0.3 to a positive zero, but truncation keeps the sign: `Ceil(-0.3)` is a
+  negative zero. The result's normalization is what answers `0` there.
+- **Not built yet.** Versions are stored, served and digested in a later run, a usage SKU pins one in the next, and Products
+  answers pricing's meter semantics after that (the plan's runs 2–4). Until then nothing reads a declaration, and no derived
+  meter can be sold (P-D-229).
+- **The tests.** `products-sdk/src/derived_tests.rs`: the cloudlet vector (RAM 300 / CPU 500 → 3, RAM 100 / CPU 900 → 3,
+  idle → 0) and the per-granule window; every refusal, with the boundaries (depth 32 and 256 nodes accepted, 33 and 257
+  refused; scale 12 accepted, 13 refused; holds 1 and 86,400 accepted, 0 and 86,401 refused; units at 64 two-byte characters
+  accepted, 65 refused); every `EvalError`, with a constructed overflow of `Add`, `Sub`, `Mul` and `DivConst`; each
+  `RoundMode` at and off the midpoint, positive and negative; the canonical bytes (input order, `128` vs `128.0`, a
+  constant, a fold and a hold) and two goldens; the meter id's round trip and each refusal.
+
+**Source:** The derived usage types implementation plan, rev 3: design decisions 1–4 and run 1, on the owner's answers of
+2026-10-01 (O-2, the meter id). Implements P-D-229 and its amendment.
+
+**Amended by P-D-233 (2026-10-01).** The "Not built yet" line above is done: versions are stored and served (P-D-231), a
+usage SKU pins one (P-D-232), and Products answers pricing's meter semantics for them (P-D-233).
+
+#### P-D-231 [H] Derived usage types are stored append-only and served by five doors
+
+**Status:** DECIDED 2026-10-01.
+
+P-D-230 fixes what a derived usage declaration is. This entry fixes how Products stores one, who may write and read it,
+and what the doors answer. Migration `m20261001_000012_derived_usage_type`, the repository `derived_usage_type_repo`,
+`domain/derived.rs` and `api/rest/derived_usage_types.rs` carry it.
+- **The identity (O-2).** A derived usage type has:
+  - a stable `id` (a UUID v7), one per `(tenant, code)`;
+  - a `code`, `^[a-z0-9][a-z0-9._-]{0,63}$`, unique in the tenant: a code off the pattern is 400 `VALIDATION`, one over 64
+    characters 400 `FIELD_TOO_LONG` (P-D-225), and a second type with the tenant's code 409 `DERIVED_CODE_TAKEN`;
+  - a `name`, set at the create, not blank and at most 200 characters;
+  - versions 1, 2, … . The meter id of version `n` is `products.derived/<code>@<n>`, and pricing names it
+    `{usage_type_id: "products.derived/<code>@<n>", version: "<n>"}`.
+- **The lifecycle (O-1).** A version is append-only and needs no approval of its own. A type has no lifecycle: no door
+  renames, retires or deletes it. A usage SKU adopts a version only at its own approved first publish, and the pin never
+  moves after that (M1, the next run). A version is never written again: a new formula is a new version, and every earlier
+  version is served and stored byte for byte as it was.
+- **The storage.** Two tables, on both backends:
+  - `products_derived_usage_type`: `(tenant_id, id, code, name, created_by, created_at)`, key `(tenant_id, id)`, the unique
+    index `uq_products_derived_usage_type_code` on `(tenant_id, code)` and a CHECK on the code's pattern;
+  - `products_derived_usage_type_version`: `(tenant_id, type_id, version, declaration_json, digest, created_by,
+    created_at)`, key `(tenant_id, type_id, version)`, a tenant-qualified foreign key `(tenant_id, type_id)` to the type,
+    and CHECKs on `version >= 1` and on the digest (64 lowercase hex digits).
+
+  Postgres refuses every `UPDATE` and `DELETE` of a version through one `PL/pgSQL` function, as pricing's usage rating
+  policy table does; `SQLite` has two triggers with the same refusal. The type row has no trigger: no door writes it after the
+  create, and its versions' key holds it. The migration is reversible. The schema guard (P-D-195) needs no change: neither
+  table is in the legacy chain.
+- **The declaration and its digest.** The wire declaration is string-typed (P-D-217): the granularity, a fold, a round mode
+  and an operator are plain strings, so the door refuses an unknown one with its own code, and the request census keeps
+  them strings. Its formula nodes have the canonical bytes' shape: `op` and that operator's own fields (`name`; `value`;
+  `left` and `right`; `arg` and `divisor`; `args`; `arg`, `scale` and `mode`). A version stores the declaration as the doors
+  serve it (decimals normalized, an absent hold omitted) and the SHA-256 of `derived::canonical_bytes`, taken through
+  `aws-lc-rs` (lint DE0708) once, at the write. Every read answers the STORED digest; nothing recomputes it.
+- **The refusals.** A declaration the shape or the SDK refuses is 400 `DERIVED_DECLARATION_INVALID` on `declaration`, its
+  detail led by the rule: the SDK's 18 (`empty_unit`, `unit_too_long`, `scale_too_large`, `too_few_inputs`,
+  `invalid_input_name`, `duplicate_input`, `empty_input_ref`, `input_ref_too_long`, `derived_input`, `hold_missing`,
+  `hold_not_allowed`, `hold_out_of_range`, `unknown_input`, `unused_input`, `division_by_zero`, `too_few_operands`,
+  `too_deep`, `too_many_nodes`) and the shape's 6 (`unknown_granularity`, `unknown_fold`, `unknown_round_mode`,
+  `unknown_operator`, `invalid_decimal`, `malformed_expression`). A `DERIVED_` refusal names the `derived_usage_type`
+  resource (P-D-223). A JSON body nested past the parser's limit is a 400 on the body, before any rule.
+- **The inputs (P-D-184, P-D-207).** After the rules, each input resolves through the `UsageTypeCatalog` port as the caller,
+  once, in input order. A catalog that refuses the caller is 403 `USAGE_TYPE_FORBIDDEN` and one that does not answer 503
+  `USAGE_TYPE_UNAVAILABLE`, whichever input met it; otherwise every unresolved input is one 400 `USAGE_TYPE_UNRESOLVED` on
+  `declaration.inputs.<name>.usage_type_ref`. An unconfigured catalog answers nothing, so a write is 503: a version is
+  immutable, so it fails closed, as a usage SKU's publish does. A derived input is refused by the rules before the catalog is
+  asked (P-D-230).
+- **The doors**, under `/bss-products/v1`:
+  - `POST /derived-usage-types` `{code, name, declaration}` → 201, version 1;
+  - `POST /derived-usage-types/{code}/versions` `{declaration}` → 201, version n + 1; 404 when the tenant has no type with
+    the code, asked before the catalog; 409 `CONTENDED` when a concurrent write took the number;
+  - `GET /derived-usage-types`: the tenant's types by code (tie-break id), each with its `latest_version`; `$top`/`limit`
+    50, clamped at 200, and a `cursor`, as the SKU list pages (P-D-210). `$filter`, `$orderby`, `$select` and any other key
+    are 400; a cursor another list cut is 400;
+  - `GET /derived-usage-types/{code}`: the type with its versions' headers, oldest first;
+  - `GET /derived-usage-types/{code}/versions/{n}`: the declaration, the stored `digest`, and what a pricing author copies
+    into a usage policy: `meter_ref`, `canonical_unit` (the output unit) and `accrual_policy_version`
+    (`derived-v1:<digest>`). An `n` that is not a canonical decimal names no version: 404.
+
+  Each write takes an optional `Idempotency-Key` (P-D-198), looked up before the body is judged or the catalog asked, and
+  claimed and answered in the write's transaction. 503 is declared on every door; the served text names every code.
+- **The grants (O-3).** The writes ask `author` on the new PDP resource `derived_usage_type`
+  (`cf.bss.products.derived_usage_type.v1~` under the platform's GTS prefix, as the other labels), anchored to the
+  caller's tenant. It is the resource's one permission (`derived_usage_type_author`), so the catalog grows from 16 to 17
+  permissions, and its label schema is registered at boot with the others (P-D-204). The reads ask `sku:read`, and its
+  compiled scope is the read's SQL filter beside the tenant. A `sku:read` scope narrowed to rows names SKUs, so it shows no
+  derived usage type: the read fails closed. *Amended 2026-10-01:* the `sku:read` decision is unchanged (403 when denied,
+  503 when the PDP cannot be judged). The SQL filter is `tenant_only()` of that scope, beside `tenant_id` of the caller.
+  A SKU `resource_id` does not hide a derived row. A constraint with no `owner_tenant_id` is deny-all.
+- **The audit (P-D-193).** A create writes one `products_audit_log` row, `derived_usage_type.create`, and a new version one,
+  `derived_usage_type.version`, each in the write's transaction: `subject_kind = derived_usage_type`, `subject_id` the type's
+  id, `subject_revision` the version. The table has no CHECK on `subject_kind`, so no audit migration is needed.
+- **The caps.** The SDK's caps are tied to `domain/caps.rs` by const asserts: the unit cap is `LABEL_MAX_CHARS`, the input
+  ref cap `USAGE_TYPE_REF_MAX_CHARS`, and the code cap `CODE_MAX_CHARS`.
+- **Beyond the plan's text.** The repository has two reads the plan does not list: `list_versions` (the type read's
+  headers) and `latest_versions` (the list's `latest_version` and the next version number, in one grouped read). A lost
+  version-number race is 409 `CONTENDED`, the gear's answer to contention it cannot retry away.
+- **Not built yet.** A usage SKU cannot name a derived type yet (the plan's run 3), and Products does not yet answer
+  pricing's meter semantics (run 4). Until then no derived meter can be sold (P-D-229).
+- **The tests.** `domain/derived_tests.rs` (the digest against a SHA-256 taken outside the code, a rule per SDK variant, the
+  identity, the catalog's answers), the migration's `_tests.rs` and `tests/postgres_derived_usage_type.rs` (the triggers, the
+  tenant-qualified key, the CHECKs and the keys), `derived_usage_type_repo_tests.rs` (tenant scoping, the code per tenant,
+  the versions), and `derived_usage_types_tests.rs`: version 1 kept byte for byte after version 2, every rule at the door,
+  the catalog's three answers, a foreign tenant, a replay, the paging, the version read, the stored digest, the audit rows
+  and their transaction, and the two grants. The censuses: the gear's operations and migration count, the door census, the
+  permission census, the request-string and kept-string censuses, the refusal-resource census and the schema guard's table
+  count.
+
+**Source:** The derived usage types implementation plan, rev 3: design decisions 4, 8 and 9 and run 2, on the owner's
+answers of 2026-10-01 (O-1: versions are append-only, with no approval of their own; O-2: the meter id; O-3: reads under
+`sku:read`, writes under `author` on `derived_usage_type`). Implements P-D-229 and P-D-230.
+
+**Amended by P-D-232 (2026-10-01).**
+- A usage SKU now names a derived version and pins it at its first publish (the "Not built yet" line above is done for
+  the pin; the meter-semantics answer is still to come).
+- Only the derived doors' own `DERIVED_` codes name the `derived_usage_type` resource. The binding's codes
+  (`DERIVED_USAGE_TYPE_UNKNOWN`, `DERIVED_UNIT_MISMATCH`, `DERIVED_PIN_IMMUTABLE`) refuse a SKU's write and name the SKU.
+
+**Amended by P-D-233 (2026-10-01).** The meter-semantics half of the "Not built yet" line above is done: Products answers
+pricing's meter semantics from this store (P-D-233), so a derived meter can be sold.
+
+#### P-D-232 [H] A usage SKU pins a derived usage type at its first publish
+
+**Status:** DECIDED 2026-10-01.
+
+P-D-231 stores derived usage types. This entry fixes how a usage SKU names one and keeps it: design decision 7 of the plan,
+on the owner's M1 and O-2. `domain/derived.rs`, `domain/sku.rs`, `domain/approvals/change.rs`, `api/rest/skus.rs`,
+`api/rest/governance.rs`, `api/rest/sku_governance.rs` and `api/rest/derived_usage_types.rs` carry it.
+- **The ref (O-2).** A usage SKU names a derived meter by `usage_type_ref = "products.derived/<code>@<n>"`, tenant-scoped.
+  The prefix is reserved (P-D-230), so a ref that starts with it is derived whatever follows, and is never a catalog's
+  question.
+- **The derived check comes first**, at three sites:
+  - the draft doors (`resolve_draft_ref`: the create, and a PATCH that changes the ref, or the unit of a derived ref);
+  - the resolution a submit or an approve makes before its transaction (`governance::resolve`);
+  - the publish rule (`validate_publish`), at submit and at apply, for a publish and for a change.
+
+  At the first two it reads the tenant's version from this gear's store: `MeterId::parse`, then the type by code and the
+  version, under the caller's tenant (`AccessScope::for_tenant`). *Amended 2026-10-01:* the pin reads `tenant_only()` of
+  `sku:read`, the same scope the meter provider uses, beside the caller's tenant. At draft save that is before the unconfigured catalog's
+  early `Ok`; everywhere it is before any catalog call. The catalog is never asked for a derived ref, configured or not, so
+  a usage SKU on a derived version saves, publishes and is approved with no catalog configured (P-D-184, P-D-207 amended).
+- **The binding.** A derived ref binds when the tenant holds that version and the SKU's unit, when it names one, is that
+  version's `output_unit`, exactly. Otherwise:
+  - 400 `DERIVED_USAGE_TYPE_UNKNOWN` on `usage_type_ref`, ONE answer for an unknown code, an unknown version, another
+    tenant's type, a version that is not canonical (`@01`, `@0`) and a ref with no version;
+  - 400 `DERIVED_UNIT_MISMATCH` on `unit`.
+
+  A draft may leave its unit for later, as a GTS draft may, and a blank unit is no unit; the publish then needs one
+  (`USAGE_NEEDS_METER`). At publish, `validate_publish` judges a derived ref by the stored version the door read
+  (`UsageRefAnswer::Derived`): no catalog answer binds it, `Resolved` included, and a derived answer binds no GTS ref.
+- **The pin (M1).** `SkuChange::validate_change` refuses a change when the current or the proposed `usage_type_ref` is
+  derived and the two differ: `@1` → `@2`, GTS → derived, derived → GTS, and a derived ref dropped, alone or by a type
+  change. It judges the head as it is, at submit and again at apply, before the fence and type checks.
+  - At submit the refusal is 400 `DERIVED_PIN_IMMUTABLE` on `usage_type_ref`. The change door applies the same rule before
+    it resolves the proposal, so no catalog is asked for a change the pin refuses: a derived → GTS change is 400, not a
+    503, when no catalog is configured.
+  - At apply it is 409 `DERIVED_PIN_IMMUTABLE`, as every apply refusal is a conflict (`ApplyRefused`).
+  - A change that keeps the ref still applies; one that moves the unit off the pinned version's output unit is 400
+    `DERIVED_UNIT_MISMATCH`.
+  - A draft that was never published may move its pin by PATCH: only the insert writes `draft`, and a draft holds no
+    reservation. A new formula version is sold through a new usage SKU, then a new entry and a new plan revision, as a
+    usage chain's metering is fixed (pricing D-402).
+- **Measured: the stale apply.** A unit's fingerprint covers only what it proposes (`bss_approval` `snapshot_hash`). A
+  concurrent writer that moves only fields the change overrides changes no proposal, so the approve is not refreshed and
+  the apply runs at the same generation; the apply judges the head it finds, and the pin refuses it. A writer that also
+  moves a field the change keeps refreshes the unit first (`UNIT_STALE`), and the approve of the new generation is refused
+  at apply the same way.
+- **The resource.** The three codes refuse a SKU's write, so they name the SKU (`cf.bss.products.sku.v1~`); only the
+  derived doors' own `DERIVED_` codes name `derived_usage_type` (P-D-231 amended, P-D-223).
+- **A store failure** in the derived read is a 500, as every repository read of the SKU doors is.
+- **The served texts** of the create, the draft PATCH, the submit (which had none), the change and the approve name the
+  new codes.
+- **Not built yet.** Products does not answer pricing's meter semantics yet (the plan's run 4). Until then a usage SKU on
+  a derived version publishes, but no pricing usage entry can name its meter (P-D-229).
+- **The tests.** `api/rest/derived_binding_tests.rs`, every case with the catalog configured and unconfigured, and a
+  counting catalog that must stay at zero: a derived draft created, submitted and approved; the unknown refs at the create
+  and a PATCH; a unit mismatch at the create, a PATCH and a change, and a draft without its unit; a draft moving `@1` →
+  `@2` and publishing on `@2`; the pin at submit for `@1` → `@2`, derived → GTS, a type change dropping the ref and a dropped
+  ref, with no unit recorded and no fence left; GTS → derived refused while GTS → GTS applies; a stale type change refused
+  at apply after a concurrent writer pinned the head, and (configured) a stale GTS → GTS change refused at apply after its
+  refresh. `domain/derived_tests.rs`: the reserved prefix, the binding and the pin's truth table. `domain/sku_tests.rs`:
+  `validate_publish` on a derived ref. `infra/error_mapping_tests.rs`: the three codes name the SKU.
+
+**Source:** The derived usage types implementation plan, rev 3: design decision 7 and run 3, on the owner's answers of
+2026-10-01 (M1: a usage SKU's derived pin is fixed at its first publish, a new formula version is sold through a new usage
+SKU, a never-published draft may change its pin; O-2: the ref). Implements P-D-229's pin (its amendment).
+
+**Amended by P-D-233 (2026-10-01).** The "Not built yet" line above is done: Products answers pricing's meter semantics
+(P-D-233), so a pricing usage entry can name a derived usage SKU's meter.
+
+#### P-D-233 [H] Products answers pricing's meter semantics for its derived usage types (E1b)
+
+**Status:** DECIDED 2026-10-01.
+
+P-D-229 has pricing name a derived usage type exactly as a raw one, and leaves the answer to the meter-semantics provider of
+the pricing seam plan (its external dependency E1). This entry builds its derived half, E1b: design decisions 5 and 6 of the
+plan. `infra/meter_semantics.rs` and `gear.rs` carry it; pricing's checks do not change.
+- **One dispatcher (decision 6).** Products registers ONE `Arc<dyn UsageMeterSemanticsV1>` with
+  `ctx.client_hub().register::<dyn UsageMeterSemanticsV1>(..)`, beside `PricingReferenceRegistry`, over the same runtime
+  the REST doors use (`register_pricing_ports`). It is not wired through `#[toolkit::provides]`. A meter whose
+  `usage_type_id` starts with the reserved `products.derived/` prefix (P-D-230) is answered from this gear's store. Any
+  other meter is a raw meter (E1a), and it answers exactly what pricing answers when no provider is registered,
+  `UnconfiguredMeterSemantics` (400 `UNCONFIGURED_DEPENDENCY`), without asking the PDP or the store.
+- **The E1a extension point** is documented, not built. When a raw-meter provider exists (the usage collector's semantic
+  adapter over the types registry's declarations), it registers under a trait of `bss-products-sdk`, and this dispatcher
+  calls it for every non-derived id. Pricing's port stays one registration: two providers registered as
+  `dyn UsageMeterSemanticsV1` would replace each other.
+- **The answer (decision 5).** For `MeterRef { usage_type_id: "products.derived/<code>@<n>", version: "<n>" }`:
+  - `meter` as asked;
+  - `canonical_unit` = the version's `output_unit`;
+  - `fold` = `Sum`: the granule outputs add up over a window (P-D-230);
+  - `accrual_policy_version` = `derived-v1:<stored digest hex>`, what the version read serves (P-D-231);
+  - `source_integrated` = true;
+  - `digest` = the STORED digest, its 64 hex digits as pricing's 32 bytes. Nothing recomputes it from the declaration
+    (decision 3).
+
+  It answers what the declaration's digest identifies, not the declaration itself: the inputs at their exact versions and
+  the formula are in the stored declaration, which `GET /derived-usage-types/{code}/versions/{n}` serves (P-D-229 amended).
+- **The order** (P-D-202): the caller's tenant, then the PDP, then the meter's shape, then the store.
+- **The refusals:**
+  - a nil tenant or subject: 403;
+  - a denied `sku:read` (O-3): 403; an unreachable PDP: 503;
+  - a `version` that is not canonical, or that disagrees with the id's `@<n>`: 400 `METER_POLICY_MISMATCH` on
+    `meter.version`. Measured, probe D4-4: pricing's `validate_meter_policy` compares the policy's meter with the answer's
+    `meter`, which is the meter as asked, so `@1` with version `2` would pass pricing if Products answered it;
+  - an unknown code, an unknown version, another tenant's type, and a prefixed id that names no meter (`@01`, an upper-case
+    code, no code): ONE answer, 400 `METER_VERSION_UNKNOWN` on `meter`, with the same detail, as pricing's contract-test
+    provider answers every unknown pair;
+  - a store failure: 503 (pricing answers any 5xx of the provider as 503); a stored row that does not read: 500, a corrupt
+    row. *Amended 2026-10-01:* pricing forwards a provider 500 and remaps every other 5xx to the generic 503. The corrupt-row
+    wire detail is `a stored derived meter row does not read`; the cause is logged and is not on the wire. A permanent fault
+    must not read as retryable. `Internal` hides a custom description, so this 500 is data-loss: status 500, and that sentence
+    is the detail.
+- **The tenant pin.** The port carries no tenant. The provider reads in the caller's tenant, `ctx.subject_tenant_id()`, as
+  the store's key, beside `tenant_only()` of the `sku:read` scope (a SKU `resource_id` is not applied), so a grant whose scope spans tenants (a parent reading its children)
+  never answers another tenant's meter. Measured, probe D4-3: with the key dropped, such a grant read the other tenant's
+  type; under a one-tenant grant the scope alone hid it.
+- **No trusted subject.** Pricing resolves the semantics as its door's caller, never as its system actor (D-503), so every
+  caller goes through the PDP; unlike the reference registry (P-D-222), no subject type is trusted here.
+- **One read.** `derived_usage_types::stored_version` is the tenant's version and its served declaration, read by the meter
+  id: the SKU binding and the provider share `tenant_only()` of `sku:read`, beside the caller's tenant. *Amended 2026-10-01:* not `AccessScope::for_tenant`, and not the SKU `resource_id`.
+  The SKU doors still answer a store failure 500 (P-D-232); the provider answers 503.
+- **Pricing's docs.** D-503 and D-510 carry the amendment: E1b is provided, E1a is still external, and the answer carries
+  the digest of a declaration that names the inputs and the formula. The lines that said a derived meter is not sellable
+  until Products' store exists now say it is.
+- **The tests.**
+  - `infra/meter_semantics_tests.rs`: decision 5's answer for versions 1 and 2, under stored digests no declaration hashes
+    to; a raw ref (six spellings) answering the absent provider's error, byte for byte, with no PDP evaluation and a dropped
+    table; eight versions off the id; six unknown meters, one body; the store's 503 and a corrupt row's 500; a nil tenant's
+    and a nil subject's 403 before the PDP; the PDP's 403 and 503; the tenant pin under a grant over two tenants; and the hub after the gear's own init: nothing before it, Products'
+    dispatcher after it, over the gear's database.
+  - `tests/derived_meter_e2e.rs`, in this crate, with no test meter provider anywhere: Products boots through its own
+    `Gear::init` and pricing's authoring state and router run on its hub, as `sku_governance_tests`' cross-gear test does.
+    The cloudlet type is created through its door; a usage SKU on `products.derived/cloudlets@1` with its invoice fields is
+    published; a pricing usage entry names the meter, `cloudlet·hour` and `derived-v1:<digest>`; a price is authored,
+    submitted and applied; a plan revision is published; a `NewSaleQuery` built through `PricingReadProvider::resolve` and
+    `selected_bindings_digest` is accepted by `SellabilityV1::check`. The probes: a wrong unit and a wrong accrual are
+    `METER_POLICY_MISMATCH`, and the version table dropped is 503 at pricing's entry create (not the registry's 503).
+
+**Source:** The derived usage types implementation plan, rev 3: design decisions 5 and 6 and run 4. Implements P-D-229's
+pricing reference (its amendment) and the E1b half of pricing's E1 (D-503).
 
 #### P-D-248 [H] A retire under review keeps the SKU's lifecycle
 

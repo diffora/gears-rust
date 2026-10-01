@@ -133,15 +133,34 @@ impl Harness {
     /// # Errors
     /// Propagates migration and initialization failures.
     pub async fn new() -> anyhow::Result<Self> {
+        Self::with_config(serde_json::json!({})).await
+    }
+
+    /// Boot with explicit deployment policy.
+    /// # Errors
+    /// Invalid policy or runtime initialization failure.
+    pub async fn with_config(config: serde_json::Value) -> anyhow::Result<Self> {
+        Self::with_dependencies(config, true).await
+    }
+
+    /// Boot with an optional PDP to test missing-dependency failures.
+    /// # Errors
+    /// Missing PDP, invalid config or runtime initialization failure.
+    pub async fn with_dependencies(
+        config: serde_json::Value,
+        with_pdp: bool,
+    ) -> anyhow::Result<Self> {
         let db = common::migrated_db().await?;
         let hub = Arc::new(toolkit::ClientHub::new());
-        hub.register::<dyn authz_resolver_sdk::AuthZResolverApi>(Arc::new(DenyingResolver));
+        if with_pdp {
+            hub.register::<dyn authz_resolver_sdk::AuthZResolverApi>(Arc::new(DenyingResolver));
+        }
         let registry = Arc::new(Registry::default());
         hub.register::<dyn TypesRegistryClient>(registry.clone());
         let ctx = GearCtx::new(
             "bss-pricing",
             Uuid::new_v4(),
-            Arc::new(Config(serde_json::json!({"config": {}}))),
+            Arc::new(Config(serde_json::json!({"config": config}))),
             hub,
             tokio_util::sync::CancellationToken::new(),
         )

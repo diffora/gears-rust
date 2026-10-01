@@ -19,6 +19,7 @@
         "date": "2026-11-05",
         "items": [
           {
+            "usage_rating_policy": null,
             "item_id": "<item:promo-1/promo>",
             "sku_id": "<sku:promo>",
             "price_book_entry_id": "<entry:promo>",
@@ -91,6 +92,7 @@
         "date": "2026-12-01",
         "items": [
           {
+            "usage_rating_policy": null,
             "item_id": "<item:promo-1/promo>",
             "sku_id": "<sku:promo>",
             "price_book_entry_id": "<entry:promo>",

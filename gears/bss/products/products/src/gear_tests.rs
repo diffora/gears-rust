@@ -16,9 +16,10 @@ async fn configured_gear_registers_implemented_routes() -> anyhow::Result<()> {
     assert!(gear.runtime.load_full().is_some());
     assert_eq!(
         crate::infra::storage::migrations::Migrator::migrations().len(),
-        13,
-        "the schema guard, coordination and the eleven PriceBook migrations (000009: the unit's \
-         note, P-D-219; 000010: no retired default, P-D-220; 000011: retire_pending, P-D-248)"
+        14,
+        "the schema guard, coordination and the twelve PriceBook migrations (000009: the unit's \
+         note, P-D-219; 000010: no retired default, P-D-220; 000011: retire_pending, P-D-248; \
+         000012: the derived usage types, P-D-231)"
     );
     let openapi = OpenApiRegistryImpl::new();
     let router = gear.register_rest(&ctx, Router::new(), &openapi)?;
@@ -66,6 +67,11 @@ async fn configured_gear_registers_implemented_routes() -> anyhow::Result<()> {
         "bss_products.release_reference",
         "bss_products.browse",
         "bss_products.list_usage_types",
+        "bss_products.create_derived_usage_type",
+        "bss_products.create_derived_usage_type_version",
+        "bss_products.list_derived_usage_types",
+        "bss_products.get_derived_usage_type",
+        "bss_products.get_derived_usage_type_version",
     ];
     expected.sort_unstable();
     assert_eq!(actual, expected);
@@ -353,7 +359,8 @@ const CLOSED: &[Closed] = &[
 ];
 
 /// P-D-217: response fields that stay `string`. No CHECK guards the stored set (the audit
-/// `action` and `unit_kind`, the approval unit's `ref_type`, a reference's `owner`), the value is not
+/// `action` and `unit_kind`, the approval unit's `ref_type`, a reference's `owner`, and a derived usage
+/// type's declaration, stored as JSON and served in the request's own strings, P-D-231), the value is not
 /// this gear's (a usage type's `kind`, the collector's), it names the wired catalog (`source`), or
 /// the kept `/browse` envelope carries the catalog port's vocabulary verbatim (`CatalogSku`: "not
 /// an enum").
@@ -367,6 +374,11 @@ const KEPT_STRING: &[(&str, &str)] = &[
     ("ProductsUsageTypeList", "source"),
     ("SkuRow", "lifecycle_state"),
     ("SkuRow", "sku_type"),
+    ("ProductsDerivedDeclaration", "granularity"),
+    ("ProductsDerivedDeclaration", "output_round"),
+    ("ProductsDerivedInput", "granule_fold"),
+    ("ProductsDerivedExpr", "op"),
+    ("ProductsDerivedExpr", "mode"),
 ];
 
 /// Request fields over the same sets: `string`, so the door's own code refuses a bad value.
@@ -378,6 +390,11 @@ const REQUEST_STRING: &[(&str, &str)] = &[
     ("SkuPatchRequest", "billing_timing"),
     ("ReserveRequest", "kind"),
     ("ApprovalPolicyRequest", "kind"),
+    ("ProductsDerivedDeclaration", "granularity"),
+    ("ProductsDerivedDeclaration", "output_round"),
+    ("ProductsDerivedInput", "granule_fold"),
+    ("ProductsDerivedExpr", "op"),
+    ("ProductsDerivedExpr", "mode"),
 ];
 
 async fn served_spec() -> anyhow::Result<serde_json::Value> {

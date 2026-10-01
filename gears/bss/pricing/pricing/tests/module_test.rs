@@ -436,3 +436,142 @@ async fn no_operation_declares_a_422() {
 
 // Run 8.2 (D-452): method | path | resource:action | If-Match | Idempotency-Key
 // POST /plan-revisions/{id}/unschedule plan:submit false true
+
+#[tokio::test]
+async fn init_registers_pricing_read_beside_sku_usage_and_checks_pdp() {
+    use bss_pricing_sdk::read::{CatalogRef, PriceQuery, PricingReadV1};
+    let harness = rest_support::Harness::new().await.unwrap();
+    let port = harness.ctx.client_hub().get::<dyn PricingReadV1>().unwrap();
+    assert!(
+        harness
+            .ctx
+            .client_hub()
+            .get::<dyn bss_products_sdk::sku_usage::SkuUsageV1>()
+            .is_ok()
+    );
+    let tenant = uuid::Uuid::new_v4();
+    let reader = toolkit_security::SecurityContext::builder()
+        .subject_id(uuid::Uuid::new_v4())
+        .subject_tenant_id(tenant)
+        .subject_type("user")
+        .build()
+        .unwrap();
+    let error = port
+        .price(
+            &reader,
+            PriceQuery {
+                catalog: CatalogRef { tenant_id: tenant },
+                price_id: uuid::Uuid::new_v4(),
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.status_code(), 503, "the configured PDP is down");
+}
+
+#[tokio::test]
+async fn init_registers_both_commercial_ports_separately_from_read() {
+    use bss_pricing_sdk::acceptance::{AcceptanceQuery, PricingAcceptanceV1, SellabilityV1};
+    let h = rest_support::Harness::new().await.unwrap();
+    let hub = h.ctx.client_hub();
+    assert!(
+        hub.get::<dyn bss_pricing_sdk::read::PricingReadV1>()
+            .is_ok()
+    );
+    assert!(hub.get::<dyn SellabilityV1>().is_ok());
+    let acceptance = hub.get::<dyn PricingAcceptanceV1>().unwrap();
+    let tenant = uuid::Uuid::new_v4();
+    let ctx = toolkit_security::SecurityContext::builder()
+        .subject_id(uuid::Uuid::new_v4())
+        .subject_tenant_id(tenant)
+        .subject_type("user")
+        .build()
+        .unwrap();
+    assert_eq!(
+        acceptance
+            .acceptance(
+                &ctx,
+                AcceptanceQuery {
+                    catalog: bss_pricing_sdk::read::CatalogRef { tenant_id: tenant },
+                    acceptance_id: uuid::Uuid::new_v4()
+                }
+            )
+            .await
+            .unwrap_err()
+            .status_code(),
+        503
+    );
+}
+
+#[tokio::test]
+async fn startup_validates_versioned_hold_policy_before_registering_providers() {
+    for policy in [
+        serde_json::json!({"version":0,"duration_seconds":86400}),
+        serde_json::json!({"version":1,"duration_seconds":0}),
+        serde_json::json!({"version":1,"duration_seconds":-1}),
+        serde_json::json!({"version":1}),
+        serde_json::json!({"version":1,"duration_seconds":86400,"typo":1}),
+    ] {
+        let result =
+            rest_support::Harness::with_config(serde_json::json!({"seller_hold_policy":policy}))
+                .await;
+        assert!(result.is_err(), "{policy}");
+    }
+    rest_support::Harness::with_config(
+        serde_json::json!({"seller_hold_policy":{"version":2,"duration_seconds":3600}}),
+    )
+    .await
+    .unwrap();
+    let default = bss_pricing::config::BssPricingConfig::default().seller_hold_policy;
+    assert_eq!((default.version, default.duration_seconds), (1, 86400));
+}
+
+#[test]
+fn resource_and_action_census_is_exact() {
+    assert_eq!(
+        bss_pricing::authz::labels::ALL,
+        [
+            "gts.cf.bss.pricing.price_book.v1~",
+            "gts.cf.bss.pricing.price_book_entry.v1~",
+            "gts.cf.bss.pricing.price.v1~",
+            "gts.cf.bss.pricing.approval_unit.v1~",
+            "gts.cf.bss.pricing.config.v1~",
+            "gts.cf.bss.pricing.plan.v1~",
+            "gts.cf.bss.pricing.acceptance.v1~",
+        ]
+    );
+    assert_eq!(
+        [
+            bss_pricing::authz::actions::CREATE,
+            bss_pricing::authz::actions::READ,
+            bss_pricing::authz::actions::HOLD
+        ],
+        ["create", "read", "hold"]
+    );
+}
+
+#[tokio::test]
+async fn absent_pdp_is_a_named_unconfigured_dependency() {
+    let error = rest_support::Harness::with_dependencies(serde_json::json!({}), false)
+        .await
+        .err()
+        .unwrap();
+    let canonical = error
+        .downcast_ref::<toolkit_canonical_errors::CanonicalError>()
+        .unwrap();
+    assert_eq!(canonical.status_code(), 400);
+    let problem =
+        serde_json::to_value(toolkit_canonical_errors::Problem::from(canonical.clone())).unwrap();
+    assert_eq!(
+        problem["context"]["violations"][0]["type"], "UNCONFIGURED_DEPENDENCY",
+        "{problem}"
+    );
+    assert_eq!(
+        problem["context"]["violations"][0]["description"],
+        "unconfigured dependency: AuthZResolverApi"
+    );
+    assert_eq!(
+        problem["context"]["violations"][0]["subject"],
+        "AuthZResolverApi"
+    );
+}
