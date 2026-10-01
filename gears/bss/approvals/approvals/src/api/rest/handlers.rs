@@ -10,7 +10,7 @@ use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use bss_approvals_sdk::{VoteAction, VoteRequest};
 use serde::Deserialize;
-use toolkit_canonical_errors::CanonicalError;
+use toolkit_canonical_errors::{CanonicalError, ForeignPassthrough};
 use toolkit_odata::Error as ODataError;
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
@@ -191,6 +191,9 @@ fn vote_request(headers: &HeaderMap, body: Bytes) -> Result<VoteRequest, Canonic
     })
 }
 
+/// The owning door's answer as it left that door: status, headers and body. It is marked as a
+/// passthrough, so the platform's error layer does not rewrite a refusal the door already shaped
+/// (its `instance` names the door, AP-D-4).
 fn pass_through(answered: bss_approvals_sdk::VoteResponse) -> Response {
     let Ok(status) = StatusCode::from_u16(answered.status) else {
         return CanonicalError::internal(
@@ -217,6 +220,7 @@ fn pass_through(answered: bss_approvals_sdk::VoteResponse) -> Response {
         };
         response.headers_mut().insert(name, value);
     }
+    response.extensions_mut().insert(ForeignPassthrough);
     response
 }
 

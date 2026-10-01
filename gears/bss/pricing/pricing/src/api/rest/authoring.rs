@@ -5,6 +5,7 @@ mod books;
 mod caps;
 pub(crate) mod configuration;
 pub mod dto;
+pub mod inbox_source;
 pub mod plan_items;
 mod plan_routes;
 pub(crate) mod plans;

@@ -389,6 +389,20 @@ impl Gear for BssProductsGear {
             hub: ctx.client_hub(),
         });
         register_products_client(&ctx.client_hub(), api_state.db.db(), Arc::clone(&enforcer));
+        // P-D-250: the approvals inbox reads and votes on this gear's units through this source,
+        // as the caller, under the gear's own doors.
+        ctx.client_hub()
+            .register_scoped::<dyn bss_approvals_sdk::ApprovalSourceV1>(
+                toolkit::client_hub::ClientScope::new(
+                    crate::api::rest::approval_units::inbox_source::SOURCE,
+                ),
+                Arc::new(
+                    crate::api::rest::approval_units::inbox_source::ProductsApprovalSource::new(
+                        Arc::clone(&api_state),
+                        (*enforcer).clone(),
+                    ),
+                ),
+            );
         ctx.client_hub()
             .register::<bss_products_sdk::PricingReferenceRegistry>(Arc::new(
                 bss_products_sdk::PricingReferenceRegistry(Arc::new(

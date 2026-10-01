@@ -219,8 +219,10 @@ impl StateCounts {
     }
 }
 
-/// Units of each kind the inbox's closed set names.
+/// Units of each kind the inbox's closed set names. A gear's counts door names only its own kinds;
+/// read from it, the others are `0`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct KindCounts {
     /// Pricing: a price submission.
     pub prices: u64,
@@ -385,4 +387,29 @@ pub struct InboxUnit {
     pub subject_live: Option<serde_json::Value>,
     /// The live impact, or null when it was skipped or the source could not read it.
     pub impact: Option<serde_json::Value>,
+}
+
+impl InboxUnit {
+    /// The unit one of the gear's own doors served, as the inbox serves it.
+    ///
+    /// `unit` is the door's JSON unit, the shape the BSS gears share (products P-D-219): the
+    /// inbox reads the door's bytes, never a copy of its rules. The door's `impact_live` (the
+    /// products card's live SKU head) becomes `subject_live`; a field the door does not serve
+    /// (`subject_live` on pricing, `impact` on products) is null, for the source to fill.
+    ///
+    /// # Errors
+    /// The door's unit does not read as an inbox unit: a kind or a state outside the closed sets,
+    /// or a field of another type.
+    pub fn from_door(source: &str, mut unit: serde_json::Value) -> Result<Self, serde_json::Error> {
+        let Some(fields) = unit.as_object_mut() else {
+            return Err(serde::de::Error::custom("a door's unit is a JSON object"));
+        };
+        let live = fields
+            .remove("impact_live")
+            .unwrap_or(serde_json::Value::Null);
+        fields.insert("source".to_owned(), source.into());
+        fields.entry("subject_live").or_insert(live);
+        fields.entry("impact").or_insert(serde_json::Value::Null);
+        serde_json::from_value(unit)
+    }
 }

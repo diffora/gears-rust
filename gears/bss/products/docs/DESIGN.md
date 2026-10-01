@@ -415,6 +415,17 @@ or type change, which stay on the local registry (P-D-188, P-D-194). The list's 
 ask its `usage_sets` once per request, bind each set as one value, and fail the read (403 or 503) when the
 port cannot answer them, never returning an unfiltered page (P-D-212).
 
+This gear implements the approvals inbox's source port, `bss_approvals_sdk::ApprovalSourceV1`, and registers it at
+init in the ClientHub as `dyn ApprovalSourceV1`, scoped `products` (P-D-250). The inbox gear asks it as the caller and
+merges its pages with pricing's by P-D-227's order, `(submitted_at, id)`. The source calls this gear's own doors: the
+list's read (`approval_units::page_of`) with a `CursorV1` it builds from the inbox's key, so the keyset is the pager's
+compare; the counts door on the plain connection; the card door, whose 404 is a miss and whose `impact_live` is the
+inbox's `subject_live`; and the vote door through the approval-unit router under the gear's enforcer and the
+platform's error layer, so the grant, the replay endpoint and the answer's bytes are the door's. A `sku_change` or
+`sku_retire` unit's impact is pricing's `SkuUsage` of its SKU, from ONE `SkuUsageV1::usage` call per page, null when
+the port refuses, cannot answer or is absent; never `usage_sets`. A kind products does not record, and any `book_id`,
+are an empty page and zero counts.
+
 ### 3.6 Interactions & Sequences
 
 #### GL change
@@ -935,4 +946,4 @@ registry and Pricing protocol; P-D-196 → the optional category; P-D-197 → th
 P-D-198–P-D-204 → the rules carried from the backup register (replay mechanics, event delivery, the audit
 shape, the request digest, the validation answer, the usage-type resolve bound, the authz label registration);
 P-D-205 → the policy's `If-Match`; P-D-206 → the draft delete; P-D-207 → usage types as the caller and the
-picker; P-D-208 → category retirement; P-D-209 → the fence TTL as a deployment setting; P-D-216 → the override reset; P-D-218 → moving the default category; P-D-219 → the submitter's note on the unit; P-D-220 → a retired category is never the default. Spec §2.2, §4, §6, §7.2–§7.3 and §13 govern the corresponding sections.
+picker; P-D-208 → category retirement; P-D-209 → the fence TTL as a deployment setting; P-D-216 → the override reset; P-D-218 → moving the default category; P-D-219 → the submitter's note on the unit; P-D-220 → a retired category is never the default; P-D-250 → the approvals inbox's source. Spec §2.2, §4, §6, §7.2–§7.3 and §13 govern the corresponding sections.

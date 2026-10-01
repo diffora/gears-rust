@@ -55,6 +55,8 @@ use toolkit_db::{DbTx, secure::AccessScope};
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
+pub mod inbox_source;
+
 #[derive(Clone, Copy)]
 enum Vote {
     Approve,
@@ -318,11 +320,24 @@ async fn list(
         query.map_err(|e| CanonicalError::from(g::validation("query", e.to_string())))?;
     let filter = narrowing(q.state.as_deref(), q.kind.as_deref(), q.ref_id)?;
     let page = unit_page(&filter, q.limit, q.cursor.as_deref(), q.orderby.as_deref())?;
+    let list = page_of(&state, scope, &ctx, filter, page).await?;
+    Ok(Json(list).into_response())
+}
+/// The list door's read (P-D-224, P-D-228): one page under `scope` and `filter`, in the order
+/// `page` carries (`unit_page` puts it on the query, a cursor carries its own), as `ctx` reads it.
+/// The approvals inbox's source reads its page here too (P-D-250).
+async fn page_of(
+    state: &ApiState,
+    scope: AccessScope,
+    ctx: &SecurityContext,
+    filter: repo::UnitListFilter,
+    page: toolkit_odata::ODataQuery,
+) -> Result<UnitList, CanonicalError> {
     let (tenant, reader) = (ctx.subject_tenant_id(), ctx.subject_id());
-    let list = state
+    state
         .db
         .db()
-        .transaction_with_retry(category_tx_config(&state), contention_db_err, move |tx| {
+        .transaction_with_retry(category_tx_config(state), contention_db_err, move |tx| {
             let (scope, filter, page) = (scope.clone(), filter.clone(), page.clone());
             Box::pin(async move {
                 // One page, all its units' decisions and all their items, one read each
@@ -363,8 +378,7 @@ async fn list(
             })
         })
         .await
-        .map_err(tx_to_canonical)?;
-    Ok(Json(list).into_response())
+        .map_err(tx_to_canonical)
 }
 /// The unit list's narrowing, which the counts take too (P-D-224, P-D-227): a known state (else
 /// 400 on `state`), a kind products records (else 400 on `kind`) and the SKU.
