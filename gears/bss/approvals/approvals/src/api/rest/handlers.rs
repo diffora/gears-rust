@@ -15,7 +15,7 @@ use toolkit_odata::Error as ODataError;
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
-use super::dto::{CountsDto, UnitDto, UnitListDto};
+use super::dto::{InboxCountsDto, InboxUnitDto, InboxUnitListDto};
 use crate::api::ApiState;
 use crate::domain::error;
 use crate::domain::query::{self, ListParams};
@@ -56,7 +56,7 @@ pub(super) async fn list_units(
     Extension(state): Extension<Arc<ApiState>>,
     ctx: Option<Extension<SecurityContext>>,
     query: Result<Query<ListQuery>, QueryRejection>,
-) -> Result<Json<UnitListDto>, CanonicalError> {
+) -> Result<Json<InboxUnitListDto>, CanonicalError> {
     let ctx = caller(ctx)?;
     let Query(query) = bad_query(query)?;
     let prepared = query::prepare_list(&ListParams {
@@ -70,7 +70,7 @@ pub(super) async fn list_units(
         impact: query.impact,
     })?;
     let listed = read::list_page(&state.hub, &state.sources, &ctx, &prepared).await?;
-    Ok(Json(UnitListDto {
+    Ok(Json(InboxUnitListDto {
         items: listed.units.into_iter().map(Into::into).collect(),
         next_cursor: listed.next_cursor,
         sources: listed.sources.into_iter().map(Into::into).collect(),
@@ -81,7 +81,7 @@ pub(super) async fn count_units(
     Extension(state): Extension<Arc<ApiState>>,
     ctx: Option<Extension<SecurityContext>>,
     query: Result<Query<CountsQuery>, QueryRejection>,
-) -> Result<Json<CountsDto>, CanonicalError> {
+) -> Result<Json<InboxCountsDto>, CanonicalError> {
     let ctx = caller(ctx)?;
     let Query(query) = bad_query(query)?;
     let params = ListParams {
@@ -98,7 +98,7 @@ pub(super) async fn count_units(
         &query::narrowing_of(&params),
     )
     .await?;
-    Ok(Json(CountsDto::from_counts(
+    Ok(Json(InboxCountsDto::from_counts(
         counted.counts,
         counted.sources,
     )))
@@ -109,7 +109,7 @@ pub(super) async fn get_unit(
     ctx: Option<Extension<SecurityContext>>,
     Path(id): Path<Uuid>,
     query: Result<Query<CardQuery>, QueryRejection>,
-) -> Result<Json<UnitDto>, CanonicalError> {
+) -> Result<Json<InboxUnitDto>, CanonicalError> {
     let ctx = caller(ctx)?;
     let Query(query) = bad_query(query)?;
     let unit = read::get_unit(

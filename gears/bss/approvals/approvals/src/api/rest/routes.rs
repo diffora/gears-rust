@@ -10,7 +10,7 @@ use toolkit::api::operation_builder::{OperationBuilder, ParamSpec};
 
 use super::handlers;
 use crate::api::ApiState;
-use crate::api::rest::dto::{CountsDto, UnitDto, UnitListDto};
+use crate::api::rest::dto::{InboxCountsDto, InboxUnitDto, InboxUnitListDto};
 
 const TAG: &str = "Approval units";
 
@@ -99,7 +99,7 @@ fn list_route(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         )
         .query_param_typed("impact", false, "false skips the live impact", "boolean")
         .handler(handlers::list_units)
-        .json_response_with_schema::<UnitListDto>(openapi, StatusCode::OK, "One merged page")
+        .json_response_with_schema::<InboxUnitListDto>(openapi, StatusCode::OK, "One merged page")
         .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
@@ -143,7 +143,7 @@ fn counts_route(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
             "string",
         )
         .handler(handlers::count_units)
-        .json_response_with_schema::<CountsDto>(openapi, StatusCode::OK, "Summed counts")
+        .json_response_with_schema::<InboxCountsDto>(openapi, StatusCode::OK, "Summed counts")
         .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
@@ -169,7 +169,7 @@ fn card_route(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .path_param("id", "Unit id")
         .query_param_typed("impact", false, "false skips the live impact", "boolean")
         .handler(handlers::get_unit)
-        .json_response_with_schema::<UnitDto>(openapi, StatusCode::OK, "The unit")
+        .json_response_with_schema::<InboxUnitDto>(openapi, StatusCode::OK, "The unit")
         .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)

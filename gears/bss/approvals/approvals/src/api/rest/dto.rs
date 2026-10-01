@@ -11,7 +11,7 @@ use crate::domain::read::{SourceHealth, SourceRow};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[toolkit_macros::api_dto(response)]
-pub enum KindDto {
+pub enum InboxKindDto {
     #[serde(rename = "prices")]
     Prices,
     #[serde(rename = "plan_revision")]
@@ -24,7 +24,7 @@ pub enum KindDto {
     SkuRetire,
 }
 
-impl From<InboxKind> for KindDto {
+impl From<InboxKind> for InboxKindDto {
     fn from(kind: InboxKind) -> Self {
         match kind {
             InboxKind::Prices => Self::Prices,
@@ -38,7 +38,7 @@ impl From<InboxKind> for KindDto {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[toolkit_macros::api_dto(response)]
-pub enum StateDto {
+pub enum InboxStateDto {
     #[serde(rename = "pending")]
     Pending,
     #[serde(rename = "approved")]
@@ -49,7 +49,7 @@ pub enum StateDto {
     Withdrawn,
 }
 
-impl From<UnitState> for StateDto {
+impl From<UnitState> for InboxStateDto {
     fn from(state: UnitState) -> Self {
         match state {
             UnitState::Pending => Self::Pending,
@@ -62,14 +62,14 @@ impl From<UnitState> for StateDto {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[toolkit_macros::api_dto(response)]
-pub enum DecisionKindDto {
+pub enum InboxDecisionKindDto {
     #[serde(rename = "approve")]
     Approve,
     #[serde(rename = "reject")]
     Reject,
 }
 
-impl From<DecisionKind> for DecisionKindDto {
+impl From<DecisionKind> for InboxDecisionKindDto {
     fn from(kind: DecisionKind) -> Self {
         match kind {
             DecisionKind::Approve => Self::Approve,
@@ -79,10 +79,10 @@ impl From<DecisionKind> for DecisionKindDto {
 }
 
 #[toolkit_macros::api_dto(response)]
-pub struct DecisionDto {
+pub struct InboxDecisionDto {
     pub actor: Uuid,
     pub generation: i32,
-    pub decision: DecisionKindDto,
+    pub decision: InboxDecisionKindDto,
     pub note: Option<String>,
     #[serde(with = "time::serde::rfc3339")]
     #[schema(value_type = String)]
@@ -90,7 +90,7 @@ pub struct DecisionDto {
     pub stale: bool,
 }
 
-impl From<InboxDecision> for DecisionDto {
+impl From<InboxDecision> for InboxDecisionDto {
     fn from(decision: InboxDecision) -> Self {
         Self {
             actor: decision.actor,
@@ -104,13 +104,13 @@ impl From<InboxDecision> for DecisionDto {
 }
 
 #[toolkit_macros::api_dto(response)]
-pub struct UnitDto {
+pub struct InboxUnitDto {
     pub id: Uuid,
     pub source: String,
-    pub kind: KindDto,
+    pub kind: InboxKindDto,
     pub ref_type: String,
     pub ref_id: Uuid,
-    pub state: StateDto,
+    pub state: InboxStateDto,
     pub generation: i32,
     pub quorum_required: u32,
     pub common_effective_date: Option<String>,
@@ -124,13 +124,13 @@ pub struct UnitDto {
     pub decided_at: Option<OffsetDateTime>,
     pub decided_note: Option<String>,
     pub snapshot: serde_json::Value,
-    pub decisions: Vec<DecisionDto>,
+    pub decisions: Vec<InboxDecisionDto>,
     pub caller_can_approve: bool,
     pub subject_live: Option<serde_json::Value>,
     pub impact: Option<serde_json::Value>,
 }
 
-impl From<InboxUnit> for UnitDto {
+impl From<InboxUnit> for InboxUnitDto {
     fn from(unit: InboxUnit) -> Self {
         Self {
             id: unit.id,
@@ -158,14 +158,14 @@ impl From<InboxUnit> for UnitDto {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[toolkit_macros::api_dto(response)]
-pub enum SourceStatusDto {
+pub enum InboxSourceStatusDto {
     #[serde(rename = "ok")]
     Ok,
     #[serde(rename = "forbidden")]
     Forbidden,
 }
 
-impl From<SourceHealth> for SourceStatusDto {
+impl From<SourceHealth> for InboxSourceStatusDto {
     fn from(status: SourceHealth) -> Self {
         match status {
             SourceHealth::Ok => Self::Ok,
@@ -175,12 +175,12 @@ impl From<SourceHealth> for SourceStatusDto {
 }
 
 #[toolkit_macros::api_dto(response)]
-pub struct SourceDto {
+pub struct InboxSourceDto {
     pub name: String,
-    pub status: SourceStatusDto,
+    pub status: InboxSourceStatusDto,
 }
 
-impl From<SourceRow> for SourceDto {
+impl From<SourceRow> for InboxSourceDto {
     fn from(row: SourceRow) -> Self {
         Self {
             name: row.name,
@@ -190,22 +190,22 @@ impl From<SourceRow> for SourceDto {
 }
 
 #[toolkit_macros::api_dto(response)]
-pub struct UnitListDto {
-    pub items: Vec<UnitDto>,
+pub struct InboxUnitListDto {
+    pub items: Vec<InboxUnitDto>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
-    pub sources: Vec<SourceDto>,
+    pub sources: Vec<InboxSourceDto>,
 }
 
 #[toolkit_macros::api_dto(response)]
-pub struct StateCountsDto {
+pub struct InboxStateCountsDto {
     pub pending: u64,
     pub approved: u64,
     pub rejected: u64,
     pub withdrawn: u64,
 }
 
-impl From<StateCounts> for StateCountsDto {
+impl From<StateCounts> for InboxStateCountsDto {
     fn from(counts: StateCounts) -> Self {
         Self {
             pending: counts.pending,
@@ -217,7 +217,7 @@ impl From<StateCounts> for StateCountsDto {
 }
 
 #[toolkit_macros::api_dto(response)]
-pub struct KindCountsDto {
+pub struct InboxKindCountsDto {
     pub prices: u64,
     pub plan_revision: u64,
     pub sku_publish: u64,
@@ -225,7 +225,7 @@ pub struct KindCountsDto {
     pub sku_retire: u64,
 }
 
-impl From<KindCounts> for KindCountsDto {
+impl From<KindCounts> for InboxKindCountsDto {
     fn from(counts: KindCounts) -> Self {
         Self {
             prices: counts.prices,
@@ -238,14 +238,14 @@ impl From<KindCounts> for KindCountsDto {
 }
 
 #[toolkit_macros::api_dto(response)]
-pub struct CountsDto {
-    pub by_state: StateCountsDto,
-    pub by_kind: KindCountsDto,
+pub struct InboxCountsDto {
+    pub by_state: InboxStateCountsDto,
+    pub by_kind: InboxKindCountsDto,
     pub total: u64,
-    pub sources: Vec<SourceDto>,
+    pub sources: Vec<InboxSourceDto>,
 }
 
-impl CountsDto {
+impl InboxCountsDto {
     #[must_use]
     pub fn from_counts(counts: SourceCounts, sources: Vec<SourceRow>) -> Self {
         Self {
