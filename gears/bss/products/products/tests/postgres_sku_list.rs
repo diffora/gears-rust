@@ -428,3 +428,29 @@ async fn a_picker_scope_filters_through_one_uuid_array_on_postgres() {
         assert_eq!((counts.all, counts.draft), (1, 1), "{extra}");
     }
 }
+
+/// P-D-245 on Postgres: the batch SKU read binds the whole id set as one `uuid[]`, and a missing
+/// id is absent, for a handful of ids and for a set far past a per-id bind list.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn skus_for_write_binds_one_uuid_array_on_postgres() {
+    let (_pg, f) = Fixture::new().await;
+    let mut ids = Vec::new();
+    for code in ["A", "B", "C"] {
+        ids.push(f.sku(code, code, None, Lifecycle::Draft, None).await);
+    }
+    let conn = f.db.conn().unwrap();
+    for extra in [0_usize, 5000] {
+        let mut asked = vec![ids[2], ids[0], Uuid::now_v7()];
+        asked.extend((0..extra).map(|_| Uuid::new_v4()));
+        let found = repo::find_skus(&conn, DbBackend::Postgres, &f.scope, f.tenant, &asked)
+            .await
+            .unwrap();
+        let got: Vec<Uuid> = found.into_iter().map(|sku| sku.id).collect();
+        assert!(
+            got.contains(&ids[0]) && got.contains(&ids[2]),
+            "{extra}: {got:?}"
+        );
+        assert_eq!(got.len(), 2, "{extra}");
+    }
+}

@@ -434,7 +434,8 @@ apply event (P-D-193; spec §6–§7.3).
 ### 3.5 External Dependencies
 
 Pricing reads SKU/type/metering and dated descriptors, consumes `SkuChanged` to refresh its read model,
-and owns durable confirmation work for its references. It uses Products' reference doors, including
+and owns durable confirmation work for its references. Its checks read many SKU heads in one
+`skus_for_write` (P-D-245): an id the caller may not read is left out, and the caller is judged once. It uses Products' reference doors, including
 sold-as reservations; Products has no `SkuReferences` remote-count port. Descriptor updates draft no
 Pricing unit and require no book action. Pricing's reserve/write/confirm path arrives in phase 2
 (P-D-194; spec §7.3, §13).
