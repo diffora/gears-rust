@@ -926,8 +926,10 @@ pub(super) async fn patch_revision(
     )?)
 }
 /// Point every item at the new book's entry of the same (SKU, charge kind, period, model), where
-/// there is one; the rest keep their entry. The model is part of an entry's key (D-427): a twin of
-/// another model is another entry, never a match.
+/// there is one; the rest keep their entry and are not written. The model is part of an entry's
+/// key (D-427): a twin of another model is another entry, never a match. A moved item is written in
+/// the shape of D-467 (`paid`, no quantity), as the item PATCH writes it, so a legacy row stops
+/// being one.
 async fn remap(
     tx: &impl DBRunner,
     scope: &AccessScope,
@@ -955,6 +957,11 @@ async fn remap(
             continue;
         };
         item.price_book_entry_id = Some(twin.id);
+        item.treatment = plan::stored_treatment(item.price_book_entry_id)
+            .as_str()
+            .into();
+        item.included_qty = None;
+        item.qty_min = None;
         item.updated_at = now;
         plan_item_repo::update_draft(tx, scope, item.clone()).await?;
         item.version += 1;

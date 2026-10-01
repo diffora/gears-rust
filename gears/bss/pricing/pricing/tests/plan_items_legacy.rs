@@ -349,6 +349,56 @@ async fn a_published_legacy_revision_reads_resolves_and_copies_its_included_item
     );
     assert!(source.iter().any(|i| i.qty_min == Some(2)), "{source:?}");
 }
+/// D-467: a revision PATCH that changes the plan's book points each item at the new book's twin
+/// entry and writes the row in the shape of D-467, as the item PATCH does: a legacy paid item
+/// with a `qty_min` and a legacy optional item become `paid` with no quantity. An item the remap
+/// does not move (the included item without an entry has no twin) is not written.
+#[tokio::test]
+async fn a_book_remap_writes_each_moved_legacy_item_as_a_sku_and_its_entry() {
+    let (f, catalog) = setup().await;
+    let w = world(&f, &catalog).await;
+    let (_, rev, paid, included) = legacy_draft(&f, &w, "remap").await;
+    let optional = legacy(
+        &f,
+        rev,
+        w.storage.0,
+        Some(w.storage.1),
+        "optional",
+        (None, None),
+    )
+    .await;
+    let other = book(&f, "other").await;
+    let seats_twin = entry(&f, other, w.seats.0, "recurring", Some("month")).await;
+    let storage_twin = entry(&f, other, w.storage.0, "usage", None).await;
+    let path = format!("/plan-revisions/{rev}");
+    let (_, _, tag) = f.call("GET", &path, json!({}), None, None).await;
+    let (s, b, _) = f
+        .call("PATCH", &path, json!({"book_id":other}), Some(&tag), None)
+        .await;
+    assert_eq!(s, 200, "{b}");
+    let rows = items(&f, rev).await;
+    let shape = |id: Uuid| {
+        let r = rows.iter().find(|i| i.id == id).unwrap();
+        (
+            r.price_book_entry_id,
+            r.treatment.clone(),
+            r.included_qty.clone(),
+            r.qty_min,
+        )
+    };
+    assert_eq!(
+        shape(paid.id),
+        (Some(seats_twin), "paid".to_owned(), None, None),
+        "the paid item with a qty_min"
+    );
+    assert_eq!(
+        shape(optional.id),
+        (Some(storage_twin), "paid".to_owned(), None, None),
+        "the optional item"
+    );
+    let kept = rows.iter().find(|i| i.id == included.id).unwrap();
+    assert_eq!(kept, &included, "the item without a twin is not written");
+}
 async fn copy_of_row(f: &Fixture, revision: Uuid, sku: Uuid) -> plan_item::Model {
     items(f, revision)
         .await
