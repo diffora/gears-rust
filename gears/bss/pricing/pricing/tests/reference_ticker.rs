@@ -34,7 +34,7 @@ async fn setup(kind: Kind) -> (Fixture, Arc<Script>, Target, serde_json::Value) 
     let script = Arc::new(Script::default());
     let f = Fixture::new(script.clone()).await;
     let t = f.target(kind).await;
-    let input = t.input();
+    let input = t.input(&f.caller()).await;
     (f, script, t, input)
 }
 fn id_of(value: &serde_json::Value) -> Uuid {
@@ -690,7 +690,7 @@ async fn reconciliation_is_periodic_bounded_and_uses_the_system_actor() {
         let c = f.caller();
         let mut created = Vec::new();
         for n in 0..3 {
-            let result = t.create(&c, t.input(), &format!("{n}")).await;
+            let result = t.create(&c, t.input(&c).await, &format!("{n}")).await;
             assert_eq!(result.0, 201);
             created.push(result.1);
         }
@@ -759,7 +759,7 @@ async fn one_tenants_states_failure_skips_only_that_tenant_and_the_cursor_moves_
             ctx: &ctx,
         };
         let t2 = Target::new(kind, &theirs).await;
-        let second = t2.create(&theirs, t2.input(), "b").await;
+        let second = t2.create(&theirs, t2.input(&theirs).await, "b").await;
         assert_eq!(second.0, 201, "{second:?}");
         for value in script.refs.lock().await.values_mut() {
             value.1 = bss_products_sdk::models::ReferenceState::Released;

@@ -35222,7 +35222,7 @@
             }
           },
           {
-            "description": "submitted_at asc (the default) or submitted_at desc; the id breaks a tie the same way",
+            "description": "OData v4 orderby expression\n- submitted_at asc\n- submitted_at desc",
             "in": "query",
             "name": "$orderby",
             "required": false,
@@ -35340,7 +35340,13 @@
         "summary": "List the approval units",
         "tags": [
           "Pricing"
-        ]
+        ],
+        "x-odata-orderby": {
+          "allowedFields": [
+            "submitted_at asc",
+            "submitted_at desc"
+          ]
+        }
       }
     },
     "/bss-pricing/v1/approval-units/counts": {
@@ -42129,7 +42135,7 @@
             }
           },
           {
-            "description": "submitted_at asc (the default) or submitted_at desc; the id breaks a tie the same way",
+            "description": "OData v4 orderby expression\n- submitted_at asc\n- submitted_at desc",
             "in": "query",
             "name": "$orderby",
             "required": false,
@@ -42228,7 +42234,13 @@
         "summary": "list_approval_units",
         "tags": [
           "Approval units"
-        ]
+        ],
+        "x-odata-orderby": {
+          "allowedFields": [
+            "submitted_at asc",
+            "submitted_at desc"
+          ]
+        }
       }
     },
     "/bss-products/v1/approval-units/counts": {

@@ -787,12 +787,7 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
             "integer",
         )
         .query_param_typed("cursor", false, "Continuation from page_info", "string")
-        .query_param_typed(
-            "$orderby",
-            false,
-            "submitted_at asc (the default) or submitted_at desc; the id breaks a tie the same way",
-            "string",
-        )
+        .with_odata_orderby::<UnitOrderField>()
         .query_param_typed(
             "impact",
             false,
@@ -1182,7 +1177,7 @@ async fn list_approval_units(
         query.ref_id,
         query.book_id,
     )?;
-    let (page, direction) = unit_page(
+    let page = unit_page(
         &filter,
         query.limit,
         query.cursor.as_deref(),
@@ -1191,21 +1186,11 @@ async fn list_approval_units(
     let request = approvals::UnitListRequest {
         filter,
         page,
-        direction,
         impact: query.impact.unwrap_or(true),
     };
     transaction(&state.db.db(), move |tx| {
         let (scope, ctx, request) = (scope.clone(), ctx.clone(), request.clone());
-        Box::pin(async move {
-            approvals::list_units(
-                tx,
-                &scope,
-                ctx.subject_tenant_id(),
-                ctx.subject_id(),
-                &request,
-            )
-            .await
-        })
+        Box::pin(async move { approvals::list_units(tx, &scope, &ctx, &request).await })
     })
     .await
 }
@@ -1236,26 +1221,61 @@ fn unit_narrowing(
         ref_id: reference,
     })
 }
+/// The one field the unit list's `$orderby` takes (D-470): `submitted_at`, ascending or descending.
+/// The unit id breaks a tie in the same direction; it is the pager's tie-break, not a client key,
+/// so it is not declared. `.with_odata_orderby` publishes it in the served contract
+/// (`x-odata-orderby`), and [`unit_order`] accepts exactly it (the phase 9 review's theme I).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum UnitOrderField {
+    SubmittedAt,
+}
+impl UnitOrderField {
+    const fn field(self) -> crate::infra::storage::repo::approval_repo::UnitListField {
+        match self {
+            Self::SubmittedAt => {
+                crate::infra::storage::repo::approval_repo::UnitListField::SubmittedAt
+            }
+        }
+    }
+}
+impl toolkit_odata::filter::FilterField for UnitOrderField {
+    const FIELDS: &'static [Self] = &[Self::SubmittedAt];
+    fn name(&self) -> &'static str {
+        toolkit_odata::filter::FilterField::name(&self.field())
+    }
+    fn kind(&self) -> toolkit_odata::filter::FieldKind {
+        toolkit_odata::filter::FilterField::kind(&self.field())
+    }
+    fn from_name(name: &str) -> Option<Self> {
+        Self::FIELDS
+            .iter()
+            .copied()
+            .find(|f| toolkit_odata::filter::FilterField::name(f) == name)
+    }
+}
 /// The unit list's order (D-470): `submitted_at` ascending (also when omitted, D-458) or
 /// descending, the id breaking a tie in the same direction. Any other `$orderby` is 400
-/// `INVALID_ORDERBY_FIELD`, the toolkit's refusal of an order a list does not take.
+/// `INVALID_ORDERBY_FIELD`, the toolkit's refusal of an order a list does not take. The list parses
+/// its own query rather than take the toolkit's `OData` extractor, which would refuse `limit=0`
+/// (the house pager reads one unit) and drop a cursor's cause from its refusal (theme I).
 fn unit_order(orderby: Option<&str>) -> Result<toolkit_odata::SortDir, CanonicalError> {
     let Some(raw) = orderby else {
         return Ok(toolkit_odata::SortDir::Asc);
     };
     let order = toolkit::api::odata::parse_orderby(raw).map_err(CanonicalError::from)?;
+    let declared = |key: &toolkit_odata::OrderKey| {
+        <UnitOrderField as toolkit_odata::filter::FilterField>::from_name(&key.field).is_some()
+    };
     match order.0.as_slice() {
         [] => Ok(toolkit_odata::SortDir::Asc),
-        [key] if key.field == "submitted_at" => Ok(key.dir),
+        [key] if declared(key) => Ok(key.dir),
         // The refusal names the key it refuses, never the whole order, so a supported field is
         // never called unsupported (the phase 9 review's R67).
         keys => Err(toolkit_odata::Error::InvalidOrderByField(
-            keys.iter()
-                .find(|key| key.field != "submitted_at")
-                .map_or_else(
-                    || "only one key, submitted_at, is accepted".to_owned(),
-                    |key| key.field.clone(),
-                ),
+            keys.iter().find(|key| !declared(key)).map_or_else(
+                || "only one key, submitted_at, is accepted".to_owned(),
+                |key| key.field.clone(),
+            ),
         )
         .into()),
     }
@@ -1265,13 +1285,15 @@ fn unit_order(orderby: Option<&str>) -> Result<toolkit_odata::SortDir, Canonical
 /// under another is 400 `FILTER_MISMATCH`, as the book list's is (D-442). The order is not part of
 /// the hash (D-470): a cursor carries its own (`CursorV1.s`) and a continuation follows it, so
 /// every cursor minted before the descending order still reads. `$orderby` beside a cursor is the
-/// toolkit's 400 `ORDER_WITH_CURSOR`, judged first, as its `OData` extractor does.
+/// toolkit's 400 `ORDER_WITH_CURSOR`, judged first, as its `OData` extractor does. Without a
+/// cursor, the query carries the order (`approval_repo::submission_order`), the one source the
+/// repository reads (the phase 9 review's R36).
 fn unit_page(
     filter: &crate::infra::storage::repo::approval_repo::UnitListFilter,
     limit: Option<u64>,
     cursor: Option<&str>,
     orderby: Option<&str>,
-) -> Result<(toolkit_odata::ODataQuery, toolkit_odata::SortDir), CanonicalError> {
+) -> Result<toolkit_odata::ODataQuery, CanonicalError> {
     if cursor.is_some() && orderby.is_some() {
         return Err(toolkit_odata::Error::OrderWithCursor.into());
     }
@@ -1301,8 +1323,11 @@ fn unit_page(
             return Err(toolkit_odata::Error::FilterMismatch.into());
         }
         query = query.with_cursor(cursor);
+    } else {
+        query = query
+            .with_order(crate::infra::storage::repo::approval_repo::submission_order(direction));
     }
-    Ok((query, direction))
+    Ok(query)
 }
 /// `GET /approval-units/counts` (D-470): under the list's grant, the list's narrowing, counted
 /// outside any transaction.
@@ -1358,9 +1383,7 @@ async fn get_approval_unit(
     .map_err(authz_failure)?;
     transaction(&state.db.db(), move |tx| {
         let (scope, ctx) = (scope.clone(), ctx.clone());
-        Box::pin(async move {
-            approvals::get_unit(tx, &scope, ctx.subject_tenant_id(), ctx.subject_id(), id).await
-        })
+        Box::pin(async move { approvals::get_unit(tx, &scope, &ctx, id).await })
     })
     .await
 }

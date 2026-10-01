@@ -1185,6 +1185,317 @@ async fn exactly_the_reads_that_declare_an_etag_answer_one() {
     assert_eq!(measured, 22, "every GET operation is measured");
 }
 
+// ------------------------------------------------------------------ phase 9 review R27: the writes' ETag
+
+/// What the write census measured: each call of a write op, with whether its answer set an `ETag`.
+#[derive(Default)]
+struct Writes(Vec<(String, String, bool)>);
+impl Writes {
+    /// Call one write op (its method and its template below `/bss-pricing/v1`) at `path` as `who`,
+    /// with a fresh Idempotency-Key, and record whether its answer set an `ETag`. The call must
+    /// succeed: the census measures success answers.
+    async fn call(
+        &mut self,
+        f: &Fixture,
+        who: &toolkit_security::SecurityContext,
+        (method, template): (&str, &str),
+        path: &str,
+        body: Value,
+        tag: Option<&str>,
+    ) -> (u16, Value, String) {
+        let key = Uuid::new_v4().to_string();
+        let answer = f.call_as(who, method, path, body, tag, Some(&key)).await;
+        assert!(
+            (200..300).contains(&answer.0),
+            "{method} {path}: {answer:?}"
+        );
+        self.0.push((
+            method.to_owned(),
+            format!("/bss-pricing/v1{template}"),
+            !answer.2.is_empty(),
+        ));
+        answer
+    }
+}
+/// The `ETag` a read answers: the version a following write sends back as If-Match.
+async fn etag_of(f: &Fixture, path: &str) -> String {
+    let (s, b, tag) = f.call("GET", path, json!({}), None, None).await;
+    assert_eq!(s, 200, "{path}: {b}");
+    tag
+}
+
+/// The phase 9 review's R27: `module_test` pins which write answers declare an `ETag`, and
+/// `exactly_the_reads_that_declare_an_etag_answer_one` measures the reads; this measures the
+/// writes. Every write op of the two production routers is called on a live fixture with what its
+/// success needs, and exactly the ops that declare the header on a success answer set one, on
+/// every call.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one call of each of the 30 write ops, in order"
+)]
+async fn exactly_the_writes_that_declare_an_etag_answer_one() {
+    let w = world().await;
+    let (f, catalog) = (&w.f, &w.catalog);
+    let me = f.ctx.clone();
+    let reviewer = f.user();
+    let mut writes = Writes::default();
+    let id = |b: &Value| id_of(&b["id"]);
+    let version = |b: &Value| format!("\"{}\"", b["version"]);
+    // The configuration.
+    let (_, mut settings, tag) = f.call("GET", "/settings", json!({}), None, None).await;
+    for field in ["version", "updated_at", "updated_by"] {
+        settings.as_object_mut().unwrap().remove(field);
+    }
+    let put = ("PUT", "/settings");
+    writes
+        .call(f, &me, put, "/settings", settings, Some(&tag))
+        .await;
+    let tag = etag_of(f, "/dimension-keys").await;
+    let keys = json!({"items":[{"key":"region","values":["eu","us"]}]});
+    let put = ("PUT", "/dimension-keys");
+    writes
+        .call(f, &me, put, "/dimension-keys", keys, Some(&tag))
+        .await;
+    let tag = etag_of(f, "/dimension-keys").await;
+    let added = json!({"key":"region","add":["apac"]});
+    let edit = ("PATCH", "/dimension-keys");
+    writes
+        .call(f, &me, edit, "/dimension-keys", added, Some(&tag))
+        .await;
+    // The policy: prices at the default quorum 1, plan revisions at 0, and an override to reset.
+    let put = ("PUT", "/approval-policy");
+    for body in [
+        json!({"quorum":1}),
+        json!({"kind":"plan_revision","quorum":0}),
+        json!({"kind":"prices","quorum":2}),
+    ] {
+        let tag = etag_of(f, "/approval-policy").await;
+        writes
+            .call(f, &me, put, "/approval-policy", body, Some(&tag))
+            .await;
+    }
+    let tag = etag_of(f, "/approval-policy").await;
+    let reset = ("DELETE", "/approval-policy/{kind}");
+    writes
+        .call(
+            f,
+            &me,
+            reset,
+            "/approval-policy/prices",
+            json!({}),
+            Some(&tag),
+        )
+        .await;
+    // A book, its PATCH, and an empty book deleted.
+    let create = ("POST", "/price-books");
+    let body = json!({"code":"census","name":"Census","currency":"EUR"});
+    let book = id(&writes
+        .call(f, &me, create, "/price-books", body, None)
+        .await
+        .1);
+    let book_path = format!("/price-books/{book}");
+    let tag = etag_of(f, &book_path).await;
+    let edit = ("PATCH", "/price-books/{id}");
+    writes
+        .call(
+            f,
+            &me,
+            edit,
+            &book_path,
+            json!({"name":"Census 2"}),
+            Some(&tag),
+        )
+        .await;
+    let body = json!({"code":"empty","name":"Empty","currency":"EUR"});
+    let empty = id(&writes
+        .call(f, &me, create, "/price-books", body, None)
+        .await
+        .1);
+    let empty_path = format!("/price-books/{empty}");
+    let tag = etag_of(f, &empty_path).await;
+    let delete = ("DELETE", "/price-books/{id}");
+    writes
+        .call(f, &me, delete, &empty_path, json!({}), Some(&tag))
+        .await;
+    // An entry through its door, its PATCH, and an unpriced entry deleted.
+    let create = ("POST", "/price-books/{id}/entries");
+    let body = json!({"sku_id":catalog.sku(SkuType::Usage),"model":"per_unit"});
+    let entries = format!("{book_path}/entries");
+    let entry = id(&writes.call(f, &me, create, &entries, body, None).await.1);
+    let entry_path = format!("/price-book-entries/{entry}");
+    let tag = etag_of(f, &entry_path).await;
+    let edit = ("PATCH", "/price-book-entries/{id}");
+    let body = json!({"invoice_line_override":null});
+    writes
+        .call(f, &me, edit, &entry_path, body, Some(&tag))
+        .await;
+    let unpriced = plan_support::entry(f, book, catalog.sku(SkuType::Usage), "usage", None).await;
+    let delete = ("DELETE", "/price-book-entries/{id}");
+    let unpriced_path = format!("/price-book-entries/{unpriced}");
+    writes
+        .call(f, &me, delete, &unpriced_path, json!({}), None)
+        .await;
+    // Four draft prices, each on its own entry: one approved, one rejected, one withdrawn through
+    // publish-changes and one deleted.
+    let mut drafts = Vec::new();
+    for n in 0..4 {
+        let on = if n == 0 {
+            entry
+        } else {
+            plan_support::entry(f, book, catalog.sku(SkuType::Usage), "usage", None).await
+        };
+        let create = ("POST", "/price-book-entries/{id}/prices");
+        let path = format!("/price-book-entries/{on}/prices");
+        let body =
+            json!({"price":{"rate":"0.10"},"eligibility":"all","effective_from":"2031-03-01"});
+        drafts.push(writes.call(f, &me, create, &path, body, None).await.1["items"][0].clone());
+    }
+    let edit = ("PATCH", "/prices/{id}");
+    let first = format!("/prices/{}", id(&drafts[0]));
+    let tag = version(&drafts[0]);
+    writes
+        .call(f, &me, edit, &first, json!({"note":"census"}), Some(&tag))
+        .await;
+    let delete = ("DELETE", "/prices/{id}");
+    let last = format!("/prices/{}", id(&drafts[3]));
+    let tag = version(&drafts[3]);
+    writes
+        .call(f, &me, delete, &last, json!({}), Some(&tag))
+        .await;
+    let submit = ("POST", "/prices/{id}/submit");
+    let mut units = Vec::new();
+    for draft in &drafts[..2] {
+        let path = format!("/prices/{}/submit", id(draft));
+        units.push(id(&writes
+            .call(f, &me, submit, &path, json!({}), None)
+            .await
+            .1["unit"]));
+    }
+    let publish = ("POST", "/price-books/{id}/publish-changes");
+    let path = format!("{book_path}/publish-changes");
+    let body = json!({"price_ids":[id(&drafts[2])]});
+    units.push(id(
+        &writes.call(f, &me, publish, &path, body, None).await.1["unit"]
+    ));
+    // The three votes: the approve and the reject by a reviewer, the withdraw by the submitter.
+    let vote = json!({"generation":1,"note":"census"});
+    for (unit, action, who, body) in [
+        (units[0], "approve", &reviewer, vote.clone()),
+        (units[1], "reject", &reviewer, vote),
+        (units[2], "withdraw", &me, json!({})),
+    ] {
+        let template = format!("/approval-units/{{id}}/{action}");
+        let path = format!("/approval-units/{unit}/{action}");
+        writes
+            .call(f, who, ("POST", &template), &path, body, None)
+            .await;
+    }
+    // A plan, its PATCH and a clone of the published one.
+    let create = ("POST", "/plans");
+    let body = json!({"code":"CENSUS","name":"Census","book_id":w.book});
+    let plan = id(&writes.call(f, &me, create, "/plans", body, None).await.1);
+    let plan_path = format!("/plans/{plan}");
+    let tag = etag_of(f, &plan_path).await;
+    let edit = ("PATCH", "/plans/{id}");
+    writes
+        .call(
+            f,
+            &me,
+            edit,
+            &plan_path,
+            json!({"name":"Census 2"}),
+            Some(&tag),
+        )
+        .await;
+    let clone = ("POST", "/plans/{id}/clone");
+    let path = format!("/plans/{}/clone", w.plan);
+    let body = json!({"code":"CENSUS-CLONE","name":"Clone"});
+    writes.call(f, &me, clone, &path, body, None).await;
+    // A copy of the published revision: its PATCH to a later sale date, an item added, patched
+    // and deleted; submitted at quorum 0 it waits for its date, then is unscheduled and deleted.
+    let copy = ("POST", "/plans/{id}/revisions");
+    let path = format!("/plans/{}/revisions", w.plan);
+    let revision = id(&writes.call(f, &me, copy, &path, json!({}), None).await.1);
+    let revision_path = format!("/plan-revisions/{revision}");
+    let later = (time::OffsetDateTime::now_utc().date() + time::Duration::days(5)).to_string();
+    let tag = etag_of(f, &revision_path).await;
+    let edit = ("PATCH", "/plan-revisions/{id}");
+    let body = json!({"available_from":later});
+    writes
+        .call(f, &me, edit, &revision_path, body, Some(&tag))
+        .await;
+    let sku = catalog.sku(SkuType::Usage);
+    let fresh = plan_support::entry(f, w.book, sku, "usage", None).await;
+    let add = ("POST", "/plan-revisions/{id}/items");
+    let path = format!("{revision_path}/items");
+    let body = json!({"sku_id":sku,"price_book_entry_id":fresh});
+    let item = id(&writes.call(f, &me, add, &path, body, None).await.1);
+    let item_path = format!("/plan-items/{item}");
+    let tag = etag_of(f, &item_path).await;
+    let edit = ("PATCH", "/plan-items/{id}");
+    let body = json!({"price_book_entry_id":fresh});
+    writes
+        .call(f, &me, edit, &item_path, body, Some(&tag))
+        .await;
+    let delete = ("DELETE", "/plan-items/{id}");
+    writes
+        .call(f, &me, delete, &item_path, json!({}), None)
+        .await;
+    let submit = ("POST", "/plan-revisions/{id}/submit");
+    let path = format!("{revision_path}/submit");
+    let receipt = writes.call(f, &me, submit, &path, json!({}), None).await.1;
+    assert_eq!(receipt["revision"]["state"], "scheduled", "{receipt}");
+    let unschedule = ("POST", "/plan-revisions/{id}/unschedule");
+    let path = format!("{revision_path}/unschedule");
+    writes
+        .call(f, &me, unschedule, &path, json!({}), None)
+        .await;
+    let tag = etag_of(f, &revision_path).await;
+    let delete = ("DELETE", "/plan-revisions/{id}");
+    writes
+        .call(f, &me, delete, &revision_path, json!({}), Some(&tag))
+        .await;
+    // The census: every write op of the production routers, measured against its declaration.
+    let registry = toolkit::api::OpenApiRegistryImpl::new();
+    let _mounted = bss_pricing::api::rest::authoring::router(w.f.state.clone(), &registry).merge(
+        bss_pricing::api::rest::read_contract::router(w.f.state.clone(), &registry),
+    );
+    let mut declarations = std::collections::BTreeMap::new();
+    for spec in &registry.operation_specs {
+        let (method, template) = spec.key().split_once(':').unwrap();
+        if method != "GET" {
+            let declares = spec.value().responses.iter().any(|r| {
+                (200..300).contains(&r.status)
+                    && r.headers
+                        .iter()
+                        .any(|h| h.name.eq_ignore_ascii_case("etag"))
+            });
+            declarations.insert((method.to_owned(), template.to_owned()), declares);
+        }
+    }
+    let mut measured = std::collections::BTreeSet::new();
+    for (method, template, set) in &writes.0 {
+        let declares = declarations
+            .get(&(method.clone(), template.clone()))
+            .unwrap_or_else(|| panic!("{method} {template} is not a served write"));
+        assert_eq!(
+            set, declares,
+            "{method} {template}: ETag set {set}, declared {declares}"
+        );
+        measured.insert((method.clone(), template.clone()));
+    }
+    let unmeasured: Vec<_> = declarations
+        .keys()
+        .filter(|op| !measured.contains(*op))
+        .collect();
+    assert!(
+        unmeasured.is_empty(),
+        "every write op is measured: {unmeasured:?}"
+    );
+    assert_eq!(measured.len(), 30, "the 30 write ops of the 52");
+}
+
 // ------------------------------------------------------------------ phase 4 review F1: what was refused
 
 const PLAN_RESOURCE: &str = "gts.cf.bss.pricing.plan.v1~";

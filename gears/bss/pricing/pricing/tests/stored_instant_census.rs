@@ -3,7 +3,10 @@
 //! is a date (`now_utc().date()`), a doc comment, the one helper that cuts it (`stored_now`), or a
 //! named exception below. A door that reads `now_utc()` and stores it fails here, whether or not a
 //! door test happens to cover it.
-#![allow(clippy::expect_used, clippy::unwrap_used)]
+#![expect(
+    clippy::unwrap_used,
+    reason = "a census of the source tree: an unreadable file fails the test"
+)]
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -29,6 +32,49 @@ fn sources(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// Whether a source line reads the clock at its own precision: it names the `now_utc` token (a
+/// call, or the function passed by path, as `unwrap_or_else(OffsetDateTime::now_utc)` does), is not
+/// a comment, and does not take the date alone (the phase 9 review's R29: the census matched only
+/// the call and was blind to the path).
+fn reads_the_clock(line: &str) -> bool {
+    let code = line.trim_start();
+    if code.starts_with("//") {
+        return false;
+    }
+    let word = |c: char| c.is_alphanumeric() || c == '_';
+    code.match_indices("now_utc").any(|(at, token)| {
+        let before = code[..at].chars().next_back();
+        let rest = &code[at + token.len()..];
+        !before.is_some_and(word)
+            && !rest.chars().next().is_some_and(word)
+            && !rest.starts_with("().date()")
+    })
+}
+
+/// R29's positive control: the matcher reports a clock read in each form it guards, and only those.
+#[test]
+fn the_census_sees_a_clock_read_in_every_form() {
+    for stray in [
+        "    let now = time::OffsetDateTime::now_utc();",
+        "    .unwrap_or_else(OffsetDateTime::now_utc)",
+        "    let at = clock.map_or_else(time::OffsetDateTime::now_utc, |c| c.now());",
+        "    let t = now_utc(); // stored",
+        "now_utc()",
+    ] {
+        assert!(reads_the_clock(stray), "a clock read: {stray}");
+    }
+    for kept in [
+        "    let today = time::OffsetDateTime::now_utc().date();",
+        "    // time::OffsetDateTime::now_utc() is cut by stored_now",
+        "    /// `now_utc()` keeps nanoseconds",
+        "    let at = crate::infra::storage::stored_now();",
+        "    fn now_utc_cut() {}",
+        "    let my_now_utc = 1;",
+    ] {
+        assert!(!reads_the_clock(kept), "not a stored clock read: {kept}");
+    }
+}
+
 #[test]
 fn every_clock_read_in_src_is_a_date_or_goes_through_stored_now() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -42,16 +88,13 @@ fn every_clock_read_in_src_is_a_date_or_goes_through_stored_now() {
             .to_string_lossy()
             .replace('\\', "/");
         let text = fs::read_to_string(&file).unwrap();
+        if ALLOWED.contains(&rel.as_str()) {
+            continue;
+        }
         for (n, line) in text.lines().enumerate() {
-            let code = line.trim_start();
-            if !line.contains("now_utc()")
-                || code.starts_with("//")
-                || line.contains("now_utc().date()")
-                || ALLOWED.contains(&rel.as_str())
-            {
-                continue;
+            if reads_the_clock(line) {
+                stray.push(format!("{rel}:{}: {}", n + 1, line.trim_start()));
             }
-            stray.push(format!("{rel}:{}: {code}", n + 1));
         }
     }
     assert!(

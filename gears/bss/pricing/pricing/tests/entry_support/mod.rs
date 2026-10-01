@@ -803,16 +803,7 @@ pub struct Target {
     /// The plan and its draft revision; nil for entries.
     pub plan: Uuid,
     pub revision: Uuid,
-    /// For items: fresh SKUs, each with an entry of the book written directly (no reservation),
-    /// taken one per [`Target::input`]. A plan item is a SKU and its entry (D-467). The entries
-    /// stay `confirmation_pending`, which reconciliation (confirmed and lost references) never
-    /// scans: they are not the references a suite drives.
-    pub priced: Arc<std::sync::Mutex<Vec<Priced>>>,
 }
-/// A SKU and its entry of the target's book: `(sku, entry)`.
-pub type Priced = (Uuid, Uuid);
-/// How many priced SKUs an item target holds: more than any suite asks one target for.
-const PRICED_SKUS: usize = 8;
 /// Read a door's answer as `(status, body, etag)`, the shape [`request`] returns.
 pub async fn answer(
     result: Result<axum::response::Response, CanonicalError>,
@@ -905,48 +896,11 @@ impl Target {
         } else {
             (Uuid::nil(), Uuid::nil())
         };
-        let mut priced = Vec::new();
-        if kind == Kind::Item {
-            let tenant = c.ctx.subject_tenant_id();
-            let conn = c.state.db.conn().unwrap();
-            let now = time::OffsetDateTime::now_utc();
-            for _ in 0..PRICED_SKUS {
-                let sku = Uuid::new_v4();
-                let entry = price_book_entry_repo::insert(
-                    &conn,
-                    &AccessScope::for_tenant(tenant),
-                    price_book_entry::Model {
-                        id: Uuid::now_v7(),
-                        tenant_id: tenant,
-                        book_id: book,
-                        sku_id: sku,
-                        charge_kind: "usage".into(),
-                        period: None,
-                        model: "per_unit".into(),
-                        usage_policy_id: None,
-                        usage_policy_version: None,
-                        usage_policy_digest: None,
-                        dimension_key: None,
-                        invoice_line_override: None,
-                        reservation_id: Uuid::new_v4(),
-                        reference_state: "confirmation_pending".into(),
-                        version: 1,
-                        created_at: now,
-                        updated_at: now,
-                    },
-                )
-                .await
-                .unwrap();
-                priced.push((sku, entry.id));
-            }
-            priced.reverse();
-        }
         Self {
             kind,
             book,
             plan,
             revision,
-            priced: Arc::new(std::sync::Mutex::new(priced)),
         }
     }
     /// The endpoint a create's Idempotency-Key belongs to, below `/bss-pricing/v1`.
@@ -979,25 +933,48 @@ impl Target {
             ),
         }
     }
-    /// A create body for a fresh SKU: an entry, or an item naming that SKU's entry of the book,
-    /// written directly when the target was made, so it makes no second reservation.
-    /// # Panics
-    /// When an item target has handed out all its priced SKUs.
-    #[must_use]
-    pub fn input(&self) -> Value {
+    /// A create body for a fresh SKU: an entry, or an item naming that SKU's entry of the book. A
+    /// plan item is a SKU and its entry (D-467): the entry is written directly when the input is
+    /// asked for, through `c`'s database, so it makes no reservation of its own. It stays
+    /// `confirmation_pending`, which reconciliation (confirmed and lost references) never scans:
+    /// it is not a reference a suite drives. Each call is a new SKU, so a target hands out as many
+    /// as a suite asks for (the phase 9 review's R26, R61: no pool, no lock).
+    pub async fn input(&self, c: &Caller<'_>) -> Value {
         match self.kind {
             // `per_unit` is a model every charge kind allows (D-386, D-427).
             Kind::Entry => {
                 json!({"usage_rating_policy":policy_support::input(),"sku_id":Uuid::new_v4(),"model":"per_unit"})
             }
             Kind::Item => {
-                let (sku, entry) = self
-                    .priced
-                    .lock()
-                    .unwrap()
-                    .pop()
-                    .expect("an item target holds PRICED_SKUS priced SKUs");
-                json!({"sku_id":sku,"price_book_entry_id":entry})
+                let tenant = c.ctx.subject_tenant_id();
+                let now = time::OffsetDateTime::now_utc();
+                let sku = Uuid::new_v4();
+                let entry = price_book_entry_repo::insert(
+                    &c.state.db.conn().unwrap(),
+                    &AccessScope::for_tenant(tenant),
+                    price_book_entry::Model {
+                        id: Uuid::now_v7(),
+                        tenant_id: tenant,
+                        book_id: self.book,
+                        sku_id: sku,
+                        charge_kind: "usage".into(),
+                        period: None,
+                        model: "per_unit".into(),
+                        usage_policy_id: None,
+                        usage_policy_version: None,
+                        usage_policy_digest: None,
+                        dimension_key: None,
+                        invoice_line_override: None,
+                        reservation_id: Uuid::new_v4(),
+                        reference_state: "confirmation_pending".into(),
+                        version: 1,
+                        created_at: now,
+                        updated_at: now,
+                    },
+                )
+                .await
+                .unwrap();
+                json!({"sku_id":sku,"price_book_entry_id":entry.id})
             }
         }
     }

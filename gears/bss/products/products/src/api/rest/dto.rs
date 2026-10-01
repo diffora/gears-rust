@@ -548,7 +548,7 @@ pub struct ProductsApprovalUnitStateCounts {
 /// The units of each kind products records (P-D-227).
 #[toolkit_macros::api_dto(response)]
 #[derive(Default)]
-#[allow(
+#[expect(
     clippy::struct_field_names,
     reason = "the fields are the stored kind names, sku_publish, sku_change and sku_retire"
 )]
@@ -573,6 +573,30 @@ pub struct DecisionDto {
 pub struct UnitList {
     pub items: Vec<UnitDto>,
     pub page_info: toolkit_odata::PageInfo,
+}
+/// `GET /approval-units` (P-D-224, P-D-227): the narrowing, the page and the order. A key the list
+/// does not know is ignored, as before.
+#[toolkit_macros::api_dto(request)]
+pub struct UnitListQuery {
+    pub state: Option<String>,
+    pub kind: Option<String>,
+    pub ref_id: Option<Uuid>,
+    /// Page size (P-D-224): 200 by default, clamped at 500.
+    pub limit: Option<u64>,
+    /// The opaque continuation of a page's `page_info.next_cursor`.
+    pub cursor: Option<String>,
+    /// `submitted_at asc` (the default, P-D-224) or `submitted_at desc` (P-D-227); the id breaks a
+    /// tie in the same direction. A cursor carries its order, so a continuation sends none.
+    #[serde(rename = "$orderby")]
+    pub orderby: Option<String>,
+}
+/// `GET /approval-units/counts` (P-D-227): the list's narrowing, and nothing else.
+#[toolkit_macros::api_dto(request)]
+#[serde(deny_unknown_fields)]
+pub struct UnitCountsQuery {
+    pub state: Option<String>,
+    pub kind: Option<String>,
+    pub ref_id: Option<Uuid>,
 }
 #[toolkit_macros::api_dto(request)]
 pub struct VoteRequest {

@@ -103,18 +103,19 @@ pub(super) fn editable(r: &plan_revision::Model, ctx: &SecurityContext) -> Resul
 pub(super) fn today() -> time::Date {
     time::OffsetDateTime::now_utc().date()
 }
-/// What the plan DTO shows beside the rows of the plans in `revisions` (their revisions, by plan):
-/// the item SKUs of each plan's current revision (D-460) and the instants of every unit the
-/// revisions name (D-461), ONE grouped statement each whatever the number of plans.
-async fn plan_reading(
+/// What the plan DTO shows beside the rows of the plans whose revisions `revisions` yields (one
+/// slice per plan): the item SKUs of each plan's current revision (D-460) and the instants of every
+/// unit the revisions name (D-461), ONE grouped statement each whatever the number of plans. It
+/// borrows the revisions: a single plan's read clones none (the phase 9 review's R51).
+async fn plan_reading<'a>(
     tx: &impl DBRunner,
     tenant: Uuid,
-    revisions: &BTreeMap<Uuid, Vec<plan_revision::Model>>,
+    revisions: impl IntoIterator<Item = &'a [plan_revision::Model]>,
     today: time::Date,
 ) -> Result<PlanReading, DoorError> {
     let children = AccessScope::for_tenant(tenant);
     let (mut current, mut units) = (Vec::new(), Vec::new());
-    for own in revisions.values() {
+    for own in revisions {
         current.extend(dto::current_revision(own, today)?);
         units.extend(dto::named_units(own));
     }
@@ -131,7 +132,7 @@ async fn plan_body(
     let own =
         plan_revision_repo::for_plan(tx, &AccessScope::for_tenant(tenant), tenant, m.id).await?;
     let today = today();
-    let reading = plan_reading(tx, tenant, &BTreeMap::from([(m.id, own.clone())]), today).await?;
+    let reading = plan_reading(tx, tenant, [own.as_slice()], today).await?;
     Ok(PricingPlanDto::of(m, &own, today, &reading)?)
 }
 /// A revision read: its items, its state among its plan's revisions as it reads today, the
@@ -364,7 +365,7 @@ pub(super) async fn list(
     {
         revisions.entry(r.plan_id).or_default().push(r);
     }
-    let reading = plan_reading(tx, tenant, &revisions, today).await?;
+    let reading = plan_reading(tx, tenant, revisions.values().map(Vec::as_slice), today).await?;
     Ok(PricingPlanList {
         items: plans
             .into_iter()

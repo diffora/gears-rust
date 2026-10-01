@@ -67,7 +67,13 @@ async fn setup(kind: Kind) -> Door {
         },
     )
     .await;
-    let input = target.input();
+    let input = target
+        .input(&Caller {
+            app: &app,
+            state: &state,
+            ctx: &ctx,
+        })
+        .await;
     Door {
         pg,
         db,

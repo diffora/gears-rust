@@ -849,20 +849,19 @@ pub fn state_filter(state: Option<&str>) -> Result<Option<UnitState>, CanonicalE
         .map(|s| UnitState::parse(s).ok_or_else(|| support::invalid("state", "UNIT_STATE_INVALID")))
         .transpose()
 }
-/// What one read of the unit list asks for: its narrowing, its page, its order and whether it
-/// reads the live impact (D-458, D-470).
+/// What one read of the unit list asks for: its narrowing, its page (which carries its order, or
+/// a cursor that carries its own) and whether it reads the live impact (D-458, D-470).
 #[derive(Clone)]
 pub struct UnitListRequest {
     pub filter: approval_repo::UnitListFilter,
     pub page: toolkit_odata::ODataQuery,
-    /// Submission order, ascending by default; a cursor carries its own.
-    pub direction: toolkit_odata::SortDir,
     /// `false` (`impact=false`): no plan is read and every unit answers `impact: null`.
     pub impact: bool,
 }
 /// `GET /approval-units`: one page in submission order (D-458), oldest or newest first (D-470),
-/// each unit with every generation's decisions, whether `reader` may approve it (D-471) and, unless
-/// the request declines it, the same live impact as the card. The page, its units' items, their
+/// each unit with every generation's decisions, whether the caller `ctx` may approve it (D-471)
+/// and, unless the request declines it, the same live impact as the card. The tenant and the
+/// reader both come from `ctx`, so they cannot be swapped (the phase 9 review's R7). The page, its units' items, their
 /// decisions and the plans their impact names are read set-based: a fixed number of statements
 /// whatever the page's size, and no plan read without the impact.
 /// # Errors
@@ -870,23 +869,16 @@ pub struct UnitListRequest {
 pub async fn list_units(
     tx: &DbTx<'_>,
     scope: &AccessScope,
-    tenant: Uuid,
-    reader: Uuid,
+    ctx: &SecurityContext,
     request: &UnitListRequest,
 ) -> Result<Response, DoorError> {
-    let page = approval_repo::page_units(
-        tx,
-        scope,
-        tenant,
-        &request.filter,
-        &request.page,
-        request.direction,
-    )
-    .await
-    .map_err(|e| match e {
-        approval_repo::UnitListError::Query(e) => DoorError::Api(e.into()),
-        approval_repo::UnitListError::Repo(e) => DoorError::Repo(e),
-    })?;
+    let (tenant, reader) = (ctx.subject_tenant_id(), ctx.subject_id());
+    let page = approval_repo::page_units(tx, scope, tenant, &request.filter, &request.page)
+        .await
+        .map_err(|e| match e {
+            approval_repo::UnitListError::Query(e) => DoorError::Api(e.into()),
+            approval_repo::UnitListError::Repo(e) => DoorError::Repo(e),
+        })?;
     let ids: Vec<Uuid> = page.items.iter().map(|u| u.id).collect();
     // The items are read whatever the impact: whether the reader may approve judges their
     // authors (D-471). Without the impact, their authors alone are read (the phase 9 review's
@@ -989,16 +981,17 @@ pub async fn count_units(
     )?)
 }
 /// `GET /approval-units/{id}`: the stored snapshot, the decisions, the live impact and whether
-/// `reader` may approve it (D-471).
+/// the caller `ctx` may approve it (D-471). The tenant and the reader both come from `ctx` (the
+/// phase 9 review's R9).
 /// # Errors
 /// Returns a missing unit or storage failure.
 pub async fn get_unit(
     tx: &DbTx<'_>,
     scope: &AccessScope,
-    tenant: Uuid,
-    reader: Uuid,
+    ctx: &SecurityContext,
     id: Uuid,
 ) -> Result<Response, DoorError> {
+    let (tenant, reader) = (ctx.subject_tenant_id(), ctx.subject_id());
     let store = PricingApprovalStore {
         scope: scope.clone(),
         tenant_id: tenant,

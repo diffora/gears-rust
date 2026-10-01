@@ -679,7 +679,7 @@ async fn create_item(
     let key = preconditions::idempotency_key(&headers)?;
     let payload: serde_json::Value = preconditions::parse_body(&body)?;
     let digest = preconditions::request_digest(&payload)?;
-    plan_items::judge_body(&payload, true)?;
+    plan_items::judge_create_body(&payload)?;
     let input: dto::PricingPlanItemCreate = preconditions::parse_body(&body)?;
     plan_items::add(state, scope, ctx, id, correlation, key, digest, input).await
 }
@@ -729,7 +729,7 @@ async fn patch_item(
     let correlation = correlation::require_correlation(corr)?;
     let version = preconditions::if_match(&headers)?.get();
     let payload: serde_json::Value = preconditions::parse_body(&body)?;
-    plan_items::judge_body(&payload, false)?;
+    plan_items::judge_patch_body(&payload)?;
     let input: dto::PricingPlanItemPatch = preconditions::parse_body(&body)?;
     transaction(&state.db.db(), move |tx| {
         let (scope, ctx, input) = (scope.clone(), ctx.clone(), input.clone());

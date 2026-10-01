@@ -7,7 +7,7 @@
 mod plan_support;
 use bss_pricing::infra::storage::{entity::plan as plan_entity, repo::plan_repo};
 use bss_products_sdk::models::SkuType;
-use plan_support::{Fixture, book, entry, id_of, item, plan, publish, scope, setup, text};
+use plan_support::{Fixture, book, entry, holding, id_of, item, plan, publish, scope, setup, text};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -120,6 +120,65 @@ async fn the_rule_comes_after_the_cap_and_before_the_date_and_the_book() {
         assert_eq!(s, 400, "{body}: {b}");
         assert!(text(&b).contains(reason), "{body}: {reason}: {b}");
     }
+}
+
+/// The phase 9 review's R62: the order above is observable only under a grant that does not
+/// admit the book. A caller holding `plan:author` alone, without `price_book` read, gets the code
+/// rule's 400 for a refused code, on the create and on the clone, and the book's 403 only once the
+/// code passes.
+#[tokio::test]
+async fn the_rule_comes_before_the_grant_on_the_book() {
+    let (f, catalog) = setup().await;
+    let eur = book(&f, "eur").await;
+    let (created, rev1) = plan(&f, "pro", eur).await;
+    let source = id_of(&created["id"]);
+    let sku = catalog.sku(SkuType::Usage);
+    let e = entry(&f, eur, sku, "usage", None).await;
+    item(&f, rev1, sku, Some(e), "paid").await;
+    publish(&f, source, rev1).await;
+    let author = holding(&f, "plan:author");
+    let before = plan_count(&f).await;
+    let clone_path = format!("/plans/{source}/clone");
+    for (path, body, status, reason) in [
+        (
+            "/plans",
+            json!({"code":"lower","name":"n","book_id":eur}),
+            400,
+            "PLAN_CODE_INVALID",
+        ),
+        (
+            "/plans",
+            json!({"code":"UPPER","name":"n","book_id":eur}),
+            403,
+            "PRICE_BOOK_READ_REQUIRED",
+        ),
+        (
+            clone_path.as_str(),
+            json!({"code":"lower","name":"n"}),
+            400,
+            "PLAN_CODE_INVALID",
+        ),
+        (
+            clone_path.as_str(),
+            json!({"code":"UPPER","name":"n"}),
+            403,
+            "PRICE_BOOK_READ_REQUIRED",
+        ),
+    ] {
+        let (s, b, _) = f
+            .call_as(
+                &author,
+                "POST",
+                path,
+                body.clone(),
+                None,
+                Some(&Uuid::new_v4().to_string()),
+            )
+            .await;
+        assert_eq!(s, status, "{path} {body}: {b}");
+        assert!(text(&b).contains(reason), "{path} {body}: {reason}: {b}");
+    }
+    assert_eq!(plan_count(&f).await, before, "nothing written");
 }
 
 #[tokio::test]

@@ -156,13 +156,23 @@ fn the_predicate_counts_the_current_generations_live_approves() {
     // The count alone needs no item and no actor (the phase 9 review's R4).
     assert_eq!(counted_approvals(&refreshed, &decisions), 1);
 }
-/// W2: the predicate is the engine's rule. On every fixture (quorum 0, 1 and 2, a stale vote, a
-/// vote of an earlier generation, a decided unit) and for every actor (the submitter, an item
-/// author, a voter of the current generation, a voter of an earlier one, a fresh reviewer), its
-/// refusal is `evaluate_approve`'s error, and where the engine counts a vote, `have` is the
-/// predicate's approvals plus that vote.
+/// W2 and the phase 9 review's R40: the predicate and the engine against a table written out,
+/// never against each other (the engine judges through the predicate, so comparing the two cannot
+/// fail on a defect in it). For every fixture (quorum 0, 1 and 2 with no vote and with the
+/// reviewer's, a stale vote beside a live one, a current vote marked stale, a decided unit) and
+/// every actor (the submitter, an item author, the reviewer, a voter of an earlier generation, a
+/// fresh reviewer), the table says the outcome: a refusal, or the step the vote takes. The
+/// predicate counts the fixture's live approves and refuses as the table does; the engine answers
+/// the table's step, or the refusal's own error.
 #[test]
-fn the_predicate_answers_what_the_engine_answers() {
+fn the_predicate_and_the_engine_answer_the_written_table() {
+    use ApproveRefusal::{
+        AlreadyDecided as Decided, DuplicateVote as Duplicate, SodViolation as Sod,
+    };
+    use ApproveStep::{Apply, NeedMore};
+    type Outcome = Result<ApproveStep, ApproveRefusal>;
+    /// A fixture, its unit and decisions, its counted approves, and each actor's outcome.
+    type Row<'a> = (&'a str, &'a Unit, Vec<Decision>, u32, [Outcome; 5]);
     let (submitter, author, reviewer, earlier_reviewer, fresh) = (
         Uuid::new_v4(),
         Uuid::new_v4(),
@@ -171,55 +181,96 @@ fn the_predicate_answers_what_the_engine_answers() {
         Uuid::new_v4(),
     );
     let items = authored(&[author]);
-    let mut fixtures = Vec::new();
-    for quorum in [0, 1, 2] {
-        let u = unit(quorum, submitter);
-        fixtures.push((format!("quorum {quorum}, no vote"), u.clone(), Vec::new()));
-        let cast = vec![vote(&u, reviewer, 1)];
-        fixtures.push((format!("quorum {quorum}, one vote"), u, cast));
-    }
+    let voted = |u: &Unit| vec![vote(u, reviewer, 1)];
+    let (q0, q1, q2) = (unit(0, submitter), unit(1, submitter), unit(2, submitter));
+    let (q0_voted, q1_voted, q2_voted) =
+        (unit(0, submitter), unit(1, submitter), unit(2, submitter));
     let mut refreshed = unit(2, submitter);
     refreshed.generation = 2;
-    let cast = vec![
+    let beside = vec![
         vote(&refreshed, earlier_reviewer, 1),
         vote(&refreshed, reviewer, 2),
     ];
-    fixtures.push((
-        "a stale vote beside a live one".into(),
-        refreshed.clone(),
-        cast,
-    ));
+    // A vote of the current generation is the voter's vote, stale flag or not: a refresh moves the
+    // generation, so the votes it makes stale are of an earlier one.
     let mut marked = vote(&refreshed, earlier_reviewer, 2);
     marked.stale = true;
-    fixtures.push(("a vote marked stale".into(), refreshed, vec![marked]));
     let mut decided = unit(1, submitter);
     decided.state = UnitState::Approved;
-    fixtures.push(("a decided unit".into(), decided, Vec::new()));
-    for (name, u, decisions) in &fixtures {
-        for actor in [submitter, author, reviewer, earlier_reviewer, fresh] {
+    let need: Outcome = Ok(NeedMore { have: 1, need: 2 });
+    // (fixture, unit, decisions, counted approves, the outcome for the submitter, the author, the
+    // reviewer, the voter of an earlier generation and a fresh reviewer)
+    let table: Vec<Row<'_>> = vec![
+        (
+            "quorum 0, no vote",
+            &q0,
+            vec![],
+            0,
+            [Err(Sod), Err(Sod), Ok(Apply), Ok(Apply), Ok(Apply)],
+        ),
+        (
+            "quorum 0, the reviewer's vote",
+            &q0_voted,
+            voted(&q0_voted),
+            1,
+            [Err(Sod), Err(Sod), Err(Duplicate), Ok(Apply), Ok(Apply)],
+        ),
+        (
+            "quorum 1, no vote",
+            &q1,
+            vec![],
+            0,
+            [Err(Sod), Err(Sod), Ok(Apply), Ok(Apply), Ok(Apply)],
+        ),
+        (
+            "quorum 1, the reviewer's vote",
+            &q1_voted,
+            voted(&q1_voted),
+            1,
+            [Err(Sod), Err(Sod), Err(Duplicate), Ok(Apply), Ok(Apply)],
+        ),
+        (
+            "quorum 2, no vote",
+            &q2,
+            vec![],
+            0,
+            [Err(Sod), Err(Sod), need, need, need],
+        ),
+        (
+            "quorum 2, the reviewer's vote",
+            &q2_voted,
+            voted(&q2_voted),
+            1,
+            [Err(Sod), Err(Sod), Err(Duplicate), Ok(Apply), Ok(Apply)],
+        ),
+        (
+            "a stale vote beside a live one",
+            &refreshed,
+            beside,
+            1,
+            [Err(Sod), Err(Sod), Err(Duplicate), Ok(Apply), Ok(Apply)],
+        ),
+        (
+            "a current vote marked stale",
+            &refreshed,
+            vec![marked],
+            0,
+            [Err(Sod), Err(Sod), need, Err(Duplicate), need],
+        ),
+        ("a decided unit", &decided, vec![], 0, [Err(Decided); 5]),
+    ];
+    let actors = [submitter, author, reviewer, earlier_reviewer, fresh];
+    for (name, u, decisions, counted, outcomes) in &table {
+        for (actor, expected) in actors.iter().zip(outcomes) {
             let judged =
-                approve_eligibility(u, items.iter().map(|i| i.created_by), decisions, actor);
-            assert_eq!(judged.approvals, counted_approvals(u, decisions), "{name}");
-            match evaluate_approve(u, decisions, actor, &items) {
-                Err(error) => assert_eq!(
-                    judged.refusal.map(|r| ApprovalError::from(r).code()),
-                    Some(error.code()),
-                    "{name}, {actor}"
-                ),
-                Ok(step) => {
-                    assert!(judged.refusal.is_none(), "{name}, {actor}: {judged:?}");
-                    let have = judged.approvals + 1;
-                    let expected = if have >= u.quorum_required {
-                        ApproveStep::Apply
-                    } else {
-                        ApproveStep::NeedMore {
-                            have,
-                            need: u.quorum_required,
-                        }
-                    };
-                    assert_eq!(step, expected, "{name}, {actor}");
-                }
-            }
+                approve_eligibility(u, items.iter().map(|i| i.created_by), decisions, *actor);
+            assert_eq!(judged.approvals, *counted, "{name}");
+            assert_eq!(judged.refusal, expected.err(), "{name}, {actor}");
+            assert_eq!(
+                evaluate_approve(u, decisions, *actor, &items).map_err(|e| e.code()),
+                expected.map_err(|r| ApprovalError::from(r).code()),
+                "{name}, {actor}"
+            );
         }
     }
 }

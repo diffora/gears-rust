@@ -126,7 +126,7 @@ async fn setup_kind(mode: usize, kind: Kind) -> (Fixture, Arc<Script>, Target, V
     script.set(mode);
     let f = Fixture::new(script.clone()).await;
     let t = f.target(kind).await;
-    let input = t.input();
+    let input = t.input(&f.caller()).await;
     (f, script, t, input)
 }
 #[tokio::test]
