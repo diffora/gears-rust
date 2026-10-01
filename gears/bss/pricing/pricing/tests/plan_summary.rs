@@ -490,6 +490,8 @@ async fn the_list_filters_orders_and_rejects_a_cursor_under_another_narrowing() 
     assert_eq!(change["items"].as_array().unwrap().len(), 2, "{change}");
     let (status, bad) = get(&f, "/plans?change=retired").await;
     assert_eq!(status, 400, "{bad}");
+    let (status, unordered) = get(&f, "/plans?$orderby=book_id").await;
+    assert_eq!(status, 400, "{unordered}");
     let (status, clamped) = get(&f, "/plans?$top=1000").await;
     assert_eq!(status, 200, "{clamped}");
     assert_eq!(clamped["page_info"]["limit"], 500, "{clamped}");

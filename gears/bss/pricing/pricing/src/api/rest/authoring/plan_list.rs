@@ -12,7 +12,7 @@ use super::{
 };
 use crate::{
     authz::{self, actions, resource_types},
-    infra::storage::repo::plan_repo::{PlanListField, PlanListFilter},
+    infra::storage::repo::plan_repo::{PlanListField, PlanListFilter, PlanOrderField},
 };
 use authz_resolver_sdk::PolicyEnforcer;
 use axum::{
@@ -93,7 +93,7 @@ pub(super) fn register(router: Router, openapi: &dyn OpenApiRegistry) -> Router 
         )
         .handler(list_plans)
         .with_odata_filter::<PlanListField>()
-        .with_odata_orderby::<PlanListField>()
+        .with_odata_orderby::<PlanOrderField>()
         .json_response_with_schema::<crate::api::rest::authoring::dto::PricingPlanList>(
             openapi,
             StatusCode::OK,

@@ -365,6 +365,41 @@ impl FilterField for PlanListField {
         Self::FIELDS.iter().copied().find(|f| f.name() == name)
     }
 }
+/// The `$orderby` fields. `book_id` and `currency` filter but do not order (D-485).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PlanOrderField {
+    Id,
+    Code,
+    Name,
+    LastActivityAt,
+}
+impl FilterField for PlanOrderField {
+    const FIELDS: &'static [Self] = &[Self::Id, Self::Code, Self::Name, Self::LastActivityAt];
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Id => "id",
+            Self::Code => "code",
+            Self::Name => "name",
+            Self::LastActivityAt => "last_activity_at",
+        }
+    }
+    fn kind(&self) -> FieldKind {
+        match self {
+            Self::Id => FieldKind::Uuid,
+            Self::Code | Self::Name => FieldKind::String,
+            Self::LastActivityAt => FieldKind::DateTimeUtc,
+        }
+    }
+    fn nullable(&self) -> bool {
+        false
+    }
+    fn from_name(name: &str) -> Option<Self> {
+        Self::FIELDS
+            .iter()
+            .copied()
+            .find(|field| field.name() == name)
+    }
+}
 impl PlanListField {
     #[must_use]
     pub const fn orderable(self) -> bool {
