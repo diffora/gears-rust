@@ -7,46 +7,12 @@ use crate::api::rest::closed_sets::{
     PricingReferenceOpRefKind, PricingReferenceOpState, PricingRevisionState, PricingUnitState,
     PricingVoteOutcome,
 };
-use crate::domain::plan::{self, EffectiveRevision, StoredRevision};
+use crate::domain::plan::{self, EffectiveRevision};
+use crate::infra::plan_revisions::{effective_revisions, stored_revisions};
 use crate::infra::storage::{RepoError, entity, repo::approval_repo::UnitInstants};
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
-/// The stored revisions as the effective-state rule reads them (D-447), in their order; a state
-/// outside the closed set is a corrupt row naming the revision (D-439).
-/// # Errors
-/// `CorruptRow`.
-pub fn stored_revisions(
-    rows: &[entity::plan_revision::Model],
-) -> Result<Vec<StoredRevision>, RepoError> {
-    rows.iter()
-        .map(|m| {
-            Ok(StoredRevision {
-                id: m.id,
-                plan_id: m.plan_id,
-                rev_no: m.rev_no,
-                state: PricingRevisionState::stored(
-                    &m.state,
-                    &format_args!("revision {} state", m.id),
-                )?
-                .into(),
-                available_from: m.available_from,
-                published_at: m.published_at,
-            })
-        })
-        .collect()
-}
-/// The revisions as they read on `today` (D-447), in the order of `rows`: a due scheduled
-/// revision reads published, its plan's stored-published one superseded. A read derives; it never
-/// writes.
-/// # Errors
-/// `CorruptRow` for a state outside the closed set.
-pub fn effective_revisions(
-    rows: &[entity::plan_revision::Model],
-    today: time::Date,
-) -> Result<Vec<EffectiveRevision>, RepoError> {
-    Ok(plan::effective(&stored_revisions(rows)?, today))
-}
 #[toolkit_macros::api_dto(response)]
 pub struct PriceBookDto {
     pub id: Uuid,

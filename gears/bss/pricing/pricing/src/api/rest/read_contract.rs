@@ -432,7 +432,7 @@ async fn read_stored(
     // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-switch:p1:inst-plans-revision-switch-5
     let siblings = plan_revision_repo::for_plan(tx, &children, tenant, revision.plan_id).await?;
     let today = time::OffsetDateTime::now_utc().date();
-    let state = super::authoring::dto::effective_revisions(&siblings, today)?
+    let state = crate::infra::plan_revisions::effective_revisions(&siblings, today)?
         .into_iter()
         .find(|e| e.id == id)
         .map(|e| e.state)

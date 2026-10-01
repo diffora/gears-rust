@@ -163,9 +163,11 @@ async fn admissible(
     if items.len() >= MAX_ITEMS {
         return Err(support::invalid("items", "REVISION_ITEMS_TOO_MANY").into());
     }
-    Ok(plans::published_skus(tx, tenant, r.plan_id, plans::today())
-        .await?
-        .contains(&input.sku_id))
+    Ok(
+        crate::infra::plan_revisions::published_skus(tx, tenant, r.plan_id, plans::today())
+            .await?
+            .contains(&input.sku_id),
+    )
 }
 /// The SKU read fresh (D-408): a deprecated SKU is added only when the plan's published revision
 /// in effect carries it (`carried`: a re-add is not "newly added", D-465), and a bundle SKU is
@@ -259,7 +261,7 @@ pub(super) async fn get(
     let children = AccessScope::for_tenant(tenant);
     let r = plans::find_revision(tx, &children, tenant, m.revision_id).await?;
     let siblings = plan_revision_repo::for_plan(tx, &children, tenant, r.plan_id).await?;
-    let state = super::dto::effective_revisions(&siblings, plans::today())?
+    let state = crate::infra::plan_revisions::effective_revisions(&siblings, plans::today())?
         .into_iter()
         .find(|e| e.id == r.id)
         .map_or_else(

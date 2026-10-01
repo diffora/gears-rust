@@ -1147,7 +1147,7 @@ pub async fn stored_context(
             .map_err(|_| corrupt(format!("dimension {} values", d.key)))?;
         dimension_values.push((d.key, values));
     }
-    let revisions = dto::effective_revisions(
+    let revisions = plan_revisions::effective_revisions(
         &plan_revision_repo::for_plan(tx, &children, tenant, p.id).await?,
         today,
     )?;
@@ -1156,7 +1156,8 @@ pub async fn stored_context(
         .find(|x| x.id == r.id)
         .map(|x| x.state)
         .ok_or_else(|| corrupt(format!("revision {} is not among its plan's", r.id)))?;
-    let published_sku_ids = in_effect_skus(tx, &children, tenant, &revisions).await?;
+    let published_sku_ids =
+        plan_revisions::in_effect_skus(tx, &children, tenant, &revisions).await?;
     let quorum = approval_repo::read_policy(tx, &children, tenant)
         .await?
         .quorum_for(plan::KIND_PLAN_REVISION);
@@ -1187,41 +1188,6 @@ pub async fn stored_context(
             tax_category: settings.default_tax_category,
         },
     })
-}
-/// The item SKUs of the published revision in effect among ONE plan's `revisions` as they read on
-/// a day (D-447): the SKUs a deprecated SKU may be carried from (D-408) and added again (D-465).
-async fn in_effect_skus(
-    tx: &impl DBRunner,
-    children: &AccessScope,
-    tenant: Uuid,
-    revisions: &[plan::EffectiveRevision],
-) -> Result<Vec<Uuid>, DoorError> {
-    Ok(match plan::in_effect(revisions) {
-        Some(published) => plan_item_repo::for_revision(tx, children, tenant, published.id)
-            .await?
-            .into_iter()
-            .map(|i| i.sku_id)
-            .collect(),
-        None => Vec::new(),
-    })
-}
-/// The item SKUs of the published revision in effect on `today` of the plan `plan_id` (D-465):
-/// a deprecated SKU among them may be added to its draft again, as the checks carry it (D-408).
-/// The item door and the create op's SKU re-read judge by it; a clone is a new plan, with none.
-/// # Errors
-/// Storage failures; `CorruptRow` for a state outside the closed set.
-pub async fn published_skus(
-    tx: &impl DBRunner,
-    tenant: Uuid,
-    plan_id: Uuid,
-    today: time::Date,
-) -> Result<Vec<Uuid>, DoorError> {
-    let children = AccessScope::for_tenant(tenant);
-    let revisions = dto::effective_revisions(
-        &plan_revision_repo::for_plan(tx, &children, tenant, plan_id).await?,
-        today,
-    )?;
-    in_effect_skus(tx, &children, tenant, &revisions).await
 }
 fn item_of(m: &plan_item::Model) -> Result<plan::Item, DoorError> {
     let bad = |what: &str| corrupt(format!("plan item {} {what}", m.id));

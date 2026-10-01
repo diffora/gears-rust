@@ -406,42 +406,31 @@ pub(super) async fn delete(
 pub(super) struct Headline {
     /// The default chain's approved price in force on the day.
     pub current: Option<super::dto::PricingPriceDto>,
-    /// The default chain's next price after the day ([`next_of`]).
+    /// The default chain's next price after the day (`domain::price::next_of`).
     pub next: Option<super::dto::PricingPriceDto>,
 }
-/// The default chain's next price after `day` (D-472), of one entry's default-chain prices: its
-/// earliest approved price that starts after the day (a scheduled price; two approved prices of
-/// a chain never share a start, and the highest `version_no` would win as it wins in force), else
-/// its newest draft or pending price — the highest `version_no`, then the latest `created_at`,
-/// then the highest id — else `None`. A rejected price is never one.
-fn next_of<'a>(
-    chain: &[&'a entity::price::Model],
-    day: time::Date,
-) -> Option<&'a entity::price::Model> {
-    let is = |p: &entity::price::Model, state: PriceState| p.state == state.as_str();
-    chain
-        .iter()
-        .copied()
-        .filter(|p| is(p, PriceState::Approved) && p.effective_from > day)
-        .min_by(|a, b| {
-            a.effective_from
-                .cmp(&b.effective_from)
-                .then(b.version_no.cmp(&a.version_no))
-        })
-        .or_else(|| {
-            chain
-                .iter()
-                .copied()
-                .filter(|p| is(p, PriceState::Draft) || is(p, PriceState::Pending))
-                .max_by_key(|p| (p.version_no, p.created_at, p.id))
-        })
+/// A stored default-chain price as the next-price rule reads it.
+fn chain_price(p: &entity::price::Model) -> Result<crate::domain::price::ChainPrice, DoorError> {
+    Ok(crate::domain::price::ChainPrice {
+        id: p.id,
+        state: p.state.parse::<PriceState>().map_err(|_| {
+            crate::infra::storage::RepoError::CorruptRow(format!(
+                "price {} state {}",
+                p.id, p.state
+            ))
+        })?,
+        effective_from: p.effective_from,
+        version_no: p.version_no,
+        created_at: p.created_at,
+    })
 }
 /// The headline prices of each of `entries` on `day` (D-434, D-440, D-472), from ONE read of the
 /// entries' default-chain approved, pending and draft prices (no dimension value, never a
 /// rejected price): the price in force — started on or before the day and not ended, chosen as
 /// resolve chooses a price in force (the latest start, then the latest version) — and the next
-/// price ([`next_of`]), each with its status on the day; an entry with neither has no key. The
-/// caller has judged whose money it may show: every entry given is shown.
+/// price (`domain::price::next_of`), each with its status on the day; an entry with neither has
+/// no key. The door maps the rows; both choices are the domain's. The caller has judged whose
+/// money it may show: every entry given is shown.
 /// # Errors
 /// Storage failures; a stored token outside its closed set is a corrupt row.
 pub(super) async fn headline(
@@ -476,9 +465,15 @@ pub(super) async fn headline(
             p.map(|p| super::dto::PricingPriceDto::at((*p).clone(), &e.model, day))
                 .transpose()
         };
+        let views = chain
+            .iter()
+            .map(|p| chain_price(p))
+            .collect::<Result<Vec<_>, DoorError>>()?;
+        let next = crate::domain::price::next_of(&views, day)
+            .and_then(|found| chain.iter().find(|p| p.id == found.id));
         let found = Headline {
             current: shown(current)?,
-            next: shown(next_of(&chain, day).as_ref())?,
+            next: shown(next)?,
         };
         if found.current.is_some() || found.next.is_some() {
             out.insert(e.id, found);

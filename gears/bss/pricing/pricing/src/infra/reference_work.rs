@@ -1104,15 +1104,12 @@ async fn carried(
     else {
         return Ok(false);
     };
-    Ok(crate::api::rest::authoring::plans::published_skus(
-        &conn,
-        tenant,
-        revision.plan_id,
-        clock.now().date(),
+    Ok(
+        super::plan_revisions::published_skus(&conn, tenant, revision.plan_id, clock.now().date())
+            .await
+            .map_err(stored_failure)?
+            .contains(&op.sku_id),
     )
-    .await
-    .map_err(CanonicalError::from)?
-    .contains(&op.sku_id))
 }
 async fn observe(
     registry: Result<Arc<dyn ReferenceRegistryV1>, CanonicalError>,
