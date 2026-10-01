@@ -9,6 +9,7 @@ suite: bss-pricebook
 # the recurring variant carries the flow (see test_pricebook_flow.py).
 features:
   - bss-pricing
+  - bss-approvals
   - account-management
   - static-idp
   - static-tenants
@@ -18,6 +19,7 @@ launcher: e2e-launcher
 config_gears:
   - bss-products
   - bss-pricing
+  - bss-approvals
   - account-management
   # Linked through account-management; it boots only with its database block.
   - resource-group

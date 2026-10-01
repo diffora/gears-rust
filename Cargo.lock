@@ -1902,6 +1902,47 @@ dependencies = [
 ]
 
 [[package]]
+name = "cf-gears-bss-approvals"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "arc-swap",
+ "async-trait",
+ "aws-lc-rs",
+ "axum",
+ "base64 0.22.1",
+ "cf-gears-bss-approvals-sdk",
+ "cf-gears-toolkit",
+ "cf-gears-toolkit-canonical-errors",
+ "cf-gears-toolkit-gts",
+ "cf-gears-toolkit-macros",
+ "cf-gears-toolkit-odata",
+ "cf-gears-toolkit-security",
+ "http-body-util",
+ "serde",
+ "serde_json",
+ "time",
+ "tokio",
+ "tokio-util",
+ "tower",
+ "utoipa",
+ "uuid",
+]
+
+[[package]]
+name = "cf-gears-bss-approvals-sdk"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "cf-gears-toolkit-canonical-errors",
+ "cf-gears-toolkit-security",
+ "serde",
+ "serde_json",
+ "time",
+ "uuid",
+]
+
+[[package]]
 name = "cf-gears-bss-coord"
 version = "0.0.0"
 dependencies = [
@@ -2467,6 +2508,7 @@ dependencies = [
  "cf-gears-api-gateway",
  "cf-gears-authn-resolver",
  "cf-gears-authz-resolver",
+ "cf-gears-bss-approvals",
  "cf-gears-bss-ledger",
  "cf-gears-bss-pricing",
  "cf-gears-bss-products",
