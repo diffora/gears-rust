@@ -125,7 +125,7 @@ async fn the_registered_route_set_is_exactly_the_declared_paths() {
         .collect();
     assert_eq!(registered, declared_paths());
     assert_eq!(census::source_routes(), registered);
-    assert_eq!(registered.len(), 55);
+    assert_eq!(registered.len(), 56);
     assert!(router.has_routes());
 }
 
@@ -207,7 +207,7 @@ fn every_precondition_reading_route_is_in_the_precondition_census() {
         // effective-policy read (D-480, D-481), each registration and its 200 answer; + 2: run
         // 9.7's batch checks read (D-482), its registration and its 200 answer; + 2: run 9.8b's
         // plans counts (D-485), its registration and its 200 answer.
-        ("StatusCode::", 2, 110),
+        ("StatusCode::", 2, 112),
     ] {
         assert_eq!(census::count_in_functions(census::CONTROL, needle), control);
         assert_eq!(census::production_count(needle), production, "{needle}");
@@ -308,7 +308,7 @@ async fn every_operation_has_a_human_summary_and_a_description() {
         assert_ne!(description, summary, "{id}");
         described += 1;
     }
-    assert_eq!(described, 55);
+    assert_eq!(described, 56);
 }
 
 /// Every answer that sets an `ETag` declares the header on its success response, and nothing else

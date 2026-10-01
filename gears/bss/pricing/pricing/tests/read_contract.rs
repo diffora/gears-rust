@@ -1176,15 +1176,20 @@ async fn exactly_the_reads_that_declare_an_etag_answer_one() {
         if path == "/price-book-entries" {
             path = format!("/price-book-entries?sku_id={}", w.sku);
         }
+        // D-482: the batch checks read names its revisions.
+        if path == "/plan-revisions/checks" {
+            path = format!("/plan-revisions/checks?revision_ids={}", w.revision);
+        }
         let (s, b, tag) = w.f.call("GET", &path, json!({}), None, None).await;
         assert_eq!(s, 200, "{path}: {b}");
         assert_eq!(!tag.is_empty(), declares, "{path}: ETag {tag:?}");
         measured += 1;
     }
-    // 25 since run 9.8b's plans counts (D-485). 24 was run 9.6's reservations read and
+    // 26 with run 9.7's batch checks read (D-482); 25 was run 9.8b's plans counts (D-485). 24 was run
+    // 9.6's reservations read and
     // effective-policy read (D-480, D-481), which
     // declare no ETag. 22 was run 9.3's unit counts (D-470).
-    assert_eq!(measured, 25, "every GET operation is measured");
+    assert_eq!(measured, 26, "every GET operation is measured");
 }
 
 // ------------------------------------------------------------------ phase 9 review R27: the writes' ETag
