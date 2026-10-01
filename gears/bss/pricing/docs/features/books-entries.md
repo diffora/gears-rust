@@ -228,3 +228,22 @@ Requirement: `cpt-cf-bss-pricing-fr-entry-key`; PRD AC #3.
 | `cpt-cf-bss-pricing-dod-entry-reference-handoff` | AC #3; `cpt-cf-bss-pricing-fr-entry-key` | Given Products unavailable before reserve, when an entry is created then REGISTRY_UNAVAILABLE leaves no entry; a successful create retains its live receipt. |
 
 Verification uses domain tests, scoped repository tests on both backends and REST positive/denial/precondition probes as applicable. Phase 2 checks must not mark later-phase behavior implemented. Golden consumer contracts belong to phase 4.
+
+
+**Final seam conformance (D-510).** Immutable UsageRatingPolicy remains owned by PriceBookEntry, with no item/price override. The
+semantic key is book, SKU, charge kind, normalized period, model and canonical policy-content digest;
+the policy reference is tenant-qualified `(tenant_id, policy_id, version, digest)`. Book remapping also
+matches dimension key, and preserves an unmatched source selection for explicit repair. Changed policy
+requires a new entry and revision. Creation verifies exact immutable meter evidence before reservation;
+price/plan submit and final apply recheck it. Legacy entries remain policy-less/readable; new usage
+creates require explicit policy. Shared backend tests prove upgrade preservation, content deduplication
+and concurrent identical/different-policy creation. No policy column is added to items or prices.
+
+The final seven typed signatures, CommercialReason mappings, PDP authorization, indefinite receipt
+retention, supported-model matrix and provider-test links are consolidated in
+[DESIGN](../DESIGN.md#executable-seam-fixture-boundary-d-509) and [PRD](../PRD.md). Acceptance and hold
+commands are SDK-only; historical replay never refreshes the original 24-hour seller-policy deadline.
+E1 (real meter declarations/adapter/provenance), E2 (resolved terms, authenticated market and consumer
+fencing), E3 (runtime PDP grants) and E4 (source history and safe policy transitions) remain external.
+The atlas owner reconciles C00/C01/C10; downstream Rating scheduling and Billing invoicing remain
+unexecuted integration obligations, even when Pricing provider parity is green.

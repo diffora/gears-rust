@@ -248,3 +248,22 @@ Requirement: `cpt-cf-bss-pricing-fr-plans`; PRD AC #15.
 | `cpt-cf-bss-pricing-dod-plan-retire-migration` | AC #15; `cpt-cf-bss-pricing-fr-plans` | Deferred (D-410). Given subscriptions pinned to a retiring plan, when only the request is approved then movement is not reported complete; an invalid target blocks the request. |
 
 Verification uses domain tests, scoped repository tests on both backends and REST positive/denial/precondition probes as applicable. Phase 2 checks must not mark later-phase behavior implemented. Golden consumer contracts belong to phase 4.
+
+
+**Final seam conformance (D-510).** Items select entries and expose immutable policy only by projection. Mixed-window plans preserve each
+item's policy; reusing an entry across plans never pools subscription-line usage. Copy/clone keeps entry
+identity; book remapping matches SKU/kind/period/model, dimension and policy digest. Submit and final
+apply bind the exact selected entry/policy version and validate authoritative meter evidence. Concurrent
+scheduled promotion has one durable published revision while existing acceptance and holds preserve
+the old entry/policy/price. Orders supplies explicit versioned BillingTerms independently of usage period
+(null); Pricing never infers a month or normalizes an anchor. Subscriptions owns order/version/attempt
+fencing and activates within accepted bounds; a hold is never a reusable eligibility token.
+
+The final seven typed signatures, CommercialReason mappings, PDP authorization, indefinite receipt
+retention, supported-model matrix and provider-test links are consolidated in
+[DESIGN](../DESIGN.md#executable-seam-fixture-boundary-d-509) and [PRD](../PRD.md). Acceptance and hold
+commands are SDK-only; historical replay never refreshes the original 24-hour seller-policy deadline.
+E1 (real meter declarations/adapter/provenance), E2 (resolved terms, authenticated market and consumer
+fencing), E3 (runtime PDP grants) and E4 (source history and safe policy transitions) remain external.
+The atlas owner reconciles C00/C01/C10; downstream Rating scheduling and Billing invoicing remain
+unexecuted integration obligations, even when Pricing provider parity is green.

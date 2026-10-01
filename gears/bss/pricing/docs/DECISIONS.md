@@ -13,6 +13,12 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 
 - [Register](#register)
 - [Entries](#entries)
+- [D-505 — Durable commercial receipt storage (2026-10-01)](#d-505--durable-commercial-receipt-storage-2026-10-01)
+- [D-506 — Authorized commercial provider boundary (2026-10-01)](#d-506--authorized-commercial-provider-boundary-2026-10-01)
+- [D-507 — Atomic acceptance and durable authenticated command replay (2026-10-01)](#d-507--atomic-acceptance-and-durable-authenticated-command-replay-2026-10-01)
+- [D-508 — Frozen first holds and fresh original-binding eligibility (2026-10-01)](#d-508--frozen-first-holds-and-fresh-original-binding-eligibility-2026-10-01)
+- [D-509 — Executable Pricing seam fixtures and transport boundary (2026-10-01)](#d-509--executable-pricing-seam-fixtures-and-transport-boundary-2026-10-01)
+- [D-510 — Database parity and provider handoff (2026-10-01)](#d-510--database-parity-and-provider-handoff-2026-10-01)
 
 <!-- /toc -->
 
@@ -109,6 +115,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-502 | H | Immutable usage policies belong to entries and their semantic key | DECIDED 2026-10-01 · Pricing Seam Contracts Task 2; amends D-386, D-401, D-427 |
 | D-504 | H | Pure new-sale terms validate a bounded commercial profile and snapshot integrity | DECIDED 2026-10-01 · Pricing Seam Contracts Task 4 |
 | D-508 | H | Frozen first holds, original-price eligibility and durable replay | DECIDED 2026-10-01 · Pricing Seam Contracts Task 6 |
+| D-510 | H | Database parity evidence and bounded provider handoff | DECIDED 2026-10-01 · Pricing Seam Contracts Task 8 |
 
 ## Entries
 
@@ -1483,3 +1490,43 @@ Its older C01 method placement and C10 plan-item ownership remain a publishing-o
 the delivered SDK ports and entry ownership are authoritative for these executable provider fixtures.
 No external atlas file is edited, no consumer integration status is promoted, and E1 production meter
 semantics remains externally blocked. Task 8 and the shared G4 controller gate follow this slice.
+
+
+## D-510 — Database parity and provider handoff (2026-10-01)
+
+Retain D-501–D-509's final typed ports, refusal reasons, PDP authorization and indefinite receipt
+retention. Task 8 adds a common SQLite/PostgreSQL conformance suite and actual persisted-database
+restart boundaries; it does not change production signatures, schema or commercial behavior.
+The complete method/query/output matrix and source links are in
+[DESIGN](DESIGN.md#executable-seam-fixture-boundary-d-509). New usage entries own immutable policies;
+semantic entry identity includes canonical policy content digest. Book remapping also matches the
+registered dimension and cannot silently replace a policy. Price/plan submit and final apply verify
+exact immutable meter evidence, with no dependency call inside the Pricing transaction. D-504's
+supported-model matrix remains binding: recurring/one-time Flat or PerUnit, usage PerUnit/Volume/
+Graduated, explicit month/year BillingTerms, no hourly minimum fee or included quantity.
+
+The pre-seam migration proof preserves phase-9 entries, published bindings and unversioned operation
+payloads; tenant-qualified receipt/policy keys and the extended entry index are inspected. Identical
+and different-policy concurrent entry creates and the one-winner acceptance race use real services.
+Acceptance/hold replay is durable beyond 24 hours and uses the original frozen policy/money/terms;
+new fulfilment still requires live eligibility. The report records actual scoped checks at the final
+commit. The orchestrator owns the single G4 controller gate.
+
+Atlas baseline 1.1.0 has SHA-256
+`95ca93b9814b7ff131711990d4d9fea246776704820370407c97a10a36f8c4ed`.
+Its owner must reconcile C00/C01/C10 and regenerate the embedded download. The SDD atlas-handoff.md
+lists exact changes and final-SHA implementation/test links; it is not a published baseline or release
+certificate. F07/F22/F31 provider evidence and F23/F24 Pricing input/math evidence remain distinct
+from unexecuted downstream scheduler, collection and invoicing specifications.
+
+**External production obligations remain open.** E1: Types Registry owns immutable declarations,
+Usage Collector the authorized exact-version semantic adapter, and source/IRM owners the accrual
+provenance. Delivery must identify the implementation and tracked work and prove canonical units,
+SUM/additivity, source integration, historical immutability, authorization, outage behavior and real
+VM/cloudlet vectors. E2: Orders resolves Subscriptions-owned versioned BillingTerms and authenticates
+payer/market; Subscriptions checks committed order/version and attempt fencing immediately before
+activation. E3: deployment grants scoped actions to Orders, Subscriptions and Rating; names confer no
+privilege. E4: Collector retains immutable source history, Subscriptions schedules incompatible policy
+changes at the next UTC hour boundary, and Rating consumes the original history. Rating owns hourly
+scheduling/reset/catch-up and exact amounts; Billing sums exact contributions before HALF_EVEN invoice
+rounding. Pricing tests do not certify those downstream behaviors.

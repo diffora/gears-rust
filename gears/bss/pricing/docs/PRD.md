@@ -647,3 +647,29 @@ there is no new public HTTP command API. A future remote transport binds the sam
 Production meter declarations, Rating scheduling/roll-up and Billing invoice assertions remain external
 obligations. Illustrative meter names are registered only by the contract-test provider. Task 8 and G4
 are still required for the complete implementation handoff.
+
+
+**Final commercial provider acceptance criteria (D-510).** The seven typed methods, canonical refusal
+classes, indefinite retention and database evidence are consolidated in
+[DESIGN](DESIGN.md#executable-seam-fixture-boundary-d-509). An SDK preview does not accept an order;
+SellabilityV1::check issues the immutable receipt, PricingAcceptanceV1::acceptance reads it, hold freezes
+the first eligible activation, and check_fulfilment rechecks current eligibility. Orders must retain the
+receipt; Subscriptions retains accepted entry/policy/price, dated descriptors and BillingTerms. Existing
+recurring/one-time Flat/PerUnit and usage PerUnit/Volume/Graduated support remains exactly the D-504
+matrix above. No Package sale, allowance, FX, promotional phase, cross-line pooling or hourly minimum fee
+is admitted. Approval submit and final apply revalidate authoritative meter evidence and local entry
+identity. Different plan items may use different entry-owned windows; a book change must match the
+policy digest and dimension key as well as SKU/kind/period/model, retaining an unmatched old entry for
+explicit repair. Legacy policy-less reads remain valid while new usage sales fail closed.
+
+**External production obligations remain open.** E1: Types Registry owns immutable declarations,
+Usage Collector the authorized exact-version semantic adapter, and source/IRM owners the accrual
+provenance. Delivery must identify the implementation and tracked work and prove canonical units,
+SUM/additivity, source integration, historical immutability, authorization, outage behavior and real
+VM/cloudlet vectors. E2: Orders resolves Subscriptions-owned versioned BillingTerms and authenticates
+payer/market; Subscriptions checks committed order/version and attempt fencing immediately before
+activation. E3: deployment grants scoped actions to Orders, Subscriptions and Rating; names confer no
+privilege. E4: Collector retains immutable source history, Subscriptions schedules incompatible policy
+changes at the next UTC hour boundary, and Rating consumes the original history. Rating owns hourly
+scheduling/reset/catch-up and exact amounts; Billing sums exact contributions before HALF_EVEN invoice
+rounding. Pricing tests do not certify those downstream behaviors.

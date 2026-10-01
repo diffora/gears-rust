@@ -1021,3 +1021,71 @@ still own hourly work, source coverage, reset behavior and complete parent/invoi
 No production meter, timer, event or HTTP command is added. Remote deployment must bind the exact
 PricingReadV1, PricingAcceptanceV1 and SellabilityV1 ports to the same services. SDK types remain
 serde-free. The read-only atlas baseline and outstanding reconciliation are recorded in D-509.
+
+
+**Final provider surface (D-510).** All methods are async, take `&self` and
+`ctx: &SecurityContext`, and return `Result<Output, CanonicalError>`; the table gives the
+remaining typed arguments and output. Only the two commands take `meta: CommandMeta`.
+
+| Trait / method | Query | Output | Semantics |
+| --- | --- | --- | --- |
+| `PricingReadV1::resolve` | `ResolveQuery` | `ResolvedBindings` | SafeRead; dated preview |
+| `PricingReadV1::price` | `PriceQuery` | `ImmutablePrice` | SafeRead; immutable money |
+| `PricingReadV1::current_revision` | `PlanQuery` | `RevisionRef` | SafeRead; server-time due promotion |
+| `PricingAcceptanceV1::acceptance` | `AcceptanceQuery` | `AcceptanceReceipt` | SafeRead; retained receipt |
+| `PricingAcceptanceV1::hold` | `FulfilmentQuery`, `CommandMeta` | `HeldBindings` | IdempotentWrite; frozen first hold |
+| `SellabilityV1::check` | `NewSaleQuery`, `CommandMeta` | `AcceptanceReceipt` | IdempotentWrite; durable acceptance |
+| `SellabilityV1::check_fulfilment` | `FulfilmentQuery` | `FulfilmentEligibility` | SafeRead; fresh eligibility |
+
+The declarations live in [read.rs](../pricing-sdk/src/read.rs) and
+[acceptance.rs](../pricing-sdk/src/acceptance.rs); implementations are
+[PricingReadProvider](../pricing/src/api/pricing_read.rs),
+[PricingAcceptanceProvider](../pricing/src/api/pricing_acceptance.rs) and
+[SellabilityProvider](../pricing/src/api/sellability.rs). Commands remain SDK-only; a remote
+adapter must bind these ports to the same services. No REST command or consumer integration is implied.
+
+PDP-derived scope and explicit catalog tenant qualify every lookup, including replay. Caller tenant
+and subject come from SecurityContext, never the idempotency key or a system-looking actor name.
+Malformed/unsupported terms retain typed `CommercialReason` metadata and 400; `ResolutionChanged`,
+`IdempotencyConflict`, `AcceptanceMismatch`, `PriceClosed`, `HoldExpired`, `SkuRetired`,
+`MarketChanged` and `ActivationOutsideAcceptedWindow` are 409; denial is 403 and an authorized missing
+receipt is 404. An absent meter provider is typed `UNCONFIGURED_DEPENDENCY`; an unreachable configured
+provider is 503. Dependency failure must not masquerade as MissingRatingPolicy or commercial refusal.
+
+Acceptance business identity is `(catalog tenant, order_id, order_version, line_id)`; command identity
+also includes authenticated caller tenant/subject, operation and key. Same-key changed content conflicts;
+a new key with identical business content attaches to the original acceptance. Receipts, commands,
+policy versions and schema-1 readers are retained indefinitely. The initial versioned seller hold policy
+is 24 hours; expiry limits new eligibility, never historical reads or exact command replay. Neither replay
+nor a different key refreshes accepted money or the deadline. First activation is within
+`start_at <= activation_at < hold_until`, and server time must still be before `hold_until`.
+A fresh eligibility result is an observation, not a reusable activation permission.
+
+**Database conformance evidence.** [SQLite](../pricing/tests/sqlite_pricing_seams.rs) and
+[PostgreSQL](../pricing/tests/postgres_pricing_seams.rs) invoke the same
+[scenario suite](../pricing/tests/seam_parity_support/mod.rs) and
+[acceptance race](../pricing/tests/seam_support/mod.rs). They cover one durable winner, changed payload
+and business-key replay after 25 hours, authorization denial, explicit-close interleaving, money digest
+stability, concurrent due promotion and immutable held policies. Crash and response-loss phases destroy
+the runtime and reopen persisted storage with a new pool. Scoped persisted reads supply the race result.
+
+The [upgrade proof](../pricing/tests/seam_parity_support/migration.rs) starts at the committed phase-9
+chain through migration 17 and seeds policy-less usage entries, published revisions and old entry/item
+reference-operation payloads. Migrations 18/19 preserve bindings and payloads, add no policy columns
+to items or prices, leave receipt tables empty and match a fresh install on each engine. Existing entries
+remain readable without invented policy; new usage-entry authoring requires an explicit policy.
+Concurrent identical-policy creates have one entry winner; different policies create distinct entries
+and identical content is interned once per tenant. PostgreSQL goldens are compared, never regenerated.
+G4 controller certification and atlas publication are orchestrator/atlas-owner work, separate from these tests.
+
+**External production obligations remain open.** E1: Types Registry owns immutable declarations,
+Usage Collector the authorized exact-version semantic adapter, and source/IRM owners the accrual
+provenance. Delivery must identify the implementation and tracked work and prove canonical units,
+SUM/additivity, source integration, historical immutability, authorization, outage behavior and real
+VM/cloudlet vectors. E2: Orders resolves Subscriptions-owned versioned BillingTerms and authenticates
+payer/market; Subscriptions checks committed order/version and attempt fencing immediately before
+activation. E3: deployment grants scoped actions to Orders, Subscriptions and Rating; names confer no
+privilege. E4: Collector retains immutable source history, Subscriptions schedules incompatible policy
+changes at the next UTC hour boundary, and Rating consumes the original history. Rating owns hourly
+scheduling/reset/catch-up and exact amounts; Billing sums exact contributions before HALF_EVEN invoice
+rounding. Pricing tests do not certify those downstream behaviors.

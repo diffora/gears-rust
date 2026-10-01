@@ -434,3 +434,95 @@ pub fn compare_bindings(
         assert_eq!(a, e, "all entry/policy/money/descriptor pins must survive");
     }
 }
+
+/// Durable rows observed after two synchronized identical commands.
+pub struct RaceResult {
+    pub receipt_ids: Vec<Uuid>,
+    pub stored_acceptances: usize,
+    pub stored_commands: usize,
+}
+
+/// Real acceptance race on a caller-supplied migrated database.
+pub async fn run_acceptance_race(db: toolkit_db::DBProvider<toolkit_db::DbError>) -> RaceResult {
+    use bss_pricing::infra::storage::repo::{acceptance_repo, commercial_command_repo};
+    use bss_pricing_sdk::acceptance::SellabilityV1;
+    // This scenario uses repository reads only; no raw connection needs the fixture DSN.
+    let catalog = Arc::new(plan_support::Catalog::default());
+    let fixture = plan_support::Fixture::on(
+        db,
+        Uuid::new_v4(),
+        plan_support::entry_support::TestDsn::of(String::new()),
+        catalog.clone(),
+    )
+    .await;
+    let f = acceptance_fixture::AcceptanceFixture::on(fixture, catalog).await;
+    let barrier = tokio::sync::Barrier::new(2);
+    let call = || async {
+        barrier.wait().await;
+        f.sellability
+            .check(&f.ctx, f.query.clone(), f.meta.clone())
+            .await
+            .unwrap()
+    };
+    let (a, b) = tokio::join!(call(), call());
+    let conn = f.fixture.db.conn().unwrap();
+    let scope = scope(&f.fixture);
+    let tenant = f.ctx.subject_tenant_id();
+    let stored = acceptance_repo::find_business(
+        &conn,
+        &scope,
+        tenant,
+        f.query.order_id,
+        &f.query.order_version.to_string(),
+        f.query.line_id,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let command = commercial_command_repo::find_scope(
+        &conn,
+        &scope,
+        &commercial_command_repo::CommandScope {
+            tenant_id: tenant,
+            caller_tenant_id: tenant,
+            caller_id: f.ctx.subject_id(),
+            operation: "check".into(),
+            idempotency_key: f.meta.idempotency_key.clone(),
+        },
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(stored.id, a.acceptance_id);
+    assert_eq!(command.receipt_id, stored.id);
+    let (stored_acceptances, stored_commands) = commercial_counts(&f.fixture).await;
+    RaceResult {
+        receipt_ids: vec![a.acceptance_id, b.acceptance_id],
+        stored_acceptances,
+        stored_commands,
+    }
+}
+
+/// Tenant-scoped persisted rows, independent of provider/mock call counts.
+pub async fn commercial_counts(f: &Fixture) -> (usize, usize) {
+    use bss_pricing::infra::storage::entity::{acceptance, commercial_command};
+    use sea_orm::EntityTrait;
+    use toolkit_db::secure::SecureEntityExt;
+    let conn = f.db.conn().unwrap();
+    let scope = scope(f);
+    let a = acceptance::Entity::find()
+        .secure()
+        .scope_with(&scope)
+        .all(&conn)
+        .await
+        .unwrap();
+    let c = commercial_command::Entity::find()
+        .secure()
+        .scope_with(&scope)
+        .all(&conn)
+        .await
+        .unwrap();
+    (a.len(), c.len())
+}
+
+pub mod acceptance_fixture;
