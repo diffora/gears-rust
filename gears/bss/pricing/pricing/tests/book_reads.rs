@@ -1902,6 +1902,10 @@ async fn the_unit_list_pages_newest_first_with_the_id_breaking_a_tie_the_same_wa
 /// an order the list does not take is 400 `INVALID_ORDERBY_FIELD`.
 #[tokio::test]
 async fn a_cursor_keeps_its_order_and_one_minted_before_the_order_still_continues() {
+    use toolkit_odata::{CursorV1, SortDir};
+    // The narrowing hash of `kind=prices` as the list minted it before run 9.3: the first 8 bytes
+    // of the SHA-256 of {"kind":"prices","ref_id":null,"state":null}, with no order in it.
+    const BEFORE: &str = "a1a21e85af067d2d";
     // The phase 9 review's R67 (products) and its twin here: the refusal names the key it refuses,
     // never the whole order, so a supported field is never called unsupported.
     for (order, said) in [
@@ -1922,10 +1926,6 @@ async fn a_cursor_keeps_its_order_and_one_minted_before_the_order_still_continue
         );
         assert!(!text.contains("submitted_at desc,"), "{order}: {b}");
     }
-    use toolkit_odata::{CursorV1, SortDir};
-    // The narrowing hash of `kind=prices` as the list minted it before run 9.3: the first 8 bytes
-    // of the SHA-256 of {"kind":"prices","ref_id":null,"state":null}, with no order in it.
-    const BEFORE: &str = "a1a21e85af067d2d";
     let (f, _catalog) = setup().await;
     let book = plan_support::book(&f, "cursors").await;
     let t0 = whole_second(time::OffsetDateTime::now_utc()) - time::Duration::hours(1);

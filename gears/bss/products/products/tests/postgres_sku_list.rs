@@ -316,7 +316,6 @@ async fn null_filters_the_order_and_the_counts_hold_on_postgres() {
             draft: 2,
             published: 1,
             deprecated: 1,
-            retiring: 0,
             retired: 0,
             in_review: 1,
         }

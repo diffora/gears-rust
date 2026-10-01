@@ -252,8 +252,9 @@ async fn retiring_a_retired_category_is_category_retired() {
     assert_eq!(problem_code(&body_json(r).await), "CATEGORY_RETIRED");
 }
 
-/// P-D-208 (#9, amends P-D-186): a category is in use only while a SKU in `draft`, `published`,
-/// `deprecated` or `retiring` names it; SKUs that are all `retired` no longer hold it.
+/// P-D-208 (#9, amends P-D-186; P-D-248): a category is in use only while a SKU in `draft`,
+/// `published` or `deprecated` names it. A retire under review keeps one of those, so it still
+/// holds the category. SKUs that are all `retired` no longer hold it.
 #[tokio::test]
 async fn only_a_sku_that_is_not_retired_keeps_a_category_in_use() {
     use crate::test_support::{id_matches, repo_connection, seed_rest_sku};
@@ -265,7 +266,6 @@ async fn only_a_sku_that_is_not_retired_keeps_a_category_in_use() {
         (0, "draft", StatusCode::CONFLICT),
         (1, "published", StatusCode::CONFLICT),
         (2, "deprecated", StatusCode::CONFLICT),
-        (3, "retiring", StatusCode::CONFLICT),
         (4, "retired", StatusCode::OK),
     ] {
         let c = body_json(
@@ -375,7 +375,7 @@ async fn a_category_reads_alone_with_its_etag_and_sku_count() {
             "draft",
             "published",
             "deprecated",
-            "retiring",
+            "published",
             "retired",
             "retired",
         ],

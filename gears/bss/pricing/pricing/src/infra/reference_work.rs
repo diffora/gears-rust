@@ -1308,16 +1308,20 @@ async fn observe_sku(
     // and a create takes no deprecated SKU, except a plan item's whose plan's published revision
     // in effect carries it (`carried`, D-465). An attach and a rereserve do: the reference they
     // replace already protected that SKU (D-413). The kind adds its own rule on the SKU's type.
-    let refusal = match sku.lifecycle {
-        Lifecycle::Draft => Some("SKU_DRAFT"),
-        Lifecycle::Deprecated if op.kind == OpKind::Create.as_str() && !carried => {
-            Some("SKU_DEPRECATED")
+    let refusal = if sku.retire_pending {
+        Some("SKU_RETIRING")
+    } else {
+        match sku.lifecycle {
+            Lifecycle::Draft => Some("SKU_DRAFT"),
+            Lifecycle::Deprecated if op.kind == OpKind::Create.as_str() && !carried => {
+                Some("SKU_DEPRECATED")
+            }
+            Lifecycle::Retired => Some("SKU_RETIRING"),
+            Lifecycle::Published | Lifecycle::Deprecated => match kind {
+                RefKind::Entry => charge_kind_for(sku.r#type).err().map(|e| e.code),
+                RefKind::PlanItem => plan_item::type_refusal(sku.r#type),
+            },
         }
-        Lifecycle::Retiring | Lifecycle::Retired => Some("SKU_RETIRING"),
-        Lifecycle::Published | Lifecycle::Deprecated => match kind {
-            RefKind::Entry => charge_kind_for(sku.r#type).err().map(|e| e.code),
-            RefKind::PlanItem => plan_item::type_refusal(sku.r#type),
-        },
     };
     if let Some(code) = refusal {
         return Ok((

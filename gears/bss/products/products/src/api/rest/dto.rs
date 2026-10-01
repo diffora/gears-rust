@@ -47,8 +47,19 @@ impl TryFrom<Category> for ProductsCategoryDto {
         })
     }
 }
+/// A lifecycle change that takes effect on `from` (P-D-249).
+#[toolkit_macros::api_dto(response)]
+pub struct LifecycleNextDto {
+    pub lifecycle: ProductsLifecycle,
+    #[serde(with = "crate::infra::serde_date")]
+    pub from: Date,
+}
 /// Wire representation of the registry Sku.
 #[toolkit_macros::api_dto(response)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "sellable, type_change_pending and retire_pending are three independent flags (P-D-248)"
+)]
 pub struct SkuDto {
     pub id: Uuid,
     pub tenant_id: Uuid,
@@ -61,6 +72,10 @@ pub struct SkuDto {
     pub description: String,
     pub sellable: bool,
     pub lifecycle: ProductsLifecycle,
+    /// Set while a retire is in review (P-D-248). The lifecycle stays.
+    pub retire_pending: bool,
+    /// A dated lifecycle change that has not arrived (P-D-249). Null when none is pending.
+    pub lifecycle_next: Option<LifecycleNextDto>,
     pub revision: i64,
     pub published_version: i64,
     pub gl_code: Option<String>,
@@ -90,6 +105,11 @@ impl From<Sku> for SkuDto {
             description: value.description,
             sellable: value.sellable,
             lifecycle: value.lifecycle.into(),
+            retire_pending: value.retire_pending,
+            lifecycle_next: value.lifecycle_next.map(|next| LifecycleNextDto {
+                lifecycle: next.lifecycle.into(),
+                from: next.from,
+            }),
             revision: value.revision,
             published_version: value.published_version,
             gl_code: value.gl_code,
@@ -281,7 +301,6 @@ pub struct ProductsSkuCounts {
     pub draft: u64,
     pub published: u64,
     pub deprecated: u64,
-    pub retiring: u64,
     pub retired: u64,
     pub in_review: u64,
 }
@@ -292,7 +311,6 @@ impl From<crate::infra::storage::repo::SkuCounts> for ProductsSkuCounts {
             draft: c.draft,
             published: c.published,
             deprecated: c.deprecated,
-            retiring: c.retiring,
             retired: c.retired,
             in_review: c.in_review,
         }

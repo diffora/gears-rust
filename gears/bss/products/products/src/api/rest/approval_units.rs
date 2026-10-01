@@ -970,7 +970,7 @@ async fn decision_audit(
     now: OffsetDateTime,
 ) -> Result<(), TxError> {
     let action = audited.action();
-    let left = g::lifecycle(tx, ctx.subject_tenant_id(), unit.ref_id).await?;
+    let left = g::recorded_to(tx, ctx.subject_tenant_id(), unit.ref_id).await?;
     let moved = repo::LifecycleMove::between(found, left);
     g::audit(tx, ctx, action, "approval_unit", unit.id, note, now, moved).await
 }

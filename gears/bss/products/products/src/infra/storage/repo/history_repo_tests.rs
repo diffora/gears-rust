@@ -107,7 +107,7 @@ async fn the_history_orders_by_audit_id_across_every_page() {
     let conn = db.conn().unwrap();
     unit(&conn, UNIT, TENANT, SKU, "sku_retire").await;
     unit(&conn, OTHER_UNIT, TENANT, OTHER_SKU, "sku_publish").await;
-    let moved = LifecycleMove::between(Lifecycle::Published, Lifecycle::Retiring);
+    let moved = LifecycleMove::between(Lifecycle::Published, Lifecycle::Deprecated);
     // Three rows share one instant, inserted against their id order; the last id is the earliest
     // instant, and `written_at` decides nothing.
     row(&conn, 3, TENANT, "sku", SKU, 5, moved, None).await;
@@ -191,7 +191,7 @@ async fn the_history_orders_by_audit_id_across_every_page() {
             Some("sku_retire"),
             Some("n1"),
             Some(Lifecycle::Published),
-            Some(Lifecycle::Retiring),
+            Some(Lifecycle::Deprecated),
             ACTOR,
             utc(2026, 9, 27, 10, 0, 5),
         )
@@ -335,4 +335,166 @@ async fn a_cursor_of_the_written_at_order_is_refused() {
         page_sku_history(&conn, TENANT, SKU, &stale).await,
         Err(SkuListError::Query(_))
     ));
+}
+
+async fn legacy(
+    runner: &impl DBRunner,
+    n: u128,
+    kind: &str,
+    subject: Uuid,
+    action: &str,
+    from: Option<&str>,
+    to: Option<&str>,
+) {
+    let model = crate::infra::storage::entity::audit_log::ActiveModel {
+        audit_id: Set(Uuid::from_u128(n)),
+        tenant_id: Set(TENANT),
+        actor_ref: Set(ACTOR),
+        action: Set(action.to_owned()),
+        subject_kind: Set(kind.to_owned()),
+        subject_id: Set(Some(subject)),
+        subject_revision: Set(None),
+        error_code: Set(None),
+        attempted_key: Set(None),
+        reason: Set(None),
+        correlation_id: Set(None),
+        written_at: Set(utc(2026, 9, 27, 10, 0, u8::try_from(n).unwrap_or(1))),
+        session_id: Set(None),
+        ceremony_ref: Set(None),
+        seal_state: Set("unsealed".to_owned()),
+        chain_id: Set(None),
+        seq: Set(None),
+        prev_hash: Set(None),
+        row_hash: Set(None),
+        from_lifecycle: Set(from.map(str::to_owned)),
+        to_lifecycle: Set(to.map(str::to_owned)),
+    };
+    crate::infra::storage::entity::audit_log::Entity::insert(model.clone())
+        .secure()
+        .scope_with_model(&AccessScope::for_tenant(TENANT), &model)
+        .unwrap()
+        .exec(runner)
+        .await
+        .unwrap();
+}
+
+/// A stored `retiring` is mapped at read (P-D-248). Parsing it would be a corrupt row, which the
+/// history door serves as 500.
+#[tokio::test]
+async fn a_stored_retiring_move_is_mapped_and_never_a_corrupt_row() {
+    let (db, _, _, _dsn) = test_db().await;
+    let conn = db.conn().unwrap();
+    let earlier = Uuid::from_u128(0x0a_11);
+    let resumed = Uuid::from_u128(0x0a_12);
+    unit(&conn, earlier, TENANT, SKU, "sku_retire").await;
+    unit(&conn, resumed, TENANT, SKU, "sku_retire").await;
+    unit(&conn, UNIT, TENANT, SKU, "sku_retire").await;
+    legacy(
+        &conn,
+        1,
+        "approval_unit",
+        earlier,
+        "approval.submit",
+        Some("published"),
+        Some("retiring"),
+    )
+    .await;
+    legacy(
+        &conn,
+        2,
+        "approval_unit",
+        resumed,
+        "approval.submit",
+        Some("retiring"),
+        Some("retiring"),
+    )
+    .await;
+    legacy(
+        &conn,
+        3,
+        "approval_unit",
+        UNIT,
+        "approval.submit",
+        Some("deprecated"),
+        Some("retiring"),
+    )
+    .await;
+    legacy(
+        &conn,
+        4,
+        "approval_unit",
+        UNIT,
+        "approval.vote",
+        Some("retiring"),
+        Some("retiring"),
+    )
+    .await;
+    legacy(
+        &conn,
+        5,
+        "approval_unit",
+        UNIT,
+        "approval.applied",
+        Some("retiring"),
+        Some("retired"),
+    )
+    .await;
+    legacy(
+        &conn,
+        6,
+        "approval_unit",
+        UNIT,
+        "approval.rejected",
+        Some("retiring"),
+        Some("deprecated"),
+    )
+    .await;
+    legacy(
+        &conn,
+        7,
+        "sku",
+        SKU,
+        "sku.unfence",
+        Some("retiring"),
+        Some("deprecated"),
+    )
+    .await;
+    legacy(
+        &conn,
+        8,
+        "sku",
+        SKU,
+        "sku.fence_expired",
+        Some("retiring"),
+        Some("published"),
+    )
+    .await;
+    let page = page_sku_history(&conn, TENANT, SKU, &ODataQuery::default())
+        .await
+        .expect("a stored retiring is mapped, never a 500");
+    let moves: Vec<_> = page
+        .items
+        .iter()
+        .map(|e| {
+            format!(
+                "{} {}>{}",
+                e.action,
+                e.from_lifecycle.map_or("-", Lifecycle::as_str),
+                e.to_lifecycle.map_or("-", Lifecycle::as_str)
+            )
+        })
+        .collect();
+    assert_eq!(
+        moves,
+        [
+            "approval.submit published>published",
+            "approval.submit published>published",
+            "approval.submit deprecated>deprecated",
+            "approval.vote deprecated>deprecated",
+            "approval.applied deprecated>retired",
+            "approval.rejected deprecated>deprecated",
+            "sku.unfence deprecated>deprecated",
+            "sku.fence_expired published>published",
+        ]
+    );
 }

@@ -217,7 +217,8 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .operation_id("bss_products.retire_category")
         .summary("Retire an unused category")
         .description(
-            "Retires a category no SKU in draft, published, deprecated or retiring names; retired \
+            "Retires a category no SKU in draft, published or deprecated names; a retire under \
+             review keeps one of those, so it still holds the category (P-D-248). Retired \
              SKUs do not keep it in use (P-D-208). Retiring the tenant's default clears it in the \
              same transaction, with its own version and audit row, and leaves the tenant without \
              a default (P-D-220). Refusals: 404; 409 CATEGORY_IN_USE, or CATEGORY_RETIRED when it \

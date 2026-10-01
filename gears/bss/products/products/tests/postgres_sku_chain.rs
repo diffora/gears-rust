@@ -590,7 +590,7 @@ async fn reserve_vs_both_fences_never_both_commit() {
                             if reserve {
                                 if reservation_allowed(
                                     sku.lifecycle,
-                                    sku.type_change_pending || sku.lifecycle == Lifecycle::Retiring,
+                                    sku.type_change_pending || sku.retire_pending,
                                 )
                                 .is_err()
                                 {
@@ -643,9 +643,7 @@ async fn reserve_vs_both_fences_never_both_commit() {
             .await
             .unwrap()
             .unwrap();
-        assert!(
-            !(sku.type_change_pending || sku.lifecycle == Lifecycle::Retiring) || live.is_empty()
-        );
+        assert!(!(sku.type_change_pending || sku.retire_pending) || live.is_empty());
     }
 }
 

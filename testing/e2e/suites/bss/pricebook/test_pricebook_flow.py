@@ -756,7 +756,6 @@ def test_a_sku_without_a_category_is_priced_in_two_models_and_its_reads_carry_it
             "draft": 0,
             "published": 1,
             "deprecated": 0,
-            "retiring": 0,
             "retired": 0,
             "in_review": 0,
         }, r.text

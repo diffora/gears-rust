@@ -6,7 +6,6 @@ fn reservations_require_an_unfenced_live_sku() {
         Lifecycle::Draft,
         Lifecycle::Published,
         Lifecycle::Deprecated,
-        Lifecycle::Retiring,
         Lifecycle::Retired,
     ] {
         assert!(reservation_allowed(lifecycle, true).is_err());
@@ -22,10 +21,10 @@ fn reservations_require_an_unfenced_live_sku() {
         "SKU_FENCED"
     );
     assert_eq!(
-        reservation_allowed(Lifecycle::Retiring, false)
+        reservation_allowed(Lifecycle::Published, true)
             .unwrap_err()
             .code(),
-        "SKU_RETIRING"
+        "SKU_FENCED"
     );
 }
 #[test]

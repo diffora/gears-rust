@@ -38,7 +38,7 @@ fn each_set_carries_its_stored_tokens_on_the_wire() {
     );
     assert_eq!(
         tokens!(ProductsLifecycle),
-        ["draft", "published", "deprecated", "retiring", "retired"]
+        ["draft", "published", "deprecated", "retired"]
     );
     assert_eq!(tokens!(ProductsBillingTiming), ["advance", "arrears"]);
     assert_eq!(tokens!(ProductsCategoryStatus), ["active", "retired"]);
@@ -96,7 +96,6 @@ fn a_mapped_set_carries_the_source_token() {
             Lifecycle::Draft,
             Lifecycle::Published,
             Lifecycle::Deprecated,
-            Lifecycle::Retiring,
             Lifecycle::Retired,
         ],
         ProductsLifecycle::ALL,

@@ -263,16 +263,35 @@ pub fn validate_type_change(references: u32) -> Result<(), DomainError> {
     Ok(())
 }
 
+/// The lifecycle a head stores, and a dated change that may already be due (P-D-249).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LifecycleHead {
+    pub lifecycle: Lifecycle,
+    pub next: Option<Lifecycle>,
+    pub next_from: Option<time::Date>,
+}
+
+/// The lifecycle in force on `today`: `next` when `next_from` has arrived, otherwise the stored
+/// lifecycle. Reads use this; they do not wait for a write to fold the row (P-D-249).
+#[must_use]
+pub fn effective_lifecycle(head: LifecycleHead, today: time::Date) -> Lifecycle {
+    match (head.next, head.next_from) {
+        (Some(next), Some(from)) if from <= today => next,
+        _ => head.lifecycle,
+    }
+}
+
 /// @cpt-cf-bss-products-fr-sku-lifecycle
+/// A retire is not an edge (P-D-248): apply moves `published` or `deprecated` straight to
+/// `retired`. There is no `retiring` lifecycle.
 #[must_use]
 pub const fn lifecycle_edge(from: Lifecycle, to: Lifecycle) -> bool {
-    use Lifecycle::{Deprecated, Draft, Published, Retired, Retiring};
+    use Lifecycle::{Deprecated, Draft, Published, Retired};
     matches!(
         (from, to),
-        (Draft | Deprecated | Retiring, Published)
-            | (Published | Retiring, Deprecated)
-            | (Published | Deprecated, Retiring)
-            | (Retiring, Retired)
+        (Draft | Deprecated, Published)
+            | (Published, Deprecated)
+            | (Published | Deprecated, Retired)
     )
 }
 

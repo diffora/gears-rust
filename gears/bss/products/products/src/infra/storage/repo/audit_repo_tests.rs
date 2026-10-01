@@ -225,7 +225,7 @@ async fn a_batch_of_audit_rows_is_written_whole_or_not_at_all() {
                 "sku",
                 at(0),
             );
-            c.lifecycle = LifecycleMove::between(Lifecycle::Retiring, Lifecycle::Published);
+            c.lifecycle = LifecycleMove::between(Lifecycle::Deprecated, Lifecycle::Published);
             (c, PRODUCT, Some(7))
         })
         .collect();
@@ -248,7 +248,7 @@ async fn a_batch_of_audit_rows_is_written_whole_or_not_at_all() {
             "sku.fence_expired",
             Some(PRODUCT),
             Some(7),
-            Some("retiring"),
+            Some("deprecated"),
             Some("published"),
             "unsealed"
         )

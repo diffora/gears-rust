@@ -158,7 +158,7 @@ approve or settings permission and tenant scope; holding multiple grants never b
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-read-model-events-browse-maps-published-only`
 
 1. [ ] - `p1` - Authenticate and scope the retained ProductCatalogClientV1 browse request before selecting source SKUs - `inst-read-browse-scope`
-2. [ ] - `p1` - Serve Published and Deprecated SKUs with lifecycle status and deprecated flag; exclude draft, retiring and retired entries - `inst-read-browse-map`
+2. [ ] - `p1` - Serve Published and Deprecated SKUs with lifecycle status and deprecated flag; exclude draft and retired entries. A retire under review stays published or deprecated (P-D-248) - `inst-read-browse-map`
 3. [ ] - `p1` - Preserve the transport's existing response contract until phase 2 without recreating Product parents, CatalogVersion freezes or a second catalog authority - `inst-read-browse-contract`
 
 Browse is the current published catalog surface; historical period binding always uses versions/as-of?date=.
