@@ -249,6 +249,20 @@ async fn facade_over(
     pricing_source: Arc<PricingApprovalSource>,
     products_source: Arc<ProductsApprovalSource>,
 ) -> Router {
+    facade_in(
+        pricing_source,
+        products_source,
+        &toolkit::api::OpenApiRegistryImpl::new(),
+    )
+    .await
+}
+
+/// [`facade_over`], with its doors registered in `openapi`.
+async fn facade_in(
+    pricing_source: Arc<PricingApprovalSource>,
+    products_source: Arc<ProductsApprovalSource>,
+    openapi: &dyn toolkit::api::OpenApiRegistry,
+) -> Router {
     let facade_hub = Arc::new(toolkit::ClientHub::new());
     facade_hub.register_scoped::<dyn ApprovalSourceV1>(ClientScope::new("pricing"), pricing_source);
     facade_hub
@@ -264,12 +278,7 @@ async fn facade_over(
     );
     let gear = bss_approvals::BssApprovalsGear::default();
     gear.init(&ctx).await.unwrap();
-    gear.register_rest(
-        &ctx,
-        Router::new(),
-        &toolkit::api::OpenApiRegistryImpl::new(),
-    )
-    .unwrap()
+    gear.register_rest(&ctx, Router::new(), openapi).unwrap()
 }
 
 /// Pricing on its own database (`pricing_db`, or a fresh file), products on `db`, both under
@@ -473,6 +482,24 @@ impl Inbox {
 
 fn whole(seconds: i64) -> OffsetDateTime {
     OffsetDateTime::from_unix_timestamp(1_790_000_000 + seconds).unwrap()
+}
+
+/// A server registers every linked gear's doors in ONE `OpenAPI` registry, which refuses (a panic at
+/// boot) a schema name two gears define differently. The facade's doors register beside products'
+/// and pricing's: its schemas carry their own names.
+#[tokio::test]
+async fn the_facade_registers_beside_both_gears_in_one_openapi_registry() {
+    let i = inbox().await;
+    let openapi = toolkit::api::OpenApiRegistryImpl::new();
+    let _products = super::tests::routes(i.products.state.clone(), &openapi);
+    let _pricing = bss_pricing::api::rest::authoring::router(i.pricing_state.clone(), &openapi);
+    let _read = bss_pricing::api::rest::read_contract::router(i.pricing_state.clone(), &openapi);
+    let _facade = facade_in(
+        i.pricing_source.clone(),
+        i.products_source.clone(),
+        &openapi,
+    )
+    .await;
 }
 
 /// A walk over prices, plan revisions and the three SKU kinds of both gears, in both orders and at
