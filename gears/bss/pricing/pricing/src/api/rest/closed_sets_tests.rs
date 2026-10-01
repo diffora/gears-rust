@@ -99,6 +99,18 @@ fn each_set_carries_its_stored_tokens_on_the_wire() {
     assert_eq!(tokens!(PricingResolveSource), ["entry", "sku", "tenant"]);
 }
 
+#[test]
+fn a_sku_entry_status_carries_priced_scheduled_and_unpriced() {
+    assert_eq!(
+        round_trips(
+            PricingSkuEntryStatus::ALL,
+            PricingSkuEntryStatus::as_str,
+            PricingSkuEntryStatus::stored,
+        ),
+        ["priced", "scheduled", "unpriced"]
+    );
+}
+
 /// The domain's value `d` and the wire value it maps to carry one token.
 fn same<D: Copy, W: From<D>>(
     domain: &[D],

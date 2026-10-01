@@ -195,7 +195,7 @@ async fn a_skus_entries_are_listed_across_books_with_their_usage_and_the_price_i
 
     let items = sku_entries(&f, sku).await;
     assert_eq!(items.len(), 2, "{items:#?}");
-    // Ordered by book code: "a-usd" before "b-eur".
+    // Ordered by book name (D-486): "Dollars" before "b-eur".
     let (first, second) = (&items[0], &items[1]);
     assert_eq!(first["id"], e_usd.to_string());
     assert_eq!(first["book_id"], usd.to_string());
@@ -236,7 +236,9 @@ async fn a_skus_entries_are_listed_across_books_with_their_usage_and_the_price_i
             None,
         )
         .await;
-    assert_eq!((s, b), (200, json!({"items": []})));
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(b["items"], json!([]));
+    assert_eq!(b["page_info"]["limit"], 500);
     assert!(sku_entries(&f, Uuid::new_v4()).await.is_empty());
 }
 
@@ -309,7 +311,6 @@ async fn the_entry_list_needs_exactly_one_well_formed_sku_id() {
         "?sku_id=".to_owned(),
         "?sku_id=not-a-uuid".to_owned(),
         format!("?sku_id={sku}&sku_id={sku}"),
-        format!("?sku_id={sku}&book_id={sku}"),
         "?limit=10".to_owned(),
     ] {
         let (s, b, _) = get(&f, &format!("/price-book-entries{query}")).await;
@@ -654,4 +655,684 @@ async fn the_two_sku_lists_read_in_the_same_statements_for_10_and_100_rows() {
     // The plain plan list is set-based too: 110 plans in four statements (D-460, D-461).
     let plain = statements(&f, &recorder, "/plans", 110).await;
     assert_eq!(plain.len(), 4, "{plain:#?}");
+}
+
+// ------------------------------------------------------------------ D-486: a SKU's entries, in memory
+
+async fn book_named(f: &Fixture, code: &str, name: &str, currency: &str) -> Uuid {
+    let key = format!("book-{code}");
+    let (s, b, _) = f
+        .call(
+            "POST",
+            "/price-books",
+            json!({"code": code, "name": name, "currency": currency}),
+            None,
+            Some(&key),
+        )
+        .await;
+    assert_eq!(s, 201, "{b}");
+    id_of(&b["id"])
+}
+
+fn item_ids(body: &Value) -> Vec<String> {
+    body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["id"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+fn item_names(body: &Value) -> Vec<String> {
+    body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["book_name"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+async fn sku_query(f: &Fixture, sku: Uuid, query: &str) -> Value {
+    let path = if query.is_empty() {
+        format!("/price-book-entries?sku_id={sku}")
+    } else {
+        format!("/price-book-entries?sku_id={sku}&{query}")
+    };
+    let (s, b, _) = get(f, &path).await;
+    assert_eq!(s, 200, "{path}: {b}");
+    b
+}
+
+fn id_set(ids: &[String]) -> std::collections::BTreeSet<String> {
+    ids.iter().cloned().collect()
+}
+
+fn find_item(body: &Value, id: Uuid) -> &Value {
+    body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["id"] == id.to_string())
+        .unwrap()
+}
+
+/// The statements one read makes, and how many items it answered.
+async fn recorded(
+    f: &Fixture,
+    recorder: &toolkit_db::test_support::QueryRecorder,
+    path: &str,
+) -> (usize, Vec<(String, usize)>) {
+    recorder.clear();
+    let (s, b, _) = get(f, path).await;
+    assert_eq!(s, 200, "{path}: {b}");
+    let n = b["items"].as_array().unwrap().len();
+    let sql = recorder
+        .events()
+        .into_iter()
+        .filter(|q| {
+            q.table
+                .as_deref()
+                .is_some_and(|t| t.starts_with("pricing_"))
+        })
+        .map(|q| (q.sql, q.param_count))
+        .collect();
+    (n, sql)
+}
+
+#[tokio::test]
+async fn sku_entries_query_refuses_what_it_does_not_take() {
+    let (f, _) = setup().await;
+    let sku = Uuid::new_v4();
+    let books: String = (0..51)
+        .map(|_| Uuid::new_v4().to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let cases = [
+        ("/price-book-entries".to_owned(), "QUERY_INVALID", ""),
+        (
+            "/price-book-entries?sku_id=".to_owned(),
+            "QUERY_INVALID",
+            "",
+        ),
+        (
+            "/price-book-entries?sku_id=not-a-uuid".to_owned(),
+            "QUERY_INVALID",
+            "",
+        ),
+        (
+            format!("/price-book-entries?sku_id={sku}&sku_id={sku}"),
+            "QUERY_INVALID",
+            "sku_id",
+        ),
+        (
+            format!("/price-book-entries?sku_id={sku}&book_id="),
+            "QUERY_INVALID",
+            "book_id",
+        ),
+        (
+            format!("/price-book-entries?sku_id={sku}&book_id=not-a-uuid"),
+            "QUERY_INVALID",
+            "book_id",
+        ),
+        (
+            format!("/price-book-entries?sku_id={sku}&book_id={sku},"),
+            "QUERY_INVALID",
+            "book_id",
+        ),
+        (
+            format!("/price-book-entries?sku_id={sku}&book_id={books}"),
+            "QUERY_INVALID",
+            "book_id",
+        ),
+        (
+            format!("/price-book-entries?sku_id={sku}&book_id={sku}&book_id={sku}"),
+            "QUERY_INVALID",
+            "book_id",
+        ),
+        (
+            format!("/price-book-entries?sku_id={sku}&currency=usd"),
+            "QUERY_INVALID",
+            "currency",
+        ),
+        (
+            format!("/price-book-entries?sku_id={sku}&currency=US"),
+            "QUERY_INVALID",
+            "currency",
+        ),
+        (
+            format!("/price-book-entries?sku_id={sku}&currency=USDD"),
+            "QUERY_INVALID",
+            "currency",
+        ),
+        (
+            format!("/price-book-entries?sku_id={sku}&status="),
+            "QUERY_INVALID",
+            "status",
+        ),
+        (
+            format!("/price-book-entries?sku_id={sku}&status=active"),
+            "QUERY_INVALID",
+            "status",
+        ),
+        (
+            format!("/price-book-entries?sku_id={sku}&status=priced,nope"),
+            "QUERY_INVALID",
+            "status",
+        ),
+        (
+            format!("/price-book-entries?sku_id={sku}&changing=yes"),
+            "QUERY_INVALID",
+            "changing",
+        ),
+        (
+            format!("/price-book-entries?sku_id={sku}&changing=TRUE"),
+            "QUERY_INVALID",
+            "changing",
+        ),
+        (
+            format!("/price-book-entries?sku_id={sku}&limit=nope"),
+            "QUERY_INVALID",
+            "limit",
+        ),
+        (
+            format!("/price-book-entries?sku_id={sku}&limit=-1"),
+            "QUERY_INVALID",
+            "limit",
+        ),
+        (
+            format!("/price-book-entries?sku_id={sku}&as_of=2026-01-01"),
+            "QUERY_INVALID",
+            "as_of",
+        ),
+        (
+            format!("/price-book-entries?sku_id={sku}&foo=1"),
+            "QUERY_INVALID",
+            "foo",
+        ),
+        (
+            format!("/price-book-entries?sku_id={sku}&$top=10"),
+            "QUERY_INVALID",
+            "$top",
+        ),
+        (
+            format!("/price-book-entries?sku_id={sku}&q=a&q=b"),
+            "QUERY_INVALID",
+            "q",
+        ),
+        (
+            format!("/price-book-entries?sku_id={sku}&$orderby=code"),
+            "INVALID_ORDERBY_FIELD",
+            "field: code",
+        ),
+        (
+            format!("/price-book-entries?sku_id={sku}&$orderby=id"),
+            "INVALID_ORDERBY_FIELD",
+            "field: id",
+        ),
+        (
+            format!("/price-book-entries?sku_id={sku}&$orderby=book_name%20desc,id%20desc"),
+            "INVALID_ORDERBY_FIELD",
+            "field: id",
+        ),
+        (
+            format!("/price-book-entries?sku_id={sku}&$orderby=book_name,status"),
+            "INVALID_ORDERBY_FIELD",
+            "only one key, book_name or status, is accepted",
+        ),
+        (
+            format!("/price-book-entries?sku_id={sku}&cursor=abc&$orderby=book_name"),
+            "ORDER_WITH_CURSOR",
+            "",
+        ),
+    ];
+    for (path, code, said) in cases {
+        let (s, b, _) = get(&f, &path).await;
+        let text = b.to_string();
+        assert_eq!(s, 400, "{path}: {b}");
+        assert!(text.contains(code), "{path}: {b}");
+        if !said.is_empty() {
+            assert!(text.contains(said), "{path}: want {said} in {b}");
+        }
+    }
+    // Authorization is judged first, before a query this read refuses.
+    let (s, _, _) = plan_support::request(
+        &f.denied,
+        &f.ctx,
+        "GET",
+        &format!("/price-book-entries?sku_id={sku}&$filter=x"),
+        json!({}),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(s, 403);
+}
+
+#[tokio::test]
+async fn sku_entries_filter_select_and_count_are_refused_before_any_read() {
+    let (db, recorder, tenant, dsn) = entry_support::recorded_db().await;
+    let catalog = Arc::new(Catalog::default());
+    let f = Fixture::on(db, tenant, dsn, catalog).await;
+    let sku = Uuid::new_v4();
+    for key in ["$filter=x", "$select=id", "$count=true"] {
+        recorder.clear();
+        let (s, b, _) = get(&f, &format!("/price-book-entries?sku_id={sku}&{key}")).await;
+        assert_eq!(s, 400, "{key}: {b}");
+        assert!(b.to_string().contains("QUERY_INVALID"), "{key}: {b}");
+        let reads = recorder
+            .events()
+            .into_iter()
+            .filter(|q| {
+                q.table
+                    .as_deref()
+                    .is_some_and(|t| t.starts_with("pricing_"))
+            })
+            .count();
+        assert_eq!(reads, 0, "{key} is judged before any read");
+    }
+}
+
+#[tokio::test]
+async fn sku_entries_status_comes_from_todays_counts() {
+    let (f, catalog) = setup().await;
+    let sku = catalog.sku(SkuType::Usage);
+    let t = today();
+    let day = time::Duration::days(1);
+    let value_book = book_named(&f, "v-priced", "a-value", "EUR").await;
+    let later_book = book_named(&f, "s-later", "b-later", "EUR").await;
+    let live_book = book_named(&f, "p-live", "c-live", "EUR").await;
+    let none_book = book_named(&f, "u-none", "d-none", "EUR").await;
+    let pend_book = book_named(&f, "n-pend", "e-pend", "EUR").await;
+    let rej_book = book_named(&f, "r-rej", "f-rej", "EUR").await;
+    let ended_book = book_named(&f, "e-end", "g-end", "EUR").await;
+    let value = entry(&f, value_book, sku, "usage", None).await;
+    let later = entry(&f, later_book, sku, "usage", None).await;
+    let live = entry(&f, live_book, sku, "usage", None).await;
+    let none = entry(&f, none_book, sku, "usage", None).await;
+    let pending = entry(&f, pend_book, sku, "usage", None).await;
+    let rejected = entry(&f, rej_book, sku, "usage", None).await;
+    let ended = entry(&f, ended_book, sku, "usage", None).await;
+    // A value chain in force prices the entry and is not its current_price (D-434).
+    price_at(&f, value, 1, "approved", Some("eu"), t - day, None, "0.25").await;
+    price_at(&f, later, 1, "approved", None, t + day, None, "0.30").await;
+    price_at(&f, live, 1, "approved", None, t - day, None, "0.20").await;
+    price_at(&f, live, 2, "draft", None, t + day, None, "0.40").await;
+    price_at(&f, pending, 1, "pending", None, t, None, "0.50").await;
+    price_at(&f, rejected, 1, "rejected", None, t - day, None, "0.60").await;
+    price_at(
+        &f,
+        ended,
+        1,
+        "approved",
+        None,
+        t - day * 30,
+        Some(t - day),
+        "0.10",
+    )
+    .await;
+
+    let (s, body, _) = get(&f, &format!("/price-book-entries?sku_id={sku}")).await;
+    assert_eq!(s, 200, "{body}");
+    let row = |id: Uuid| find_item(&body, id);
+    let expect = |id: Uuid, status: &str, changing: bool, money: bool| {
+        let item = row(id);
+        assert_eq!(item["status"], status, "{item}");
+        assert_eq!(item["changing"], changing, "{item}");
+        assert_eq!(!item["current_price"].is_null(), money, "{item}");
+    };
+    expect(value, "priced", false, false);
+    expect(later, "scheduled", false, false);
+    expect(live, "priced", true, true);
+    expect(none, "unpriced", false, false);
+    expect(pending, "unpriced", true, false);
+    expect(rejected, "unpriced", false, false);
+    expect(ended, "unpriced", false, false);
+    assert_eq!(
+        item_names(&body),
+        [
+            "a-value", "b-later", "c-live", "d-none", "e-pend", "f-rej", "g-end"
+        ]
+    );
+
+    // Status is the usage split, not money: an entry reader sees it, and no price.
+    let (s, b, _) = f
+        .call_as(
+            &holding(&f, "price_book_entry:read"),
+            "GET",
+            &format!("/price-book-entries?sku_id={sku}"),
+            json!({}),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(s, 200, "{b}");
+    let shown = find_item(&b, value);
+    assert_eq!(shown["status"], "priced", "{shown}");
+    assert_eq!(shown["changing"], false, "{shown}");
+    assert!(shown["current_price"].is_null(), "{shown}");
+}
+
+#[tokio::test]
+async fn sku_entries_narrow_by_the_plain_keys() {
+    let (f, catalog) = setup().await;
+    let sku = catalog.sku(SkuType::Usage);
+    let t = today();
+    let dollars = book_named(&f, "a-usd", "Dollars", "USD").await;
+    let euros = book_named(&f, "b-eur", "Euros", "EUR").await;
+    let later = book_named(&f, "c-later", "Later", "EUR").await;
+    let drafty = book_named(&f, "d-draft", "Drafty", "EUR").await;
+    let d_entry = entry(&f, dollars, sku, "usage", None).await;
+    let e_entry = entry(&f, euros, sku, "usage", None).await;
+    let l_entry = entry(&f, later, sku, "usage", None).await;
+    let r_entry = entry(&f, drafty, sku, "usage", None).await;
+    price_at(
+        &f,
+        e_entry,
+        1,
+        "approved",
+        None,
+        t - time::Duration::days(1),
+        None,
+        "0.20",
+    )
+    .await;
+    price_at(
+        &f,
+        l_entry,
+        1,
+        "approved",
+        None,
+        t + time::Duration::days(1),
+        None,
+        "0.30",
+    )
+    .await;
+    price_at(
+        &f,
+        r_entry,
+        1,
+        "approved",
+        None,
+        t - time::Duration::days(1),
+        None,
+        "0.40",
+    )
+    .await;
+    price_at(
+        &f,
+        r_entry,
+        2,
+        "draft",
+        None,
+        t + time::Duration::days(2),
+        None,
+        "0.41",
+    )
+    .await;
+
+    assert_eq!(item_ids(&sku_query(&f, sku, "").await).len(), 4);
+    assert_eq!(
+        item_ids(&sku_query(&f, sku, "currency=USD").await),
+        vec![d_entry.to_string()]
+    );
+    assert_eq!(item_ids(&sku_query(&f, sku, "currency=EUR").await).len(), 3);
+    assert_eq!(
+        item_ids(&sku_query(&f, sku, "q=doll").await),
+        vec![d_entry.to_string()]
+    );
+    assert_eq!(
+        item_ids(&sku_query(&f, sku, "q=B-EUR").await),
+        vec![e_entry.to_string()]
+    );
+    assert!(
+        item_ids(&sku_query(&f, sku, "q=%25").await).is_empty(),
+        "q is a literal"
+    );
+    assert_eq!(
+        item_ids(&sku_query(&f, sku, "q=").await).len(),
+        4,
+        "an empty q does not narrow"
+    );
+    assert_eq!(
+        item_ids(&sku_query(&f, sku, &format!("book_id={euros}")).await),
+        vec![e_entry.to_string()]
+    );
+    let both = item_ids(&sku_query(&f, sku, &format!("book_id={dollars},{euros}")).await);
+    assert_eq!(
+        id_set(&both),
+        id_set(&[d_entry.to_string(), e_entry.to_string()])
+    );
+    assert_eq!(
+        id_set(&both),
+        id_set(&item_ids(
+            &sku_query(&f, sku, &format!("book_id={euros},{dollars}")).await
+        ))
+    );
+    assert_eq!(
+        id_set(&item_ids(&sku_query(&f, sku, "status=priced").await)),
+        id_set(&[e_entry.to_string(), r_entry.to_string()])
+    );
+    assert_eq!(
+        id_set(&item_ids(
+            &sku_query(&f, sku, "status=scheduled,unpriced").await
+        )),
+        id_set(&[l_entry.to_string(), d_entry.to_string()])
+    );
+    assert_eq!(
+        item_ids(&sku_query(&f, sku, "changing=true").await),
+        vec![r_entry.to_string()]
+    );
+    assert_eq!(
+        item_ids(&sku_query(&f, sku, "changing=false").await).len(),
+        3
+    );
+    let fifty: String = (0..50)
+        .map(|_| Uuid::new_v4().to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    assert!(item_ids(&sku_query(&f, sku, &format!("book_id={fifty}")).await).is_empty());
+    let repeated = vec![euros.to_string(); 51].join(",");
+    assert_eq!(
+        item_ids(&sku_query(&f, sku, &format!("book_id={repeated}")).await),
+        vec![e_entry.to_string()],
+        "distinct ids, so fifty-one copies of one id are one book"
+    );
+}
+
+#[tokio::test]
+async fn sku_entries_order_by_book_name_and_status_both_ways() {
+    let (f, catalog) = setup().await;
+    let sku = catalog.sku(SkuType::Usage);
+    let t = today();
+    // Code order is the reverse of name order: the default is book_name, not book code.
+    let z_book = book_named(&f, "a-code", "z-name", "EUR").await;
+    let m_book = book_named(&f, "m-code", "m-name", "EUR").await;
+    let n_book = book_named(&f, "z-code", "m-name", "EUR").await;
+    let z = entry(&f, z_book, sku, "usage", None).await;
+    let priced = entry(&f, m_book, sku, "usage", None).await;
+    let other = entry(&f, n_book, sku, "usage", None).await;
+    price_at(
+        &f,
+        priced,
+        1,
+        "approved",
+        None,
+        t - time::Duration::days(1),
+        None,
+        "0.20",
+    )
+    .await;
+    let by_name = vec![priced.to_string(), other.to_string(), z.to_string()];
+    assert_eq!(
+        item_ids(&sku_query(&f, sku, "").await),
+        by_name,
+        "book_name asc, id the same way"
+    );
+    assert_eq!(
+        item_ids(&sku_query(&f, sku, "$orderby=book_name").await),
+        by_name
+    );
+    assert_eq!(
+        item_ids(&sku_query(&f, sku, "$orderby=book_name%20asc").await),
+        by_name
+    );
+    assert_eq!(
+        item_ids(&sku_query(&f, sku, "$orderby=book_name%20desc").await),
+        vec![z.to_string(), other.to_string(), priced.to_string()]
+    );
+    assert_eq!(
+        item_ids(&sku_query(&f, sku, "$orderby=status").await),
+        vec![priced.to_string(), z.to_string(), other.to_string()]
+    );
+    assert_eq!(
+        item_ids(&sku_query(&f, sku, "$orderby=status%20desc").await),
+        vec![other.to_string(), z.to_string(), priced.to_string()]
+    );
+}
+
+#[tokio::test]
+async fn sku_entries_page_on_the_cursor_and_clamp_the_limit() {
+    let (f, catalog) = setup().await;
+    let sku = catalog.sku(SkuType::Usage);
+    let mut expected = Vec::new();
+    for name in ["a", "b", "c", "d"] {
+        let own = book_named(&f, name, name, "EUR").await;
+        expected.push(entry(&f, own, sku, "usage", None).await.to_string());
+    }
+    let (s, whole, _) = get(&f, &format!("/price-book-entries?sku_id={sku}")).await;
+    assert_eq!(s, 200, "{whole}");
+    assert_eq!(item_ids(&whole), expected);
+    assert_eq!(whole["page_info"]["limit"], 500, "{whole}");
+    assert!(whole["page_info"]["next_cursor"].is_null(), "{whole}");
+    let (s, clamped, _) = get(&f, &format!("/price-book-entries?sku_id={sku}&limit=1000")).await;
+    assert_eq!(s, 200, "{clamped}");
+    assert_eq!(clamped["page_info"]["limit"], 500, "{clamped}");
+    let (s, one, _) = get(&f, &format!("/price-book-entries?sku_id={sku}&limit=0")).await;
+    assert_eq!(s, 200, "{one}");
+    assert_eq!(one["page_info"]["limit"], 1, "{one}");
+    assert_eq!(item_ids(&one), vec![expected[0].clone()]);
+
+    let mut seen = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..6 {
+        let path = match &cursor {
+            None => format!("/price-book-entries?sku_id={sku}&limit=2"),
+            Some(token) => format!("/price-book-entries?sku_id={sku}&limit=2&cursor={token}"),
+        };
+        let (s, page, _) = get(&f, &path).await;
+        assert_eq!(s, 200, "{path}: {page}");
+        assert_eq!(page["page_info"]["limit"], 2, "{page}");
+        let ids = item_ids(&page);
+        assert!(!ids.is_empty() && ids.len() <= 2, "{page}");
+        seen.extend(ids);
+        if let Some(token) = page["page_info"]["next_cursor"].as_str() {
+            cursor = Some(token.to_owned());
+        } else {
+            cursor = None;
+            break;
+        }
+    }
+    assert!(cursor.is_none(), "the cursor does not advance");
+    assert_eq!(seen, expected);
+
+    let first = get(&f, &format!("/price-book-entries?sku_id={sku}&limit=2")).await;
+    let token = first.1["page_info"]["next_cursor"].as_str().unwrap();
+    let (s, b, _) = get(
+        &f,
+        &format!("/price-book-entries?sku_id={sku}&limit=2&cursor={token}&$orderby=status"),
+    )
+    .await;
+    assert_eq!(s, 400, "{b}");
+    assert!(b.to_string().contains("ORDER_WITH_CURSOR"), "{b}");
+    let (s, b, _) = get(&f, &format!("/price-book-entries?sku_id={sku}&cursor=abc")).await;
+    assert_eq!(s, 400, "{b}");
+    assert!(b.to_string().contains("INVALID_CURSOR"), "{b}");
+    let other = Uuid::new_v4();
+    let (s, b, _) = get(
+        &f,
+        &format!("/price-book-entries?sku_id={other}&cursor={token}"),
+    )
+    .await;
+    assert_eq!(s, 400, "{b}");
+    assert!(b.to_string().contains("FILTER_MISMATCH"), "{b}");
+    let (s, b, _) = get(
+        &f,
+        &format!("/price-book-entries?sku_id={sku}&status=priced&cursor={token}"),
+    )
+    .await;
+    assert_eq!(s, 400, "{b}");
+    assert!(b.to_string().contains("FILTER_MISMATCH"), "{b}");
+
+    // The hash is the narrowing, so the two spellings of one book list continue each other.
+    let left = book_named(&f, "p-left", "p-left", "EUR").await;
+    let right = book_named(&f, "q-right", "q-right", "EUR").await;
+    let left_entry = entry(&f, left, sku, "usage", None).await;
+    let right_entry = entry(&f, right, sku, "usage", None).await;
+    let narrowed = format!("book_id={left},{right}");
+    let (s, page, _) = get(
+        &f,
+        &format!("/price-book-entries?sku_id={sku}&{narrowed}&limit=1"),
+    )
+    .await;
+    assert_eq!(s, 200, "{page}");
+    assert_eq!(item_ids(&page), vec![left_entry.to_string()]);
+    let token = page["page_info"]["next_cursor"].as_str().unwrap();
+    let (s, rest, _) = get(
+        &f,
+        &format!("/price-book-entries?sku_id={sku}&book_id={right},{left}&limit=1&cursor={token}"),
+    )
+    .await;
+    assert_eq!(s, 200, "{rest}");
+    assert_eq!(item_ids(&rest), vec![right_entry.to_string()]);
+}
+
+#[tokio::test]
+async fn sku_entries_of_five_and_fifty_books_read_the_same_statements() {
+    let (db, recorder, tenant, dsn) = entry_support::recorded_db().await;
+    let catalog = Arc::new(Catalog::default());
+    let f = Fixture::on(db, tenant, dsn, catalog.clone()).await;
+    let small = seeded_sku(&f, &catalog, "five", 5).await;
+    let large = seeded_sku(&f, &catalog, "fifty", 50).await;
+    let five = recorded(
+        &f,
+        &recorder,
+        &format!("/price-book-entries?sku_id={small}"),
+    )
+    .await;
+    let fifty = recorded(
+        &f,
+        &recorder,
+        &format!("/price-book-entries?sku_id={large}"),
+    )
+    .await;
+    let priced = recorded(
+        &f,
+        &recorder,
+        &format!("/price-book-entries?sku_id={large}&status=priced"),
+    )
+    .await;
+    let unpriced = recorded(
+        &f,
+        &recorder,
+        &format!("/price-book-entries?sku_id={large}&status=unpriced"),
+    )
+    .await;
+    assert_eq!((five.0, fifty.0, priced.0, unpriced.0), (5, 50, 50, 0));
+    assert_eq!(
+        five.1.len(),
+        7,
+        "a SKU's entries stay at seven statements: {five:#?}"
+    );
+    let sql = |rows: &Vec<(String, usize)>| rows.iter().map(|(q, _)| q.clone()).collect::<Vec<_>>();
+    assert_eq!(
+        sql(&five.1),
+        sql(&fifty.1),
+        "5 and 50 books, the same statements"
+    );
+    assert_eq!(sql(&fifty.1), sql(&priced.1));
+    assert_eq!(
+        sql(&fifty.1),
+        sql(&unpriced.1),
+        "a narrowing that keeps nothing still reads the SKU's entries"
+    );
 }

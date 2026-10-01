@@ -324,3 +324,88 @@ async fn the_entry_reads_say_what_they_headline_and_on_which_day() {
         assert!(text.contains(said), "the list says {said}: {text}");
     }
 }
+
+/// D-486: `GET /price-book-entries` names its plain keys, its in-memory order and page, and the
+/// refusals of a query it does not evaluate. `status` is the entry's closed set.
+#[tokio::test]
+async fn the_sku_entries_read_says_how_it_narrows_orders_and_pages() {
+    let api = served().await;
+    let path = "/bss-pricing/v1/price-book-entries";
+    let op = &api["paths"][path]["get"];
+    let mut names: Vec<String> = op["parameters"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|p| p["in"] == "query")
+        .map(|p| p["name"].as_str().unwrap().to_owned())
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        [
+            "$orderby", "book_id", "changing", "currency", "cursor", "limit", "q", "sku_id",
+            "status",
+        ]
+    );
+    let text = description(&api, "get", path);
+    for said in [
+        "book_id",
+        "currency",
+        "changing",
+        "book_name",
+        "priced",
+        "scheduled",
+        "unpriced",
+        "500",
+        "QUERY_INVALID",
+        "$filter",
+        "$select",
+        "$count",
+        "INVALID_ORDERBY_FIELD",
+        "ORDER_WITH_CURSOR",
+        "FILTER_MISMATCH",
+        "next_price",
+        "version_no",
+    ] {
+        assert!(text.contains(said), "the list says {said}: {text}");
+    }
+    let status = property(&api, "PricingSkuEntryDto", "status");
+    let status_schema = status["$ref"].as_str().map_or(status.clone(), |r| {
+        api["components"]["schemas"][r.rsplit('/').next().unwrap_or("")].clone()
+    });
+    assert_eq!(
+        status_schema["enum"],
+        json_strings(&["priced", "scheduled", "unpriced"]),
+        "status is the entry's closed set: {status}"
+    );
+    let changing = property(&api, "PricingSkuEntryDto", "changing");
+    assert_eq!(changing["type"], "boolean", "{changing}");
+    let required = required_of(&api["components"]["schemas"]["PricingSkuEntryDto"]);
+    for field in ["status", "changing"] {
+        assert!(required.iter().any(|r| r == field), "{field}: {required:?}");
+    }
+    assert!(
+        !property(&api, "PricingSkuEntryList", "page_info").is_null(),
+        "the list pages"
+    );
+}
+
+fn json_strings(values: &[&str]) -> Value {
+    Value::Array(values.iter().copied().map(Value::from).collect())
+}
+
+fn required_of(schema: &Value) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut take = |node: &Value| {
+        for name in node["required"].as_array().into_iter().flatten() {
+            if let Some(name) = name.as_str() {
+                out.push(name.to_owned());
+            }
+        }
+    };
+    take(schema);
+    for part in schema["allOf"].as_array().into_iter().flatten() {
+        take(part);
+    }
+    out
+}
