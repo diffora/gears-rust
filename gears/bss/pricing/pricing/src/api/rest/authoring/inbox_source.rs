@@ -28,7 +28,7 @@ use bss_approvals_sdk::{
 use toolkit_canonical_errors::CanonicalError;
 use toolkit_db::odata::{ODataFieldMapping, encode_cursor_value};
 use toolkit_odata::filter::FilterField;
-use toolkit_odata::{CursorV1, ODataOrderBy, ODataQuery, OrderKey, SortDir};
+use toolkit_odata::{CursorV1, ODataQuery, SortDir};
 use toolkit_security::SecurityContext;
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -37,7 +37,9 @@ use super::support::{self, authz_failure, require_authenticated, transaction};
 use super::{AuthoringState, approvals};
 use crate::authz::{self, actions, resource_types};
 use crate::infra::approval_kinds::Kind;
-use crate::infra::storage::repo::approval_repo::{UnitListField, UnitListMapping};
+use crate::infra::storage::repo::approval_repo::{
+    UnitListField, UnitListMapping, submission_order,
+};
 
 /// The name this source is registered under in `ClientHub` (`ClientScope`).
 pub const SOURCE: &str = "pricing";
@@ -95,39 +97,40 @@ fn foreign_kind(narrowing: &SourceNarrowing) -> bool {
         .is_some_and(|kind| Kind::parse(kind).is_none())
 }
 
-/// The pager's own cursor for the key after which a page starts: `submitted_at` then `id`, both in
-/// `dir`, each value encoded by the pager's codec under the list mapping's cursor kind, no
-/// narrowing hash, forward. `page_units` then compares the columns as it does for its own
-/// cursors.
+/// The pager's own cursor for the key after which a page starts, in the list's one order
+/// (`submission_order(dir)`, the order the door puts on its query): each of the order's keys takes
+/// its value from the inbox's key, encoded by the pager's codec under the list mapping's cursor
+/// kind; no narrowing hash, forward. `page_units` then reads the order from the cursor and
+/// compares the columns as it does for its own cursors.
 fn keyset_cursor(after: SortKey, dir: SortDir) -> Result<CursorV1, CanonicalError> {
-    let keys = [
-        (
-            UnitListField::SubmittedAt,
-            sea_orm::Value::TimeDateTimeWithTimeZone(Some(after.submitted_at)),
-        ),
-        (UnitListField::Id, sea_orm::Value::Uuid(Some(after.id))),
-    ];
-    let mut k = Vec::with_capacity(keys.len());
-    for (field, value) in &keys {
-        k.push(
+    let order = submission_order(dir);
+    let k = order
+        .0
+        .iter()
+        .map(|key| {
+            let field = UnitListField::from_name(&key.field).ok_or_else(|| {
+                CanonicalError::internal(format!(
+                    "bss-pricing: the list's order names an unknown field: {}",
+                    key.field
+                ))
+                .create()
+            })?;
+            let value = match field {
+                UnitListField::SubmittedAt => {
+                    sea_orm::Value::TimeDateTimeWithTimeZone(Some(after.submitted_at))
+                }
+                UnitListField::Id => sea_orm::Value::Uuid(Some(after.id)),
+            };
             encode_cursor_value(
-                value,
-                <UnitListMapping as ODataFieldMapping<UnitListField>>::cursor_kind(*field),
+                &value,
+                <UnitListMapping as ODataFieldMapping<UnitListField>>::cursor_kind(field),
             )
             .map_err(|e| {
                 CanonicalError::internal(format!("bss-pricing: the inbox key does not encode: {e}"))
                     .create()
-            })?,
-        );
-    }
-    let order = ODataOrderBy(
-        keys.iter()
-            .map(|(field, _)| OrderKey {
-                field: field.name().to_owned(),
-                dir,
             })
-            .collect(),
-    );
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(CursorV1 {
         k,
         o: dir,
@@ -179,28 +182,21 @@ impl ApprovalSourceV1 for PricingApprovalSource {
             Order::Asc => SortDir::Asc,
             Order::Desc => SortDir::Desc,
         };
-        let mut page = ODataQuery::new().with_limit(u64::from(q.limit));
-        if let Some(after) = q.after {
-            page = page.with_cursor(keyset_cursor(after, direction)?);
-        }
+        // The page carries the order, as the list door's query does: a continuation's cursor carries
+        // its own, a first page names `submission_order` (the phase 9 review's R36).
+        let page = ODataQuery::new().with_limit(u64::from(q.limit));
+        let page = match q.after {
+            Some(after) => page.with_cursor(keyset_cursor(after, direction)?),
+            None => page.with_order(submission_order(direction)),
+        };
         let request = approvals::UnitListRequest {
             filter,
             page,
-            direction,
             impact: q.impact,
         };
         let response = transaction(&self.state.db.db(), move |tx| {
             let (scope, ctx, request) = (scope.clone(), ctx.clone(), request.clone());
-            Box::pin(async move {
-                approvals::list_units(
-                    tx,
-                    &scope,
-                    ctx.subject_tenant_id(),
-                    ctx.subject_id(),
-                    &request,
-                )
-                .await
-            })
+            Box::pin(async move { approvals::list_units(tx, &scope, &ctx, &request).await })
         })
         .await?;
         let mut body = door_json(response).await?;

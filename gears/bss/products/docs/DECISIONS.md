@@ -1352,15 +1352,19 @@ this gear's side; pricing D-490 is its twin.
   the handler so both call it), under the list's grant (products read on approval units) and its narrowing
   (`approval_units::narrowing`). So the page has the list's refusals, decisions, item authors and statements.
   - **The keyset (pricing plan review H1, L1).** The inbox asks for up to `limit` units strictly after its key
-    `(submitted_at, id)` for this source, or from the start. The source builds the pager's own `CursorV1` for that key:
-    `s` is `+submitted_at,+id` or `-submitted_at,-id`, each value of `k` is encoded by the pager's codec
-    (`encode_cursor_value`) under the list mapping's cursor kind, `f` is empty and `d` is `fwd`. `page_units` then
-    compares the columns as it does for its own cursors. There is no second SQL predicate and no compare of text.
-    `has_more` is whether the pager minted a next cursor.
+    `(submitted_at, id)` for this source, or from the start. The source builds the pager's own `CursorV1` for that key in
+    the list's one order, `approval_repo::submission_order`: `s` is that order's signed tokens, `+submitted_at,+id` or
+    `-submitted_at,-id`, each of its keys takes its value from the inbox's key, encoded by the pager's codec
+    (`encode_cursor_value`) under the list mapping's cursor kind, `f` is empty and `d` is `fwd`. `page_units` then reads
+    the order from the cursor and compares the columns as it does for its own cursors. A first page has no cursor: the
+    source puts `submission_order` on the query, as the list door does, and `page_units` reads the order from the query
+    alone. There is no second SQL predicate and no compare of text. `has_more` is whether the pager minted a next
+    cursor.
   - The order is P-D-227's, which this entry makes the inbox's merge key. Postgres orders it exactly; `SQLite` keeps
     `submitted_at` as text, so the exact order of a walk is proved on Postgres. The source never parses `$orderby`
-    and never reads the gear's cursor token. The phase 9 review's theme I (9.5d-2) changes how the list declares its
-    `$orderby`, not this read.
+    and never reads the gear's cursor token. Since the phase 9 review's theme I (9.5d-2) the order has one source,
+    `submission_order` (R36): `page_of` takes no direction, and the source puts the order on the query as the door
+    does.
 - **The counts (pricing plan review M5).** The counts door's handler: one grouped statement on the plain connection,
   never in the list's serializable transaction (R32).
 - **The card.** The card door's handler. Its 404 is the source's `None`, a unit this tenant does not hold. The facade's

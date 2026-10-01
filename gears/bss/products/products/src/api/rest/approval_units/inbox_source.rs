@@ -34,15 +34,15 @@ use bss_approvals_sdk::{
 use toolkit::api::canonical_prelude::CanonicalError;
 use toolkit_db::odata::{ODataFieldMapping, encode_cursor_value};
 use toolkit_odata::filter::FilterField;
-use toolkit_odata::{CursorV1, ODataOrderBy, ODataQuery, OrderKey, SortDir};
+use toolkit_odata::{CursorV1, ODataQuery, SortDir};
 use toolkit_security::SecurityContext;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-use super::{ApiState, CountsQuery, g, require_authenticated};
+use super::{ApiState, UnitCountsQuery, g, require_authenticated};
 use crate::authz::{actions, resource_types};
 use crate::domain::approvals::ApprovalKind;
-use crate::infra::storage::repo::{UnitListField, UnitListMapping};
+use crate::infra::storage::repo::{UnitListField, UnitListMapping, submission_order};
 
 /// The name this source is registered under in `ClientHub` (`ClientScope`).
 pub const SOURCE: &str = "products";
@@ -106,41 +106,42 @@ fn foreign(narrowing: &SourceNarrowing) -> bool {
             .is_some_and(|kind| ApprovalKind::parse(kind).is_none())
 }
 
-/// The pager's own cursor for the key after which a page starts: `submitted_at` then `id`, both in
-/// `dir`, each value encoded by the pager's codec under the list mapping's cursor kind, no
-/// narrowing hash, forward. `page_units` then compares the columns as it does for its own
-/// cursors.
+/// The pager's own cursor for the key after which a page starts, in the list's one order
+/// (`submission_order(dir)`, the order the door puts on its query): each of the order's keys takes
+/// its value from the inbox's key, encoded by the pager's codec under the list mapping's cursor
+/// kind; no narrowing hash, forward. `page_units` then reads the order from the cursor and
+/// compares the columns as it does for its own cursors.
 fn keyset_cursor(after: SortKey, dir: SortDir) -> Result<CursorV1, CanonicalError> {
-    let keys = [
-        (
-            UnitListField::SubmittedAt,
-            sea_orm::Value::TimeDateTimeWithTimeZone(Some(after.submitted_at)),
-        ),
-        (UnitListField::Id, sea_orm::Value::Uuid(Some(after.id))),
-    ];
-    let mut k = Vec::with_capacity(keys.len());
-    for (field, value) in &keys {
-        k.push(
+    let order = submission_order(dir);
+    let k = order
+        .0
+        .iter()
+        .map(|key| {
+            let field = UnitListField::from_name(&key.field).ok_or_else(|| {
+                CanonicalError::internal(format!(
+                    "bss-products: the list's order names an unknown field: {}",
+                    key.field
+                ))
+                .create()
+            })?;
+            let value = match field {
+                UnitListField::SubmittedAt => {
+                    sea_orm::Value::TimeDateTimeWithTimeZone(Some(after.submitted_at))
+                }
+                UnitListField::Id => sea_orm::Value::Uuid(Some(after.id)),
+            };
             encode_cursor_value(
-                value,
-                <UnitListMapping as ODataFieldMapping<UnitListField>>::cursor_kind(*field),
+                &value,
+                <UnitListMapping as ODataFieldMapping<UnitListField>>::cursor_kind(field),
             )
             .map_err(|e| {
                 CanonicalError::internal(format!(
                     "bss-products: the inbox key does not encode: {e}"
                 ))
                 .create()
-            })?,
-        );
-    }
-    let order = ODataOrderBy(
-        keys.iter()
-            .map(|(field, _)| OrderKey {
-                field: field.name().to_owned(),
-                dir,
             })
-            .collect(),
-    );
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(CursorV1 {
         k,
         o: dir,
@@ -198,11 +199,14 @@ impl ApprovalSourceV1 for ProductsApprovalSource {
             Order::Asc => SortDir::Asc,
             Order::Desc => SortDir::Desc,
         };
-        let mut page = ODataQuery::new().with_limit(u64::from(q.limit));
-        if let Some(after) = q.after {
-            page = page.with_cursor(keyset_cursor(after, direction)?);
-        }
-        let list = super::page_of(&self.state, scope, &ctx, filter, page, direction).await?;
+        // The page carries the order, as the list door's query does: a continuation's cursor carries
+        // its own, a first page names `submission_order` (the phase 9 review's R36).
+        let page = ODataQuery::new().with_limit(u64::from(q.limit));
+        let page = match q.after {
+            Some(after) => page.with_cursor(keyset_cursor(after, direction)?),
+            None => page.with_order(submission_order(direction)),
+        };
+        let list = super::page_of(&self.state, scope, &ctx, filter, page).await?;
         let has_more = list.page_info.next_cursor.is_some();
         let mut units = list
             .items
@@ -230,7 +234,7 @@ impl ApprovalSourceV1 for ProductsApprovalSource {
             Extension(self.state.clone()),
             Extension(self.enforcer.clone()),
             Some(Extension(ctx.clone())),
-            Ok(Query(CountsQuery {
+            Ok(Query(UnitCountsQuery {
                 state: n.state.clone(),
                 kind: n.kind.clone(),
                 ref_id: n.ref_id,
