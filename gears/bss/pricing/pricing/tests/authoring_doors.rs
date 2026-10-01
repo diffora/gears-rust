@@ -834,7 +834,8 @@ async fn authorization_labels_actions_and_cross_tenant_reads_are_pinned() {
             )
         })
         .collect();
-    assert_eq!(table.len(), 55);
+    // 56: run 9.7's batch checks read (D-482) and run 9.8b's plans counts (D-485), one each.
+    assert_eq!(table.len(), 56);
     assert_eq!(rows.len(), table.len(), "one row per route");
     assert_eq!(
         rows, f.registered,

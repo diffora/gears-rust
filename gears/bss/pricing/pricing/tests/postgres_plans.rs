@@ -261,7 +261,14 @@ async fn postgres_pricing_plan_keys_and_projection() {
         plan_repo::find(&conn, &s.scope, s.tenant, s.plan.id)
             .await
             .unwrap(),
-        Some(s.plan.clone())
+        // D-484: the seeded draft's insert refreshed the stored summary.
+        Some(plan_e::Model {
+            work_revision_id: Some(s.revision.id),
+            work_state: Some("draft".into()),
+            current_book_id: Some(s.book.id),
+            current_currency: Some(s.book.currency.clone()),
+            ..s.plan.clone()
+        })
     );
     conflict(
         plan_repo::insert(&conn, &s.scope, plan(s.tenant, "pro")).await,

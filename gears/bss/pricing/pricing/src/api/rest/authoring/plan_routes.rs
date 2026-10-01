@@ -3,7 +3,7 @@ use super::{
     AuthoringState,
     caps::Capped,
     dto, plan_items, plans,
-    support::{authz_failure, etag, header, invalid, require_authenticated, response, transaction},
+    support::{authz_failure, etag, header, invalid, require_authenticated, transaction},
 };
 use crate::{
     api::rest::{correlation, preconditions},
