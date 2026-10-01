@@ -430,7 +430,17 @@ fn unit_order(orderby: Option<&str>) -> Result<toolkit_odata::SortDir, Canonical
     match order.0.as_slice() {
         [] => Ok(toolkit_odata::SortDir::Asc),
         [key] if key.field == "submitted_at" => Ok(key.dir),
-        _ => Err(toolkit_odata::Error::InvalidOrderByField(raw.to_owned()).into()),
+        // The refusal names the key it refuses, never the whole order, so a supported field is
+        // never called unsupported (the phase 9 review's R67).
+        keys => Err(toolkit_odata::Error::InvalidOrderByField(
+            keys.iter()
+                .find(|key| key.field != "submitted_at")
+                .map_or_else(
+                    || "only one key, submitted_at, is accepted".to_owned(),
+                    |key| key.field.clone(),
+                ),
+        )
+        .into()),
     }
 }
 /// The unit list's page (P-D-224): `limit`, and `cursor` from a page's `page_info`, which carries a

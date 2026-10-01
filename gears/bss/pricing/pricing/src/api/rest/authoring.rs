@@ -1125,7 +1125,7 @@ async fn list_approval_units(
     .map_err(authz_failure)?;
     let axum::extract::Query(query) =
         axum::extract::Query::<dto::PricingApprovalUnitQuery>::try_from_uri(&uri)
-            .map_err(|_| support::invalid("query", "QUERY_INVALID"))?;
+            .map_err(|e| support::invalid_because("query", "QUERY_INVALID", &e.body_text()))?;
     let filter = unit_narrowing(
         query.state.as_deref(),
         query.kind.as_deref(),
@@ -1197,7 +1197,17 @@ fn unit_order(orderby: Option<&str>) -> Result<toolkit_odata::SortDir, Canonical
     match order.0.as_slice() {
         [] => Ok(toolkit_odata::SortDir::Asc),
         [key] if key.field == "submitted_at" => Ok(key.dir),
-        _ => Err(toolkit_odata::Error::InvalidOrderByField(raw.to_owned()).into()),
+        // The refusal names the key it refuses, never the whole order, so a supported field is
+        // never called unsupported (the phase 9 review's R67).
+        keys => Err(toolkit_odata::Error::InvalidOrderByField(
+            keys.iter()
+                .find(|key| key.field != "submitted_at")
+                .map_or_else(
+                    || "only one key, submitted_at, is accepted".to_owned(),
+                    |key| key.field.clone(),
+                ),
+        )
+        .into()),
     }
 }
 /// The unit list's page (D-458): `limit`, and `cursor` from a page's `page_info`, which carries a
@@ -1264,8 +1274,9 @@ async fn count_approval_units(
     .await
     .map_err(authz_failure)?;
     let axum::extract::Query(query) =
+        // The refusal names the key it rejects (the phase 9 review's R43), as the list's does.
         axum::extract::Query::<dto::PricingApprovalUnitCountsQuery>::try_from_uri(&uri)
-            .map_err(|_| support::invalid("query", "QUERY_INVALID"))?;
+            .map_err(|e| support::invalid_because("query", "QUERY_INVALID", &e.body_text()))?;
     let filter = unit_narrowing(
         query.state.as_deref(),
         query.kind.as_deref(),

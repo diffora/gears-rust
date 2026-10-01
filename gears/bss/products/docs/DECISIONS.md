@@ -1154,7 +1154,9 @@ the UI merges). It shows a badge per state and per kind and the newest units fir
 - **The descending order.** The list takes `$orderby=submitted_at desc`, newest first, and `submitted_at asc` (or
   `submitted_at` alone), the submission order of P-D-224 and still the default. The unit id breaks a tie in the same
   direction. Any other `$orderby` is the toolkit's 400 `INVALID_ORDERBY_FIELD`. Before this decision the list ignored an
-  `$orderby`.
+  `$orderby`. Its violation names the key it refuses: the other field, or "only one key, submitted_at, is accepted"
+  for a second `submitted_at` key; it named the whole order before, which called `submitted_at` unsupported (the phase 9
+  review's R67, fix run 9.5d-1; `sku_governance_tests::a_refused_order_names_the_key_it_refuses`).
   - The order is not part of the narrowing's hash (pricing plan review M4). The cursor carries its order (`CursorV1.s`), and a
     continuation follows it, so every cursor minted before this decision still continues ascending, never 400
     `FILTER_MISMATCH`.

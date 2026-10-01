@@ -1779,6 +1779,12 @@ async fn the_unit_counts_count_what_the_list_pages_under_each_narrowing() {
         let (s, b, _) = get(&f, &format!("/approval-units/counts?{extra}")).await;
         assert_eq!(s, 400, "{extra}: {b}");
         assert!(code_of(&b).contains("QUERY_INVALID"), "{extra}: {b}");
+        // The phase 9 review's R43: the refusal names the key the counts do not take.
+        let key = extra.split('=').next().unwrap();
+        let said = b["context"]["field_violations"][0]["description"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(said.contains(key), "{extra}: {b}");
     }
 }
 
@@ -1896,6 +1902,26 @@ async fn the_unit_list_pages_newest_first_with_the_id_breaking_a_tie_the_same_wa
 /// an order the list does not take is 400 `INVALID_ORDERBY_FIELD`.
 #[tokio::test]
 async fn a_cursor_keeps_its_order_and_one_minted_before_the_order_still_continues() {
+    // The phase 9 review's R67 (products) and its twin here: the refusal names the key it refuses,
+    // never the whole order, so a supported field is never called unsupported.
+    for (order, said) in [
+        ("code", "field: code"),
+        ("submitted_at%20desc,id%20desc", "field: id"),
+        (
+            "submitted_at%20desc,submitted_at%20asc",
+            "only one key, submitted_at, is accepted",
+        ),
+    ] {
+        let (f, _) = setup().await;
+        let (s, b, _) = get(&f, &format!("/approval-units?$orderby={order}")).await;
+        assert_eq!(s, 400, "{order}: {b}");
+        let text = b.to_string();
+        assert!(
+            text.contains("INVALID_ORDERBY_FIELD") && text.contains(said),
+            "{order}: {b}"
+        );
+        assert!(!text.contains("submitted_at desc,"), "{order}: {b}");
+    }
     use toolkit_odata::{CursorV1, SortDir};
     // The narrowing hash of `kind=prices` as the list minted it before run 9.3: the first 8 bytes
     // of the SHA-256 of {"kind":"prices","ref_id":null,"state":null}, with no order in it.

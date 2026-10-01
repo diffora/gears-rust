@@ -235,6 +235,11 @@ fn illegal(op: &entity::Model, error: &reference_op::IllegalTransition) -> Canon
 fn stored_failure(error: crate::infra::storage::RepoError) -> CanonicalError {
     crate::api::rest::authoring::support::DoorError::from(error).into()
 }
+/// A connection the pool refused (asked for inside a transaction): a storage failure logged with
+/// its cause, never a corrupt op record (the phase 9 review's R21).
+fn conn_failure(error: toolkit_db::DbError) -> CanonicalError {
+    stored_failure(error.into())
+}
 impl Work {
     /// Decode persisted recovery input.
     /// # Errors
@@ -611,7 +616,7 @@ pub async fn drive(
     let tenant = ctx.subject_tenant_id();
     let scope = AccessScope::for_tenant(tenant);
     for _ in 0..32 {
-        let op = ops::find(&state.db.conn().map_err(|_| corrupt())?, &scope, tenant, id)
+        let op = ops::find(&state.db.conn().map_err(conn_failure)?, &scope, tenant, id)
             .await
             .map_err(|e| CanonicalError::from(DoorError::Repo(e)))?
             .ok_or_else(corrupt)?;
@@ -1096,7 +1101,7 @@ async fn carried(
         return Err(corrupt());
     };
     let tenant = op.tenant_id;
-    let conn = state.db.conn().map_err(|_| corrupt())?;
+    let conn = state.db.conn().map_err(conn_failure)?;
     let Some(revision) =
         plan_revision_repo::find(&conn, &AccessScope::for_tenant(tenant), tenant, revision_id)
             .await
