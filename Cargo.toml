@@ -161,6 +161,8 @@ members = [
     "gears/bss/pricing/pricing-sdk",
     "gears/bss/products/products",
     "gears/bss/products/products-sdk",
+    "gears/bss/approvals/approvals",
+    "gears/bss/approvals/approvals-sdk",
     "gears/bss/rate-provider/rate-provider-sdk",
     "gears/bss/rate-provider/rate-provider",
     "gears/bss/rate-provider/plugins/ecb-plugin",
@@ -406,6 +408,10 @@ bss-pricing = { package = "cf-gears-bss-pricing", path = "gears/bss/pricing/pric
 # because neither crate is a release artifact and the gear that consumes it is
 # not published either.
 bss-products-sdk = { package = "cf-gears-bss-products-sdk", path = "gears/bss/products/products-sdk" }
+# The approvals inbox. Same WIP posture as pricing: no `version`, because neither
+# crate is a release artifact yet.
+bss-approvals-sdk = { package = "cf-gears-bss-approvals-sdk", path = "gears/bss/approvals/approvals-sdk" }
+bss-approvals = { package = "cf-gears-bss-approvals", path = "gears/bss/approvals/approvals" }
 # NFKC for the products registry's `normalized(name)`, the operand of its
 # uniqueness index. Already in the tree transitively; taken as a direct
 # dependency because the normalization must be identical on both engines and

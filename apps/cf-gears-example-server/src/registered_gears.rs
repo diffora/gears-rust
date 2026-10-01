@@ -108,3 +108,6 @@ use bss_products as _;
 
 #[cfg(feature = "bss-pricing")]
 use bss_pricing as _;
+
+#[cfg(feature = "bss-approvals")]
+use bss_approvals as _;

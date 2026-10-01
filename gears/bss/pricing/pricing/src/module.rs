@@ -138,6 +138,20 @@ impl Gear for BssPricingGear {
             .register::<dyn bss_products_sdk::sku_usage::SkuUsageV1>(Arc::new(
                 crate::api::sku_usage::PricingSkuUsage::new(state.clone(), (*enforcer).clone()),
             ));
+        // D-490: the approvals inbox reads and votes on pricing's units through this source, as
+        // the caller, under the gear's own doors.
+        ctx.client_hub()
+            .register_scoped::<dyn bss_approvals_sdk::ApprovalSourceV1>(
+                toolkit::client_hub::ClientScope::new(
+                    crate::api::rest::authoring::inbox_source::SOURCE,
+                ),
+                Arc::new(
+                    crate::api::rest::authoring::inbox_source::PricingApprovalSource::new(
+                        state.clone(),
+                        (*enforcer).clone(),
+                    ),
+                ),
+            );
         self.runtime
             .store(Some(Arc::new(PricingRuntime { enforcer, state })));
         Ok(())
