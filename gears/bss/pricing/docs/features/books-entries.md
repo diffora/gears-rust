@@ -91,7 +91,8 @@ returns the confirmed receipt. Unversioned persisted creates decode as legacy an
 null policy; new versioned usage creates cannot take that path. Re-reserve and delete preserve the
 original entry reference. Migration assigns no policy to old entries, including published plans;
 they continue to read and resolve. D-503 adds meter verification, publication gates and resolve
-policy projection; E1 remains an external production dependency.
+policy projection; E1 remains an external production dependency, for raw meters (E1a) and derived
+meters (E1b).
 
 D-503 adds exact-version semantic validation to D-502. Pricing consumes
 `pricing-sdk::meter_semantics::UsageMeterSemanticsV1::resolve(ctx, MeterRef)` as the authorized
@@ -99,6 +100,13 @@ caller, before opening a Pricing transaction. `MeterSemantics` carries the exact
 and version, canonical unit, SUM fold, accrual-policy version, source-integrated flag and provider
 evidence digest. All quantity fields and the SKU's unit and usage-type identity must agree;
 otherwise `METER_POLICY_MISMATCH` refuses the write. There is no substitution of a latest version.
+
+**Owner amendment of D-503, 2026-10-01.** A `MeterRef` names a raw or a derived meter, and one provider
+behind the port answers both kinds. E1a, raw meters: Types Registry declarations through the Usage
+Collector. E1b, derived meters: Products' derived usage type at its exact version (its canonical output
+unit, its inputs and their versions, and its formula version; products P-D-229 and rating T-D-39 on
+branch `bss/pricebook-meters`). The port, `validate_meter_policy` and the publication and acceptance
+gates do not change. A derived meter is not sellable until Products' derived-type store exists.
 
 New entry-create work uses schema version 2 and persists the captured declaration before reservation.
 Recovery validates that captured evidence against the reservation's SKU without another meter lookup.
@@ -243,7 +251,9 @@ The final seven typed signatures, CommercialReason mappings, PDP authorization, 
 retention, supported-model matrix and provider-test links are consolidated in
 [DESIGN](../DESIGN.md#executable-seam-fixture-boundary-d-509) and [PRD](../PRD.md). Acceptance and hold
 commands are SDK-only; historical replay never refreshes the original 24-hour seller-policy deadline.
-E1 (real meter declarations/adapter/provenance), E2 (resolved terms, authenticated market and consumer
-fencing), E3 (runtime PDP grants) and E4 (source history and safe policy transitions) remain external.
+E1a (real raw meter declarations/adapter/provenance), E1b (Products' derived usage types, not built
+yet; products P-D-229 on branch `bss/pricebook-meters`), E2 (resolved terms, authenticated market and
+consumer fencing), E3 (runtime PDP grants) and E4 (source history and safe policy transitions) remain
+external.
 The atlas owner reconciles C00/C01/C10; downstream Rating scheduling and Billing invoicing remain
 unexecuted integration obligations, even when Pricing provider parity is green.

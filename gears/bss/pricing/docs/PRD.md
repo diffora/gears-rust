@@ -146,7 +146,8 @@ consumer contracts; quote is not built (D-415).
 
 **Dropped, spec §3 A–C item numbers:** 1 phases/trials; 2 overlays; 4 region market axis; 5 brand axis now;
 6 cohort (eligibility stays as a price flag); 8 PlanTier; 9 net/gross market display; 10 plan minimum/cap
-(minimum moves to prices, cap is dropped); 11 derived meters/level aggregation; 13 bundle-of-plans;
+(minimum moves to prices, cap is dropped); 11 derived meters/level aggregation (derived meters: see E1b
+under `fr-entry-key`); 13 bundle-of-plans;
 14 structural schedules; 15 materiality; 18 CatalogVersion; 29 bulk import; 30 mass repricing.
 Allowance compiled to zero-price bands, prepaid grants, FixtureGate and per-row frozen descriptors are removed.
 
@@ -221,6 +222,26 @@ are required ownership for handoff, not evidence that another team has accepted 
 work. Pricing's contract tests certify its consumer behavior only; production readiness remains
 blocked until that external evidence exists.
 
+**Owner amendment of D-503, 2026-10-01: E1 has a raw and a derived kind.** A derived (composite)
+usage meter computes one quantity from other usage; a cloudlet is 128 MB of RAM and 400 MHz of CPU.
+Products declares it as a derived usage type with an immutable version: its inputs at exact versions,
+the formula as data, the granularity it applies at and its output unit. Rating evaluates it per
+subscription line and rating window. The usage collector reports raw meters only. These are
+products P-D-229 and rating T-D-39, decisions on branch `bss/pricebook-meters` (`d8f78cf9b`),
+not on this branch. E1 therefore has two parts:
+
+- **E1a, raw meters:** Types Registry declarations answer through the Usage Collector's semantic
+  adapter, with source/IRM accrual provenance, as above.
+- **E1b, derived meters:** Products' derived usage type at its exact version answers: its
+  canonical output unit, its inputs and their versions, and its formula version.
+
+A policy's `MeterRef` names either kind. `UsageMeterSemanticsV1`, `validate_meter_policy` and the
+publication and acceptance gates do not change: one provider behind the port answers both kinds,
+and each kind owes the delivery evidence above against its own source. Pricing computes no derived
+quantity. Products' derived-type store is not built, so a derived meter is not sellable until it exists.
+For derived meters, P-D-229 supersedes the disposition of spec §3 item 11 that §4.2 lists as dropped;
+Pricing still computes none.
+
 D-502 binds an immutable UsageRatingPolicy to each new usage entry. The create requires
 `usage_rating_policy` for usage (`MISSING_RATING_POLICY` otherwise) and refuses it for recurring
 or one-time entries (`UNEXPECTED_RATING_POLICY`). The closed input contains rating_window
@@ -246,7 +267,8 @@ returns the confirmed receipt. Unversioned persisted creates decode as legacy an
 null policy; new versioned usage creates cannot take that path. Re-reserve and delete preserve the
 original entry reference. Migration assigns no policy to old entries, including published plans;
 they continue to read and resolve. D-503 adds meter verification, publication gates and resolve
-policy projection; E1 remains an external production dependency.
+policy projection; E1 remains an external production dependency, for raw meters (E1a) and derived
+meters (E1b).
 
 D-502: a plan item remains a SKU and its selected entry (D-467), with no policy override,
 treatment, included quantity or minimum quantity. Copy/clone within a book preserves entry IDs.
@@ -663,11 +685,16 @@ identity. Different plan items may use different entry-owned windows; a book cha
 policy digest and dimension key as well as SKU/kind/period/model, retaining an unmatched old entry for
 explicit repair. Legacy policy-less reads remain valid while new usage sales fail closed.
 
-**External production obligations remain open.** E1: Types Registry owns immutable declarations,
-Usage Collector the authorized exact-version semantic adapter, and source/IRM owners the accrual
-provenance. Delivery must identify the implementation and tracked work and prove canonical units,
-SUM/additivity, source integration, historical immutability, authorization, outage behavior and real
-VM/cloudlet vectors. E2: Orders resolves Subscriptions-owned versioned BillingTerms and authenticates
+**External production obligations remain open.** E1a (raw meters): Types Registry owns immutable
+declarations, Usage Collector the authorized exact-version semantic adapter, and source/IRM owners
+the accrual provenance. E1b (derived meters; products P-D-229 and rating T-D-39 on branch
+`bss/pricebook-meters`): Products owns the derived usage type at its exact version, with its
+canonical output unit, its inputs and their versions, and its formula version. Products'
+derived-type store is not built, so a derived meter is not sellable yet. One provider behind
+`UsageMeterSemanticsV1` answers both kinds. Delivery must identify the implementation and tracked
+work and prove, for each kind, canonical units, SUM/additivity, source integration, historical
+immutability, authorization, outage behavior and real VM/cloudlet vectors.
+E2: Orders resolves Subscriptions-owned versioned BillingTerms and authenticates
 payer/market; Subscriptions checks committed order/version and attempt fencing immediately before
 activation. E3: deployment grants scoped actions to Orders, Subscriptions and Rating; names confer no
 privilege. E4: Collector retains immutable source history, Subscriptions schedules incompatible policy

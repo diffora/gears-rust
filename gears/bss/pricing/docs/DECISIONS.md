@@ -108,14 +108,14 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-469 | M | The served contract declares every door's 503, every ETag it sets and the refusals of the plan doors | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 2); phase 9 plan rev 2 (M1 and W1, binding; decisions 8 and 9; L8) |
 | D-501 | H | Authorized SDK reads share the frozen preview snapshot and canonical JSON digests | DECIDED 2026-09-30 · Pricing Seam Contracts Task 1 |
 | D-502 | H | Immutable usage policies belong to entries and their semantic key | DECIDED 2026-10-01 · Pricing Seam Contracts Task 2; amends D-386, D-401, D-427 |
-| D-503 | H | Exact meter evidence gates usage publication and stays out of historical reads | DECIDED 2026-10-01 · Pricing Seam Contracts Task 3 |
+| D-503 | H | Exact meter evidence gates usage publication and stays out of historical reads | DECIDED 2026-10-01 · Pricing Seam Contracts Task 3; amended 2026-10-01 by the owner (E1a raw and E1b derived meters; products P-D-229 and rating T-D-39 on branch `bss/pricebook-meters`) |
 | D-504 | H | Pure new-sale terms validate a bounded commercial profile and snapshot integrity | DECIDED 2026-10-01 · Pricing Seam Contracts Task 4 |
 | D-505 | H | Durable commercial receipt storage | DECIDED 2026-10-01 · Pricing Seam Contracts Task 5a |
 | D-506 | H | Authorized commercial provider boundary | DECIDED 2026-10-01 · Pricing Seam Contracts Task 5b |
 | D-507 | H | Atomic acceptance and durable authenticated command replay | DECIDED 2026-10-01 · Pricing Seam Contracts Task 5c |
 | D-508 | H | Frozen first holds and fresh original-binding eligibility | DECIDED 2026-10-01 · Pricing Seam Contracts Task 6 |
 | D-509 | H | Executable Pricing seam fixtures and transport boundary | DECIDED 2026-10-01 · Pricing Seam Contracts Task 7 |
-| D-510 | H | Database parity and provider handoff | DECIDED 2026-10-01 · Pricing Seam Contracts Task 8 |
+| D-510 | H | Database parity and provider handoff | DECIDED 2026-10-01 · Pricing Seam Contracts Task 8; E1 restated as E1a and E1b per the D-503 amendment |
 | D-511 | H | Commercial commands enforce scoped prices and nonempty activation windows | DECIDED 2026-10-01 · Pricing Seam Contracts review fix run |
 
 ## Entries
@@ -1222,7 +1222,25 @@ are required ownership for handoff, not evidence that another team has accepted 
 work. Pricing's contract tests certify its consumer behavior only; production readiness remains
 blocked until that external evidence exists.
 
-**Source:** Pricing Seam Contracts plan revision 3, Task 3 (G2). Extends D-393, D-408 and D-502; preserves D-449–D-453 scheduling. The externally owned atlas C01/C10 is not modified by this task.
+**Owner amendment 2026-10-01: E1 has a raw and a derived kind.** A derived (composite) usage meter
+computes one quantity from other usage; a cloudlet is 128 MB of RAM and 400 MHz of CPU. Products
+declares it as a derived usage type with an immutable version: its inputs at exact versions, the
+formula as data, the granularity it applies at and its output unit. Rating evaluates it per
+subscription line and rating window. The usage collector reports raw meters only. These are
+products P-D-229 and rating T-D-39, decisions on branch `bss/pricebook-meters` (`d8f78cf9b`),
+not on this branch. E1 therefore has two parts:
+
+- **E1a, raw meters:** Types Registry declarations answer through the Usage Collector's semantic
+  adapter, with source/IRM accrual provenance, as above.
+- **E1b, derived meters:** Products' derived usage type at its exact version answers: its
+  canonical output unit, its inputs and their versions, and its formula version.
+
+A policy's `MeterRef` names either kind. `UsageMeterSemanticsV1`, `validate_meter_policy` and the
+publication and acceptance gates do not change: one provider behind the port answers both kinds,
+and each kind owes the delivery evidence above against its own source. Pricing computes no derived
+quantity. Products' derived-type store is not built, so a derived meter is not sellable until it exists.
+
+**Source:** Pricing Seam Contracts plan revision 3, Task 3 (G2). Extends D-393, D-408 and D-502; preserves D-449–D-453 scheduling. The externally owned atlas C01/C10 is not modified by this task. Amended 2026-10-01 by the owner: E1a/E1b (products P-D-229, rating T-D-39 on branch `bss/pricebook-meters`).
 
 
 #### D-504 [H] Pure new-sale terms validate a bounded commercial profile and snapshot integrity
@@ -1550,11 +1568,16 @@ lists exact changes and final-SHA implementation/test links; it is not a publish
 certificate. F07/F22/F31 provider evidence and F23/F24 Pricing input/math evidence remain distinct
 from unexecuted downstream scheduler, collection and invoicing specifications.
 
-**External production obligations remain open.** E1: Types Registry owns immutable declarations,
-Usage Collector the authorized exact-version semantic adapter, and source/IRM owners the accrual
-provenance. Delivery must identify the implementation and tracked work and prove canonical units,
-SUM/additivity, source integration, historical immutability, authorization, outage behavior and real
-VM/cloudlet vectors. E2: Orders resolves Subscriptions-owned versioned BillingTerms and authenticates
+**External production obligations remain open.** E1a (raw meters): Types Registry owns immutable
+declarations, Usage Collector the authorized exact-version semantic adapter, and source/IRM owners
+the accrual provenance. E1b (derived meters; products P-D-229 and rating T-D-39 on branch
+`bss/pricebook-meters`): Products owns the derived usage type at its exact version, with its
+canonical output unit, its inputs and their versions, and its formula version. Products'
+derived-type store is not built, so a derived meter is not sellable yet. One provider behind
+`UsageMeterSemanticsV1` answers both kinds. Delivery must identify the implementation and tracked
+work and prove, for each kind, canonical units, SUM/additivity, source integration, historical
+immutability, authorization, outage behavior and real VM/cloudlet vectors.
+E2: Orders resolves Subscriptions-owned versioned BillingTerms and authenticates
 payer/market; Subscriptions checks committed order/version and attempt fencing immediately before
 activation. E3: deployment grants scoped actions to Orders, Subscriptions and Rating; names confer no
 privilege. E4: Collector retains immutable source history, Subscriptions schedules incompatible policy

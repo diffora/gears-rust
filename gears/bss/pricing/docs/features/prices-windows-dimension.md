@@ -253,7 +253,9 @@ The final seven typed signatures, CommercialReason mappings, PDP authorization, 
 retention, supported-model matrix and provider-test links are consolidated in
 [DESIGN](../DESIGN.md#executable-seam-fixture-boundary-d-509) and [PRD](../PRD.md). Acceptance and hold
 commands are SDK-only; historical replay never refreshes the original 24-hour seller-policy deadline.
-E1 (real meter declarations/adapter/provenance), E2 (resolved terms, authenticated market and consumer
-fencing), E3 (runtime PDP grants) and E4 (source history and safe policy transitions) remain external.
+E1a (real raw meter declarations/adapter/provenance), E1b (Products' derived usage types, not built
+yet; products P-D-229 on branch `bss/pricebook-meters`), E2 (resolved terms, authenticated market and
+consumer fencing), E3 (runtime PDP grants) and E4 (source history and safe policy transitions) remain
+external.
 The atlas owner reconciles C00/C01/C10; downstream Rating scheduling and Billing invoicing remain
 unexecuted integration obligations, even when Pricing provider parity is green.
