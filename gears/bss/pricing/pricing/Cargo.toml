@@ -27,6 +27,10 @@ rust_decimal = { workspace = true }
 toolkit-macros = { workspace = true }
 bss-products-sdk = { workspace = true }
 bss-approval = { workspace = true }
+# D-490: the approvals inbox's source port, which this gear implements over its own doors.
+bss-approvals-sdk = { workspace = true }
+# D-490: the inbox's votes go through this gear's own vote doors as a request (`oneshot`).
+tower = { workspace = true, features = ["util"] }
 event-broker-sdk = { workspace = true, features = ["db", "outbox"] }
 coord = { workspace = true }
 anyhow = { workspace = true }

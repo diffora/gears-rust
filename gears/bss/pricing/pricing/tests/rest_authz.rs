@@ -172,7 +172,10 @@ fn the_authentication_and_authz_parsers_have_positive_controls() {
     // SKU's entry list, the two entry reads and an entry's prices call (D-434, D-440).
     // D-501 adds the shared authorization gate of the three PricingReadV1 methods.
     // D-506 adds the shared commercial service gate (four SDK methods).
-    for (needle, more) in [("require_authenticated(", 1), ("authz::access_scope(", 4)] {
+    // Both needles are also the approvals inbox's source, whose page and counts judge the caller
+    // as the list and the counts doors do, once, in one helper (D-490); its card and votes call
+    // the doors.
+    for (needle, more) in [("require_authenticated(", 2), ("authz::access_scope(", 5)] {
         assert_eq!(census::count_in_functions(census::CONTROL, needle), 2);
         assert_eq!(census::production_count(needle), 52 + more, "{needle}");
     }

@@ -57,6 +57,7 @@ timescaledb-usage-collector = ["dep:timescaledb_usage_collector_plugin"]
 magika = ["file_parser/magika"]
 bss-products = ["dep:bss_products"]
 bss-pricing = ["dep:bss_pricing", "bss-products"]
+bss-approvals = ["dep:bss_approvals"]
 
 [dependencies]
 mimalloc = { workspace = true }
@@ -128,6 +129,7 @@ timescaledb_usage_collector_plugin = { package = "cf-gears-timescaledb-usage-col
 # Optional BSS Plan & Price Modeling gear
 bss_pricing = { package = "cf-gears-bss-pricing", path = "../../gears/bss/pricing/pricing", optional = true }
 bss_products = { package = "cf-gears-bss-products", path = "../../gears/bss/products/products", optional = true }
+bss_approvals = { package = "cf-gears-bss-approvals", path = "../../gears/bss/approvals/approvals", optional = true }
 
 # Optional example module
 users-info = { path = "../../examples/toolkit/users-info/users-info", optional = true }

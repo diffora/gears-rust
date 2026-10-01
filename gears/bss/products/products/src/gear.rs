@@ -414,6 +414,21 @@ impl Gear for BssProductsGear {
         });
         register_products_client(&ctx.client_hub(), api_state.db.db(), Arc::clone(&enforcer));
         register_pricing_ports(&ctx.client_hub(), &api_state, &enforcer);
+        // P-D-250: the approvals inbox reads and votes on this gear's units through this source,
+        // as the caller, under the gear's own doors. The reference registry stays inside
+        // `register_pricing_ports`, beside the meter-semantics dispatcher.
+        ctx.client_hub()
+            .register_scoped::<dyn bss_approvals_sdk::ApprovalSourceV1>(
+                toolkit::client_hub::ClientScope::new(
+                    crate::api::rest::approval_units::inbox_source::SOURCE,
+                ),
+                Arc::new(
+                    crate::api::rest::approval_units::inbox_source::ProductsApprovalSource::new(
+                        Arc::clone(&api_state),
+                        (*enforcer).clone(),
+                    ),
+                ),
+            );
         self.runtime.store(Some(Arc::new(ProductsRuntime {
             enforcer,
             api_state,

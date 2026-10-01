@@ -202,7 +202,7 @@ Phase 2: price models, chain normalization, pair guard, minimum fees and tempora
 
 **ID**: `cpt-cf-bss-pricing-component-approvals`
 
-Phase 2 prices subject and unit doors; phase 3 plan_revision subject (the promotion and migration subjects are deferred, D-409, D-410). Shared Store and engine, generation refresh, SoD and atomic terminal acts.
+Phase 2 prices subject and unit doors; phase 3 plan_revision subject (the promotion and migration subjects are deferred, D-409, D-410). Shared Store and engine, generation refresh, SoD and atomic terminal acts. The approvals inbox (`bss-approvals`) reads and votes on these units through `api::rest::authoring::inbox_source::PricingApprovalSource`, which calls the unit doors themselves (D-490).
 
 #### Reservations client
 
@@ -526,6 +526,13 @@ draft }, plans }, plans distinct across the SKU's entries; an unknown, foreign o
 caller without price_book_entry read gets 403, which Products shows as no usage (D-428). Pricing reads only the
 SKU ids it is given. Its usage_sets answers the tenant's priced and in-plan SKUs under the same rule, in two
 set-based statements, for the Products list's priced and in_plan filters (Products P-D-212).
+Pricing also implements the approvals inbox's source port, `bss_approvals_sdk::ApprovalSourceV1`, and registers it
+at init in the ClientHub as `dyn ApprovalSourceV1`, scoped `pricing` (D-490). The inbox gear asks it as the caller and
+merges its pages with products' by D-470's order, `(submitted_at, id)`. The source calls pricing's own doors: the
+list's read (`approvals::list_units` over `page_units`) with a `CursorV1` it builds from the inbox's key, so the keyset
+is the pager's compare; the counts' grouped statement on the plain connection; the card door, whose 404 is a miss; and
+the vote door through the authoring router as `module.rs` serves it, so the grant, the idempotency endpoint and the
+answer's bytes are the door's. A kind pricing does not record is an empty page and zero counts. `subject_live` is null.
 Reserve is idempotent on the live logical reference, not on a released receipt. The same tenant and SKU must be
 bound to the receipt and object. Products versions?as_of provides descriptor history in phase 4. There is no
 SkuChanged listener/local SKU read model in phase 2 (D-399). Subscriptions migration execution and Rating
