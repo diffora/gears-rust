@@ -1239,7 +1239,7 @@ The owner decided who does what:
 **Source:** Owner, 2026-10-01 (asked who should compute a cloudlet from RAM and CPU usage; chose "Products declares, Rating
 evaluates, the usage collector stays raw").
 
-**Amendment (2026-10-01, the implementation plan review; owner "ок ок").**
+**Amendment (2026-10-01, the implementation plan review; approved by the owner).**
 - **Exact inputs.** An input is a GTS usage type id, and its version segment is the exact version.
 - **The input folds.** The declaration states each input's granule fold (`Sum`, `Peak`, `TimeWeighted`), because no raw meter
   declaration exists to read it from.
