@@ -848,6 +848,14 @@ pub async fn plan_on(
             created_by: ctx.subject_id(),
             created_at: now,
             updated_at: now,
+            work_revision_id: None,
+            work_state: None,
+            scheduled_revision_id: None,
+            scheduled_from: None,
+            published_revision_id: None,
+            current_book_id: None,
+            current_currency: None,
+            last_activity_at: now,
         },
     )
     .await

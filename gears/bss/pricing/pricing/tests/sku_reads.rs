@@ -396,7 +396,10 @@ async fn the_plans_of_a_sku_are_those_that_name_it_through_an_entry() {
     let (_, b, _) = get(&f, &format!("/plans?sku_id={other}")).await;
     assert_eq!(b["items"].as_array().unwrap().len(), 1);
     let (_, b, _) = get(&f, &format!("/plans?sku_id={}", Uuid::new_v4())).await;
-    assert_eq!(b, json!({"items": []}));
+    assert_eq!(
+        b,
+        json!({"items": [], "page_info": {"next_cursor": null, "prev_cursor": null, "limit": 500}})
+    );
     let (s, b, _) = f
         .call_as(
             &stranger(),
@@ -407,7 +410,13 @@ async fn the_plans_of_a_sku_are_those_that_name_it_through_an_entry() {
             None,
         )
         .await;
-    assert_eq!((s, b), (200, json!({"items": []})));
+    assert_eq!(
+        (s, b),
+        (
+            200,
+            json!({"items": [], "page_info": {"next_cursor": null, "prev_cursor": null, "limit": 500}})
+        )
+    );
     for query in ["?sku_id=nope", "?sku=1", "?sku_id="] {
         let (s, b, _) = get(&f, &format!("/plans{query}")).await;
         assert_eq!(s, 400, "{query}: {b}");
@@ -652,9 +661,9 @@ async fn the_two_sku_lists_read_in_the_same_statements_for_10_and_100_rows() {
             "{what}: the same statements, whatever the size"
         );
     }
-    // The plain plan list is set-based too: 110 plans in four statements (D-460, D-461).
+    // The plain plan list is set-based too: 110 plans in five statements (D-485).
     let plain = statements(&f, &recorder, "/plans", 110).await;
-    assert_eq!(plain.len(), 4, "{plain:#?}");
+    assert_eq!(plain.len(), 5, "{plain:#?}");
 }
 
 // ------------------------------------------------------------------ D-486: a SKU's entries, in memory

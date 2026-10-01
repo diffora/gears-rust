@@ -573,6 +573,14 @@ impl Writer<'_> {
                 created_by: Uuid::nil(),
                 created_at: at(2026, 5, 1),
                 updated_at: at(2026, 5, 1),
+                work_revision_id: None,
+                work_state: None,
+                scheduled_revision_id: None,
+                scheduled_from: None,
+                published_revision_id: None,
+                current_book_id: None,
+                current_currency: None,
+                last_activity_at: at(2026, 5, 1),
             },
         )
         .await

@@ -40,6 +40,7 @@ fn declared_paths() -> Routes {
         ("PUT", "/bss-pricing/v1/approval-policy"),
         ("POST", "/bss-pricing/v1/plans"),
         ("GET", "/bss-pricing/v1/plans"),
+        ("GET", "/bss-pricing/v1/plans/counts"),
         ("GET", "/bss-pricing/v1/plans/{id}"),
         ("PATCH", "/bss-pricing/v1/plans/{id}"),
         ("POST", "/bss-pricing/v1/plans/{id}/revisions"),
@@ -204,7 +205,8 @@ fn every_precondition_reading_route_is_in_the_precondition_census() {
         // PS-43), where the claim and the book create each read it; + 2: run 9.3's counts door
         // (D-470), its registration and its 200 answer; + 4: run 9.6's reservations read and
         // effective-policy read (D-480, D-481), each registration and its 200 answer; + 2: run
-        // 9.7's batch checks read (D-482), its registration and its 200 answer.
+        // 9.7's batch checks read (D-482), its registration and its 200 answer; + 2: run 9.8b's
+        // plans counts (D-485), its registration and its 200 answer.
         ("StatusCode::", 2, 110),
     ] {
         assert_eq!(census::count_in_functions(census::CONTROL, needle), control);
@@ -409,6 +411,7 @@ async fn no_operation_declares_a_422() {
 // Run 3.3 plans: method | path | resource:action | If-Match | Idempotency-Key
 // POST /plans plan:author (then price_book:read, D-456) false true
 // GET /plans plan:read false false
+// GET /plans/counts plan:read false false (D-485)
 // GET /plans/{id} plan:read false false
 // PATCH /plans/{id} plan:author true false
 // POST /plans/{id}/revisions plan:author false true

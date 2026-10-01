@@ -8,6 +8,7 @@ pub mod dto;
 mod entry_list;
 pub mod inbox_source;
 pub mod plan_items;
+mod plan_list;
 mod plan_routes;
 pub(crate) mod plans;
 mod price_book_entries;

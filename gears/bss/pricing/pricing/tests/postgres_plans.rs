@@ -181,6 +181,14 @@ fn plan(tenant: Uuid, code: &str) -> plan_e::Model {
         created_by: Uuid::new_v4(),
         created_at: now(),
         updated_at: now(),
+        work_revision_id: None,
+        work_state: None,
+        scheduled_revision_id: None,
+        scheduled_from: None,
+        published_revision_id: None,
+        current_book_id: None,
+        current_currency: None,
+        last_activity_at: now(),
     }
 }
 fn revision(p: &plan_e::Model, b: &price_book::Model, rev_no: i32) -> plan_revision::Model {

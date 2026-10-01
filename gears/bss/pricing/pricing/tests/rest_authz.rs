@@ -38,6 +38,7 @@ fn census() -> census::Routes {
         ("PUT", "/bss-pricing/v1/approval-policy"),
         ("POST", "/bss-pricing/v1/plans"),
         ("GET", "/bss-pricing/v1/plans"),
+        ("GET", "/bss-pricing/v1/plans/counts"),
         ("GET", "/bss-pricing/v1/plans/{id}"),
         ("PATCH", "/bss-pricing/v1/plans/{id}"),
         ("POST", "/bss-pricing/v1/plans/{id}/revisions"),
@@ -262,6 +263,7 @@ fn every_mounted_router_is_merged_into_both_censuses() {
 // Run 3.3 plans: method | path | resource:action | If-Match | Idempotency-Key
 // POST /plans plan:author (then price_book:read, D-456) false true
 // GET /plans plan:read false false
+// GET /plans/counts plan:read false false (D-485)
 // GET /plans/{id} plan:read false false
 // PATCH /plans/{id} plan:author true false
 // POST /plans/{id}/revisions plan:author false true

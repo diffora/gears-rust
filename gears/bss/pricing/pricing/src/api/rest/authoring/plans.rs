@@ -115,17 +115,39 @@ async fn plan_reading<'a>(
     today: time::Date,
 ) -> Result<PlanReading, DoorError> {
     let children = AccessScope::for_tenant(tenant);
-    let (mut wanted, mut units) = (Vec::new(), Vec::new());
+    let (mut wanted, mut units, mut book_ids) = (Vec::new(), Vec::new(), Vec::new());
     for own in revisions {
+        if let Some(current) = dto::current_revision(own, today)?
+            && let Some(row) = own.iter().find(|r| r.id == current)
+        {
+            book_ids.push(row.book_id);
+        }
         wanted.extend(dto::current_revision(own, today)?);
         wanted.extend(dto::in_effect_revision(own, today)?);
         units.extend(dto::named_units(own));
     }
     wanted.sort_unstable();
     wanted.dedup();
+    book_ids.sort_unstable();
+    book_ids.dedup();
+    let books = book_repo::find_many(tx, &children, tenant, &book_ids)
+        .await?
+        .into_iter()
+        .map(|book| {
+            (
+                book.id,
+                dto::PricingPlanBook {
+                    code: book.code,
+                    name: book.name,
+                    currency: book.currency,
+                },
+            )
+        })
+        .collect();
     Ok(PlanReading {
         skus: plan_item_repo::skus_of_revisions(tx, &children, tenant, &wanted).await?,
         units: approval_repo::unit_instants(tx, &children, tenant, &units).await?,
+        books,
     })
 }
 async fn plan_body(
@@ -342,12 +364,9 @@ pub(super) async fn create(
     // D-463: judged as the revision PATCH judges it, among the body's refusals (D-456's order).
     let available_from = support::date(input.available_from.clone(), "available_from")?;
     let children = AccessScope::for_tenant(tenant);
-    if book_repo::find(tx, &children, tenant, input.book_id)
-        .await?
-        .is_none()
-    {
+    let Some(book) = book_repo::find(tx, &children, tenant, input.book_id).await? else {
         return Err(support::missing().into());
-    }
+    };
     require_book_read(tx, books, tenant, input.book_id).await?;
     let now = crate::infra::storage::stored_now();
     // @cpt-begin:cpt-cf-bss-pricing-flow-plans:p1:inst-plans-flow-1
@@ -364,6 +383,14 @@ pub(super) async fn create(
             created_by: ctx.subject_id(),
             created_at: now,
             updated_at: now,
+            work_revision_id: None,
+            work_state: None,
+            scheduled_revision_id: None,
+            scheduled_from: None,
+            published_revision_id: None,
+            current_book_id: None,
+            current_currency: None,
+            last_activity_at: now,
         },
     )
     .await?;
@@ -391,8 +418,20 @@ pub(super) async fn create(
     // @cpt-end:cpt-cf-bss-pricing-flow-plans:p1:inst-plans-flow-1
     support::audit(tx, ctx, correlation, "plan.create", p.id, 1).await?;
     support::audit(tx, ctx, correlation, "plan_revision.create", r.id, 1).await?;
-    // A write answers what it wrote (D-453): an empty draft that names no unit (D-460, D-461).
-    let body = PricingPlanDto::of(p, &[r], today(), &PlanReading::default())?;
+    // A write answers what it wrote (D-453): an empty draft that names no unit (D-460, D-461),
+    // on the book the body named.
+    let reading = PlanReading {
+        books: BTreeMap::from([(
+            book.id,
+            dto::PricingPlanBook {
+                code: book.code,
+                name: book.name,
+                currency: book.currency,
+            },
+        )]),
+        ..PlanReading::default()
+    };
+    let body = PricingPlanDto::of(p, &[r], today(), &reading)?;
     support::answer(
         tx,
         tenant,
@@ -404,46 +443,88 @@ pub(super) async fn create(
     )
     .await
 }
-/// `GET /plans`: the tenant's plans by code, each with its revision headers as they read today
-/// (D-447), its current revision and the one in effect (D-460) and each header's instants
-/// (D-461); with `sku`, only the plans that have a draft, pending, scheduled or published revision
-/// naming the SKU through an entry (D-434, the SKU usage's `plans`; the stored state counts,
-/// D-446). Four set-based statements whatever the number of plans (one when there is none): the
-/// plans, all their revisions, the current revisions' items and the units the revisions name;
-/// the derivation is in memory.
+/// `GET /plans` (D-485): one page of the tenant's plans. The page query carries the narrowing,
+/// including `sku_id`'s stored-state `EXISTS` (D-434). Then four grouped reads: revision headers,
+/// the current and in-effect items, the units, and the current revisions' books. Five statements
+/// for a non-empty page, whatever its size.
 /// # Errors
-/// Storage failures.
+/// 400 for a query the pager refuses; storage failures.
 pub(super) async fn list(
     tx: &impl DBRunner,
     scope: &AccessScope,
     tenant: Uuid,
-    sku: Option<Uuid>,
+    backend: sea_orm::DbBackend,
+    filter: &plan_repo::PlanListFilter,
+    query: &toolkit_odata::ODataQuery,
 ) -> Result<PricingPlanList, DoorError> {
-    let plans = match sku {
-        Some(sku) => plan_repo::naming_sku(tx, scope, tenant, sku).await?,
-        None => plan_repo::list(tx, scope, tenant).await?,
-    };
-    if plans.is_empty() {
-        return Ok(PricingPlanList { items: Vec::new() });
+    let page = plan_repo::page(tx, scope, tenant, backend, filter, query)
+        .await
+        .map_err(list_failure)?;
+    if page.items.is_empty() {
+        return Ok(PricingPlanList {
+            items: Vec::new(),
+            page_info: page.page_info,
+        });
     }
-    let ids: Vec<Uuid> = plans.iter().map(|p| p.id).collect();
-    let today = today();
+    let ids: Vec<Uuid> = page.items.iter().map(|p| p.id).collect();
     let mut revisions: BTreeMap<Uuid, Vec<plan_revision::Model>> = BTreeMap::new();
     for r in
         plan_revision_repo::for_plans(tx, &AccessScope::for_tenant(tenant), tenant, &ids).await?
     {
         revisions.entry(r.plan_id).or_default().push(r);
     }
-    let reading = plan_reading(tx, tenant, revisions.values().map(Vec::as_slice), today).await?;
+    let reading = plan_reading(
+        tx,
+        tenant,
+        revisions.values().map(Vec::as_slice),
+        filter.today,
+    )
+    .await?;
     Ok(PricingPlanList {
-        items: plans
+        items: page
+            .items
             .into_iter()
             .map(|p| {
                 let own = revisions.remove(&p.id).unwrap_or_default();
-                PricingPlanDto::of(p, &own, today, &reading)
+                PricingPlanDto::of(p, &own, filter.today, &reading)
             })
             .collect::<Result<_, _>>()?,
+        page_info: page.page_info,
     })
+}
+/// `GET /plans/counts` (D-485): the list's narrowing, one grouped statement.
+/// # Errors
+/// The list's query refusals; storage failures.
+pub(super) async fn counts(
+    tx: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    backend: sea_orm::DbBackend,
+    filter: &plan_repo::PlanListFilter,
+    query: &toolkit_odata::ODataQuery,
+) -> Result<dto::PricingPlanCounts, DoorError> {
+    let counts = plan_repo::count(tx, scope, tenant, backend, filter, query)
+        .await
+        .map_err(list_failure)?;
+    Ok(dto::PricingPlanCounts {
+        by_selling: dto::PricingPlanSellingCounts {
+            r#true: counts.selling_true,
+            r#false: counts.selling_false,
+        },
+        by_change: dto::PricingPlanChangeCounts {
+            none: counts.none,
+            draft: counts.draft,
+            pending: counts.pending,
+            scheduled: counts.scheduled,
+        },
+        total: counts.total,
+    })
+}
+fn list_failure(error: plan_repo::PlanListError) -> DoorError {
+    match error {
+        plan_repo::PlanListError::Query(error) => DoorError::Api(error.into()),
+        plan_repo::PlanListError::Repo(error) => DoorError::Repo(error),
+    }
 }
 /// `GET /plans/{id}`: the plan and its version.
 /// # Errors
@@ -774,6 +855,14 @@ async fn clone_in(
             created_by: ctx.subject_id(),
             created_at: now,
             updated_at: now,
+            work_revision_id: None,
+            work_state: None,
+            scheduled_revision_id: None,
+            scheduled_from: None,
+            published_revision_id: None,
+            current_book_id: None,
+            current_currency: None,
+            last_activity_at: now,
         },
     )
     .await?;
@@ -805,9 +894,20 @@ async fn clone_in(
     // A write answers what it wrote (D-453): the new draft with the items it copied (D-460).
     let mut skus: Vec<Uuid> = items.iter().map(|i| i.sku_id).collect();
     skus.sort_unstable();
+    let book = book_repo::find(tx, &children, tenant, r.book_id)
+        .await?
+        .ok_or_else(support::missing)?;
     let reading = PlanReading {
         skus: BTreeMap::from([(r.id, skus)]),
         units: BTreeMap::new(),
+        books: BTreeMap::from([(
+            book.id,
+            dto::PricingPlanBook {
+                code: book.code,
+                name: book.name,
+                currency: book.currency,
+            },
+        )]),
     };
     let body = PricingPlanDto::of(p, &[r], today(), &reading)?;
     let response = support::answer(

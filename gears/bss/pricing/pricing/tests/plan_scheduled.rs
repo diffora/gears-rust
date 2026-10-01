@@ -1147,7 +1147,7 @@ async fn the_plan_list_derives_in_its_four_statements() {
         })
         .map(|q| q.sql)
         .collect();
-    assert_eq!(statements.len(), 4, "{statements:#?}");
+    assert_eq!(statements.len(), 5, "{statements:#?}");
     let items = listed["items"].as_array().unwrap();
     assert_eq!(items.len(), 4);
     for p in items {
