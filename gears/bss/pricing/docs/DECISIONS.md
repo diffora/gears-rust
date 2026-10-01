@@ -106,8 +106,8 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-467 | H | A plan item is a SKU and its entry: no treatment, no included quantity, no minimum quantity | DECIDED 2026-09-30 · Owner, 2026-09-30 (the included quantity, then the treatment, then qty_min removed); phase 9 plan rev 2 (run 9.2); amends D-388, D-394, D-407, D-413, D-419, D-420, D-421, D-439 |
 | D-468 | M | A new plan's code follows a declared rule | DECIDED 2026-09-30 · Owner, 2026-09-30 (ask 39, "do it"); phase 9 run 9.2 scope addition; extends D-456, D-457 |
 | D-469 | M | The served contract declares every door's 503, every ETag it sets and the refusals of the plan doors | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 2); phase 9 plan rev 2 (M1 and W1, binding; decisions 8 and 9; L8) |
-| D-501 | H | Authorized SDK reads share the frozen preview snapshot and canonical JSON digests | DECIDED 2026-10-01 · Pricing Seam Contracts Task 1 |
-| D-502 | H | Immutable usage policies belong to entries and their semantic key | DECIDED 2026-10-01 · Pricing Seam Contracts Task 2 |
+| D-501 | H | Authorized SDK reads share the frozen preview snapshot and canonical JSON digests | DECIDED 2026-09-30 · Pricing Seam Contracts Task 1 |
+| D-502 | H | Immutable usage policies belong to entries and their semantic key | DECIDED 2026-10-01 · Pricing Seam Contracts Task 2; amends D-386, D-401, D-427 |
 | D-503 | H | Exact meter evidence gates usage publication and stays out of historical reads | DECIDED 2026-10-01 · Pricing Seam Contracts Task 3 |
 | D-504 | H | Pure new-sale terms validate a bounded commercial profile and snapshot integrity | DECIDED 2026-10-01 · Pricing Seam Contracts Task 4 |
 | D-505 | H | Durable commercial receipt storage | DECIDED 2026-10-01 · Pricing Seam Contracts Task 5a |
@@ -1147,7 +1147,7 @@ key and an equal dimension key. With no equivalent target, the item retains the 
 ITEM_BOOK_FOREIGN blocks publication. An hourly entry never silently becomes monthly, and an absent
 legacy policy never becomes a new policy. Explicit item selection chooses the replacement entry.
 
-**Source:** Pricing Seam Contracts plan revision 3, Task 2. Atlas C10 ownership is refined from item to entry; the atlas source remains externally owned.
+**Source:** Pricing Seam Contracts plan revision 3, Task 2. Amends D-386, D-401, D-427. Atlas C10 ownership is refined from item to entry; the atlas source remains externally owned.
 
 #### D-503 [H] Exact meter evidence gates usage publication and stays out of historical reads
 
