@@ -1132,9 +1132,66 @@ async fn a_plan_submit_carries_the_submitters_note() {
         assert_eq!(s, 400, "{key}: {b}");
         assert!(text(&b).contains("BODY_UNEXPECTED"), "{key}: {b}");
     }
+    // The phase 9 review's R64: a note that is neither text nor null is a body that does not
+    // read, 400, never "no note".
+    let units_before = units(&f).await.len();
+    for (key, body) in [
+        ("number", r#"{"note":5}"#),
+        ("list", r#"{"note":["a"]}"#),
+        ("object", r#"{"note":{"text":"a"}}"#),
+        ("flag", r#"{"note":true}"#),
+    ] {
+        let (s, b) = posted(&f, &submit_path(&over), body, key).await;
+        assert_eq!(s, 400, "{key}: {b}");
+        assert!(
+            text(&b).contains("note is text or null"),
+            "{key}: the body does not read: {b}"
+        );
+    }
+    assert_eq!(units(&f).await.len(), units_before, "no unit written");
     assert_eq!(
         revision(&f, over.revision).await["state"],
         "draft",
         "nothing written"
     );
+}
+
+/// D-464 and the phase 9 review's R5: the plan submit's Idempotency-Key digests the body as sent
+/// (`{}` for none). The same key with another note is 409 `IDEMPOTENCY_CONFLICT` and writes
+/// nothing; no body and `{}` are one body, so the second replays the first's receipt; `{}` and
+/// `{"note":null}` carry no note alike, but they are two bodies as sent, so the key conflicts.
+#[tokio::test]
+async fn a_plan_submit_key_digests_the_body_as_sent() {
+    let (f, catalog) = setup().await;
+    policy(&f, 1).await;
+    for (code, first, second, replays) in [
+        ("other-note", r#"{"note":"a"}"#, r#"{"note":"b"}"#, false),
+        ("same-note", r#"{"note":"a"}"#, r#"{"note":"a"}"#, true),
+        ("none-then-empty", "", "{}", true),
+        ("empty-then-none", "{}", "", true),
+        ("empty-then-null", "{}", r#"{"note":null}"#, false),
+        ("null-then-none", r#"{"note":null}"#, "", false),
+    ] {
+        let g = green(&f, &catalog, code).await;
+        let path = format!("/plan-revisions/{}/submit", g.revision);
+        let (s, receipt) = posted(&f, &path, first, code).await;
+        assert_eq!(s, 201, "{code}: {receipt}");
+        let written = units(&f).await.len();
+        let (s, again) = posted(&f, &path, second, code).await;
+        if replays {
+            assert_eq!(s, 201, "{code}: {again}");
+            assert_eq!(again, receipt, "{code}: the first receipt replays");
+        } else {
+            assert_eq!(s, 409, "{code}: {again}");
+            assert!(
+                text(&again).contains("IDEMPOTENCY_CONFLICT"),
+                "{code}: {again}"
+            );
+        }
+        assert_eq!(
+            units(&f).await.len(),
+            written,
+            "{code}: nothing more written"
+        );
+    }
 }

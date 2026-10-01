@@ -217,7 +217,12 @@ async fn the_item_doors_refuse_treatment_and_the_quantities() {
         let (s, b, _) = add(&f, rev, create, &format!("{key}-{value}")).await;
         assert_eq!(s, 400, "{key}: {b}");
         assert!(text(&b).contains("BODY_UNEXPECTED"), "{key}: {b}");
-        assert!(text(&b).contains(key), "the field names the key: {b}");
+        // The violation's own field, not the reason's text, which names all three keys (the
+        // phase 9 review's R63).
+        assert!(
+            text(&b).contains(&format!("\"field\":\"{key}\"")),
+            "the field names the key: {b}"
+        );
     }
     assert_eq!(catalog.reserves(), 0, "no refusal cost a reservation");
     assert!(items(&f, rev).await.is_empty());
@@ -237,6 +242,10 @@ async fn the_item_doors_refuse_treatment_and_the_quantities() {
             .await;
         assert_eq!(s, 400, "{key}: {b}");
         assert!(text(&b).contains("BODY_UNEXPECTED"), "{key}: {b}");
+        assert!(
+            text(&b).contains(&format!("\"field\":\"{key}\"")),
+            "the field names the key: {b}"
+        );
     }
     let (s, b, _) = f
         .call(

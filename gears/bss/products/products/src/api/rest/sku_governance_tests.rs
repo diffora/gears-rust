@@ -3406,8 +3406,19 @@ async fn stored_unit(
     state: bss_approval::UnitState,
     at: time::OffsetDateTime,
 ) -> Uuid {
+    stored_unit_of(f, f.tenant, kind, ref_id, state, at).await
+}
+/// [`stored_unit`] for `tenant`, in the fixture's database.
+async fn stored_unit_of(
+    f: &Fixture,
+    tenant: Uuid,
+    kind: &str,
+    ref_id: Uuid,
+    state: bss_approval::UnitState,
+    at: time::OffsetDateTime,
+) -> Uuid {
     use bss_approval::{ItemRef, Store, Unit, UnitState};
-    let (id, tenant, kind) = (Uuid::now_v7(), f.tenant, kind.to_owned());
+    let (id, kind) = (Uuid::now_v7(), kind.to_owned());
     f.state
         .db
         .db()
@@ -3578,6 +3589,56 @@ async fn the_unit_counts_count_what_the_list_pages_under_each_narrowing() {
         let (status, b) = f.units(&format!("/counts?{extra}")).await;
         assert_eq!(status, 400, "{extra}: {b}");
     }
+}
+
+/// The phase 9 review's R31: the counts' grouped statement reads the caller's tenant alone. Units of
+/// another tenant in the same database are not counted for the fixture tenant, and that tenant's
+/// own caller, under its own grant, counts its units and none of the fixture's.
+#[tokio::test]
+async fn the_unit_counts_read_the_callers_tenant_alone() {
+    use bss_approval::UnitState;
+    let f = Fixture::new(1).await;
+    let other = Uuid::new_v4();
+    let at = whole_second(time::OffsetDateTime::now_utc());
+    stored_unit(&f, "sku_publish", f.id, UnitState::Pending, at).await;
+    for (kind, state) in [
+        ("sku_change", UnitState::Approved),
+        ("sku_retire", UnitState::Pending),
+        ("sku_retire", UnitState::Rejected),
+    ] {
+        stored_unit_of(&f, other, kind, Uuid::new_v4(), state, at).await;
+    }
+    let (status, ours) = f.units("/counts").await;
+    assert_eq!(status, 200, "{ours}");
+    assert_eq!(
+        ours,
+        json!({
+            "by_state": {"pending": 1, "approved": 0, "rejected": 0, "withdrawn": 0},
+            "by_kind": {"sku_publish": 1, "sku_change": 0, "sku_retire": 0},
+            "total": 1,
+        })
+    );
+    assert_eq!(f.all_units("").await.len(), 1, "the list agrees");
+    let theirs_app = routes(f.state.clone(), &toolkit::api::OpenApiRegistryImpl::new())
+        .layer(axum::Extension(flat_in_enforcer(other)));
+    let (status, theirs) = call(
+        &theirs_app,
+        &authed_ctx(other),
+        Method::GET,
+        "/approval-units/counts",
+        json!({}),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{theirs}");
+    assert_eq!(
+        theirs,
+        json!({
+            "by_state": {"pending": 1, "approved": 1, "rejected": 1, "withdrawn": 0},
+            "by_kind": {"sku_publish": 0, "sku_change": 1, "sku_retire": 2},
+            "total": 3,
+        })
+    );
 }
 
 /// The phase 9 review's theme C (R34, R38, R68): the repository reads a unit's kind and state
@@ -3817,6 +3878,18 @@ async fn a_cursor_keeps_its_order_and_one_minted_before_the_order_still_continue
             b.to_string().contains("INVALID_ORDERBY_FIELD"),
             "{bad}: {b}"
         );
+    }
+    // A limit of 0 reads one unit, in either order, as the house pager does. The toolkit's `OData`
+    // extractor would refuse it (400 INVALID_LIMIT), one reason the list keeps its own parse (the
+    // phase 9 review's theme I).
+    for (order, first) in [
+        ("", named(&units[..1])),
+        ("&$orderby=submitted_at%20desc", named(&newest_first[..1])),
+    ] {
+        let (status, page) = f.units(&format!("?limit=0{order}")).await;
+        assert_eq!(status, 200, "{order}: {page}");
+        assert_eq!(unit_ids(&page), first, "{order}");
+        assert_eq!(page["page_info"]["limit"], 1, "{order}: {page}");
     }
 }
 

@@ -51,11 +51,22 @@ fn set(pairs: &[(&str, &str)]) -> BTreeSet<(String, String)> {
         .map(|(m, p)| ((*m).to_owned(), (*p).to_owned()))
         .collect()
 }
+/// The served text of one op. An op the spec does not serve, or one without a text, fails the test:
+/// a check that a text does NOT say something must read a text that is there (the phase 9
+/// review's R28).
 fn description(api: &Value, method: &str, path: &str) -> String {
     api["paths"][path][method]["description"]
         .as_str()
-        .unwrap_or_default()
+        .unwrap_or_else(|| panic!("{method} {path}: no served op with a description"))
         .to_owned()
+}
+
+/// R28's positive control: the text of an op the spec does not serve is a failure, never "".
+#[tokio::test]
+#[should_panic(expected = "no served op with a description")]
+async fn an_op_that_is_not_served_has_no_text_to_read() {
+    let api = served().await;
+    description(&api, "patch", "/bss-pricing/v1/plan-items/{id}/nowhere");
 }
 
 #[tokio::test]
@@ -206,6 +217,20 @@ async fn the_unit_reads_say_how_they_count_and_order() {
     for name in ["$orderby", "impact"] {
         assert!(listed.iter().any(|n| n == name), "{name}: {listed:?}");
     }
+    // The phase 9 review's theme I (R41): the order is declared through the toolkit, so the
+    // contract lists the one field it takes, in both directions; `$orderby` is one parameter, and
+    // the counts take no order.
+    assert_eq!(
+        list["x-odata-orderby"]["allowedFields"],
+        serde_json::json!(["submitted_at asc", "submitted_at desc"]),
+        "{list}"
+    );
+    assert_eq!(
+        listed.iter().filter(|n| *n == "$orderby").count(),
+        1,
+        "{listed:?}"
+    );
+    assert!(counts["x-odata-orderby"].is_null(), "{counts}");
     let text = description(&api, "get", "/bss-pricing/v1/approval-units");
     for said in [
         "submitted_at desc",

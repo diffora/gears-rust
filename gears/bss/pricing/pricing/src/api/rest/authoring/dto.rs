@@ -621,7 +621,7 @@ pub struct PricingPlanCreate {
 #[toolkit_macros::api_dto(request)]
 #[derive(Clone)]
 #[serde(deny_unknown_fields)]
-#[allow(
+#[expect(
     clippy::option_option,
     reason = "the clone distinguishes omission (keep the source's), null (clear) and a new date"
 )]
@@ -998,7 +998,7 @@ fn nullable<'de, D: serde::Deserializer<'de>, T: serde::Deserialize<'de>>(
 }
 /// An item a check row is about (D-466): the item, its SKU and the entry it names.
 #[toolkit_macros::api_dto(response)]
-#[allow(
+#[expect(
     clippy::struct_field_names,
     reason = "the wire names of ask 29, each an id of another aggregate (D-466)"
 )]
@@ -1010,7 +1010,7 @@ pub struct PricingPlanCheckSubject {
 }
 /// A pending price that blocks a check row (D-466): its approval unit, the price and its entry.
 #[toolkit_macros::api_dto(response)]
-#[allow(
+#[expect(
     clippy::struct_field_names,
     reason = "the wire names of ask 29, each an id of another aggregate (D-466)"
 )]
@@ -1040,29 +1040,30 @@ pub struct PricingPlanCheckDto {
 }
 impl From<crate::domain::plan::Check> for PricingPlanCheckDto {
     fn from(c: crate::domain::plan::Check) -> Self {
+        let blocked_by = c.blocked_by();
         Self {
             code: c.code.into(),
             ok: c.ok,
             label: c.label,
             detail: c.detail,
             info: c.info,
-            blocked_by: c.blocked_by,
+            blocked_by,
             subjects: c
                 .subjects
                 .into_iter()
                 .map(|s| PricingPlanCheckSubject {
-                    item_id: s.item_id,
-                    sku_id: s.sku_id,
-                    price_book_entry_id: s.price_book_entry_id,
+                    item_id: s.item,
+                    sku_id: s.sku,
+                    price_book_entry_id: s.entry,
                 })
                 .collect(),
             blocked_by_prices: c
                 .blocked_by_prices
                 .into_iter()
                 .map(|p| PricingPlanCheckBlockingPrice {
-                    unit_id: p.unit_id,
-                    price_id: p.price_id,
-                    price_book_entry_id: p.price_book_entry_id,
+                    unit_id: p.unit,
+                    price_id: p.price,
+                    price_book_entry_id: p.entry,
                 })
                 .collect(),
         }

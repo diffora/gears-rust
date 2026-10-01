@@ -1,4 +1,3 @@
-#![allow(clippy::expect_used, clippy::unwrap_used)]
 use super::{stored_instant, stored_now};
 use time::macros::datetime;
 

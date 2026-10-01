@@ -154,30 +154,32 @@ pub struct PlanContext {
     pub quorum: u32,
     pub defaults: Defaults,
 }
-/// An item a check row is about (D-466): the item, its SKU and the entry it names.
+/// An item a check row is about (D-466): the item, its SKU and the entry it names. The wire names
+/// (`item_id`, ...) are the DTO's, `PricingPlanCheckSubject`; the domain names the aggregates (the
+/// phase 9 review's R55).
 #[toolkit_macros::domain_model]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(
-    clippy::struct_field_names,
-    reason = "the wire names of ask 29, each an id of another aggregate (D-466)"
-)]
 pub struct Subject {
-    pub item_id: Uuid,
-    pub sku_id: Uuid,
-    pub price_book_entry_id: Option<Uuid>,
+    pub item: Uuid,
+    pub sku: Uuid,
+    pub entry: Option<Uuid>,
 }
 /// A pending price that blocks a check row (D-466): its approval unit, the price and its entry.
-/// Ordered by unit, then price, as `blocked_by` orders its units.
+/// Ordered by unit, then price, as [`Check::blocked_by`] orders its units. The wire names are the
+/// DTO's, `PricingPlanCheckBlockingPrice` (the phase 9 review's R56).
 #[toolkit_macros::domain_model]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-#[allow(
-    clippy::struct_field_names,
-    reason = "the wire names of ask 29, each an id of another aggregate (D-466)"
-)]
 pub struct BlockingPrice {
-    pub unit_id: Uuid,
-    pub price_id: Uuid,
-    pub price_book_entry_id: Uuid,
+    pub unit: Uuid,
+    pub price: Uuid,
+    pub entry: Uuid,
+}
+/// The distinct units of `prices`, in their order: `prices` is ordered by unit, so each unit's
+/// prices are adjacent.
+fn units_of(prices: &[BlockingPrice]) -> Vec<Uuid> {
+    let mut units: Vec<Uuid> = prices.iter().map(|p| p.unit).collect();
+    units.dedup();
+    units
 }
 /// One check row. An `info` row is always ok and never blocks.
 #[toolkit_macros::domain_model]
@@ -188,15 +190,21 @@ pub struct Check {
     pub label: String,
     pub detail: String,
     pub info: bool,
-    /// The approval units whose pending prices would cover what is uncovered; computed, never
-    /// stored (spec §6).
-    pub blocked_by: Vec<Uuid>,
     /// The items that turn the row red, in the revision's item order (D-466): empty for a green
     /// row and for a plan-wide one.
     pub subjects: Vec<Subject>,
-    /// The pending prices behind `blocked_by`, one per price (D-466): the units they name are
-    /// exactly `blocked_by`.
+    /// The pending prices that would cover what is uncovered, one per price, ordered by unit then
+    /// price (D-466); computed, never stored (spec §6). [`Check::blocked_by`] derives their units.
     pub blocked_by_prices: Vec<BlockingPrice>,
+}
+impl Check {
+    /// The approval units whose pending prices would cover what is uncovered: the distinct units
+    /// of `blocked_by_prices`, in order. Derived, so the two cannot drift (the phase 9 review's
+    /// R19).
+    #[must_use]
+    pub fn blocked_by(&self) -> Vec<Uuid> {
+        units_of(&self.blocked_by_prices)
+    }
 }
 /// Whether one item is priced on the sale date, in the plan's book.
 #[toolkit_macros::domain_model]
@@ -205,9 +213,15 @@ pub struct ItemCoverage {
     pub ok: bool,
     pub detail: String,
     pub version_no: Option<i32>,
-    pub blocked_by: Vec<Uuid>,
-    /// The pending prices behind `blocked_by` (D-466).
+    /// The pending prices that would cover the item (D-466), ordered by unit then price.
     pub blocked_by_prices: Vec<BlockingPrice>,
+}
+impl ItemCoverage {
+    /// The distinct units of `blocked_by_prices`, in order (the phase 9 review's R20).
+    #[must_use]
+    pub fn blocked_by(&self) -> Vec<Uuid> {
+        units_of(&self.blocked_by_prices)
+    }
 }
 
 /// A stored revision as [`effective`] reads it: the columns its effective state depends on.
@@ -369,29 +383,27 @@ fn values_of<'a>(ctx: &'a PlanContext, e: &Entry) -> &'a [String] {
 }
 /// Every pending price of the entry, with the approval unit that holds it: the default chain can
 /// cover a value, so a pending default price blocks it as much as the value's own. Answers the
-/// units, distinct and ordered (`blocked_by`), and the prices behind them (D-466).
-fn pending_units(e: &Entry) -> (Vec<Uuid>, Vec<BlockingPrice>) {
+/// prices, distinct and ordered by unit then price; their units are `blocked_by` (D-466).
+fn pending_units(e: &Entry) -> Vec<BlockingPrice> {
     // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-4
     let prices: BTreeSet<BlockingPrice> = e
         .pending
         .iter()
         .map(|p| BlockingPrice {
-            unit_id: p.unit_id,
-            price_id: p.price_id,
-            price_book_entry_id: e.id,
+            unit: p.unit_id,
+            price: p.price_id,
+            entry: e.id,
         })
         .collect();
-    let units: BTreeSet<Uuid> = prices.iter().map(|p| p.unit_id).collect();
-    (units.into_iter().collect(), prices.into_iter().collect())
+    prices.into_iter().collect()
     // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-4
 }
-fn uncovered(detail: String, blocking: (Vec<Uuid>, Vec<BlockingPrice>)) -> ItemCoverage {
+fn uncovered(detail: String, blocking: Vec<BlockingPrice>) -> ItemCoverage {
     ItemCoverage {
         ok: false,
         detail,
         version_no: None,
-        blocked_by: blocking.0,
-        blocked_by_prices: blocking.1,
+        blocked_by_prices: blocking,
     }
 }
 
@@ -400,17 +412,14 @@ fn uncovered(detail: String, blocking: (Vec<Uuid>, Vec<BlockingPrice>)) -> ItemC
 #[must_use]
 pub fn item_coverage(ctx: &PlanContext, item: &Item, today: Date) -> ItemCoverage {
     let Some(e) = entry(ctx, item.price_book_entry_id) else {
-        return uncovered("no price".into(), (vec![], vec![]));
+        return uncovered("no price".into(), vec![]);
     };
     let Some(b) = book(ctx) else {
-        return uncovered("attach a price book".into(), (vec![], vec![]));
+        return uncovered("attach a price book".into(), vec![]);
     };
     if e.book_id != b.id {
         let other = book_by_id(ctx, e.book_id).map_or("another book", |o| o.book.name.as_str());
-        return uncovered(
-            format!("priced in {other}, not {}", b.book.name),
-            (vec![], vec![]),
-        );
+        return uncovered(format!("priced in {other}, not {}", b.book.name), vec![]);
     }
     let date = sale_date(&ctx.revision, today);
     let values = values_of(ctx, e);
@@ -458,7 +467,6 @@ pub fn item_coverage(ctx: &PlanContext, item: &Item, today: Date) -> ItemCoverag
             version_no.unwrap_or_default()
         ),
         version_no,
-        blocked_by: vec![],
         blocked_by_prices: vec![],
     }
 }
@@ -488,7 +496,6 @@ struct Tally {
     kind_clash: Found,
     foreign: Found,
     uncovered: Found,
-    blocked: BTreeSet<Uuid>,
     blocking: BTreeSet<BlockingPrice>,
     /// Each recurring period with the items that bill in it.
     periods: BTreeMap<String, Vec<Uuid>>,
@@ -606,7 +613,6 @@ fn tally_pricing(
     let cov = item_coverage(ctx, item, today);
     if !cov.ok {
         t.uncovered.add(format!("{name} - {}", cov.detail), &it);
-        t.blocked.extend(cov.blocked_by);
         t.blocking.extend(cov.blocked_by_prices);
     }
 }
@@ -640,7 +646,6 @@ fn row(code: &'static str, ok: bool, label: impl Into<String>, detail: impl Into
         label: label.into(),
         detail: detail.into(),
         info: false,
-        blocked_by: vec![],
         subjects: vec![],
         blocked_by_prices: vec![],
     }
@@ -651,9 +656,9 @@ fn subjects(ctx: &PlanContext, ids: &BTreeSet<Uuid>) -> Vec<Subject> {
         .iter()
         .filter(|it| ids.contains(&it.id))
         .map(|it| Subject {
-            item_id: it.id,
-            sku_id: it.sku_id,
-            price_book_entry_id: it.price_book_entry_id,
+            item: it.id,
+            sku: it.sku_id,
+            entry: it.price_book_entry_id,
         })
         .collect()
 }
@@ -752,7 +757,6 @@ fn entry_rows(ctx: &PlanContext, t: &Tally, sale: Date) -> Vec<Check> {
         &t.uncovered,
         &format!("covered in {currency}"),
     );
-    uncovered.blocked_by = t.blocked.iter().copied().collect();
     uncovered.blocked_by_prices = t.blocking.iter().copied().collect();
     vec![
         found_row(

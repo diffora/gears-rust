@@ -289,7 +289,7 @@ async fn refusal_branches_answer_the_key_and_release_only_after_a_reservation() 
     ] {
         let (f, script, t) = setup(mode).await;
         let c = f.caller();
-        let input = t.input();
+        let input = t.input(&c).await;
         let refused = t.create(&c, input.clone(), "one").await;
         assert_eq!(refused.0, status, "{mode}: {refused:?}");
         assert!(refused.1.to_string().contains(code), "{refused:?}");
@@ -331,7 +331,7 @@ async fn refusal_branches_answer_the_key_and_release_only_after_a_reservation() 
 async fn a_second_item_for_the_same_sku_is_refused_and_its_reservation_released() {
     let (f, script, t) = setup(0).await;
     let c = f.caller();
-    let input = t.input();
+    let input = t.input(&c).await;
     assert_eq!(t.create(&c, input.clone(), "one").await.0, 201);
     let taken = t.create(&c, input.clone(), "two").await;
     assert_eq!(taken.0, 409, "{taken:?}");
@@ -407,7 +407,7 @@ async fn assert_refused(
 #[tokio::test]
 async fn the_write_rereads_the_revision_a_submit_between_reserve_and_write_refuses_the_item() {
     let (f, script, t) = setup(0).await;
-    let input = t.input();
+    let input = t.input(&f.caller()).await;
     let answer = raced(&f, &script, &t, input.clone(), async {
         lock(&f, t.revision).await;
     })
@@ -422,7 +422,7 @@ async fn the_write_rereads_the_revision_a_submit_between_reserve_and_write_refus
 #[tokio::test]
 async fn a_revision_published_between_reserve_and_write_refuses_the_item() {
     let (f, script, t) = setup(0).await;
-    let answer = raced(&f, &script, &t, t.input(), async {
+    let answer = raced(&f, &script, &t, t.input(&f.caller()).await, async {
         publish(&f, t.revision).await;
     })
     .await;
@@ -431,7 +431,7 @@ async fn a_revision_published_between_reserve_and_write_refuses_the_item() {
 #[tokio::test]
 async fn a_revision_deleted_between_reserve_and_write_refuses_the_item() {
     let (f, script, t) = setup(0).await;
-    let answer = raced(&f, &script, &t, t.input(), async {
+    let answer = raced(&f, &script, &t, t.input(&f.caller()).await, async {
         let version = revision_version(&f, t.revision).await;
         plan_revision_repo::delete_draft(
             &f.db.conn().unwrap(),
@@ -521,7 +521,9 @@ async fn an_attach_admits_a_deprecated_sku_and_a_create_does_not() {
         *script.reserve_kinds.lock().unwrap(),
         [ReferenceKind::PlanItem]
     );
-    let refused = t.create(&f.caller(), t.input(), "new").await;
+    let refused = t
+        .create(&f.caller(), t.input(&f.caller()).await, "new")
+        .await;
     assert_eq!(
         refused.0, 400,
         "the item door's own answer (R-2): {refused:?}"
@@ -702,7 +704,7 @@ async fn an_attach_for_an_item_removed_before_its_write_releases_its_receipt() {
 async fn an_item_delete_releases_its_receipt_after_its_removal() {
     let (f, script, t) = setup(0).await;
     let c = f.caller();
-    let created = t.create(&c, t.input(), "one").await;
+    let created = t.create(&c, t.input(&c).await, "one").await;
     assert_eq!(created.0, 201);
     let deleted = t.delete(&c, &created.1["id"]).await;
     assert_eq!(deleted.0, 204, "{deleted:?}");
@@ -734,7 +736,7 @@ async fn an_item_delete_releases_its_receipt_after_its_removal() {
 async fn an_item_delete_waits_for_its_confirm_and_never_touches_a_published_revision() {
     let (f, script, t) = setup(7).await;
     let c = f.caller();
-    let pending = t.create(&c, t.input(), "one").await;
+    let pending = t.create(&c, t.input(&c).await, "one").await;
     assert_eq!(pending.1["reference_state"], "confirmation_pending");
     let refused = t.delete(&c, &pending.1["id"]).await;
     assert_eq!(refused.0, 409, "{refused:?}");
@@ -794,7 +796,7 @@ async fn a_contended_item_write_after_the_reserve_cancels_the_create() {
          BEGIN SELECT RAISE(ABORT, '(code: 5) database is locked'); END",
     )
     .await;
-    let input = t.input();
+    let input = t.input(&f.caller()).await;
     let first = t.create(&f.caller(), input.clone(), "one").await;
     assert_eq!(first.0, 409, "{first:?}");
     assert!(first.1.to_string().contains("CONTENDED"), "{first:?}");
