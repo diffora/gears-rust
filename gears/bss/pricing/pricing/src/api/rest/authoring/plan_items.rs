@@ -70,7 +70,7 @@ pub fn judge_create_body(body: &serde_json::Value) -> Result<(), CanonicalError>
 }
 /// The item PATCH's body rule that the typed body cannot say, judged before any read: a key a
 /// plan item no longer takes is 400 `BODY_UNEXPECTED` on that key (D-467). Its entry is judged
-/// against the stored item, by [`patch`].
+/// against the stored item, by the PATCH below its door (`patch`).
 /// # Errors
 /// The refusal above.
 pub fn judge_patch_body(body: &serde_json::Value) -> Result<(), CanonicalError> {
