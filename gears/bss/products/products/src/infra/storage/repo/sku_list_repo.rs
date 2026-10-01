@@ -459,13 +459,16 @@ pub async fn count_skus(
                 crate::infra::storage::stored_now().date(),
             );
             q.select_only()
-                .expr_as(effective.clone(), "lifecycle")
+                .expr_as(effective, "lifecycle")
                 .column_as(Expr::col((sku::Entity, sku::Column::Id)).count(), "n")
                 .column_as(
                     Expr::col((sku::Entity, sku::Column::PendingUnitId)).count(),
                     "in_review",
                 )
-                .group_by(effective)
+                // By position: the effective lifecycle binds its day as a parameter, and Postgres
+                // reads `CASE … $1` in the select and `CASE … $2` in a repeated GROUP BY as two
+                // different expressions (42803). SQLite never notices, so only the pg tier proves it.
+                .group_by(Expr::cust("1"))
                 .into_model::<LifecycleCount>()
         })
         .await
