@@ -296,9 +296,9 @@ resolve/price/current_revision. SellabilityProvider and PricingAcceptanceProvide
 CommercialTermsService with AuthoringState, PolicyEnforcer, Clock and SellerHoldPolicy. Explicit
 Contract IR marks check/hold IdempotentWrite; every other C01 method is SafeRead.
 
-| Method | PDP resource/action | Delivery in this chunk |
+| Method | PDP resource/action | Current delivery |
 | --- | --- | --- |
-| SellabilityV1::check | acceptance:create, catalog collection | Authorized typed unimplemented; 5c supplies the transaction |
+| SellabilityV1::check | acceptance:create, catalog collection | Atomic acceptance/command/audit transaction (D-507) |
 | SellabilityV1::check_fulfilment | acceptance:read, receipt id | Authorized typed unimplemented; Task 6 supplies live eligibility |
 | PricingAcceptanceV1::acceptance | acceptance:read, receipt id | Stored immutable receipt read |
 | PricingAcceptanceV1::hold | acceptance:hold, receipt id | Authorized typed unimplemented; Task 6 supplies the hold |
@@ -322,3 +322,26 @@ provider names its UNCONFIGURED_DEPENDENCY. Pending methods return typed NotYetA
 unimplemented 501 after authorization, never a fabricated commercial success. Tests pin identity,
 actions, multi-tenant filtering, unknown ids, byte-identical restart reads and separate registrations.
 No public command release is claimed until 5c, Task 6 and the complete G3 gate are delivered.
+
+### Acceptance transaction — Task 5c (D-507)
+
+The shared service now implements check in the specified order: authorize catalog/caller, canonical
+request digest, scoped command replay, business-identity replay/command attachment, due promotion
+and local snapshot, detached resolution/live SKU/meter reads, complete-selection/profile/digest
+validation, then serializable generation recheck and receipt commit. New resolution also requires
+plan/price read grants. Exact authorized replay never consults live dependencies or refreshes TTL.
+
+The snapshot records all revision/price generations and the local inputs used to project bindings.
+Recheck covers entries, policies, dimensions and settings too. A local change rolls back and uses
+the G2 bounded capture loop; repeated change returns ResolutionChanged. Server time is sampled only
+after rechecking command/business uniqueness and generations in the final transaction. A revision
+becoming due during provider work forces recapture. Price windows are UTC and half-open; temporary
+promotional prices and wrong seller-policy versions refuse new acceptance.
+
+The same commit freezes entry IDs, exact policy references/content, prices, SKU descriptors, invoice
+inputs and supplied BillingTerms; accepted_at plus the configured duration yields hold_until. It
+inserts the immutable receipt, successful command mapping and local audit with observed meter
+provenance. Targeted insert-or-get rereads unique winners; no persistent in-flight claim is needed.
+A crash before commit rolls back all three records; restart after commit returns the original v1
+receipt even with providers down. Changing seller TTL or selecting another entry in a successor
+revision cannot rewrite it. Hold and live eligibility remain the authorized Task 6 stubs.

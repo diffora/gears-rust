@@ -33,6 +33,7 @@
   - [Typed transactional domain events](#typed-transactional-domain-events)
   - [Frozen consumer golden responses](#frozen-consumer-golden-responses)
 - [6. Acceptance Criteria](#6-acceptance-criteria)
+  - [Durable accepted terms (D-507)](#durable-accepted-terms-d-507)
 
 <!-- /toc -->
 
@@ -217,3 +218,14 @@ Requirement: `cpt-cf-bss-pricing-fr-price-read`; PRD AC #19.
 | `cpt-cf-bss-pricing-dod-consumer-golden-contracts` | AC #19; `cpt-cf-bss-pricing-fr-price-read` | Given stored contract fixtures including negative tenant/uncovered cases, when either backend serves the public paths then responses match; a shape drift fails the contract gate. |
 
 Verification uses domain tests, scoped repository tests on both backends and REST positive/denial/precondition probes as applicable. Phase 2 checks must not mark later-phase behavior implemented. Golden consumer contracts belong to phase 4.
+
+### Durable accepted terms (D-507)
+
+The SDK acceptance command now uses the real read projection and pure compatibility validators,
+with detached live Products/meter observations and bounded local-generation recapture. Acceptance,
+authenticated command receipt and local audit commit atomically. Authorized retries keep the exact
+original terms and deadline; another key on the same order line/version shares that receipt, while
+changed intent conflicts. The acceptance fixture obtains its query from a real SDK resolve and
+covers concurrency, provider failure, transaction rollback/restart, price/revision races and frozen
+history. Receipt schema 1 remains stable. Task 6 supplies hold and fresh fulfilment eligibility;
+acceptance alone never grants activation, and the public release awaits the complete G3 gate.

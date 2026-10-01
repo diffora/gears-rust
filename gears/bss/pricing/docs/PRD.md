@@ -513,7 +513,7 @@ eligibility changes use aborted reason metadata (409); denial is permission deni
 authorized missing receipt is not found (404). The existing Toolkit RFC 9457 conversion is reused.
 Wire scalars retain unsupported values in typed errors; strict BillingTerms decoding rejects missing
 snapshots, unknown/duplicate fields, numeric versions, unsupported schema, cycles and timezone.
-The SDK stays free of serde/storage types. No acceptance method or NewSale HTTP route is exposed here.
+The SDK stays free of serde/storage types. The pure layer exposes no NewSale HTTP route; D-507 implements the authorized SDK acceptance command.
 
 The SDK adds bss.billing-terms.v1, pricing.request.v1 and pricing.terms.v1 canonical JSON projections.
 BillingTerms excludes its own digest; requests include all commercial intent and exclude command
@@ -521,11 +521,15 @@ metadata; accepted terms include query plus sorted complete bindings, including 
 without receipt identity/server timestamps. Exact decimals and all integers are strings; instants
 normalize to UTC with nine fractional digits. Four new frozen vectors are verified in Rust and Node.
 
-Task 5 must supply the complete live item universe, re-resolve selections and compare the caller's
-selected-binding digest independently, validate authoritative meter observations outside transactions,
-and preserve the accepted snapshot. The pure terms function cannot detect an item omitted from both
-its query and its binding arguments. No persistence, migration 19, acceptance/hold method, receipt
-reader, provider implementation or downstream Rating/Billing scheduler is delivered by this task.
+Task 5c supplies the complete live item universe, re-resolves selections and compares the caller's
+selected-binding digest independently, validates authoritative meter observations outside transactions,
+and preserves the accepted snapshot. The pure terms function cannot detect an item omitted from both
+its query and its binding arguments. D-505–D-507 deliver migration 19, the shared authorized service,
+immutable receipt reads and atomic acceptance/command/audit persistence. Successful replay preserves
+the original deadline, including another command key for identical order/line/version intent.
+Changed content conflicts; changed commercial intent needs a new order version. Provider failure
+leaves no acceptance or poisoned command. Hold/live fulfilment remain Task 6, and acceptance alone
+does not authorize activation. No downstream Rating/Billing scheduler is delivered here.
 
 ### 7.2 External Integration Contracts
 

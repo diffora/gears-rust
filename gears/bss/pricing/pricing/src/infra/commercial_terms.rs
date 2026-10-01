@@ -1,4 +1,5 @@
 //! Shared authorized commercial boundary over immutable versioned receipts.
+mod check;
 pub mod errors;
 pub mod wire;
 use crate::{

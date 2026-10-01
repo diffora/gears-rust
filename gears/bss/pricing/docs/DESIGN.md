@@ -967,13 +967,22 @@ act with 500 instead of being retried by the transaction; Products has the same 
 `domain/commercial_terms.rs` exposes pure `validate_commercial_terms(&NewSaleQuery,
 &[AcceptedBinding])` and `validate_new_sale_observation(&SaleObservation)`. The exact matrix,
 anchor rules, reason mapping and integration boundary are recorded in PRD §7.1 and D-504.
-SDK `acceptance.rs` contains only query/market/tenant/term/error values; `terms.rs` adds the
-Subscriptions-owned BillingTerms snapshot projection. No acceptance trait or receipt persistence
-is present yet. `infra/commercial_terms_wire.rs` strictly decodes that snapshot without defaults.
+SDK `acceptance.rs` contains query/market/tenant/term/error values and the commercial capabilities;
+`terms.rs` adds the Subscriptions-owned BillingTerms snapshot projection. D-505–D-507 add
+versioned receipt persistence and authorized acceptance orchestration. `infra/commercial_terms_wire.rs` strictly decodes that snapshot without defaults.
 The existing canonical JSON encoder now also hashes billing terms, request intent and accepted
 terms. Runtime validation recomputes digests and reuses money tier validation. Authoritative
 provider evidence and complete live revision selection remain the command orchestrator's inputs;
 this layer neither queries dependencies nor opens transactions.
+
+**Durable acceptance (D-507).**
+
+SellabilityV1::check authorizes before immutable replay, then promotes due revisions, captures local
+rows and resolves complete selections with detached Products/meter observations. One serializable
+transaction rechecks local generations, samples the injected clock, enforces price windows and the
+seller-policy version, and persists acceptance, command and audit. Bounded recapture prevents mixed
+generations. Receipt schema 1 is unchanged. Exact retries and new keys on an identical order line
+retain the original terms and deadline. Hold/live fulfilment remain Task 6; see design slice 07.
 
 ## 5. Traceability
 

@@ -120,6 +120,8 @@ pub enum CommercialReason {
     ResolutionChanged,
     /// `ACCEPTANCE_MISMATCH` refusal.
     AcceptanceMismatch,
+    /// An authenticated command key was already committed with different content.
+    IdempotencyConflict,
     /// `HOLD_EXPIRED` refusal.
     HoldExpired,
     /// `PRICE_CLOSED` refusal.
@@ -163,6 +165,7 @@ impl CommercialReason {
             Self::NotSellable => "NOT_SELLABLE",
             Self::ResolutionChanged => "RESOLUTION_CHANGED",
             Self::AcceptanceMismatch => "ACCEPTANCE_MISMATCH",
+            Self::IdempotencyConflict => "IDEMPOTENCY_CONFLICT",
             Self::HoldExpired => "HOLD_EXPIRED",
             Self::PriceClosed => "PRICE_CLOSED",
             Self::SkuRetired => "SKU_RETIRED",
@@ -200,6 +203,7 @@ impl CommercialReason {
             Self::NotSellable => "NotSellable",
             Self::ResolutionChanged => "ResolutionChanged",
             Self::AcceptanceMismatch => "AcceptanceMismatch",
+            Self::IdempotencyConflict => "IdempotencyConflict",
             Self::HoldExpired => "HoldExpired",
             Self::PriceClosed => "PriceClosed",
             Self::SkuRetired => "SkuRetired",
@@ -217,6 +221,7 @@ impl From<CommercialReason> for toolkit_canonical_errors::CanonicalError {
         match reason {
             R::NotSellable
             | R::ResolutionChanged
+            | R::IdempotencyConflict
             | R::AcceptanceMismatch
             | R::HoldExpired
             | R::PriceClosed

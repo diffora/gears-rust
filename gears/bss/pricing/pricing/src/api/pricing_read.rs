@@ -47,7 +47,7 @@ impl PricingReadProvider {
     pub fn new(state: Arc<AuthoringState>, enforcer: Arc<PolicyEnforcer>) -> Self {
         Self { state, enforcer }
     }
-    async fn scope(
+    pub(crate) async fn scope(
         &self,
         ctx: &SecurityContext,
         tenant: Uuid,
@@ -242,7 +242,7 @@ fn required(value: Option<&str>, field: &'static str) -> Result<String, Canonica
         .map(str::to_owned)
         .ok_or_else(|| incomplete(field))
 }
-fn project_resolution(s: &ReadSnapshot) -> Result<ResolvedBindings, CanonicalError> {
+pub(crate) fn project_resolution(s: &ReadSnapshot) -> Result<ResolvedBindings, CanonicalError> {
     let mut cells = Vec::new();
     for r in &s.resolved {
         for chain in &r.chains {

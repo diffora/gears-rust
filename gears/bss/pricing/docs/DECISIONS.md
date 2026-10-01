@@ -1372,3 +1372,41 @@ check_fulfilment remain the same until Task 6. Each refuses only after authoriza
 nothing. This intermediate boundary commit is not a public commercial release: G3 must complete
 before consumers can rely on successful commercial commands. Production meter semantics (E1),
 consumer delivery and deployment PDP grants remain external obligations.
+
+## D-507 — Atomic acceptance and durable authenticated command replay (2026-10-01)
+
+Task 5c implements SellabilityV1::check on the D-506 shared service and D-505 receipt schema 1.
+Acceptance create and plan read authorization precede digest computation and every replay. New
+resolution additionally authorizes each selected price. Catalog identity is the explicit seller
+axis; authenticated caller tenant/id come exclusively from SecurityContext.
+
+The command scope is catalog/caller tenant/caller/operation/key. Equal request digests return the
+stored immutable receipt; different content returns IdempotencyConflict. The business identity is
+catalog/order/version/line. A new key with equal content attaches transactionally to that receipt;
+different content returns AcceptanceMismatch. Neither replay path queries Products, meter evidence,
+current revision, price windows or seller TTL. Command records have no expiry or in-flight state.
+
+After due-revision promotion, one serializable local snapshot captures the plan and its revisions,
+items, entries and policies, all candidate price rows, book, dimensions and invoice defaults. Dated
+SKU descriptors, live caller-authorized SKU reads and exact meter declarations are detached from
+that transaction. The full live item universe, current revision, coverage, market, Task 4 validators
+and caller selected-binding digest must agree. No catalog or caller binding is trusted by digest
+alone. Temporary promotional prices remain unsupported for new acceptance.
+
+One serializable write transaction rechecks command/business identity and the captured local rows
+before sampling Clock. It refuses elapsed price windows and wrong hold-policy versions; a newly due
+revision forces fresh capture. Local drift uses the G2 retry_unit_capture/SelectionMoved budget and
+ends in ResolutionChanged if exhausted. Unique-key conflicts reread the winner and compare digests.
+The acceptance, successful command mapping and local audit row commit together; the audit retains
+the observed SKU revision and exact meter evidence. Receipt IDs, accepted_at and hold_until are
+issued only in this transaction. UTC instants and exact decimals retain the D-505 storage format.
+
+A pre-commit failure leaves no receipt, command or acceptance audit. A committed result survives a
+new database pool/service and replays after expiry, policy changes, provider outage or supersession.
+Hold and check_fulfilment remain authorized NotYetAvailable until Task 6. Acceptance is not a grant
+to activate an order; release still requires Task 6 and the G3 controller gate. E1 remains external.
+
+Evidence: acceptance_receipts (real AcceptanceFixture, atomic audit failure/restart, replay and
+provider failures), deterministic detached-provider generation/clock/scheduled-switch races, and
+mutation probes removing generation checks, moving replay ahead of authorization and refreshing
+hold_until on replay. No migration or reinterpretation of previously issued receipts is needed.

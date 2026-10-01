@@ -1,4 +1,4 @@
-//! Authorized sellability boundary; execution arrives in 5c and Task 6.
+//! Authorized acceptance command and pending Task 6 fulfilment boundary.
 use crate::{authz::actions, infra::commercial_terms::CommercialTermsService};
 use bss_pricing_sdk::acceptance::{
     AcceptanceReceipt, CommandMeta, FulfilmentEligibility, FulfilmentQuery, NewSaleQuery,
@@ -24,17 +24,9 @@ impl SellabilityV1 for SellabilityProvider {
         &self,
         ctx: &SecurityContext,
         query: NewSaleQuery,
-        _meta: CommandMeta,
+        meta: CommandMeta,
     ) -> Result<AcceptanceReceipt, CanonicalError> {
-        self.service
-            .scope(
-                ctx,
-                query.tenant_axes.seller_tenant_id,
-                actions::CREATE,
-                None,
-            )
-            .await?;
-        Err(self.service.pending("SellabilityV1::check"))
+        self.service.check(ctx, query, meta).await
     }
     async fn check_fulfilment(
         &self,

@@ -94,6 +94,7 @@ pub fn price_conflict(code: &str) -> CanonicalError {
 
 /// Everything the transaction reads, as the pure model and the renderer take it.
 pub struct ReadSnapshot {
+    pub(crate) generation: LocalGeneration,
     pub policies: BTreeMap<Uuid, crate::infra::usage_policy_wire::UsageRatingPolicy>,
     pub revision: plan_revision::Model,
     /// The revision's state as it reads today (D-447): published, superseded or scheduled.
@@ -108,6 +109,18 @@ pub struct ReadSnapshot {
     pub resolved: Vec<ItemResolution>,
     pub versions: BTreeMap<Uuid, SkuVersion>,
     pub inputs: BTreeMap<Uuid, resolve::InvoiceInputs>,
+}
+
+/// Exact local rows used by a resolve, captured in its serializable snapshot.
+#[derive(Clone, PartialEq, Eq)]
+pub struct LocalGeneration {
+    pub plan: crate::infra::storage::entity::plan::Model,
+    pub revisions: Vec<plan_revision::Model>,
+    items: Vec<crate::infra::storage::entity::plan_item::Model>,
+    entries: Vec<price_book_entry::Model>,
+    book: price_book::Model,
+    dimensions: Vec<crate::infra::storage::entity::dimension_key::Model>,
+    settings: serde_json::Value,
 }
 
 pub async fn load_price(
@@ -143,25 +156,25 @@ fn corrupt(what: String) -> DoorError {
 /// (D-419) — a scheduled one whose date has come reads published, so its answer does not change
 /// when the switch is persisted — and a scheduled one still waiting resolves from its sale date
 /// on (D-454).
-async fn read_stored(
+pub async fn read_stored_at(
     tx: &impl DBRunner,
     scope: &AccessScope,
     tenant: Uuid,
     id: Uuid,
     item: Option<Uuid>,
     date: Date,
+    today: Date,
 ) -> Result<ReadSnapshot, DoorError> {
     // @cpt-begin:cpt-cf-bss-pricing-flow-read-contract-events:p1:inst-read-contract-events-flow-2
     let children = AccessScope::for_tenant(tenant);
     let revision = plan_revision_repo::find(tx, scope, tenant, id)
         .await?
         .ok_or_else(|| plan_missing("plan_revision"))?;
-    plan_repo::find(tx, &children, tenant, revision.plan_id)
+    let plan = plan_repo::find(tx, &children, tenant, revision.plan_id)
         .await?
         .ok_or_else(|| corrupt(format!("revision {id} has no plan")))?;
     // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-switch:p1:inst-plans-revision-switch-5
     let siblings = plan_revision_repo::for_plan(tx, &children, tenant, revision.plan_id).await?;
-    let today = time::OffsetDateTime::now_utc().date();
     let state = crate::api::rest::authoring::dto::effective_revisions(&siblings, today)?
         .into_iter()
         .find(|e| e.id == id)
@@ -187,10 +200,11 @@ async fn read_stored(
         .await?
         .ok_or_else(|| corrupt(format!("revision {id} has no book")))?;
     let mut registry = BTreeMap::new();
-    for d in dimension_repo::list(tx, &children, tenant).await? {
-        let values: Vec<String> = serde_json::from_value(d.values)
+    let dimension_rows = dimension_repo::list(tx, &children, tenant).await?;
+    for d in &dimension_rows {
+        let values: Vec<String> = serde_json::from_value(d.values.clone())
             .map_err(|_| corrupt(format!("dimension {} values", d.key)))?;
-        registry.insert(d.key, values);
+        registry.insert(d.key.clone(), values);
     }
     let mut entries: BTreeMap<Uuid, resolve::Entry> = BTreeMap::new();
     let mut prices = BTreeMap::new();
@@ -213,6 +227,7 @@ async fn read_stored(
     let mut grouped =
         price_repo::by_entry(price_repo::for_entries(tx, &children, tenant, &wanted).await?);
     let mut dimensions = BTreeMap::new();
+    let entry_rows = found.clone();
     for e in found {
         dimensions.insert(e.id, e.dimension_key.clone());
         let of_entry = grouped.remove(&e.id).unwrap_or_default();
@@ -247,6 +262,7 @@ async fn read_stored(
         );
     }
     let mut items = Vec::with_capacity(rows.len());
+    let item_rows = rows.clone();
     for row in rows {
         items.push(resolve::Item {
             id: row.id,
@@ -257,13 +273,22 @@ async fn read_stored(
         });
     }
     let settings = configuration::settings(tx, &children, tenant).await?;
-    let invoice_line_templates =
-        serde_json::from_value(settings.invoice_line_templates).map_err(|_| {
+    let invoice_line_templates = serde_json::from_value(settings.invoice_line_templates.clone())
+        .map_err(|_| {
             corrupt(format!(
                 "settings of tenant {tenant} invoice_line_templates"
             ))
         })?;
     Ok(ReadSnapshot {
+        generation: LocalGeneration {
+            plan,
+            revisions: siblings,
+            items: item_rows,
+            entries: entry_rows,
+            book: book.clone(),
+            dimensions: dimension_rows,
+            settings: serde_json::to_value(&settings).map_err(|e| corrupt(e.to_string()))?,
+        },
         policies,
         revision,
         state,
@@ -431,12 +456,23 @@ async fn snapshot(
 ) -> Result<ReadSnapshot, CanonicalError> {
     support::transaction_door(&state.db.db(), move |tx| {
         let scope = scope.clone();
-        Box::pin(async move { read_stored(tx, &scope, tenant, revision, item, date).await })
+        Box::pin(async move {
+            read_stored_at(
+                tx,
+                &scope,
+                tenant,
+                revision,
+                item,
+                date,
+                time::OffsetDateTime::now_utc().date(),
+            )
+            .await
+        })
     })
     .await
     .map_err(|e| read_failure(e, plan_conflict))
 }
-async fn finish(
+pub async fn finish(
     state: &AuthoringState,
     stored: &mut ReadSnapshot,
     _ctx: &SecurityContext,

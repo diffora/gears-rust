@@ -1,6 +1,6 @@
 //! Provider boundary tests over the same durable repositories as 5a.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
-use super::{database, pool, row};
+use super::{database, pool, restart_runtime, row};
 use bss_pricing::{
     api::rest::authoring::AuthoringState,
     api::{pricing_acceptance::PricingAcceptanceProvider, sellability::SellabilityProvider},
@@ -116,34 +116,38 @@ fn query(tenant: Uuid, id: Uuid) -> AcceptanceQuery {
     }
 }
 
-#[tokio::test]
-async fn authorized_receipt_read_is_immutable_after_restart() {
-    let (db, _dir, dsn) = database().await;
-    let a = row();
-    acceptance_repo::insert(
-        &db.conn().unwrap(),
-        &AccessScope::for_tenant(a.tenant_id),
-        a.clone(),
-    )
-    .await
-    .unwrap();
-    let provider =
-        PricingAcceptanceProvider::new(service(db.clone(), pdp(vec![a.tenant_id]), clock()).await);
-    let before = provider
-        .acceptance(&ctx("read"), query(a.tenant_id, a.id))
+#[test]
+fn authorized_receipt_read_is_immutable_after_restart() {
+    let (before, _dir, dsn, a) = restart_runtime().block_on(async {
+        let (db, dir, dsn) = database().await;
+        let a = row();
+        acceptance_repo::insert(
+            &db.conn().unwrap(),
+            &AccessScope::for_tenant(a.tenant_id),
+            a.clone(),
+        )
         .await
         .unwrap();
-    assert_eq!(wire::encode_acceptance(&before).unwrap(), a.receipt_json);
-    drop(provider);
-    drop(db);
-    let provider = PricingAcceptanceProvider::new(
-        service(pool(&dsn).await, pdp(vec![a.tenant_id]), clock()).await,
-    );
-    let after = provider
-        .acceptance(&ctx("read"), query(a.tenant_id, a.id))
-        .await
-        .unwrap();
-    assert_eq!(wire::encode_acceptance(&after).unwrap(), a.receipt_json);
+        let provider =
+            PricingAcceptanceProvider::new(service(db, pdp(vec![a.tenant_id]), clock()).await);
+        let before = provider
+            .acceptance(&ctx("read"), query(a.tenant_id, a.id))
+            .await
+            .unwrap();
+        assert_eq!(wire::encode_acceptance(&before).unwrap(), a.receipt_json);
+        (before, dir, dsn, a)
+    });
+    restart_runtime().block_on(async {
+        let provider = PricingAcceptanceProvider::new(
+            service(pool(&dsn).await, pdp(vec![a.tenant_id]), clock()).await,
+        );
+        let after = provider
+            .acceptance(&ctx("read"), query(a.tenant_id, a.id))
+            .await
+            .unwrap();
+        assert_eq!(after, before);
+        assert_eq!(wire::encode_acceptance(&after).unwrap(), a.receipt_json);
+    });
 }
 
 #[tokio::test]
@@ -217,7 +221,7 @@ async fn pending_methods_authorize_each_action_and_bind_the_security_context_cal
     let meta = CommandMeta {
         idempotency_key: Uuid::from_u128(999).to_string(),
     };
-    for (kind, expected) in [("denied", 403), ("outage", 503), ("create", 501)] {
+    for (kind, expected) in [("denied", 403), ("outage", 503)] {
         let e = sell
             .check(&ctx(kind), receipt.query.clone(), meta.clone())
             .await
@@ -256,7 +260,6 @@ async fn pending_methods_authorize_each_action_and_bind_the_security_context_cal
         );
     }
     let observed = clock.observed.lock();
-    assert!(observed.contains(&time::OffsetDateTime::UNIX_EPOCH));
     assert!(observed.contains(&(time::OffsetDateTime::UNIX_EPOCH + time::Duration::hours(25))));
     for request in pdp.requests.lock().iter() {
         assert_eq!(request.subject.id, ctx("read").subject_id());

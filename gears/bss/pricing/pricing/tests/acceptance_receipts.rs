@@ -1,4 +1,4 @@
-//! Persistence contracts only; provider acceptance is delivered in Task 5c.
+//! Durable commercial receipts and the authorized acceptance transaction.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 use bss_pricing::infra::{
     commercial_terms::wire,
@@ -462,3 +462,44 @@ async fn hold_and_command_rereads_preserve_winners_and_refuse_changed_intent() {
 
 #[path = "acceptance_boundary/mod.rs"]
 mod boundary;
+
+mod acceptance_support;
+mod plan_support;
+mod seam_support;
+use acceptance_support::AcceptanceFixture;
+use bss_pricing_sdk::acceptance::SellabilityV1;
+
+#[tokio::test]
+async fn acceptance_retry_does_not_refresh_the_deadline() {
+    let f = AcceptanceFixture::new().await;
+    let first = f
+        .sellability
+        .check(&f.ctx, f.query.clone(), f.meta.clone())
+        .await
+        .unwrap();
+    f.clock.advance(time::Duration::hours(25));
+    let replay = f
+        .sellability
+        .check(&f.ctx, f.query.clone(), f.meta.clone())
+        .await
+        .unwrap();
+    assert_eq!(replay.acceptance_id, first.acceptance_id);
+    assert_eq!(replay.hold_until, first.hold_until);
+    let mut changed = f.query.clone();
+    changed.quantity = "2".parse().unwrap();
+    assert!(
+        f.sellability
+            .check(&f.ctx, changed, f.meta.clone())
+            .await
+            .is_err()
+    );
+}
+mod acceptance_transaction;
+
+/// A restart test drops this runtime to cancel all old outbox work before reopening storage.
+fn restart_runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+}

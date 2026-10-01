@@ -24,7 +24,7 @@ impl From<UnconfiguredDependency> for CanonicalError {
     }
 }
 
-/// Intermediate G3 boundary, replaced by 5c and Task 6 before public release.
+/// Pending fulfilment/hold boundary, replaced by Task 6 before public release.
 #[derive(Debug, Clone, Copy, thiserror::Error)]
 #[error("NotYetAvailable: {operation}")]
 pub struct NotYetAvailable {
