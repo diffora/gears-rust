@@ -174,6 +174,7 @@ async fn submit(
     let ctx = require_authenticated(ctx)?;
     let scope = g::scope(&enforcer, &ctx, &resource_types::SKU, actions::SUBMIT).await?;
     run(
+        &enforcer,
         state,
         scope,
         ctx,
@@ -194,7 +195,17 @@ async fn changes(
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(ctx)?;
     let scope = g::scope(&enforcer, &ctx, &resource_types::SKU, actions::SUBMIT).await?;
-    run(state, scope, ctx, id, headers, body, SubmitKind::Change).await
+    run(
+        &enforcer,
+        state,
+        scope,
+        ctx,
+        id,
+        headers,
+        body,
+        SubmitKind::Change,
+    )
+    .await
 }
 async fn retire(
     Extension(state): Extension<Arc<ApiState>>,
@@ -207,6 +218,7 @@ async fn retire(
     let ctx = require_authenticated(ctx)?;
     let scope = g::scope(&enforcer, &ctx, &resource_types::SKU, actions::SUBMIT).await?;
     run(
+        &enforcer,
         state,
         scope,
         ctx,
@@ -286,7 +298,12 @@ async fn fence(
     ))
 }
 /// @cpt-cf-bss-products-fr-approval-units
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the derived pin needs the same enforcer the door already judged"
+)]
 async fn run(
+    enforcer: &PolicyEnforcer,
     state: Arc<ApiState>,
     scope: AccessScope,
     ctx: SecurityContext,
@@ -344,13 +361,17 @@ async fn run(
     {
         return Ok(response);
     }
-    execute(state, scope, ctx, id, kind, patch, date, note, now, claim).await
+    execute(
+        enforcer, state, scope, ctx, id, kind, patch, date, note, now, claim,
+    )
+    .await
 }
 #[expect(
     clippy::too_many_arguments,
     reason = "Submission captures all values once before transaction retries"
 )]
 async fn execute(
+    enforcer: &PolicyEnforcer,
     state: Arc<ApiState>,
     scope: AccessScope,
     ctx: SecurityContext,
@@ -385,7 +406,7 @@ async fn execute(
     let usage = if matches!(kind, SubmitKind::Retire) {
         None
     } else {
-        g::resolve(&state, &ctx, &proposed).await?
+        g::resolve(&state, enforcer, &ctx, &proposed).await?
     };
     let (db, sink, config) = (
         state.db.db(),

@@ -457,10 +457,10 @@ asked for it, configured or not, and its picker lists GTS types only; derived ty
 Products answers pricing's meter-semantics port for its derived usage types (E1b, P-D-233). At its init it registers the
 ClientHub's one `dyn UsageMeterSemanticsV1`, beside `PricingReferenceRegistry` and over the same runtime, not through
 `#[toolkit::provides]`. A meter whose id carries the reserved `products.derived/` prefix is answered from the store, in the
-caller's tenant (the store's key, beside the `sku:read` scope): the version's output unit as `canonical_unit`, a `Sum` fold,
+caller's tenant (the store's key, beside `tenant_only()` of the `sku:read` scope, so a SKU `resource_id` does not filter the row): the version's output unit as `canonical_unit`, a `Sum` fold,
 `derived-v1:<stored digest>` as `accrual_policy_version`, `source_integrated`, and the stored digest. A `version` that is not
 canonical or disagrees with `@<n>` is 400 `METER_POLICY_MISMATCH`; an unknown code, version or tenant is one 400
-`METER_VERSION_UNKNOWN`; a store failure is 503, a stored row that does not read is 500, and a denied `sku:read` 403. Every other meter answers exactly as an absent
+`METER_VERSION_UNKNOWN`; a store failure is 503, a stored row that does not read is a data-loss 500 whose detail is `a stored derived meter row does not read` (the cause is logged and is not on the wire; pricing forwards that 500 and remaps every other provider 5xx to 503), and a denied `sku:read` 403. Every other meter answers exactly as an absent
 provider does (`UNCONFIGURED_DEPENDENCY`). The raw-meter provider (E1a) is not built: when it exists, it registers under a
 `products-sdk` trait that this dispatcher calls for every non-derived id.
 

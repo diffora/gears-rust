@@ -220,7 +220,17 @@ async fn approve(
     )
     .await?;
     let body = json_body(body)?;
-    vote(state, scope, ctx, id, Vote::Approve, Some(body), headers).await
+    vote(
+        &enforcer,
+        state,
+        scope,
+        ctx,
+        id,
+        Vote::Approve,
+        Some(body),
+        headers,
+    )
+    .await
 }
 async fn reject(
     Extension(state): Extension<Arc<ApiState>>,
@@ -239,7 +249,17 @@ async fn reject(
     )
     .await?;
     let body = json_body(body)?;
-    vote(state, scope, ctx, id, Vote::Reject, Some(body), headers).await
+    vote(
+        &enforcer,
+        state,
+        scope,
+        ctx,
+        id,
+        Vote::Reject,
+        Some(body),
+        headers,
+    )
+    .await
 }
 async fn withdraw(
     Extension(state): Extension<Arc<ApiState>>,
@@ -256,7 +276,17 @@ async fn withdraw(
         actions::SUBMIT,
     )
     .await?;
-    vote(state, scope, ctx, id, Vote::Withdraw, None, headers).await
+    vote(
+        &enforcer,
+        state,
+        scope,
+        ctx,
+        id,
+        Vote::Withdraw,
+        None,
+        headers,
+    )
+    .await
 }
 async fn list(
     Extension(state): Extension<Arc<ApiState>>,
@@ -570,7 +600,12 @@ async fn proposed(subject: &Subject, tx: &DbTx<'_>, unit: &Unit) -> Result<SkuCo
     }
 }
 /// @cpt-cf-bss-products-fr-concurrency-idempotency
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the derived pin needs the same enforcer the door already judged"
+)]
 async fn vote(
+    enforcer: &PolicyEnforcer,
     state: Arc<ApiState>,
     scope: AccessScope,
     ctx: SecurityContext,
@@ -619,7 +654,7 @@ async fn vote(
         let content = review_content(&state, &scope, &ctx, id).await?;
         if let Some(content) = content {
             resolved_ref = content.usage_type_ref.clone();
-            usage = g::resolve(&state, &ctx, &content).await?;
+            usage = g::resolve(&state, enforcer, &ctx, &content).await?;
         }
     }
     let seen = body.as_ref().map(|b| b.generation);

@@ -24,13 +24,16 @@
 //!   - a `version` that is not canonical, or that disagrees with `@<n>`: 400 [`METER_POLICY_MISMATCH`];
 //!   - an unknown code, an unknown version, another tenant's type, or a prefixed id that names no meter: ONE answer,
 //!     400 [`METER_VERSION_UNKNOWN`], with the same detail, so the answer tells a caller nothing about other tenants;
-//!   - a store failure: 503; a stored row that does not read (a corrupt row): 500.
+//!   - a store failure: 503; a stored row that does not read (a corrupt row): a data-loss 500, detail
+//!     `a stored derived meter row does not read`, cause logged, not on the wire. `Internal` hides a custom
+//!     description, so data-loss is what keeps status 500 and puts that sentence on the wire.
 //! - **The tenant pin.** The port carries no tenant: the provider reads in the CALLER's tenant,
-//!   `ctx.subject_tenant_id()`, as the store's key, beside the PDP's compiled scope. A grant whose scope spans several
-//!   tenants (a parent reading its children) therefore never answers another tenant's meter.
+//!   `ctx.subject_tenant_id()`, as the store's key, beside `tenant_only()` of the `sku:read` scope. A SKU
+//!   `resource_id` does not filter a derived row. A grant whose scope spans several tenants (a parent reading its
+//!   children) therefore never answers another tenant's meter. A constraint with no `owner_tenant_id` is deny-all.
 //! - **No trusted subject.** Pricing resolves the semantics as its door's caller (D-503), never as its system actor,
 //!   so every caller goes through the PDP; unlike the reference registry, no subject type is trusted here.
-use crate::api::rest::{ApiState, derived_usage_types, repo_error_to_canonical};
+use crate::api::rest::{ApiState, derived_usage_types};
 use crate::domain::derived::is_derived_ref;
 use crate::infra::storage::RepoError;
 use async_trait::async_trait;
@@ -82,7 +85,9 @@ impl ProductsMeterSemantics {
                 .with_reason("a meter is read for an identified caller of a tenant")
                 .create());
         }
-        let scope = derived_usage_types::read_scope(&self.enforcer, ctx).await?;
+        let scope = derived_usage_types::read_scope(&self.enforcer, ctx)
+            .await?
+            .tenant_only();
         let Ok(id) = MeterId::parse(&meter.usage_type_id) else {
             return Err(unknown());
         };
@@ -99,7 +104,7 @@ impl ProductsMeterSemantics {
                 .map_err(|e| store_failure(&e))?
                 .ok_or_else(unknown)?;
         let digest = decode_digest(&version.digest).ok_or_else(|| {
-            repo_error_to_canonical(&RepoError::CorruptRow(format!(
+            store_failure(&RepoError::CorruptRow(format!(
                 "derived usage type {} version {} digest is not 64 lowercase hex digits",
                 version.type_id, version.version
             )))
@@ -152,10 +157,11 @@ fn mismatch(id: &MeterId) -> CanonicalError {
         .create()
 }
 
-/// A store failure is 503 (decision 5); a stored row that does not read is a corrupt row, 500.
+/// A store failure is 503 (decision 5). A stored row that does not read stays 500, with a fixed detail:
+/// a permanent fault, so pricing forwards it instead of answering a retryable 503.
 fn store_failure(error: &RepoError) -> CanonicalError {
     if matches!(error, RepoError::CorruptRow(_)) {
-        return repo_error_to_canonical(error);
+        return derived_usage_types::corrupt_row(error);
     }
     tracing::error!(error = %error, "bss-products: the derived meter store failed");
     CanonicalError::service_unavailable().create()

@@ -86,7 +86,7 @@ writes ask `author` on the resource `derived_usage_type`; the reads ask `sku:rea
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-derived-usage-types-pricing-reads`
 
-1. [ ] - `p1` - Ask `sku:read`; the compiled scope and the caller's tenant filter every read - `inst-derived-read-scope`
+1. [ ] - `p1` - Ask `sku:read` (403 denied, 503 unreachable); the SQL filter is `tenant_only()` of that scope beside the caller's tenant, so a SKU `resource_id` does not select a derived row, and a constraint with no `owner_tenant_id` is deny-all - `inst-derived-read-scope`
 2. [ ] - `p1` - List the tenant's types by code, 50 to a page and at most 200, with a cursor and each type's latest version; read one type with its versions' headers - `inst-derived-read-list`
 3. [ ] - `p1` - Read one version: the declaration, the stored digest, `meter_ref` `{usage_type_id: "products.derived/<code>@<n>", version: "<n>"}`, `canonical_unit` and `accrual_policy_version` `derived-v1:<digest>`; a non-canonical `n`, an unknown code or version, and another tenant's type are 404 - `inst-derived-read-version`
 
@@ -153,7 +153,7 @@ writes ask `author` on the resource `derived_usage_type`; the reads ask `sku:rea
 1. [ ] - `p1` - A meter whose id does not start with `products.derived/` is raw (E1a): answer exactly `UnconfiguredMeterSemantics`, asking neither the PDP nor the store - `inst-derived-meter-dispatch`
 2. [ ] - `p1` - Refuse a nil tenant or subject 403; ask `sku:read` (403 denied, 503 unreachable) - `inst-derived-meter-caller`
 3. [ ] - `p1` - Parse the meter id; a `version` that is not canonical or disagrees with `@<n>` is 400 METER_POLICY_MISMATCH on `meter.version` - `inst-derived-meter-version`
-4. [ ] - `p1` - Read the type and the version in the caller's tenant, the store's key, beside the `sku:read` scope; an unknown code or version, another tenant's type and an id that names no meter are one 400 METER_VERSION_UNKNOWN on `meter`; a store failure is 503, a row that does not read 500 - `inst-derived-meter-read`
+4. [ ] - `p1` - Read the type and the version in the caller's tenant, the store's key, beside `tenant_only()` of the `sku:read` scope; an unknown code or version, another tenant's type and an id that names no meter are one 400 METER_VERSION_UNKNOWN on `meter`; a store failure is 503, a row that does not read is a data-loss 500 with detail `a stored derived meter row does not read` (pricing forwards that 500; every other provider 5xx is 503) - `inst-derived-meter-read`
 5. [ ] - `p1` - Answer the meter as asked, the version's output unit, `Sum`, `derived-v1:<stored digest>`, source integrated, and the stored digest, never one recomputed - `inst-derived-meter-answer`
 
 ## 4. States (CDSL)
@@ -263,7 +263,7 @@ Verified by `meter_semantics_tests::a_derived_meter_answers_its_stored_version`,
 The gear's init registers one `dyn UsageMeterSemanticsV1` in the ClientHub, as it registers `PricingReferenceRegistry`. It
 answers a derived meter from the store, in the caller's tenant under `sku:read`: the output unit, `Sum`,
 `derived-v1:<stored digest>`, source integrated and the stored digest; 400 METER_POLICY_MISMATCH for a version off the id,
-one 400 METER_VERSION_UNKNOWN for an unknown code, version or tenant, 503 for a store failure, 403 for a denial. Every other
+one 400 METER_VERSION_UNKNOWN for an unknown code, version or tenant, 503 for a store failure, a data-loss 500 with detail `a stored derived meter row does not read` for a row that does not read, 403 for a denial. Every other
 meter is answered as an absent provider would; the raw-meter provider (E1a) is an extension point, not built (DESIGN §3.5;
 P-D-233).
 

@@ -354,13 +354,14 @@ async fn a_store_failure_is_503_and_a_corrupt_row_500() {
         &[(json!({"output_unit": 7}), stored_digest('d'))],
     )
     .await;
-    assert_eq!(
-        f.resolve(meter("corrupt", 1))
-            .await
-            .unwrap_err()
-            .status_code(),
-        500
+    let corrupt = f.resolve(meter("corrupt", 1)).await.unwrap_err();
+    assert_eq!(corrupt.status_code(), 500);
+    let body = problem(corrupt).to_string();
+    assert!(
+        body.contains("a stored derived meter row does not read"),
+        "{body}"
     );
+    assert!(!body.contains("output_unit"), "{body}");
     drop_table(&f.dsn, "products_derived_usage_type_version").await;
     assert_eq!(
         f.resolve(meter("cloudlets", 1))
@@ -458,6 +459,59 @@ async fn the_callers_tenant_is_pinned() {
             &stored_digest('e')
         )
     );
+}
+
+/// A permitting PDP whose only predicate is `resource_id`: no `owner_tenant_id`. `tenant_only` drops that constraint
+/// and the read is deny-all, even when the resource id is the derived type's own id.
+struct ResourceOnly {
+    resource: Uuid,
+}
+#[async_trait]
+impl AuthZResolverApi for ResourceOnly {
+    async fn evaluate(
+        &self,
+        _ctx: PlatformSecurityContext,
+        _req: EvaluationRequest,
+    ) -> Result<EvaluationResponse, CanonicalError> {
+        Ok(EvaluationResponse {
+            decision: true,
+            context: EvaluationResponseContext {
+                constraints: vec![Constraint {
+                    predicates: vec![Predicate::In(InPredicate::new(
+                        pep_properties::RESOURCE_ID,
+                        vec![self.resource],
+                    ))],
+                }],
+                deny_reason: None,
+            },
+        })
+    }
+}
+
+/// A constraint with no `owner_tenant_id` reads nothing: `tenant_only` is deny-all, so naming the derived type's id
+/// as `resource_id` does not answer the meter.
+#[tokio::test]
+async fn a_constraint_with_no_owner_tenant_reads_nothing() {
+    let f = F::new().await;
+    let (db, _) = crate::test_support::repo_connection(&f.dsn, f.tenant).await;
+    let conn = db.conn().unwrap();
+    let stored = store::find_type(
+        &conn,
+        &AccessScope::for_tenant(f.tenant),
+        f.tenant,
+        "cloudlets",
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let provider = f.provider(PolicyEnforcer::new(Arc::new(ResourceOnly {
+        resource: stored.id,
+    })));
+    let error = provider
+        .resolve(&f.ctx, meter("cloudlets", 1))
+        .await
+        .unwrap_err();
+    assert_eq!(refusal(error), (400, METER_VERSION_UNKNOWN.to_owned()));
 }
 
 /// The `TypesRegistryClient` the gear's init registers its authz labels with; nothing else is asked of it.

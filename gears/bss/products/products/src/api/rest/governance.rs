@@ -82,6 +82,7 @@ pub async fn lifecycle(
 }
 pub(super) async fn resolve(
     state: &ApiState,
+    enforcer: &PolicyEnforcer,
     ctx: &SecurityContext,
     content: &SkuContent,
 ) -> Result<Option<UsageRefAnswer>, CanonicalError> {
@@ -91,8 +92,7 @@ pub(super) async fn resolve(
     // P-D-232: a derived ref comes first, from this gear's own store, and the catalog is never
     // asked for it, configured or not.
     if derived::is_derived_ref(reference) {
-        let pin =
-            super::derived_usage_types::pin(state, ctx.subject_tenant_id(), reference).await?;
+        let pin = super::derived_usage_types::pin(state, enforcer, ctx, reference).await?;
         return Ok(Some(
             pin.map_or(UsageRefAnswer::DerivedUnknown, UsageRefAnswer::Derived),
         ));

@@ -373,6 +373,7 @@ fn write_error(e: RepoError, category_id: Option<Uuid>) -> TxError {
 /// submit and the approve answer it 403 `USAGE_TYPE_FORBIDDEN`.
 async fn resolve_draft_ref(
     state: &ApiState,
+    enforcer: &PolicyEnforcer,
     ctx: &SecurityContext,
     reference: Option<&str>,
     unit: Option<&str>,
@@ -380,8 +381,7 @@ async fn resolve_draft_ref(
     // P-D-232: a derived ref comes first, before the unconfigured catalog's early `Ok`: it is this
     // gear's own data, judged from its store, and the catalog is never asked for it.
     if let Some(reference) = reference.filter(|reference| derived::is_derived_ref(reference)) {
-        let pin =
-            super::derived_usage_types::pin(state, ctx.subject_tenant_id(), reference).await?;
+        let pin = super::derived_usage_types::pin(state, enforcer, ctx, reference).await?;
         let mut report = ValidationReport::new();
         derived::judge_binding(&mut report, reference, unit, pin.as_ref());
         return if report.is_empty() {
@@ -442,6 +442,7 @@ async fn create_sku(
     }
     resolve_draft_ref(
         &state,
+        &enforcer,
         &ctx,
         new_tx.usage_type_ref.as_deref(),
         new_tx.unit.as_deref(),
@@ -577,6 +578,7 @@ async fn update_sku_draft(
     if proposed.usage_type_ref != current.usage_type_ref || derived_unit_moved {
         resolve_draft_ref(
             &state,
+            &enforcer,
             &ctx,
             proposed.usage_type_ref.as_deref(),
             proposed.unit.as_deref(),

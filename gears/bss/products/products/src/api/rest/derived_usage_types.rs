@@ -6,7 +6,8 @@
 //! - **Writes** ask `author` on `derived_usage_type`, anchored to the caller's tenant, and take an
 //!   optional `Idempotency-Key`. A version is append-only, with no approval of its own (O-1): a usage
 //!   SKU adopts one only at its own approved first publish (Run 3).
-//! - **Reads** ask `sku:read` (O-3), and the compiled scope is the SQL filter beside the tenant.
+//! - **Reads** ask `sku:read` (O-3). The decision stays that grant (403 / 503). The SQL filter is
+//!   `tenant_only()` of it, beside the caller's tenant, so a SKU `resource_id` never selects a derived row.
 //! - **The order of the checks** (P-D-202): the caller, the PDP, the JSON body, the replay store,
 //!   the request's shape, the identity and the declaration rules (and, for a new version, its
 //!   type), then each input through the usage-type catalog as the caller; then one transaction
@@ -257,8 +258,28 @@ async fn author_scope(
     })
 }
 
-/// `sku:read` (O-3): the compiled scope is the read's SQL filter. The meter-semantics provider reads under it too
-/// (P-D-233).
+/// A stored derived meter row that does not read. `Internal` hides its description, so this is a data-loss 500:
+/// status 500, and the wire detail is the fixed sentence. The cause is logged and is not on the wire.
+pub(crate) fn corrupt_row(err: &RepoError) -> CanonicalError {
+    tracing::error!(error = %err, "bss-products: a stored derived meter row does not read");
+    DerivedUsageTypeResource::data_loss("a stored derived meter row does not read")
+        .with_resource("derived usage type")
+        .create()
+}
+
+/// A derived-row failure. `CorruptRow` stays 500 with a fixed detail; every other repository failure keeps the
+/// shared mapping.
+fn stored_row_error(err: &RepoError) -> CanonicalError {
+    if matches!(err, RepoError::CorruptRow(_)) {
+        corrupt_row(err)
+    } else {
+        repo_error_to_canonical(err)
+    }
+}
+
+/// `sku:read` (O-3): the decision is this scope (403 denied, 503 unreachable). SQL reads of a derived row use
+/// [`AccessScope::tenant_only`] of it, beside the caller's tenant (P-D-231 amended). A SKU `resource_id` is not a
+/// derived type id.
 pub(crate) async fn read_scope(
     enforcer: &PolicyEnforcer,
     ctx: &SecurityContext,
@@ -335,7 +356,7 @@ async fn judged(
     derived::validate(&declaration)?;
     derived::resolve_inputs(state.usage_type_catalog.as_ref(), ctx, &declaration).await?;
     let stored = serde_json::to_value(ProductsDerivedDeclaration::from(&declaration))
-        .map_err(|e| repo_error_to_canonical(&RepoError::Db(format!("declaration: {e}"))))?;
+        .map_err(|e| stored_row_error(&RepoError::Db(format!("declaration: {e}"))))?;
     Ok((stored, derived::digest_hex(&declaration)))
 }
 
@@ -490,7 +511,7 @@ async fn create_derived_usage_type_version(
     let conn = state.db.conn().map_err(|e| tx_to_canonical(e.into()))?;
     if store::find_type(&conn, &scope_tx, tenant_id, &code)
         .await
-        .map_err(|e| repo_error_to_canonical(&e))?
+        .map_err(|e| stored_row_error(&e))?
         .is_none()
     {
         return Err(not_found(&code, None));
@@ -598,7 +619,7 @@ async fn list_derived_usage_types(
 ) -> Result<Json<Page<ProductsDerivedUsageTypeItem>>, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     // Authorization first, then the query (a 403 before a 400).
-    let scope = read_scope(&enforcer, &ctx).await?;
+    let scope = read_scope(&enforcer, &ctx).await?.tenant_only();
     params(query, &["limit", "cursor"], Some(&["$top", "$skiptoken"]))?;
     let OData(mut odata) = odata?;
     // The cursor names this list: one another list cut is refused, not misread.
@@ -615,12 +636,12 @@ async fn list_derived_usage_types(
         .await
         .map_err(|e| match e {
             SkuListError::Query(e) => CanonicalError::from(e),
-            SkuListError::Repo(e) => repo_error_to_canonical(&e),
+            SkuListError::Repo(e) => stored_row_error(&e),
         })?;
     let ids: Vec<Uuid> = page.items.iter().map(|t| t.id).collect();
     let latest = store::latest_versions(&conn, &scope, tenant, &ids)
         .await
-        .map_err(|e| repo_error_to_canonical(&e))?;
+        .map_err(|e| stored_row_error(&e))?;
     let items = page
         .items
         .into_iter()
@@ -638,7 +659,7 @@ async fn list_derived_usage_types(
             })
         })
         .collect::<Result<_, RepoError>>()
-        .map_err(|e| repo_error_to_canonical(&e))?;
+        .map_err(|e| stored_row_error(&e))?;
     Ok(Json(Page {
         items,
         page_info: page.page_info,
@@ -653,16 +674,16 @@ async fn get_derived_usage_type(
     Path(code): Path<String>,
 ) -> Result<Json<ProductsDerivedUsageType>, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
-    let scope = read_scope(&enforcer, &ctx).await?;
+    let scope = read_scope(&enforcer, &ctx).await?.tenant_only();
     let tenant = ctx.subject_tenant_id();
     let conn = state.db.conn().map_err(|e| tx_to_canonical(e.into()))?;
     let t = store::find_type(&conn, &scope, tenant, &code)
         .await
-        .map_err(|e| repo_error_to_canonical(&e))?
+        .map_err(|e| stored_row_error(&e))?
         .ok_or_else(|| not_found(&code, None))?;
     let versions = store::list_versions(&conn, &scope, tenant, t.id)
         .await
-        .map_err(|e| repo_error_to_canonical(&e))?
+        .map_err(|e| stored_row_error(&e))?
         .iter()
         .map(|v| {
             Ok(ProductsDerivedVersionHeader {
@@ -675,7 +696,7 @@ async fn get_derived_usage_type(
             })
         })
         .collect::<Result<_, RepoError>>()
-        .map_err(|e| repo_error_to_canonical(&e))?;
+        .map_err(|e| stored_row_error(&e))?;
     Ok(Json(ProductsDerivedUsageType {
         id: t.id,
         code: t.code,
@@ -694,7 +715,7 @@ async fn get_derived_usage_type_version(
     Path((code, n)): Path<(String, String)>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
-    let scope = read_scope(&enforcer, &ctx).await?;
+    let scope = read_scope(&enforcer, &ctx).await?.tenant_only();
     let Ok(version) = MeterId::parse_version(&n) else {
         return Err(not_found(&code, Some(&n)));
     };
@@ -702,13 +723,13 @@ async fn get_derived_usage_type_version(
     let conn = state.db.conn().map_err(|e| tx_to_canonical(e.into()))?;
     let t = store::find_type(&conn, &scope, tenant, &code)
         .await
-        .map_err(|e| repo_error_to_canonical(&e))?
+        .map_err(|e| stored_row_error(&e))?
         .ok_or_else(|| not_found(&code, None))?;
     let v = store::find_version(&conn, &scope, tenant, t.id, version)
         .await
-        .map_err(|e| repo_error_to_canonical(&e))?
+        .map_err(|e| stored_row_error(&e))?
         .ok_or_else(|| not_found(&code, Some(&n)))?;
-    let body = version_dto(&t, &v).map_err(|e| repo_error_to_canonical(&e))?;
+    let body = version_dto(&t, &v).map_err(|e| stored_row_error(&e))?;
     Ok(Json(body).into_response())
 }
 
@@ -736,24 +757,26 @@ pub(crate) async fn stored_version(
 
 /// A usage SKU's derived `reference` as the tenant's store holds it (P-D-232): the version its meter
 /// id names and that version's output unit, or `None` when the ref is not canonical or the tenant
-/// holds no such code or version. The read is tenant-scoped, and the usage-type catalog is never
-/// asked: a derived usage type is this gear's own data.
+/// holds no such code or version. The read is `tenant_only()` of `sku:read`, beside the caller's tenant, the same
+/// scope the meter provider uses. The usage-type catalog is never asked: a derived usage type is this gear's own data.
 ///
 /// # Errors
 /// A storage failure, or a stored declaration that does not read (a corrupt row): 500.
 pub(super) async fn pin(
     state: &ApiState,
-    tenant: Uuid,
+    enforcer: &PolicyEnforcer,
+    ctx: &SecurityContext,
     reference: &str,
 ) -> Result<Option<DerivedPin>, CanonicalError> {
     let Ok(meter) = MeterId::parse(reference) else {
         return Ok(None);
     };
-    let scope = AccessScope::for_tenant(tenant);
+    // The same tenant scope the provider reads under, so the pin and the answer see the same rows.
+    let scope = read_scope(enforcer, ctx).await?.tenant_only();
     let conn = state.db.conn().map_err(|e| tx_to_canonical(e.into()))?;
-    let stored = stored_version(&conn, &scope, tenant, &meter)
+    let stored = stored_version(&conn, &scope, ctx.subject_tenant_id(), &meter)
         .await
-        .map_err(|e| repo_error_to_canonical(&e))?;
+        .map_err(|e| stored_row_error(&e))?;
     Ok(stored.map(|(_, declaration)| DerivedPin {
         meter: meter.format(),
         output_unit: declaration.output_unit,

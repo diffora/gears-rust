@@ -22,6 +22,17 @@ use toolkit_db::{
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
+/// A provider 5xx other than 500 is an outage: the generic 503. A 500 is a permanent fault and is forwarded.
+/// 400 and 403 are forwarded unchanged.
+fn provider_outage(error: CanonicalError) -> CanonicalError {
+    let status = error.status_code();
+    if (500..600).contains(&status) && status != 500 {
+        CanonicalError::service_unavailable().create()
+    } else {
+        error
+    }
+}
+
 /// Resolve a provider or report E1 unconfigured. No production default is supplied.
 /// # Errors
 /// Unconfigured dependency, configured outage or the provider's definite refusal.
@@ -44,13 +55,7 @@ pub async fn resolve(
     let evidence = provider
         .resolve(ctx, policy.content.quantity_semantics.meter.clone())
         .await
-        .map_err(|e| {
-            if e.status_code() >= 500 {
-                CanonicalError::service_unavailable().create()
-            } else {
-                e
-            }
-        })?;
+        .map_err(provider_outage)?;
     validate(&policy, sku, &evidence)?;
     Ok(evidence.into())
 }
@@ -258,13 +263,7 @@ impl Observations {
                         },
                     )
                     .await
-                    .map_err(|e| {
-                        if e.status_code() >= 500 {
-                            CanonicalError::service_unavailable().create()
-                        } else {
-                            e
-                        }
-                    })?;
+                    .map_err(provider_outage)?;
                 if MeterEvidence::from(evidence) != observed.evidence {
                     return Err(support::conflict("METER_EVIDENCE_CHANGED"));
                 }

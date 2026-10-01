@@ -63,6 +63,55 @@ const CPU_REF: &str = "gts.cf.core.uc.usage_record.v1~cf.test.usage.cpu_mhz.v1";
 struct FlatIn {
     tenant: Uuid,
 }
+
+/// `sku:read` compiles to one constraint, `owner_tenant_id = T AND resource_id IN {sku}`. `sku:author` carries that
+/// same constraint and a tenant disjunct: a fresh SKU id is not in `{sku}`, and the insert checks the new id against
+/// `resource_id`, so the AND constraint alone denies the create. The disjunct is what lets the pin run. Every other
+/// products grant is the tenant alone.
+struct SkuScoped {
+    tenant: Uuid,
+    sku: Uuid,
+}
+#[async_trait]
+impl AuthZResolverApi for SkuScoped {
+    async fn evaluate(
+        &self,
+        _ctx: PlatformSecurityContext,
+        req: EvaluationRequest,
+    ) -> Result<EvaluationResponse, CanonicalError> {
+        let tenant = Predicate::In(InPredicate::new(
+            pep_properties::OWNER_TENANT_ID,
+            vec![self.tenant],
+        ));
+        let sku_row = req
+            .resource
+            .resource_type
+            .contains("cf.bss.products.sku.v1");
+        let mut constraints = vec![Constraint {
+            predicates: vec![tenant.clone()],
+        }];
+        if sku_row && (req.action.name == "read" || req.action.name == "author") {
+            constraints[0]
+                .predicates
+                .push(Predicate::In(InPredicate::new(
+                    pep_properties::RESOURCE_ID,
+                    vec![self.sku],
+                )));
+        }
+        if sku_row && req.action.name == "author" {
+            constraints.push(Constraint {
+                predicates: vec![tenant],
+            });
+        }
+        Ok(EvaluationResponse {
+            decision: true,
+            context: EvaluationResponseContext {
+                constraints,
+                deny_reason: None,
+            },
+        })
+    }
+}
 #[async_trait]
 impl AuthZResolverApi for FlatIn {
     async fn evaluate(
@@ -246,6 +295,11 @@ struct Stand {
 impl Stand {
     async fn new() -> Self {
         let tenant = Uuid::new_v4();
+        Self::boot(tenant, Arc::new(FlatIn { tenant })).await
+    }
+
+    /// Products authorizes through `products_authz`. Pricing's doors keep a tenant grant.
+    async fn boot(tenant: Uuid, products_authz: Arc<dyn AuthZResolverApi>) -> Self {
         let gear = BssProductsGear::default();
         let products_dir = tempfile::Builder::new()
             .prefix("products-e2e-")
@@ -253,7 +307,7 @@ impl Stand {
             .unwrap();
         let (products_db, products_dsn) = database(&products_dir, gear.migrations()).await;
         let hub = Arc::new(toolkit::ClientHub::new());
-        hub.register::<dyn AuthZResolverApi>(Arc::new(FlatIn { tenant }));
+        hub.register::<dyn AuthZResolverApi>(products_authz);
         hub.register::<dyn TypesRegistryClient>(Arc::new(Accepting));
         hub.register::<dyn UsageTypeCatalog>(Arc::new(RawInputs));
         let ctx = GearCtx::new(
@@ -726,4 +780,167 @@ async fn a_cloudlet_sells_through_pricing_on_products_meter_semantics() {
 
     // Every meter answer above was Products': the hub's one provider is its dispatcher.
     assert!(s.hub.get::<dyn UsageMeterSemanticsV1>().is_ok());
+}
+
+/// A caller whose `sku:read` and `sku:author` are `owner_tenant_id = T AND resource_id IN {S}` still pins, reads and
+/// prices the tenant's derived meter. `S` is a SKU id, never the derived type's id.
+#[tokio::test]
+async fn a_sku_scoped_read_still_answers_the_derived_meter_it_pins() {
+    let tenant = Uuid::new_v4();
+    let sku_grant = Uuid::new_v4();
+    let s = Stand::boot(
+        tenant,
+        Arc::new(SkuScoped {
+            tenant,
+            sku: sku_grant,
+        }),
+    )
+    .await;
+
+    let (status, version) = s
+        .products(
+            Method::POST,
+            "/derived-usage-types",
+            Some(json!({"code": "cloudlets", "name": "Cloudlets", "declaration": cloudlet()})),
+        )
+        .await;
+    assert_eq!(status, 201, "{version}");
+
+    s.products_quorum_zero().await;
+    let (status, sku) = s
+        .products(
+            Method::POST,
+            "/skus",
+            Some(json!({
+                "code": "CLOUDLET", "name": "Cloudlet", "type": "usage",
+                "usage_type_ref": METER, "unit": CLOUDLET_UNIT,
+                "gl_code": "usage", "tax_category": "standard",
+                "invoice_line_template": "{sku}", "billing_timing": "arrears"
+            })),
+        )
+        .await;
+    assert_eq!(status, 201, "{sku}");
+    let sku_id = sku["id"].as_str().unwrap();
+    assert_ne!(
+        sku_id,
+        sku_grant.to_string(),
+        "the grant's SKU is not this row"
+    );
+    let (status, published) = s
+        .products(
+            Method::POST,
+            &format!("/skus/{sku_id}/submit"),
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(status, 200, "{published}");
+    assert_eq!(published["applied"], true, "{published}");
+
+    let provider = s.hub.get::<dyn UsageMeterSemanticsV1>().unwrap();
+    let answered = provider
+        .resolve(
+            &s.author,
+            bss_pricing_sdk::terms::MeterRef {
+                usage_type_id: METER.to_owned(),
+                version: "1".to_owned(),
+            },
+        )
+        .await
+        .unwrap_or_else(|error| {
+            let problem =
+                serde_json::to_value(toolkit::api::canonical_prelude::Problem::from(error))
+                    .unwrap();
+            panic!("the meter exists and is not METER_VERSION_UNKNOWN: {problem}");
+        });
+    assert_eq!(answered.meter.usage_type_id, METER);
+    assert_eq!(answered.canonical_unit, CLOUDLET_UNIT);
+
+    let (status, body) = s
+        .products(Method::GET, "/derived-usage-types/cloudlets", None)
+        .await;
+    assert_eq!(status, 200, "{body}");
+}
+
+/// A stored declaration that does not read stays 500 at entry create, with a fixed detail. A dropped version table
+/// stays 503.
+#[tokio::test]
+async fn a_corrupt_derived_row_is_500_at_entry_create_and_a_dropped_table_is_503() {
+    let s = Stand::new().await;
+    let (status, version) = s
+        .products(
+            Method::POST,
+            "/derived-usage-types",
+            Some(json!({"code": "cloudlets", "name": "Cloudlets", "declaration": cloudlet()})),
+        )
+        .await;
+    assert_eq!(status, 201, "{version}");
+    let meter = version["meter_ref"].clone();
+    let accrual = version["accrual_policy_version"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    s.products_quorum_zero().await;
+    let (status, sku) = s
+        .products(
+            Method::POST,
+            "/skus",
+            Some(json!({
+                "code": "CLOUDLET", "name": "Cloudlet", "type": "usage",
+                "usage_type_ref": METER, "unit": CLOUDLET_UNIT,
+                "gl_code": "usage", "tax_category": "standard",
+                "invoice_line_template": "{sku}", "billing_timing": "arrears"
+            })),
+        )
+        .await;
+    assert_eq!(status, 201, "{sku}");
+    let sku = sku["id"].as_str().unwrap().to_owned();
+    let (status, published) = s
+        .products(
+            Method::POST,
+            &format!("/skus/{sku}/submit"),
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(status, 200, "{published}");
+    let book = s.book("standard").await;
+
+    let conn = sea_orm::Database::connect(&s.products_dsn).await.unwrap();
+    sea_orm::ConnectionTrait::execute_unprepared(
+        &conn,
+        "DROP TRIGGER products_derived_usage_type_version_no_update;",
+    )
+    .await
+    .unwrap();
+    sea_orm::ConnectionTrait::execute_unprepared(
+        &conn,
+        "UPDATE products_derived_usage_type_version SET declaration_json = '{}';",
+    )
+    .await
+    .unwrap();
+    conn.close().await.unwrap();
+
+    let (status, corrupt) = s.entry(&book, &sku, &meter, CLOUDLET_UNIT, &accrual).await;
+    assert_eq!(status, 500, "{corrupt}");
+    assert_ne!(status, 503, "{corrupt}");
+    let text = corrupt.to_string();
+    assert!(
+        text.contains("a stored derived meter row does not read"),
+        "{text}"
+    );
+    assert!(!text.contains("missing field"), "{text}");
+    assert!(!text.contains("output_unit"), "{text}");
+
+    let conn = sea_orm::Database::connect(&s.products_dsn).await.unwrap();
+    sea_orm::ConnectionTrait::execute_unprepared(
+        &conn,
+        "DROP TABLE products_derived_usage_type_version;",
+    )
+    .await
+    .unwrap();
+    conn.close().await.unwrap();
+    let probe_book = s.book("probe").await;
+    let (status, failed) = s
+        .entry(&probe_book, &sku, &meter, CLOUDLET_UNIT, &accrual)
+        .await;
+    assert_eq!(status, 503, "{failed}");
 }

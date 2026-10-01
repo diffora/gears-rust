@@ -1322,7 +1322,9 @@ and what the doors answer. Migration `m20261001_000011_derived_usage_type`, the 
   caller's tenant. It is the resource's one permission (`derived_usage_type_author`), so the catalog grows from 16 to 17
   permissions, and its label schema is registered at boot with the others (P-D-204). The reads ask `sku:read`, and its
   compiled scope is the read's SQL filter beside the tenant. A `sku:read` scope narrowed to rows names SKUs, so it shows no
-  derived usage type: the read fails closed.
+  derived usage type: the read fails closed. *Amended 2026-10-01:* the `sku:read` decision is unchanged (403 when denied,
+  503 when the PDP cannot be judged). The SQL filter is `tenant_only()` of that scope, beside `tenant_id` of the caller.
+  A SKU `resource_id` does not hide a derived row. A constraint with no `owner_tenant_id` is deny-all.
 - **The audit (P-D-193).** A create writes one `products_audit_log` row, `derived_usage_type.create`, and a new version one,
   `derived_usage_type.version`, each in the write's transaction: `subject_kind = derived_usage_type`, `subject_id` the type's
   id, `subject_revision` the version. The table has no CHECK on `subject_kind`, so no audit migration is needed.
@@ -1371,7 +1373,8 @@ on the owner's M1 and O-2. `domain/derived.rs`, `domain/sku.rs`, `domain/approva
   - the publish rule (`validate_publish`), at submit and at apply, for a publish and for a change.
 
   At the first two it reads the tenant's version from this gear's store: `MeterId::parse`, then the type by code and the
-  version, under the caller's tenant (`AccessScope::for_tenant`). At draft save that is before the unconfigured catalog's
+  version, under the caller's tenant (`AccessScope::for_tenant`). *Amended 2026-10-01:* the pin reads `tenant_only()` of
+  `sku:read`, the same scope the meter provider uses, beside the caller's tenant. At draft save that is before the unconfigured catalog's
   early `Ok`; everywhere it is before any catalog call. The catalog is never asked for a derived ref, configured or not, so
   a usage SKU on a derived version saves, publishes and is approved with no catalog configured (P-D-184, P-D-207 amended).
 - **The binding.** A derived ref binds when the tenant holds that version and the SKU's unit, when it names one, is that
@@ -1462,15 +1465,18 @@ plan. `infra/meter_semantics.rs` and `gear.rs` carry it; pricing's checks do not
     code, no code): ONE answer, 400 `METER_VERSION_UNKNOWN` on `meter`, with the same detail, as pricing's contract-test
     provider answers every unknown pair;
   - a store failure: 503 (pricing answers any 5xx of the provider as 503); a stored row that does not read: 500, a corrupt
-    row.
+    row. *Amended 2026-10-01:* pricing forwards a provider 500 and remaps every other 5xx to the generic 503. The corrupt-row
+    wire detail is `a stored derived meter row does not read`; the cause is logged and is not on the wire. A permanent fault
+    must not read as retryable. `Internal` hides a custom description, so this 500 is data-loss: status 500, and that sentence
+    is the detail.
 - **The tenant pin.** The port carries no tenant. The provider reads in the caller's tenant, `ctx.subject_tenant_id()`, as
-  the store's key, beside the PDP's compiled scope, so a grant whose scope spans tenants (a parent reading its children)
+  the store's key, beside `tenant_only()` of the `sku:read` scope (a SKU `resource_id` is not applied), so a grant whose scope spans tenants (a parent reading its children)
   never answers another tenant's meter. Measured, probe D4-3: with the key dropped, such a grant read the other tenant's
   type; under a one-tenant grant the scope alone hid it.
 - **No trusted subject.** Pricing resolves the semantics as its door's caller, never as its system actor (D-503), so every
   caller goes through the PDP; unlike the reference registry (P-D-222), no subject type is trusted here.
 - **One read.** `derived_usage_types::stored_version` is the tenant's version and its served declaration, read by the meter
-  id: the SKU binding (P-D-232, under `AccessScope::for_tenant`) and the provider (under the `sku:read` scope) share it.
+  id: the SKU binding and the provider share `tenant_only()` of `sku:read`, beside the caller's tenant. *Amended 2026-10-01:* not `AccessScope::for_tenant`, and not the SKU `resource_id`.
   The SKU doors still answer a store failure 500 (P-D-232); the provider answers 503.
 - **Pricing's docs.** D-503 and D-510 carry the amendment: E1b is provided, E1a is still external, and the answer carries
   the digest of a declaration that names the inputs and the formula. The lines that said a derived meter is not sellable
