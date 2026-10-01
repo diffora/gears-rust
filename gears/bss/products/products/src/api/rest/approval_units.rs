@@ -8,7 +8,8 @@ use super::{
     contention_db_err,
     dto::{
         ProductsApprovalUnitCounts, ProductsApprovalUnitKindCounts,
-        ProductsApprovalUnitStateCounts, UnitDto, UnitList, VoteReceipt, VoteRequest,
+        ProductsApprovalUnitStateCounts, UnitCountsQuery, UnitDto, UnitList, UnitListQuery,
+        VoteReceipt, VoteRequest,
     },
     governance as g, json_body, replay, require_authenticated, tx_to_canonical,
     unit_tx_to_canonical,
@@ -54,28 +55,6 @@ use toolkit_db::{DbTx, secure::AccessScope};
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
-#[toolkit_macros::api_dto(request)]
-struct ListQuery {
-    state: Option<String>,
-    kind: Option<String>,
-    ref_id: Option<Uuid>,
-    /// Page size (P-D-224): 200 by default, clamped at 500.
-    limit: Option<u64>,
-    /// The opaque continuation of a page's `page_info.next_cursor`.
-    cursor: Option<String>,
-    /// `submitted_at asc` (the default, P-D-224) or `submitted_at desc` (P-D-227); the id breaks a
-    /// tie in the same direction. A cursor carries its order, so a continuation sends none.
-    #[serde(rename = "$orderby")]
-    orderby: Option<String>,
-}
-/// `GET /approval-units/counts` (P-D-227): the list's narrowing, and nothing else.
-#[toolkit_macros::api_dto(request)]
-#[serde(deny_unknown_fields)]
-struct CountsQuery {
-    state: Option<String>,
-    kind: Option<String>,
-    ref_id: Option<Uuid>,
-}
 #[derive(Clone, Copy)]
 enum Vote {
     Approve,
@@ -325,7 +304,7 @@ async fn list(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<PolicyEnforcer>,
     ctx: Option<Extension<SecurityContext>>,
-    query: Result<Query<ListQuery>, QueryRejection>,
+    query: Result<Query<UnitListQuery>, QueryRejection>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(ctx)?;
     let scope = g::scope(
@@ -519,7 +498,7 @@ async fn counts(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<PolicyEnforcer>,
     ctx: Option<Extension<SecurityContext>>,
-    query: Result<Query<CountsQuery>, QueryRejection>,
+    query: Result<Query<UnitCountsQuery>, QueryRejection>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(ctx)?;
     let scope = g::scope(

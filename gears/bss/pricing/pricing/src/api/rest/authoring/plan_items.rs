@@ -46,27 +46,20 @@ use toolkit_security::SecurityContext;
 use uuid::Uuid;
 /// The keys a plan item no longer takes (D-467): a plan item is a SKU and its entry.
 pub const REMOVED_KEYS: [&str; 3] = ["treatment", "included_qty", "qty_min"];
-/// The item doors' body rules that the typed body cannot say, judged before any read: a key a plan
-/// item no longer takes is 400 `BODY_UNEXPECTED` on that key, the rule for a stray key (D-467);
-/// then, for the create (`entry_required`), a missing or null `price_book_entry_id` is 400
-/// `ITEM_ENTRY_MISSING`. Any other key the body does not know is refused by its parse, as before.
+/// The item create's body rules that the typed body cannot say, judged before any read: a key a
+/// plan item no longer takes is 400 `BODY_UNEXPECTED` on that key, the rule for a stray key
+/// (D-467); then a missing or null `price_book_entry_id` is 400 `ITEM_ENTRY_MISSING`. Any other key
+/// the body does not know is refused by its parse, as before.
 /// # Errors
 /// The refusals above.
-pub fn judge_body(body: &serde_json::Value, entry_required: bool) -> Result<(), CanonicalError> {
+pub fn judge_create_body(body: &serde_json::Value) -> Result<(), CanonicalError> {
     let Some(fields) = body.as_object() else {
         return Ok(());
     };
-    if let Some(key) = REMOVED_KEYS.iter().find(|key| fields.contains_key(**key)) {
-        return Err(support::invalid_because(
-            key,
-            "BODY_UNEXPECTED",
-            "a plan item is a SKU and its entry: it takes no treatment, included_qty or qty_min",
-        ));
-    }
-    if entry_required
-        && fields
-            .get("price_book_entry_id")
-            .is_none_or(serde_json::Value::is_null)
+    refuse_removed_keys(fields)?;
+    if fields
+        .get("price_book_entry_id")
+        .is_none_or(serde_json::Value::is_null)
     {
         return Err(support::invalid(
             "price_book_entry_id",
@@ -74,6 +67,27 @@ pub fn judge_body(body: &serde_json::Value, entry_required: bool) -> Result<(), 
         ));
     }
     Ok(())
+}
+/// The item PATCH's body rule that the typed body cannot say, judged before any read: a key a
+/// plan item no longer takes is 400 `BODY_UNEXPECTED` on that key (D-467). Its entry is judged
+/// against the stored item, by [`patch`].
+/// # Errors
+/// The refusal above.
+pub fn judge_patch_body(body: &serde_json::Value) -> Result<(), CanonicalError> {
+    body.as_object().map_or(Ok(()), refuse_removed_keys)
+}
+/// A key a plan item no longer takes is 400 `BODY_UNEXPECTED` on that key (D-467).
+fn refuse_removed_keys(
+    fields: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), CanonicalError> {
+    match REMOVED_KEYS.iter().find(|key| fields.contains_key(**key)) {
+        Some(key) => Err(support::invalid_because(
+            key,
+            "BODY_UNEXPECTED",
+            "a plan item is a SKU and its entry: it takes no treatment, included_qty or qty_min",
+        )),
+        None => Ok(()),
+    }
 }
 /// Every item points at a price (D-467): an item without an entry is a legacy row, and a PATCH
 /// that keeps it without one, or clears its entry, is refused.
@@ -132,25 +146,32 @@ pub async fn add(
         return receipt.response();
     }
     let (judged_scope, judged_ctx, judged) = (scope.clone(), ctx.clone(), input.clone());
-    let carried = support::transaction(&state.db.db(), move |tx| {
+    let admitted = support::transaction(&state.db.db(), move |tx| {
         let (scope, ctx, input) = (judged_scope.clone(), judged_ctx.clone(), judged.clone());
-        Box::pin(async move { admissible(tx, &scope, &ctx, revision, &input).await })
+        Box::pin(async move { admit(tx, &scope, &ctx, revision, &input).await })
     })
     .await?;
     // @cpt-begin:cpt-cf-bss-pricing-flow-plans:p1:inst-plans-flow-2
-    fresh_sku(&state, &ctx, input.sku_id, carried).await?;
+    fresh_sku(&state, &ctx, input.sku_id, admitted).await?;
     create(state, scope, ctx, revision, correlation, key, digest, input).await
     // @cpt-end:cpt-cf-bss-pricing-flow-plans:p1:inst-plans-flow-2
 }
-/// The revision, the entry and the revision's items, judged in one read. Answers whether the
-/// plan's published revision in effect carries the SKU (D-465), which admits a deprecated one.
-async fn admissible(
+/// What an item create's read admits, beyond its refusals: whether the plan's published revision
+/// in effect carries the item's SKU (D-465), which admits a deprecated one (the phase 9 review's
+/// R11: a named field, never a bare `bool` that reads as "admissible").
+#[derive(Debug, Clone, Copy)]
+struct Admitted {
+    sku_carried: bool,
+}
+/// The revision, the entry and the revision's items, judged in one read: each refusal of the
+/// create's own, then what the read admits.
+async fn admit(
     tx: &impl DBRunner,
     scope: &AccessScope,
     ctx: &SecurityContext,
     revision: Uuid,
     input: &PricingPlanItemCreate,
-) -> Result<bool, DoorError> {
+) -> Result<Admitted, DoorError> {
     let tenant = ctx.subject_tenant_id();
     let children = AccessScope::for_tenant(tenant);
     let r = plans::find_revision(tx, scope, tenant, revision).await?;
@@ -163,21 +184,21 @@ async fn admissible(
     if items.len() >= MAX_ITEMS {
         return Err(support::invalid("items", "REVISION_ITEMS_TOO_MANY").into());
     }
-    Ok(
+    let sku_carried =
         crate::infra::plan_revisions::published_skus(tx, tenant, r.plan_id, plans::today())
             .await?
-            .contains(&input.sku_id),
-    )
+            .contains(&input.sku_id);
+    Ok(Admitted { sku_carried })
 }
 /// The SKU read fresh (D-408): a deprecated SKU is added only when the plan's published revision
-/// in effect carries it (`carried`: a re-add is not "newly added", D-465), and a bundle SKU is
-/// never an item. A registry that cannot answer is 503 with nothing written; a definite Products
+/// in effect carries it (`admitted.sku_carried`: a re-add is not "newly added", D-465), and a
+/// bundle SKU is never an item. A registry that cannot answer is 503 with nothing written; a definite Products
 /// refusal is answered as Products gave it.
 async fn fresh_sku(
     state: &AuthoringState,
     ctx: &SecurityContext,
     sku: Uuid,
-    carried: bool,
+    admitted: Admitted,
 ) -> Result<(), CanonicalError> {
     let registry =
         reference_registry::resolve(&state.hub).map_err(|e| support::registry_unavailable(&e))?;
@@ -191,7 +212,7 @@ async fn fresh_sku(
                 support::registry_unavailable(&error)
             }
         })?;
-    if sku.lifecycle == Lifecycle::Deprecated && !carried {
+    if sku.lifecycle == Lifecycle::Deprecated && !admitted.sku_carried {
         return Err(support::invalid("sku_id", "ITEM_SKU_DEPRECATED"));
     }
     if let Some(code) = reference_work::plan_item::type_refusal(sku.r#type) {

@@ -1187,16 +1187,7 @@ async fn list_approval_units(
     };
     transaction(&state.db.db(), move |tx| {
         let (scope, ctx, request) = (scope.clone(), ctx.clone(), request.clone());
-        Box::pin(async move {
-            approvals::list_units(
-                tx,
-                &scope,
-                ctx.subject_tenant_id(),
-                ctx.subject_id(),
-                &request,
-            )
-            .await
-        })
+        Box::pin(async move { approvals::list_units(tx, &scope, &ctx, &request).await })
     })
     .await
 }
@@ -1389,9 +1380,7 @@ async fn get_approval_unit(
     .map_err(authz_failure)?;
     transaction(&state.db.db(), move |tx| {
         let (scope, ctx) = (scope.clone(), ctx.clone());
-        Box::pin(async move {
-            approvals::get_unit(tx, &scope, ctx.subject_tenant_id(), ctx.subject_id(), id).await
-        })
+        Box::pin(async move { approvals::get_unit(tx, &scope, &ctx, id).await })
     })
     .await
 }

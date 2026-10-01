@@ -507,9 +507,9 @@ fn the_check_list_is_the_plans_codes_in_order() {
 fn subject_of(c: &PlanContext, n: u128) -> Subject {
     let it = c.items.iter().find(|i| i.id == id(n)).unwrap();
     Subject {
-        item_id: it.id,
-        sku_id: it.sku_id,
-        price_book_entry_id: it.price_book_entry_id,
+        item: it.id,
+        sku: it.sku_id,
+        entry: it.price_book_entry_id,
     }
 }
 
@@ -654,9 +654,9 @@ fn every_check_code_names_the_items_that_turn_it_red() {
                     other.code
                 );
             }
-            let units: BTreeSet<Uuid> = other.blocked_by_prices.iter().map(|p| p.unit_id).collect();
+            let units: BTreeSet<Uuid> = other.blocked_by_prices.iter().map(|p| p.unit).collect();
             assert_eq!(
-                other.blocked_by,
+                other.blocked_by(),
                 units.into_iter().collect::<Vec<_>>(),
                 "{code}'s context: {} names exactly its prices' units",
                 other.code
@@ -680,9 +680,9 @@ fn every_check_code_names_the_items_that_turn_it_red() {
     assert_eq!(
         uncovered.blocked_by_prices,
         vec![BlockingPrice {
-            unit_id: id(AP_STORAGE_V3),
-            price_id: Uuid::from_u128(E_STORAGE * 1000 + 3),
-            price_book_entry_id: id(E_STORAGE),
+            unit: id(AP_STORAGE_V3),
+            price: Uuid::from_u128(E_STORAGE * 1000 + 3),
+            entry: id(E_STORAGE),
         }],
         "the pending storage price blocks the uncovered storage item"
     );
@@ -834,12 +834,16 @@ fn item_uncovered_names_every_pending_unit_of_the_uncovered_entry() {
     c.items[1].price_book_entry_id = Some(id(31));
     let k = check(&c, "ITEM_UNCOVERED").unwrap();
     assert!(!k.ok);
-    assert_eq!(k.blocked_by, vec![id(501), id(502)], "distinct and ordered");
+    assert_eq!(
+        k.blocked_by(),
+        vec![id(501), id(502)],
+        "distinct and ordered"
+    );
     // D-466: one row per pending price, ordered by unit then price, each naming its entry.
     let blocking = |unit: u128, price: u128| BlockingPrice {
-        unit_id: id(unit),
-        price_id: Uuid::from_u128(price),
-        price_book_entry_id: id(31),
+        unit: id(unit),
+        price: Uuid::from_u128(price),
+        entry: id(31),
     };
     assert_eq!(
         k.blocked_by_prices,
@@ -853,7 +857,7 @@ fn item_uncovered_names_every_pending_unit_of_the_uncovered_entry() {
     assert!(k.detail.contains("Storage"), "{}", k.detail);
     let green_check = check(&pro(), "ITEM_UNCOVERED").unwrap();
     assert!(green_check.ok);
-    assert!(green_check.blocked_by.is_empty());
+    assert!(green_check.blocked_by().is_empty());
 }
 
 #[test]
@@ -904,7 +908,7 @@ fn item_uncovered_is_judged_per_dimension_value_with_the_default_as_fallback() {
     assert_eq!(
         check(&pending_default, "ITEM_UNCOVERED")
             .unwrap()
-            .blocked_by,
+            .blocked_by(),
         vec![id(601)]
     );
     // A value chain that closes, with no default to carry on, is not an open tail.
@@ -1105,7 +1109,7 @@ fn descriptors_and_approval_are_information_rows() {
         checks(&c, today())
             .iter()
             .filter(|k| k.info)
-            .all(|k| k.ok && k.blocked_by.is_empty())
+            .all(|k| k.ok && k.blocked_by().is_empty())
     );
 }
 
@@ -1139,7 +1143,7 @@ fn spec_8_a_revision_blocked_by_a_pending_price_unit_turns_green_once_it_is_appr
     let blocked = checks(&c, today());
     let k = blocked.iter().find(|k| k.code == "ITEM_UNCOVERED").unwrap();
     assert!(!k.ok);
-    assert_eq!(k.blocked_by, vec![ap_12]);
+    assert_eq!(k.blocked_by(), vec![ap_12]);
     assert!(!ready(&blocked));
     // ap-12 is approved: its price is approved and the unit no longer holds it.
     add_on.prices[0].state = PriceState::Approved;
@@ -1154,7 +1158,7 @@ fn spec_8_a_revision_blocked_by_a_pending_price_unit_turns_green_once_it_is_appr
             .iter()
             .find(|k| k.code == "ITEM_UNCOVERED")
             .unwrap()
-            .blocked_by
+            .blocked_by()
             .is_empty()
     );
 }
