@@ -6,12 +6,14 @@
 #[error("{code}")]
 pub struct RuleError {
     pub code: &'static str,
+    /// Typed seam reason when this is a commercial refusal.
+    pub reason: Option<bss_pricing_sdk::acceptance::CommercialReason>,
 }
 impl RuleError {
     /// Construct a domain refusal.
     #[must_use]
     pub const fn new(code: &'static str) -> Self {
-        Self { code }
+        Self { code, reason: None }
     }
 }
 
@@ -45,3 +47,13 @@ pub mod resolve;
 #[cfg(test)]
 mod test_support;
 pub mod usage_policy;
+
+pub mod commercial_terms;
+impl From<bss_pricing_sdk::acceptance::CommercialReason> for RuleError {
+    fn from(reason: bss_pricing_sdk::acceptance::CommercialReason) -> Self {
+        Self {
+            code: reason.code(),
+            reason: Some(reason),
+        }
+    }
+}

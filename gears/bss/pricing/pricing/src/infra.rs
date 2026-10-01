@@ -20,5 +20,6 @@ pub mod reference_events;
 
 pub(crate) mod pricing_reads;
 
+pub mod commercial_terms_wire;
 pub mod meter_semantics;
 pub mod usage_policy_wire;

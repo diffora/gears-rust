@@ -327,3 +327,98 @@ pub fn vm_hour_policy() -> bss_pricing_sdk::terms::UsageRatingPolicy {
         content,
     }
 }
+
+/// Complete deterministic invoice and usage binding, independent of providers and storage.
+pub fn vm_binding() -> bss_pricing_sdk::read::AcceptedBinding {
+    use bss_pricing_sdk::{digest::*, read::*, terms::*};
+    let mut price = ImmutablePrice {
+        price_id: Uuid::from_u128(3),
+        price_book_entry_id: Uuid::from_u128(2),
+        money_digest: [0; 32],
+        currency: "EUR".into(),
+        model: PriceModel::PerUnit {
+            unit_amount: "0.047".parse().unwrap(),
+        },
+        minimum_fee: None,
+        effective_from: date("2026-10-01"),
+        ends_on: None,
+    };
+    price.money_digest = money_digest(&price);
+    AcceptedBinding {
+        item_id: Uuid::from_u128(4),
+        price_book_entry_id: Uuid::from_u128(2),
+        dimension_key: None,
+        dimension_value: None,
+        sku_id: Uuid::from_u128(5),
+        sku_version: 3,
+        sku_code: "VM-2CPU-4GB".into(),
+        sku_name: "VM 2 vCPU / 4 GB".into(),
+        unit: Some("VM\u{b7}hour".into()),
+        price,
+        kind: ChargeKind::Usage,
+        recurring_period: None,
+        via_default: false,
+        usage_rating_policy: Some(vm_hour_policy()),
+        invoice: InvoiceInputs {
+            template: "VM usage".into(),
+            template_digest: template_digest("VM usage"),
+            template_source: InputSource::SkuVersion,
+            gl_code: "VM_REVENUE".into(),
+            tax_category: "cloud-services".into(),
+            timing: bss_pricing_sdk::terms::BillingTiming::Arrears,
+            currency_scale: 2,
+            rounding: Rounding::HalfEven,
+        },
+    }
+}
+/// Explicit monthly invoice terms with a valid calendar anchor and exactly one selection.
+pub fn sale_query() -> bss_pricing_sdk::acceptance::NewSaleQuery {
+    use bss_pricing_sdk::{acceptance::*, digest::*, read::*, terms::*};
+    let at = date("2026-10-01").midnight().assume_utc();
+    let mut billing_terms = BillingTerms {
+        schema_version: 1,
+        cycle: BillingCycle::Month,
+        anchor: BillingAnchor::Calendar,
+        anchor_at: at,
+        timezone: Timezone::Utc,
+        source: TermsSource::ExplicitOrder,
+        digest: [0; 32],
+    };
+    billing_terms.digest = billing_terms_digest(&billing_terms);
+    let binding = vm_binding();
+    let selections = vec![BindingSelection {
+        item_id: binding.item_id,
+        dimension_value: None,
+    }];
+    let resolved = ResolvedBindings {
+        plan_id: Uuid::from_u128(6),
+        revision_id: Uuid::from_u128(7),
+        cells: vec![ResolvedCell {
+            selection: selections[0].clone(),
+            binding: Some(binding),
+        }],
+    };
+    NewSaleQuery {
+        tenant_axes: TenantAxes {
+            seller_tenant_id: Uuid::from_u128(8),
+            payer_tenant_id: Uuid::from_u128(9),
+            resource_tenant_id: Uuid::from_u128(10),
+        },
+        order_id: Uuid::from_u128(11),
+        order_version: 1,
+        line_id: Uuid::from_u128(12),
+        plan_id: resolved.plan_id,
+        plan_revision_id: resolved.revision_id,
+        resolved_bindings_digest: selected_bindings_digest(&resolved, &selections).unwrap(),
+        selections,
+        quantity: rust_decimal::Decimal::ONE,
+        market: Market {
+            currency: "EUR".into(),
+            region: None,
+        },
+        start_at: at,
+        term: Term::Rolling,
+        billing_terms,
+        hold_policy_version: 1,
+    }
+}

@@ -406,3 +406,159 @@ pub fn selected_bindings_digest(
         ]),
     ))
 }
+
+fn instant(at: time::OffsetDateTime) -> V {
+    let at = at.to_offset(time::UtcOffset::UTC);
+    text(&format!(
+        "{}T{:02}:{:02}:{:02}.{:09}Z",
+        at.date(),
+        at.hour(),
+        at.minute(),
+        at.second(),
+        at.nanosecond()
+    ))
+}
+fn billing_terms(t: &crate::terms::BillingTerms) -> V {
+    use crate::terms::{BillingAnchor, TermsSource};
+    object([
+        ("schema_version", text(t.schema_version)),
+        (
+            "cycle",
+            text(match t.cycle {
+                BillingCycle::Month => "month",
+                BillingCycle::Year => "year",
+            }),
+        ),
+        (
+            "anchor",
+            text(match t.anchor {
+                BillingAnchor::Calendar => "calendar",
+                BillingAnchor::SubscriptionStart => "subscription_start",
+            }),
+        ),
+        ("anchor_at", instant(t.anchor_at)),
+        (
+            "timezone",
+            text(match t.timezone {
+                Timezone::Utc => "UTC",
+            }),
+        ),
+        (
+            "source",
+            match t.source {
+                TermsSource::ExplicitOrder => text("explicit_order"),
+                TermsSource::SellerPolicy { id, version } => object([
+                    ("kind", text("seller_policy")),
+                    ("id", text(id)),
+                    ("version", text(version)),
+                ]),
+            },
+        ),
+    ])
+}
+/// Canonical versioned invoice snapshot, excluding its own digest.
+#[must_use]
+pub fn billing_terms_digest(terms: &crate::terms::BillingTerms) -> Digest {
+    hash_document("bss.billing-terms.v1", billing_terms(terms))
+}
+fn selection(s: &BindingSelection) -> V {
+    object([
+        ("item_id", text(s.item_id)),
+        (
+            "dimension_value",
+            optional(s.dimension_value.as_ref(), text),
+        ),
+    ])
+}
+fn compare_cells(
+    a: (uuid::Uuid, Option<&str>),
+    b: (uuid::Uuid, Option<&str>),
+) -> std::cmp::Ordering {
+    a.0.cmp(&b.0).then_with(|| {
+        a.1.map(|s| s.encode_utf16().collect::<Vec<_>>())
+            .cmp(&b.1.map(|s| s.encode_utf16().collect::<Vec<_>>()))
+    })
+}
+fn sale_query(q: &crate::acceptance::NewSaleQuery) -> V {
+    use crate::acceptance::Term;
+    let mut selections: Vec<_> = q.selections.iter().collect();
+    selections.sort_by(|a, b| {
+        compare_cells(
+            (a.item_id, a.dimension_value.as_deref()),
+            (b.item_id, b.dimension_value.as_deref()),
+        )
+    });
+    let mut terms = billing_terms(&q.billing_terms);
+    if let V::Object(fields) = &mut terms {
+        fields.insert("digest".into(), hex(&q.billing_terms.digest));
+    }
+    object([
+        (
+            "tenant_axes",
+            object([
+                ("seller_tenant_id", text(q.tenant_axes.seller_tenant_id)),
+                ("payer_tenant_id", text(q.tenant_axes.payer_tenant_id)),
+                ("resource_tenant_id", text(q.tenant_axes.resource_tenant_id)),
+            ]),
+        ),
+        ("order_id", text(q.order_id)),
+        ("order_version", text(q.order_version)),
+        ("line_id", text(q.line_id)),
+        ("plan_id", text(q.plan_id)),
+        ("plan_revision_id", text(q.plan_revision_id)),
+        (
+            "selections",
+            V::Array(selections.into_iter().map(selection).collect()),
+        ),
+        ("quantity", decimal(q.quantity)),
+        (
+            "market",
+            object([
+                ("currency", text(&q.market.currency)),
+                ("region", optional(q.market.region.as_ref(), text)),
+            ]),
+        ),
+        ("start_at", instant(q.start_at)),
+        (
+            "term",
+            match q.term {
+                Term::Rolling => text("rolling"),
+                Term::FixedPeriods { count } => {
+                    object([("kind", text("fixed_periods")), ("count", text(count))])
+                }
+            },
+        ),
+        ("billing_terms", terms),
+        ("resolved_bindings_digest", hex(&q.resolved_bindings_digest)),
+        ("hold_policy_version", text(q.hold_policy_version)),
+    ])
+}
+/// Commercial request identity without command metadata or tracing.
+#[must_use]
+pub fn request_digest(query: &crate::acceptance::NewSaleQuery) -> Digest {
+    hash_document("pricing.request.v1", sale_query(query))
+}
+/// Exact accepted query and binding content, excluding receipt identity and server timestamps.
+#[must_use]
+pub fn terms_digest(
+    query: &crate::acceptance::NewSaleQuery,
+    bindings: &[AcceptedBinding],
+) -> Digest {
+    let mut bindings: Vec<_> = bindings.iter().collect();
+    bindings.sort_by(|a, b| {
+        compare_cells(
+            (a.item_id, a.dimension_value.as_deref()),
+            (b.item_id, b.dimension_value.as_deref()),
+        )
+    });
+    hash_document(
+        "pricing.terms.v1",
+        object([
+            ("query", sale_query(query)),
+            (
+                "bindings",
+                V::Array(bindings.into_iter().map(binding).collect()),
+            ),
+        ]),
+    )
+}

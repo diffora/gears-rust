@@ -3,7 +3,7 @@
 #[allow(dead_code)]
 #[path = "../src/digest.rs"]
 pub mod digest;
-use bss_pricing_sdk::{Digest, read, terms};
+use bss_pricing_sdk::{Digest, acceptance, read, terms};
 use digest::{CanonicalValue, canonical_json_bytes, hash_document};
 use read::{ImmutablePrice, PriceModel};
 use rust_decimal::Decimal;
@@ -311,4 +311,177 @@ fn binding_sets_sort_by_selection_and_reject_identity_mismatch() {
         .unwrap()
         .price_book_entry_id = uuid::Uuid::from_u128(9);
     assert!(selected_bindings_digest(&resolved, &[other_selection]).is_err());
+}
+
+fn commercial_query() -> acceptance::NewSaleQuery {
+    use acceptance::{Market, NewSaleQuery, TenantAxes, Term};
+    use bss_pricing_sdk::digest::{billing_terms_digest, selected_bindings_digest};
+    use terms::{BillingAnchor, BillingCycle, BillingTerms, TermsSource, Timezone};
+    let at = time::Date::from_calendar_date(2026, time::Month::October, 1)
+        .unwrap()
+        .midnight()
+        .assume_utc();
+    let mut billing_terms = BillingTerms {
+        schema_version: 1,
+        cycle: BillingCycle::Month,
+        anchor: BillingAnchor::Calendar,
+        anchor_at: at,
+        timezone: Timezone::Utc,
+        source: TermsSource::ExplicitOrder,
+        digest: [0; 32],
+    };
+    billing_terms.digest = billing_terms_digest(&billing_terms);
+    let b = sample_binding();
+    let selection = read::BindingSelection {
+        item_id: b.item_id,
+        dimension_value: b.dimension_value.clone(),
+    };
+    let resolved = read::ResolvedBindings {
+        plan_id: uuid::Uuid::from_u128(6),
+        revision_id: uuid::Uuid::from_u128(7),
+        cells: vec![read::ResolvedCell {
+            selection: selection.clone(),
+            binding: Some(b),
+        }],
+    };
+    NewSaleQuery {
+        tenant_axes: TenantAxes {
+            seller_tenant_id: uuid::Uuid::from_u128(8),
+            payer_tenant_id: uuid::Uuid::from_u128(9),
+            resource_tenant_id: uuid::Uuid::from_u128(10),
+        },
+        order_id: uuid::Uuid::from_u128(11),
+        order_version: u64::MAX,
+        line_id: uuid::Uuid::from_u128(12),
+        plan_id: resolved.plan_id,
+        plan_revision_id: resolved.revision_id,
+        resolved_bindings_digest: selected_bindings_digest(
+            &resolved,
+            std::slice::from_ref(&selection),
+        )
+        .unwrap(),
+        selections: vec![selection],
+        quantity: Decimal::ONE,
+        market: Market {
+            currency: "EUR".into(),
+            region: Some("eu".into()),
+        },
+        start_at: at + time::Duration::minutes(630),
+        term: Term::FixedPeriods { count: 12 },
+        billing_terms,
+        hold_policy_version: u64::MAX,
+    }
+}
+#[test]
+fn commercial_projections_match_independent_canonical_vectors() {
+    use bss_pricing_sdk::digest::{billing_terms_digest, request_digest, terms_digest};
+    let q = commercial_query();
+    let f = fixture();
+    for (key, actual) in [
+        ("billing_terms", billing_terms_digest(&q.billing_terms)),
+        ("request", request_digest(&q)),
+        ("terms", terms_digest(&q, &[sample_binding()])),
+    ] {
+        let i = usize::try_from(f["commercial_vectors"][key].as_u64().unwrap()).unwrap();
+        assert_eq!(hex(actual), f["vectors"][i]["sha256"], "{key}");
+    }
+    let mut terms = q.billing_terms;
+    terms.source = terms::TermsSource::SellerPolicy {
+        id: uuid::Uuid::from_u128(20),
+        version: u64::MAX,
+    };
+    let i = usize::try_from(f["commercial_vectors"]["seller_terms"].as_u64().unwrap()).unwrap();
+    assert_eq!(hex(billing_terms_digest(&terms)), f["vectors"][i]["sha256"]);
+}
+#[test]
+fn billing_terms_exclude_self_digest_preserve_source_and_normalize_instants() {
+    use bss_pricing_sdk::digest::billing_terms_digest;
+    let original = commercial_query().billing_terms;
+    let baseline = billing_terms_digest(&original);
+    let mut changed = original.clone();
+    changed.digest = [9; 32];
+    assert_eq!(baseline, billing_terms_digest(&changed));
+    changed.anchor_at = changed
+        .anchor_at
+        .to_offset(time::UtcOffset::from_hms(2, 0, 0).unwrap());
+    assert_eq!(baseline, billing_terms_digest(&changed));
+    changed.source = terms::TermsSource::SellerPolicy {
+        id: uuid::Uuid::from_u128(20),
+        version: 1,
+    };
+    assert_ne!(baseline, billing_terms_digest(&changed));
+    changed = original.clone();
+    changed.schema_version = 2;
+    assert_ne!(baseline, billing_terms_digest(&changed));
+    changed = original;
+    changed.anchor = terms::BillingAnchor::SubscriptionStart;
+    assert_ne!(baseline, billing_terms_digest(&changed));
+}
+#[test]
+fn commercial_digests_cover_intent_and_sort_sets_without_reordering_tiers() {
+    type Mutation = fn(&mut acceptance::NewSaleQuery);
+    use bss_pricing_sdk::digest::{request_digest, terms_digest};
+    let original = commercial_query();
+    let baseline = request_digest(&original);
+    let mut q = original.clone();
+    q.quantity = "1.000".parse().unwrap();
+    assert_eq!(baseline, request_digest(&q));
+    let changes: &[Mutation] = &[
+        |q| q.tenant_axes.payer_tenant_id = uuid::Uuid::from_u128(100),
+        |q| q.tenant_axes.seller_tenant_id = uuid::Uuid::from_u128(100),
+        |q| q.tenant_axes.resource_tenant_id = uuid::Uuid::from_u128(100),
+        |q| q.order_id = uuid::Uuid::from_u128(100),
+        |q| q.line_id = uuid::Uuid::from_u128(100),
+        |q| q.plan_id = uuid::Uuid::from_u128(100),
+        |q| q.plan_revision_id = uuid::Uuid::from_u128(100),
+        |q| q.order_version = 1,
+        |q| q.hold_policy_version = 1,
+        |q| q.quantity = Decimal::TEN,
+        |q| q.market.currency = "USD".into(),
+        |q| q.market.region = None,
+        |q| q.market.region = Some(String::new()),
+        |q| q.start_at += time::Duration::seconds(1),
+        |q| q.term = acceptance::Term::Rolling,
+        |q| q.billing_terms.digest = [1; 32],
+        |q| q.resolved_bindings_digest = [1; 32],
+        |q| q.selections[0].dimension_value = None,
+    ];
+    for mutate in changes {
+        let mut q = original.clone();
+        mutate(&mut q);
+        assert_ne!(baseline, request_digest(&q));
+    }
+    let a = sample_binding();
+    let mut b = a.clone();
+    b.item_id = uuid::Uuid::from_u128(100);
+    q = original;
+    q.selections.push(read::BindingSelection {
+        item_id: b.item_id,
+        dimension_value: b.dimension_value.clone(),
+    });
+    let request = request_digest(&q);
+    let accepted = terms_digest(&q, &[a.clone(), b.clone()]);
+    q.selections.reverse();
+    assert_eq!(request, request_digest(&q));
+    assert_eq!(accepted, terms_digest(&q, &[b.clone(), a.clone()]));
+    b.price_book_entry_id = uuid::Uuid::from_u128(200);
+    assert_ne!(accepted, terms_digest(&q, &[a.clone(), b.clone()]));
+    b = a;
+    b.price.model = PriceModel::Volume {
+        tiers: vec![
+            read::Tier {
+                up_to: Some(Decimal::TEN),
+                rate: Decimal::ONE,
+            },
+            read::Tier {
+                up_to: None,
+                rate: Decimal::TEN,
+            },
+        ],
+    };
+    let before = terms_digest(&q, &[b.clone()]);
+    if let PriceModel::Volume { tiers } = &mut b.price.model {
+        tiers.reverse();
+    }
+    assert_ne!(before, terms_digest(&q, &[b]));
 }

@@ -467,6 +467,66 @@ phase 4 must explicitly wire that public surface. Wire fields and query paramete
 Doors use headers + Bytes and preconditions::parse_body with correlation::establish on mutations. Errors expose
 code/field/message through canonical RFC-9457 Problem responses. Reads expose ETag, and so does every write answer that sets one, declared in the served contract; mutation preconditions are required. Every operation declares its 503, and the operations that read Products hard name REGISTRY_UNAVAILABLE (D-469).
 
+D-504 defines the pure new-sale profile, narrower than the readable catalog:
+
+| Selected binding | Supported profile | Stable refusal |
+| --- | --- | --- |
+| Recurring | Flat or PerUnit; month/year equal to BillingTerms | UnsupportedModel / BillingCycleMismatch |
+| One-time | Flat or PerUnit; no recurring period or usage policy | UnsupportedModel / UnsupportedTerms |
+| Usage BillingCycle | PerUnit, Volume or Graduated; period null; immutable explicit policy | MissingRatingPolicy / MeterPolicyMismatch |
+| Usage CalendarHour | Same usage models; UTC, SUM, subscription_line or resource scope; no minimum fee, including zero | UnsupportedTerms |
+| BillingCycle minimum fee | SubscriptionLine only; any Resource-scoped floor is refused | UnsupportedTerms |
+| Package, FX, promotions, phases, allowances, quarter | Not part of new-sale terms; historical catalog reads remain intact | UnsupportedModel / UnsupportedTerms |
+
+Invoice terms must be schema version 1, month/year and UTC, with explicit order or positive,
+non-nil seller-policy provenance. Orders resolves this Subscriptions-owned snapshot before Pricing
+is called. Calendar anchors are the first day at midnight UTC (January 1 for a year). Hourly usage
+requires an hour-aligned SubscriptionStart anchor; BillingCycle-only usage allows a 10:30 anniversary.
+A 10:30 activation with a valid calendar invoice anchor is supported. Pricing never chooses, shifts
+or rounds an anchor. Different entries in one plan may retain different rating windows.
+
+Quantity and fixed period count must be positive. Selected bindings must cover exactly one cell per
+item, with no duplicate/foreign selection, and agree on requested dimensions and binding/price entry
+identity. Every price currency must equal the market currency; a region dimension must equal the
+market region, including when the price came via the default chain. Invoice inputs require dated SKU
+identity/version/code/name, the unit for PerUnit/usage, nonempty template/GL/tax, the existing book
+currency scale and HalfEven. The existing book currency spelling/minor-digit rules apply; this slice
+adds neither a currency registry nor FX. Money is nonnegative and tier validation delegates to
+`domain::money::validate_tiers`. BillingTerms, policy, money and template digests are recomputed;
+policy unit must equal the dated binding unit. No second tier interpreter is introduced.
+
+The deterministic VM fixture uses entry 2, EUR, no dimension/region, 2026-10-01T00:00Z, monthly
+calendar invoice terms, Rolling, quantity 1, VM BillingCycle policy, SKU v3, VM-2CPU-4GB,
+VM 2 vCPU / 4 GB, VM·hour, PerUnit 0.047, no floor, VM_REVENUE, cloud-services, VM usage,
+scale 2 and HalfEven. Supported test variants recertify altered content digests; integrity tests
+intentionally retain a stale digest. Exact threshold 10 exercises the existing half-open arithmetic.
+
+Pure SaleObservation is the specified five booleans, derived from verified live reads. Non-current or
+unavailable revisions and inactive/unsellable SKUs return NotSellable; missing coverage returns
+ResolutionChanged. That shape intentionally does not distinguish retired from deprecated or off-sale.
+Provider failures are not observations of commercial ineligibility: missing E1 remains 400
+UNCONFIGURED_DEPENDENCY naming UsageMeterSemanticsV1, configured outage remains 503 and denial 403.
+
+Commercial RuleError carries a typed reason alongside its stable uppercase code. Canonical invalid
+arguments retain the concrete reason in field-violation metadata (400); resolution/payload/expiry/
+eligibility changes use aborted reason metadata (409); denial is permission denied (403), and an
+authorized missing receipt is not found (404). The existing Toolkit RFC 9457 conversion is reused.
+Wire scalars retain unsupported values in typed errors; strict BillingTerms decoding rejects missing
+snapshots, unknown/duplicate fields, numeric versions, unsupported schema, cycles and timezone.
+The SDK stays free of serde/storage types. No acceptance method or NewSale HTTP route is exposed here.
+
+The SDK adds bss.billing-terms.v1, pricing.request.v1 and pricing.terms.v1 canonical JSON projections.
+BillingTerms excludes its own digest; requests include all commercial intent and exclude command
+metadata; accepted terms include query plus sorted complete bindings, including entry/policy identity,
+without receipt identity/server timestamps. Exact decimals and all integers are strings; instants
+normalize to UTC with nine fractional digits. Four new frozen vectors are verified in Rust and Node.
+
+Task 5 must supply the complete live item universe, re-resolve selections and compare the caller's
+selected-binding digest independently, validate authoritative meter observations outside transactions,
+and preserve the accepted snapshot. The pure terms function cannot detect an item omitted from both
+its query and its binding arguments. No persistence, migration 19, acceptance/hold method, receipt
+reader, provider implementation or downstream Rating/Billing scheduler is delivered by this task.
+
 ### 7.2 External Integration Contracts
 
 ProductsClient supplies SKUs and reference receipts; Products versions?as_of supplies dated snapshots.

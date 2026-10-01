@@ -962,6 +962,19 @@ Known limits (accepted by the owner). In broker mode (an EventBrokerApi is regis
 ProducerOutbox::enqueue turns the outbox's database error into a string, so a contended outbox insert fails the
 act with 500 instead of being retried by the transaction; Products has the same limit, and the SDK stays unchanged.
 
+**Pure commercial compatibility (D-504).**
+
+`domain/commercial_terms.rs` exposes pure `validate_commercial_terms(&NewSaleQuery,
+&[AcceptedBinding])` and `validate_new_sale_observation(&SaleObservation)`. The exact matrix,
+anchor rules, reason mapping and integration boundary are recorded in PRD §7.1 and D-504.
+SDK `acceptance.rs` contains only query/market/tenant/term/error values; `terms.rs` adds the
+Subscriptions-owned BillingTerms snapshot projection. No acceptance trait or receipt persistence
+is present yet. `infra/commercial_terms_wire.rs` strictly decodes that snapshot without defaults.
+The existing canonical JSON encoder now also hashes billing terms, request intent and accepted
+terms. Runtime validation recomputes digests and reuses money tier validation. Authoritative
+provider evidence and complete live revision selection remain the command orchestrator's inputs;
+this layer neither queries dependencies nor opens transactions.
+
 ## 5. Traceability
 
 | Slice | Feature | Requirements / delivery |

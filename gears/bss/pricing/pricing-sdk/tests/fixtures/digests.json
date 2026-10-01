@@ -575,6 +575,192 @@
       },
       "canonical_text": "{\"domain\":\"pricing.bindings.v1\",\"payload\":{\"bindings\":[{\"binding\":{\"dimension_key\":\"region\",\"dimension_value\":\"eu\",\"invoice\":{\"currency_scale\":\"2\",\"gl_code\":\"usage\",\"rounding\":\"half_even\",\"tax_category\":\"standard\",\"template\":\"{sku} changed\",\"template_digest\":\"0a5fae8d525fa468a554154603c92b42a51ce4d79ea00503014418e122a28c9b\",\"template_source\":\"sku_version\",\"timing\":\"arrears\"},\"item_id\":\"00000000-0000-0000-0000-000000000003\",\"kind\":\"usage\",\"price\":{\"currency\":\"EUR\",\"effective_from\":\"2026-09-01\",\"ends_on\":null,\"minimum_fee\":null,\"model\":{\"kind\":\"per_unit\",\"unit_amount\":\"0.047\"},\"money_digest\":\"cbacb48590974dbee047262c4c31b8f55a46aa7dea4bc79e0ed7503eeab1e648\",\"price_book_entry_id\":\"00000000-0000-0000-0000-000000000002\",\"price_id\":\"00000000-0000-0000-0000-000000000001\"},\"price_book_entry_id\":\"00000000-0000-0000-0000-000000000002\",\"recurring_period\":null,\"sku_code\":\"CLOUD\",\"sku_id\":\"00000000-0000-0000-0000-000000000004\",\"sku_name\":\"Cloudlet\",\"sku_version\":\"1\",\"unit\":\"cloudlet_hour\",\"usage_rating_policy\":{\"content\":{\"aggregation_scope\":\"subscription_line\",\"partial_window\":\"actual_quantity_full_thresholds\",\"quantity_semantics\":{\"accrual_policy_version\":\"integration-v1\",\"fold\":\"SUM\",\"meter\":{\"usage_type_id\":\"cloudlets\",\"version\":\"1\"},\"unit\":\"cloudlet_hour\"},\"rating_window\":{\"kind\":\"calendar_hour\",\"timezone\":\"UTC\"},\"reset\":\"rating_window_start\"},\"digest\":\"c9dc411f7758532dcb616eeeb4389fc9b6fb10169fd52e60c9df1a599a707c7b\",\"policy_id\":\"00000000-0000-0000-0000-000000000005\",\"version\":\"18446744073709551615\"},\"via_default\":true},\"selection\":{\"dimension_value\":\"eu\",\"item_id\":\"00000000-0000-0000-0000-000000000003\"}}],\"plan_id\":\"00000000-0000-0000-0000-000000000006\",\"revision_id\":\"00000000-0000-0000-0000-000000000007\"}}",
       "sha256": "a4f9e54181173e19604c263f336c3c050bd24822cf4b50b0e2f9c5dfd8ed6603"
+    },
+    {
+      "name": "billing_terms_v1",
+      "domain": "bss.billing-terms.v1",
+      "payload": {
+        "schema_version": "1",
+        "cycle": "month",
+        "anchor": "calendar",
+        "anchor_at": "2026-10-01T00:00:00.000000000Z",
+        "timezone": "UTC",
+        "source": "explicit_order"
+      },
+      "canonical_text": "{\"domain\":\"bss.billing-terms.v1\",\"payload\":{\"anchor\":\"calendar\",\"anchor_at\":\"2026-10-01T00:00:00.000000000Z\",\"cycle\":\"month\",\"schema_version\":\"1\",\"source\":\"explicit_order\",\"timezone\":\"UTC\"}}",
+      "sha256": "8bbd1652e172dcb1c4498d7dec92af3b6d7f727d34bb7ffebc8aed1181bda983"
+    },
+    {
+      "name": "commercial_request_v1",
+      "domain": "pricing.request.v1",
+      "payload": {
+        "tenant_axes": {
+          "seller_tenant_id": "00000000-0000-0000-0000-000000000008",
+          "payer_tenant_id": "00000000-0000-0000-0000-000000000009",
+          "resource_tenant_id": "00000000-0000-0000-0000-00000000000a"
+        },
+        "order_id": "00000000-0000-0000-0000-00000000000b",
+        "order_version": "18446744073709551615",
+        "line_id": "00000000-0000-0000-0000-00000000000c",
+        "plan_id": "00000000-0000-0000-0000-000000000006",
+        "plan_revision_id": "00000000-0000-0000-0000-000000000007",
+        "selections": [
+          {
+            "item_id": "00000000-0000-0000-0000-000000000003",
+            "dimension_value": "eu"
+          }
+        ],
+        "quantity": "1",
+        "market": {
+          "currency": "EUR",
+          "region": "eu"
+        },
+        "start_at": "2026-10-01T10:30:00.000000000Z",
+        "term": {
+          "kind": "fixed_periods",
+          "count": "12"
+        },
+        "billing_terms": {
+          "schema_version": "1",
+          "cycle": "month",
+          "anchor": "calendar",
+          "anchor_at": "2026-10-01T00:00:00.000000000Z",
+          "timezone": "UTC",
+          "source": "explicit_order",
+          "digest": "8bbd1652e172dcb1c4498d7dec92af3b6d7f727d34bb7ffebc8aed1181bda983"
+        },
+        "resolved_bindings_digest": "b4be41c8abdd4ba9a808b3a1ab54ce85bec603982d81e19347ccc3cb6aba3e86",
+        "hold_policy_version": "18446744073709551615"
+      },
+      "canonical_text": "{\"domain\":\"pricing.request.v1\",\"payload\":{\"billing_terms\":{\"anchor\":\"calendar\",\"anchor_at\":\"2026-10-01T00:00:00.000000000Z\",\"cycle\":\"month\",\"digest\":\"8bbd1652e172dcb1c4498d7dec92af3b6d7f727d34bb7ffebc8aed1181bda983\",\"schema_version\":\"1\",\"source\":\"explicit_order\",\"timezone\":\"UTC\"},\"hold_policy_version\":\"18446744073709551615\",\"line_id\":\"00000000-0000-0000-0000-00000000000c\",\"market\":{\"currency\":\"EUR\",\"region\":\"eu\"},\"order_id\":\"00000000-0000-0000-0000-00000000000b\",\"order_version\":\"18446744073709551615\",\"plan_id\":\"00000000-0000-0000-0000-000000000006\",\"plan_revision_id\":\"00000000-0000-0000-0000-000000000007\",\"quantity\":\"1\",\"resolved_bindings_digest\":\"b4be41c8abdd4ba9a808b3a1ab54ce85bec603982d81e19347ccc3cb6aba3e86\",\"selections\":[{\"dimension_value\":\"eu\",\"item_id\":\"00000000-0000-0000-0000-000000000003\"}],\"start_at\":\"2026-10-01T10:30:00.000000000Z\",\"tenant_axes\":{\"payer_tenant_id\":\"00000000-0000-0000-0000-000000000009\",\"resource_tenant_id\":\"00000000-0000-0000-0000-00000000000a\",\"seller_tenant_id\":\"00000000-0000-0000-0000-000000000008\"},\"term\":{\"count\":\"12\",\"kind\":\"fixed_periods\"}}}",
+      "sha256": "e2f058f9772845950baaa86d9d094b8c05b6fed450e2dd4346cf25aa08790ae0"
+    },
+    {
+      "name": "accepted_terms_v1",
+      "domain": "pricing.terms.v1",
+      "payload": {
+        "query": {
+          "tenant_axes": {
+            "seller_tenant_id": "00000000-0000-0000-0000-000000000008",
+            "payer_tenant_id": "00000000-0000-0000-0000-000000000009",
+            "resource_tenant_id": "00000000-0000-0000-0000-00000000000a"
+          },
+          "order_id": "00000000-0000-0000-0000-00000000000b",
+          "order_version": "18446744073709551615",
+          "line_id": "00000000-0000-0000-0000-00000000000c",
+          "plan_id": "00000000-0000-0000-0000-000000000006",
+          "plan_revision_id": "00000000-0000-0000-0000-000000000007",
+          "selections": [
+            {
+              "item_id": "00000000-0000-0000-0000-000000000003",
+              "dimension_value": "eu"
+            }
+          ],
+          "quantity": "1",
+          "market": {
+            "currency": "EUR",
+            "region": "eu"
+          },
+          "start_at": "2026-10-01T10:30:00.000000000Z",
+          "term": {
+            "kind": "fixed_periods",
+            "count": "12"
+          },
+          "billing_terms": {
+            "schema_version": "1",
+            "cycle": "month",
+            "anchor": "calendar",
+            "anchor_at": "2026-10-01T00:00:00.000000000Z",
+            "timezone": "UTC",
+            "source": "explicit_order",
+            "digest": "8bbd1652e172dcb1c4498d7dec92af3b6d7f727d34bb7ffebc8aed1181bda983"
+          },
+          "resolved_bindings_digest": "b4be41c8abdd4ba9a808b3a1ab54ce85bec603982d81e19347ccc3cb6aba3e86",
+          "hold_policy_version": "18446744073709551615"
+        },
+        "bindings": [
+          {
+            "item_id": "00000000-0000-0000-0000-000000000003",
+            "price_book_entry_id": "00000000-0000-0000-0000-000000000002",
+            "dimension_key": "region",
+            "dimension_value": "eu",
+            "sku_id": "00000000-0000-0000-0000-000000000004",
+            "sku_version": "1",
+            "sku_code": "CLOUD",
+            "sku_name": "Cloudlet",
+            "unit": "cloudlet_hour",
+            "price": {
+              "price_id": "00000000-0000-0000-0000-000000000001",
+              "price_book_entry_id": "00000000-0000-0000-0000-000000000002",
+              "money_digest": "cbacb48590974dbee047262c4c31b8f55a46aa7dea4bc79e0ed7503eeab1e648",
+              "currency": "EUR",
+              "model": {
+                "kind": "per_unit",
+                "unit_amount": "0.047"
+              },
+              "minimum_fee": null,
+              "effective_from": "2026-09-01",
+              "ends_on": null
+            },
+            "kind": "usage",
+            "recurring_period": null,
+            "via_default": true,
+            "usage_rating_policy": {
+              "policy_id": "00000000-0000-0000-0000-000000000005",
+              "version": "18446744073709551615",
+              "digest": "c9dc411f7758532dcb616eeeb4389fc9b6fb10169fd52e60c9df1a599a707c7b",
+              "content": {
+                "rating_window": {
+                  "kind": "calendar_hour",
+                  "timezone": "UTC"
+                },
+                "aggregation_scope": "subscription_line",
+                "reset": "rating_window_start",
+                "quantity_semantics": {
+                  "meter": {
+                    "usage_type_id": "cloudlets",
+                    "version": "1"
+                  },
+                  "unit": "cloudlet_hour",
+                  "fold": "SUM",
+                  "accrual_policy_version": "integration-v1"
+                },
+                "partial_window": "actual_quantity_full_thresholds"
+              }
+            },
+            "invoice": {
+              "template": "{sku}",
+              "template_digest": "89030c318bc320ae10e425e5a24465a7880638f6862299ada453f734b163c636",
+              "template_source": "sku_version",
+              "gl_code": "usage",
+              "tax_category": "standard",
+              "timing": "arrears",
+              "currency_scale": "2",
+              "rounding": "half_even"
+            }
+          }
+        ]
+      },
+      "canonical_text": "{\"domain\":\"pricing.terms.v1\",\"payload\":{\"bindings\":[{\"dimension_key\":\"region\",\"dimension_value\":\"eu\",\"invoice\":{\"currency_scale\":\"2\",\"gl_code\":\"usage\",\"rounding\":\"half_even\",\"tax_category\":\"standard\",\"template\":\"{sku}\",\"template_digest\":\"89030c318bc320ae10e425e5a24465a7880638f6862299ada453f734b163c636\",\"template_source\":\"sku_version\",\"timing\":\"arrears\"},\"item_id\":\"00000000-0000-0000-0000-000000000003\",\"kind\":\"usage\",\"price\":{\"currency\":\"EUR\",\"effective_from\":\"2026-09-01\",\"ends_on\":null,\"minimum_fee\":null,\"model\":{\"kind\":\"per_unit\",\"unit_amount\":\"0.047\"},\"money_digest\":\"cbacb48590974dbee047262c4c31b8f55a46aa7dea4bc79e0ed7503eeab1e648\",\"price_book_entry_id\":\"00000000-0000-0000-0000-000000000002\",\"price_id\":\"00000000-0000-0000-0000-000000000001\"},\"price_book_entry_id\":\"00000000-0000-0000-0000-000000000002\",\"recurring_period\":null,\"sku_code\":\"CLOUD\",\"sku_id\":\"00000000-0000-0000-0000-000000000004\",\"sku_name\":\"Cloudlet\",\"sku_version\":\"1\",\"unit\":\"cloudlet_hour\",\"usage_rating_policy\":{\"content\":{\"aggregation_scope\":\"subscription_line\",\"partial_window\":\"actual_quantity_full_thresholds\",\"quantity_semantics\":{\"accrual_policy_version\":\"integration-v1\",\"fold\":\"SUM\",\"meter\":{\"usage_type_id\":\"cloudlets\",\"version\":\"1\"},\"unit\":\"cloudlet_hour\"},\"rating_window\":{\"kind\":\"calendar_hour\",\"timezone\":\"UTC\"},\"reset\":\"rating_window_start\"},\"digest\":\"c9dc411f7758532dcb616eeeb4389fc9b6fb10169fd52e60c9df1a599a707c7b\",\"policy_id\":\"00000000-0000-0000-0000-000000000005\",\"version\":\"18446744073709551615\"},\"via_default\":true}],\"query\":{\"billing_terms\":{\"anchor\":\"calendar\",\"anchor_at\":\"2026-10-01T00:00:00.000000000Z\",\"cycle\":\"month\",\"digest\":\"8bbd1652e172dcb1c4498d7dec92af3b6d7f727d34bb7ffebc8aed1181bda983\",\"schema_version\":\"1\",\"source\":\"explicit_order\",\"timezone\":\"UTC\"},\"hold_policy_version\":\"18446744073709551615\",\"line_id\":\"00000000-0000-0000-0000-00000000000c\",\"market\":{\"currency\":\"EUR\",\"region\":\"eu\"},\"order_id\":\"00000000-0000-0000-0000-00000000000b\",\"order_version\":\"18446744073709551615\",\"plan_id\":\"00000000-0000-0000-0000-000000000006\",\"plan_revision_id\":\"00000000-0000-0000-0000-000000000007\",\"quantity\":\"1\",\"resolved_bindings_digest\":\"b4be41c8abdd4ba9a808b3a1ab54ce85bec603982d81e19347ccc3cb6aba3e86\",\"selections\":[{\"dimension_value\":\"eu\",\"item_id\":\"00000000-0000-0000-0000-000000000003\"}],\"start_at\":\"2026-10-01T10:30:00.000000000Z\",\"tenant_axes\":{\"payer_tenant_id\":\"00000000-0000-0000-0000-000000000009\",\"resource_tenant_id\":\"00000000-0000-0000-0000-00000000000a\",\"seller_tenant_id\":\"00000000-0000-0000-0000-000000000008\"},\"term\":{\"count\":\"12\",\"kind\":\"fixed_periods\"}}}}",
+      "sha256": "f60062b3cb01767fe2b80e34cc096fdc254a9ec5324043dce2b4d1787c765e9d"
+    },
+    {
+      "name": "seller_billing_terms_max_version",
+      "domain": "bss.billing-terms.v1",
+      "payload": {
+        "schema_version": "1",
+        "cycle": "month",
+        "anchor": "calendar",
+        "anchor_at": "2026-10-01T00:00:00.000000000Z",
+        "timezone": "UTC",
+        "source": {
+          "kind": "seller_policy",
+          "id": "00000000-0000-0000-0000-000000000014",
+          "version": "18446744073709551615"
+        }
+      },
+      "canonical_text": "{\"domain\":\"bss.billing-terms.v1\",\"payload\":{\"anchor\":\"calendar\",\"anchor_at\":\"2026-10-01T00:00:00.000000000Z\",\"cycle\":\"month\",\"schema_version\":\"1\",\"source\":{\"id\":\"00000000-0000-0000-0000-000000000014\",\"kind\":\"seller_policy\",\"version\":\"18446744073709551615\"},\"timezone\":\"UTC\"}}",
+      "sha256": "330fa67c5203671aa5ba9079c672eb514d5034605966afb8b2e9ee8049cf382e"
     }
   ],
   "semantic_projections": [
@@ -632,5 +818,11 @@
       "change": "template",
       "vector": 24
     }
-  ]
+  ],
+  "commercial_vectors": {
+    "billing_terms": 25,
+    "request": 26,
+    "terms": 27,
+    "seller_terms": 28
+  }
 }
