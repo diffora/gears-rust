@@ -78,7 +78,7 @@ async fn census(quorum: u32) -> Census {
         .call(
             "POST",
             &format!("/price-books/{book}/entries"),
-            json!({"sku_id":Uuid::new_v4(),"model":"per_unit"}),
+            json!({"sku_id":Uuid::new_v4(),"model":"per_unit","usage_rating_policy":entry_support::policy_support::input()}),
             None,
             Some("entry"),
         )
