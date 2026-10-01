@@ -872,8 +872,8 @@ pub struct PricingPlanList {
     pub items: Vec<PricingPlanDto>,
 }
 /// A pending revision's vote progress (D-462), counts only: its unit, the approve votes the quorum
-/// counts (the current generation's, not stale: the approval library's `approve_eligibility`, the
-/// rule the vote door judges by) and the quorum.
+/// counts (the current generation's, not stale: the approval library's `counted_approvals`, the
+/// count the vote door judges by) and the quorum.
 #[toolkit_macros::api_dto(response)]
 pub struct PricingPlanApprovalProgress {
     pub unit_id: Uuid,
@@ -1261,19 +1261,21 @@ pub struct PricingApprovalUnitDto {
 }
 impl PricingApprovalUnitDto {
     /// The unit as `reader` reads it: its decisions of every generation, and whether `reader` may
-    /// approve it, judged by the engine's own predicate over the unit's stored (current
-    /// generation) `items` and its `decisions` (D-459, D-471). `impact` is the caller's to fill.
+    /// approve it, judged by the engine's own predicate over the `authors` of the unit's stored
+    /// (current generation) items and its `decisions` (D-459, D-471). `impact` is the caller's to
+    /// fill.
     /// # Errors
     /// `CorruptRow` for a kind pricing does not record.
     pub fn of(
         u: bss_approval::Unit,
-        items: &[bss_approval::ItemRef],
+        authors: &[Uuid],
         decisions: Vec<bss_approval::Decision>,
         reader: Uuid,
     ) -> Result<Self, RepoError> {
-        let caller_can_approve = bss_approval::approve_eligibility(&u, items, &decisions, reader)
-            .refusal
-            .is_none();
+        let caller_can_approve =
+            bss_approval::approve_eligibility(&u, authors.iter().copied(), &decisions, reader)
+                .refusal
+                .is_none();
         Ok(Self {
             id: u.id,
             kind: PricingApprovalKind::stored(&u.kind, &format_args!("approval unit {}", u.id))?,

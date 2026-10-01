@@ -1,5 +1,8 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
-use super::{ApproveStep, approve_eligibility, evaluate_approve};
+use super::{
+    ApproveEligibility, ApproveRefusal, ApproveStep, approve_eligibility, counted_approvals,
+    evaluate_approve,
+};
 use crate::model::{ApprovalError, Decision, ItemRef, Policy, Unit, UnitState, Verdict};
 use time::macros::datetime;
 use uuid::Uuid;
@@ -147,9 +150,11 @@ fn the_predicate_counts_the_current_generations_live_approves() {
         rejected,
         marked,
     ];
-    let judged = approve_eligibility(&refreshed, &[], &decisions, Uuid::new_v4());
+    let judged = approve_eligibility(&refreshed, [], &decisions, Uuid::new_v4());
     assert_eq!(judged.approvals, 1, "{judged:?}");
     assert!(judged.refusal.is_none(), "{judged:?}");
+    // The count alone needs no item and no actor (the phase 9 review's R4).
+    assert_eq!(counted_approvals(&refreshed, &decisions), 1);
 }
 /// W2: the predicate is the engine's rule. On every fixture (quorum 0, 1 and 2, a stale vote, a
 /// vote of an earlier generation, a decided unit) and for every actor (the submitter, an item
@@ -192,10 +197,12 @@ fn the_predicate_answers_what_the_engine_answers() {
     fixtures.push(("a decided unit".into(), decided, Vec::new()));
     for (name, u, decisions) in &fixtures {
         for actor in [submitter, author, reviewer, earlier_reviewer, fresh] {
-            let judged = approve_eligibility(u, &items, decisions, actor);
+            let judged =
+                approve_eligibility(u, items.iter().map(|i| i.created_by), decisions, actor);
+            assert_eq!(judged.approvals, counted_approvals(u, decisions), "{name}");
             match evaluate_approve(u, decisions, actor, &items) {
                 Err(error) => assert_eq!(
-                    judged.refusal.as_ref().map(ApprovalError::code),
+                    judged.refusal.map(|r| ApprovalError::from(r).code()),
                     Some(error.code()),
                     "{name}, {actor}"
                 ),
@@ -215,6 +222,45 @@ fn the_predicate_answers_what_the_engine_answers() {
             }
         }
     }
+}
+/// The phase 9 review's R3: the predicate's refusal is one of three, each the engine's own error,
+/// with its code and its text unchanged.
+#[test]
+fn each_refusal_is_the_engines_error_byte_for_byte() {
+    for (refusal, code, text) in [
+        (
+            ApproveRefusal::AlreadyDecided,
+            "UNIT_ALREADY_DECIDED",
+            "the unit is already decided",
+        ),
+        (
+            ApproveRefusal::SodViolation,
+            "SOD_VIOLATION",
+            "the actor authored or submitted this unit",
+        ),
+        (
+            ApproveRefusal::DuplicateVote,
+            "DUPLICATE_VOTE",
+            "the actor already voted in this generation",
+        ),
+    ] {
+        let error = ApprovalError::from(refusal);
+        assert_eq!((error.code(), error.to_string().as_str()), (code, text));
+    }
+    let author = Uuid::new_v4();
+    let u = unit(1, Uuid::new_v4());
+    // The authors alone judge the separation of duties, from any iterator of them.
+    assert_eq!(
+        approve_eligibility(&u, vec![Uuid::new_v4(), author], &[], author),
+        ApproveEligibility {
+            approvals: 0,
+            refusal: Some(ApproveRefusal::SodViolation),
+        }
+    );
+    assert_eq!(
+        approve_eligibility(&u, std::iter::empty(), &[], author).refusal,
+        None
+    );
 }
 #[test]
 fn the_policy_overrides_per_kind_and_falls_back_to_star() {

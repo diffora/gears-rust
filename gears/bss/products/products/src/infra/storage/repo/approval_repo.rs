@@ -629,23 +629,31 @@ pub async fn count_units(
         })
         .collect()
 }
-/// The items of every unit among `units`, each unit's by type and id as [`Store::items`] reads
-/// them, in ONE statement whatever their number (P-D-228, the twin of pricing's): the authors
-/// whether a reader may approve a unit judges. An empty list reads nothing, as
+/// One row of [`item_authors_of_units`]: an item's unit and its author.
+#[derive(Debug, sea_orm::FromQueryResult)]
+struct ItemAuthor {
+    unit_id: Uuid,
+    created_by: Uuid,
+}
+/// The authors of the items of every unit among `units`, each unit's in [`Store::items`]' order,
+/// in ONE statement whatever their number (P-D-228, the twin of pricing's), reading only each
+/// item's unit and author: what whether a reader may approve a unit judges, never the items'
+/// content (the phase 9 review's R73, R74). An empty list reads nothing, as
 /// [`decisions_of_units`].
 /// # Errors
 /// Returns typed database failures.
-pub async fn items_of_units(
+pub async fn item_authors_of_units(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
     units: &[Uuid],
-) -> Result<BTreeMap<Uuid, Vec<ItemRef>>, RepoError> {
-    let mut grouped: BTreeMap<Uuid, Vec<ItemRef>> = BTreeMap::new();
+) -> Result<BTreeMap<Uuid, Vec<Uuid>>, RepoError> {
+    use sea_orm::QuerySelect;
+    let mut grouped: BTreeMap<Uuid, Vec<Uuid>> = BTreeMap::new();
     if units.is_empty() {
         return Ok(grouped);
     }
-    for m in approval_unit_item::Entity::find()
+    for row in approval_unit_item::Entity::find()
         .secure()
         .scope_with(scope)
         .filter(
@@ -656,17 +664,16 @@ pub async fn items_of_units(
         .order_by(approval_unit_item::Column::UnitId, Order::Asc)
         .order_by(approval_unit_item::Column::ItemType, Order::Asc)
         .order_by(approval_unit_item::Column::ItemId, Order::Asc)
-        .all(runner)
+        .project_all(runner, |q| {
+            q.select_only()
+                .column(approval_unit_item::Column::UnitId)
+                .column(approval_unit_item::Column::CreatedBy)
+                .into_model::<ItemAuthor>()
+        })
         .await
-        .map_err(|e| driver_failure("read the items of units".into(), e))?
+        .map_err(|e| driver_failure("read the item authors of units".into(), e))?
     {
-        grouped.entry(m.unit_id).or_default().push(ItemRef {
-            item_type: m.item_type,
-            item_id: m.item_id,
-            created_by: m.created_by,
-            before: m.before_json,
-            after: m.after_json,
-        });
+        grouped.entry(row.unit_id).or_default().push(row.created_by);
     }
     Ok(grouped)
 }

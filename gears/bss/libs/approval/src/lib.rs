@@ -18,6 +18,6 @@ pub use model::{
 };
 /// The one approve-eligibility rule of the engine and of every reader (the vote counts, whether a
 /// reader may approve); `rules` stays private.
-pub use rules::{ApproveEligibility, approve_eligibility};
+pub use rules::{ApproveEligibility, ApproveRefusal, approve_eligibility, counted_approvals};
 pub use store::Store;
 pub use subject::ApprovalSubject;

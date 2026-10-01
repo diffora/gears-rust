@@ -60,7 +60,7 @@
 | P-D-225 | M | Every text a request writes has an explicit length cap (twin of pricing D-457) | DECIDED 2026-09-29 · Whole-branch review RS-10, RS-11, RS-37, RS-38 (fix run W1b); the dispositions' "Length caps" |
 | P-D-226 | M | The SDK's SKU types serialize as the wire carries them | DECIDED 2026-09-30 · Whole-branch review RS-22, RS-23, RS-24 (fix run W1b) |
 | P-D-227 | M | The approval units are counted by state and kind and list newest first on request (twin of pricing D-470) | DECIDED 2026-09-30 · Owner, 2026-09-30 (the approvals option 1, "ok"); pricing phase 9 plan rev 2 (decision 10; plan review M4, L11); amends P-D-224; amended by the phase 9 review (C, R32; fix run 9.5d-1) |
-| P-D-228 | M | A unit says whether its reader may approve it (twin of pricing D-471) | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 4, "ok"); pricing phase 9 plan rev 2 (decision 11; W2; plan review H1, M2); amends P-D-224 |
+| P-D-228 | M | A unit says whether its reader may approve it (twin of pricing D-471) | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 4, "ok"); pricing phase 9 plan rev 2 (decision 11; W2; plan review H1, M2); amends P-D-224; amended by the phase 9 review (E, fix run 9.5d-1) |
 
 ## Entries
 
@@ -1077,7 +1077,8 @@ order stays the default. `$orderby=submitted_at asc` names that default. Any `$o
 400 `INVALID_ORDERBY_FIELD`, and `$orderby` beside a `cursor` is 400 `ORDER_WITH_CURSOR`.
 
 **Amended by P-D-228 (2026-09-30).** A page also reads all its units' items in one statement more
-(`approval_repo::items_of_units`), so it makes three statements whatever its size.
+(`approval_repo::items_of_units`; since the phase 9 review, `item_authors_of_units`, their authors alone), so it
+makes three statements whatever its size.
 
 #### P-D-225 [M] Every text a request writes has an explicit length cap (twin of pricing D-457)
 
@@ -1227,3 +1228,11 @@ H1). The list and the card read no unit items, so the screen could not judge it.
 
 **Source:** Owner, 2026-09-30 (validation 3 item 4, "ok"); pricing phase 9 plan rev 2 (decision 11; W2, binding; plan review
 H1, M2). Amends P-D-224 (the page's statements).
+
+**Amended by the phase 9 review, theme E (fix run 9.5d-1, 2026-10-01; R70, R72, R73, R74).** The flag reads only who
+authored a unit's items: `bss_approval::approve_eligibility` takes the authors (pricing D-459), and the page reads its
+units' item authors alone (`approval_repo::item_authors_of_units`: each item's unit and author, one statement), not the
+items with their before and after content; still three statements per page. The card and every receipt (the submit,
+change and retire receipts and the vote receipts) read their unit's item authors the same way, beside its decisions;
+the engine's own approve still reads its items. `api/rest/sku_governance_tests.rs`: the list's statement test pins the
+projection, and the card, the submit receipt and the vote receipt read the authors alone.

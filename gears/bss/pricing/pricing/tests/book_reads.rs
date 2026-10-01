@@ -1433,6 +1433,31 @@ async fn submit_reads(
             .await;
         assert_eq!(s, 201, "{body}");
         assert_eq!(body["applied"], quorum == 0, "{body}");
+        // The phase 9 review's R44: the receipt reads the unit's items and its decisions once
+        // each and builds its prices and its unit from them. Under quorum 0 the apply's event reads
+        // the items once more, and the decided event the decisions.
+        let selects = |table: &str| {
+            recorder
+                .events()
+                .into_iter()
+                .filter(|q| {
+                    q.table.as_deref() == Some(table)
+                        && q.sql
+                            .trim_start()
+                            .to_ascii_uppercase()
+                            .starts_with("SELECT")
+                })
+                .count()
+        };
+        let once = if quorum == 0 { 2 } else { 1 };
+        assert_eq!(
+            (
+                selects("pricing_approval_unit_item"),
+                selects("pricing_approval_decision")
+            ),
+            (once, once),
+            "quorum {quorum}: the unit's items and decisions, read once"
+        );
         runs.push(
             recorder
                 .events()
@@ -1989,6 +2014,21 @@ async fn impact_false_serves_no_impact_and_reads_no_plan() {
     recorder.clear();
     let light = ok(&f, &format!("/approval-units?book_id={b}&impact=false")).await;
     let light_tables = tables_read(&recorder);
+    // The phase 9 review's R46: without the impact, the items are read for their authors only
+    // (the flag's separation of duties), never their content.
+    let items_read: Vec<String> = recorder
+        .events()
+        .into_iter()
+        .filter(|q| q.table.as_deref() == Some("pricing_approval_unit_item"))
+        .map(|q| q.sql)
+        .collect();
+    assert_eq!(items_read.len(), 1, "{items_read:#?}");
+    assert!(
+        items_read[0].contains("created_by")
+            && !items_read[0].contains("before_json")
+            && !items_read[0].contains("after_json"),
+        "the authors alone: {items_read:#?}"
+    );
     assert_eq!(
         light_tables,
         [

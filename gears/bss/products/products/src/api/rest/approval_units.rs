@@ -361,7 +361,9 @@ async fn list(
                 let mut decisions = repo::decisions_of_units(tx, &scope, tenant, &ids)
                     .await
                     .map_err(TxError::Repo)?;
-                let mut authored = repo::items_of_units(tx, &scope, tenant, &ids)
+                // The items' authors alone: the flag judges who authored an item, never its
+                // content (the phase 9 review's R73, R74).
+                let mut authored = repo::item_authors_of_units(tx, &scope, tenant, &ids)
                     .await
                     .map_err(TxError::Repo)?;
                 let items = page
@@ -518,16 +520,31 @@ async fn counts(
     .into_response())
 }
 /// A unit as `reader` reads it in a receipt: the decisions actually stored for all generations, and
-/// whether `reader` may approve it over its stored items (P-D-228).
+/// whether `reader` may approve it over its stored items' authors (P-D-228), one statement each;
+/// the items' content is not read (the phase 9 review's R70, R72).
 pub(super) async fn as_read_by(
     tx: &DbTx<'_>,
     store: &repo::ProductsApprovalStore,
     unit: Unit,
     reader: Uuid,
 ) -> Result<UnitDto, TxError> {
-    let items = store.items(tx, unit.id).await?;
+    let authors = authors_of(tx, store, unit.id).await?;
     let decisions = store.decisions(tx, unit.id).await?;
-    UnitDto::of(unit, &items, decisions, reader).map_err(TxError::Repo)
+    UnitDto::of(unit, &authors, decisions, reader).map_err(TxError::Repo)
+}
+/// The authors of one unit's stored items, in one statement that reads nothing else.
+async fn authors_of(
+    tx: &DbTx<'_>,
+    store: &repo::ProductsApprovalStore,
+    unit: Uuid,
+) -> Result<Vec<Uuid>, TxError> {
+    Ok(
+        repo::item_authors_of_units(tx, &store.scope, store.tenant_id, &[unit])
+            .await
+            .map_err(TxError::Repo)?
+            .remove(&unit)
+            .unwrap_or_default(),
+    )
 }
 
 async fn get(
@@ -572,9 +589,9 @@ async fn get(
                 let live = repo::find_sku(tx, &scope, ctx.subject_tenant_id(), unit.ref_id)
                     .await
                     .map_err(TxError::Repo)?;
-                let items = store.items(tx, id).await?;
+                let authors = authors_of(tx, &store, id).await?;
                 let decisions = store.decisions(tx, id).await?;
-                let mut dto = UnitDto::of(unit, &items, decisions, ctx.subject_id())
+                let mut dto = UnitDto::of(unit, &authors, decisions, ctx.subject_id())
                     .map_err(TxError::Repo)?;
                 dto.impact_live = live
                     .map(|live| {

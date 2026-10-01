@@ -95,10 +95,10 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-456 | M | A plan names only a book its author may read | DECIDED 2026-09-29 · Whole-branch review PS-08 (fix run W1a); extends D-440; extended by D-463, D-468 |
 | D-457 | M | Every text a request writes has an explicit length cap | DECIDED 2026-09-29 · Whole-branch review PS-09, PS-10, X-01 (fix run W1a); twin of a products decision in W1b; extended by D-468 |
 | D-458 | M | The approval-unit list pages and reads its page set-based | DECIDED 2026-09-29 · Owner, 2026-09-29 (dispositions O2, "2"); whole-branch review PS-13 (fix run W1a); amended by D-470 |
-| D-459 | M | One approve-eligibility predicate for the engine and its readers | DECIDED 2026-09-30 · Phase 9 plan rev 2 (W2, binding; plan review W2, L5); extends D-393 |
+| D-459 | M | One approve-eligibility predicate for the engine and its readers | DECIDED 2026-09-30 · Phase 9 plan rev 2 (W2, binding; plan review W2, L5); extends D-393; amended by the phase 9 review (E, fix run 9.5d-1) |
 | D-460 | M | The plans list names each plan's current revision and the one in effect | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 1); phase 9 plan rev 2 (decision 1; plan review M6, M7, W3, L4); amends D-434, D-453; amended by D-461 |
 | D-461 | M | A revision says who made it and when it was submitted and approved | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 7); phase 9 plan rev 2 (decision 2; plan review M6, M7, L1, L9); amends D-434, D-453, D-460 |
-| D-462 | M | A pending revision shows its vote progress under plan read | DECIDED 2026-09-30 · Owner, 2026-09-30 (O-9a, "yes"); phase 9 plan rev 2 (decision 4; plan review M7, L5) |
+| D-462 | M | A pending revision shows its vote progress under plan read | DECIDED 2026-09-30 · Owner, 2026-09-30 (O-9a, "yes"); phase 9 plan rev 2 (decision 4; plan review M7, L5); amended by the phase 9 review (E, fix run 9.5d-1) |
 | D-463 | M | A plan's sale date on create and clone | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 7); phase 9 plan rev 2 (decision 3; plan review L10); amends D-451, extends D-456 |
 | D-464 | L | A plan submit and a publish-changes carry the submitter's note | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 6); phase 9 plan rev 2 (decision 5; plan review L3); amends D-445 |
 | D-465 | M | A revision may carry again a deprecated SKU its plan sells | DECIDED 2026-09-30 · Owner, 2026-09-30 (O-9b, "yes"); phase 9 plan rev 2 (decision 6; plan review L2); amends D-408 |
@@ -107,7 +107,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-468 | M | A new plan's code follows a declared rule | DECIDED 2026-09-30 · Owner, 2026-09-30 (ask 39, "do it"); phase 9 run 9.2 scope addition; extends D-456, D-457 |
 | D-469 | M | The served contract declares every door's 503, every ETag it sets and the refusals of the plan doors | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 2); phase 9 plan rev 2 (M1 and W1, binding; decisions 8 and 9; L8); extended by D-470 |
 | D-470 | M | The approval units are counted by state and kind, list newest first on request, and skip the live impact on request | DECIDED 2026-09-30 · Owner, 2026-09-30 (the approvals option 1, "ok"); phase 9 plan rev 2 (decision 10; plan review M3, M4, L11); amends D-458, extends D-469; amended by the phase 9 review (C, R32; fix run 9.5d-1) |
-| D-471 | M | A unit says whether its reader may approve it | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 4, "ok"); phase 9 plan rev 2 (decision 11; W2; plan review M2) |
+| D-471 | M | A unit says whether its reader may approve it | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 4, "ok"); phase 9 plan rev 2 (decision 11; W2; plan review M2); amended by the phase 9 review (E, fix run 9.5d-1) |
 | D-472 | M | An entry names its next price | DECIDED 2026-10-01 · Owner, 2026-09-30 (validation 3 item 7, "ok"); phase 9 plan rev 2 (decision 12; plan review M5, L7); amends D-434, D-440; amended by D-473 |
 | D-473 | M | The book's entries list reads its prices on a date | DECIDED 2026-10-01 · Owner, 2026-09-30 (validation 3 item 7, "ok"); phase 9 plan rev 2 (decision 13; plan review M5, L6); amends D-440, D-472; amended by the phase 9 review R1 (fix run 9.5d-1) |
 
@@ -915,7 +915,9 @@ D-470 amends this entry: the list also takes $orderby=submitted_at desc, newest 
 
 D-393's engine keeps its rules; this entry makes them one function that the readers call.
 
-**Source:** Phase 9 plan rev 2 (W2, binding: the review's alternative W2; L5 for #40's counts).
+The phase 9 review's theme E amends this entry (fix run 9.5d-1; R3, R4, R39): approve_eligibility(unit, authors, decisions, actor) takes the authors of the unit's stored items (any iterator of their ids), not the items: it judges only who authored an item, so a reader may read the authors alone. The count is its own function, counted_approvals(unit, decisions), over the decisions alone, and ApproveEligibility's approvals is that count. Its refusal is ApproveRefusal (AlreadyDecided, SodViolation, DuplicateVote), which converts into the ApprovalError the engine answers. evaluate_approve passes its items' authors and answers that error, so the engine's refusals are byte-identical: the library's rule tests keep their expectations, a test pins each refusal's code and text, and both gears' door tests pass unchanged. Pricing's progress counts the decisions alone (D-462); the flag reads the item authors alone where it does not need the items (D-471, products P-D-228). A probe that counted stale votes turned four library tests red.
+
+**Source:** Phase 9 plan rev 2 (W2, binding: the review's alternative W2; L5 for #40's counts). Amended by the phase 9 review, theme E (fix run 9.5d-1): the authors, the count apart, a three-variant refusal.
 
 #### D-460 [M] The plans list names each plan's current revision and the one in effect
 
@@ -966,7 +968,9 @@ The plan's screen shows how far a pending revision is from its quorum (ask 40).
 - **The reads.** The revision read reads its unit, and for a pending one its items and its decisions: at most three statements more, only for a revision that names a unit.
 - **The tests.** tests/plan_overview.rs: quorum 2 through its votes (approvals moves as the receipt's have does, a duplicate vote adds nothing, a refresh makes the first vote stale and it stops counting, the apply clears the field), quorum 1 and quorum 0 at the submit, a draft; a caller holding plan read only reads it. Probes that counted stale votes, that dropped the progress from the read and from the receipt, were caught.
 
-**Source:** Owner, 2026-09-30 (O-9a, "yes"); phase 9 plan rev 2 (decision 4; plan review M7, L5).
+The phase 9 review's theme E amends this entry (fix run 9.5d-1; R13, R45, R52): the count is bss_approval::counted_approvals over the unit's decisions alone (D-459), so the revision read reads its unit and, for a pending one, its decisions: at most two statements more (it read the unit's items too, only to discard them). The progress takes no reader: GET /plan-revisions/{id} answers the same counts to every plan reader. The submit receipt reads its new unit's item authors and its decisions once each and builds both the progress and the unit from them (it read each twice). tests/plan_overview.rs pins both: the receipt reads one items statement and one decisions statement, and the read of a pending revision none and one.
+
+**Source:** Owner, 2026-09-30 (O-9a, "yes"); phase 9 plan rev 2 (decision 4; plan review M7, L5). Amended by the phase 9 review, theme E (fix run 9.5d-1): the count from the decisions alone, each row read once.
 
 #### D-463 [M] A plan's sale date on create and clone
 
@@ -1126,7 +1130,9 @@ The approvals screen shows the Approve action only to a reviewer the vote door w
 - **The reads.** No statement is added to the list: its page already reads its units' items in one statement (D-458) and their decisions in one more, and with impact=false it still reads the items, for the flag (D-470). The card reads the unit's items and decisions once each, as before. A receipt reads the unit's items and decisions (two statements).
 - **The tests.** tests/approval_doors.rs: a prices unit at quorum 3, authored by one user and submitted by another, a vote in generation 1, a refresh to generation 2, a vote in generation 2; for an item's author, the submitter, the voter of this generation, a fresh reviewer and the voter of the earlier generation, the flag on the card and in the list (which agree) is exactly whether the vote door answers 200 (403 SOD_VIOLATION twice, 409 DUPLICATE_VOTE, then pending and applied); on the decided unit it is false for everyone and the door answers 409 UNIT_ALREADY_DECIDED; the submit and vote receipts answer false for their caller. The submitter's reject answers 200 while the submitter's flag, and the author's, is false. tests/served_contract.rs: the field is a required boolean whose text says Approve only and 403, and the list's and the card's texts name it.
 
-**Source:** Owner, 2026-09-30 (validation 3 item 4, "ok"); phase 9 plan rev 2 (decision 11; W2, binding; plan review M2). Uses D-459.
+The phase 9 review's theme E amends the reads (fix run 9.5d-1; R44, R46): where only the flag needs a unit's items, their authors alone are read (approval_repo::item_authors_of_units: each item's unit and author, one statement): the list with impact=false and the vote receipt. The list with its impact and the card read the items whole, which the impact needs, and take the authors from them. Every receipt reads its unit's items, or their authors, and its decisions once each: the receipt of publish-changes and of a price submit builds its prices and its unit from one read of the items (it read them twice), and the plan submit's receipt its progress and its unit (D-462). tests/book_reads.rs pins the light list's projection and the publish-changes receipt's reads: the items and the decisions once each under quorum 1, twice under quorum 0, where the apply's event and the decided event read them once more.
+
+**Source:** Owner, 2026-09-30 (validation 3 item 4, "ok"); phase 9 plan rev 2 (decision 11; W2, binding; plan review M2). Uses D-459. Amended by the phase 9 review, theme E (fix run 9.5d-1): the flag reads the item authors alone, and each receipt reads each row once.
 
 #### D-472 [M] An entry names its next price
 

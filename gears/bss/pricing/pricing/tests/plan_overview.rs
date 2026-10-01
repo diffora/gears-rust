@@ -716,6 +716,66 @@ async fn a_pending_revision_shows_its_vote_progress_and_nothing_else_does() {
     assert_eq!(receipt["revision"]["approval"], json!(null), "{receipt}");
 }
 
+/// The phase 9 review's R13, R45 and R52 (D-462 amended): a revision's vote progress is counted
+/// from its unit's decisions alone (`bss_approval::counted_approvals`), so a pending revision's read
+/// reads no unit item; the submit receipt reads its new unit's items and decisions once each and
+/// builds both the progress and the unit from them.
+#[tokio::test]
+async fn the_progress_reads_the_decisions_alone_and_the_receipt_each_row_once() {
+    let (db, recorder, tenant, dsn) = entry_support::recorded_db().await;
+    let catalog = Arc::new(Catalog::default());
+    let f = Fixture::on(db, tenant, dsn, catalog.clone()).await;
+    let selects = |table: &str| {
+        recorder
+            .events()
+            .into_iter()
+            .filter(|q| {
+                q.table.as_deref() == Some(table)
+                    && q.sql
+                        .trim_start()
+                        .to_ascii_uppercase()
+                        .starts_with("SELECT")
+            })
+            .count()
+    };
+    let p = fresh(&f, &catalog, "pro").await;
+    policy(&f, 2).await;
+    recorder.clear();
+    let receipt = submit(&f, p.rev1, "submit").await;
+    assert_eq!(receipt["revision"]["approval"]["approvals"], 0, "{receipt}");
+    assert_eq!(receipt["unit"]["caller_can_approve"], false, "{receipt}");
+    assert_eq!(
+        (
+            selects("pricing_approval_unit_item"),
+            selects("pricing_approval_decision")
+        ),
+        (1, 1),
+        "the receipt reads the new unit's items and decisions once"
+    );
+    let unit = receipt["unit"]["id"].clone();
+    let (s, b) = vote(
+        &f,
+        &f.user(),
+        &unit,
+        "approve",
+        json!({"generation":1}),
+        "a1",
+    )
+    .await;
+    assert_eq!(s, 200, "{b}");
+    recorder.clear();
+    let read = get(&f, &format!("/plan-revisions/{}", p.rev1)).await;
+    assert_eq!(read["approval"]["approvals"], 1, "{read}");
+    assert_eq!(
+        (
+            selects("pricing_approval_unit_item"),
+            selects("pricing_approval_decision")
+        ),
+        (0, 1),
+        "the progress counts the decisions alone"
+    );
+}
+
 // ------------------------------------------------------------------ M7 the write answers
 
 /// D-460, D-461, D-462 (plan review M7): the new fields are filled on every answer of the two

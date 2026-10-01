@@ -468,9 +468,7 @@ async fn get_revision(
     .map_err(authz_failure)?;
     transaction(&state.db.db(), move |tx| {
         let (scope, ctx) = (scope.clone(), ctx.clone());
-        Box::pin(async move {
-            plans::get_revision(tx, &scope, (ctx.subject_tenant_id(), ctx.subject_id()), id).await
-        })
+        Box::pin(async move { plans::get_revision(tx, &scope, ctx.subject_tenant_id(), id).await })
     })
     .await
 }

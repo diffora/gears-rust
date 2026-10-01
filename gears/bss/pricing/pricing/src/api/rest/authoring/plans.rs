@@ -139,7 +139,6 @@ async fn plan_body(
 async fn revision_body(
     tx: &impl DBRunner,
     tenant: Uuid,
-    reader: Uuid,
     m: plan_revision::Model,
 ) -> Result<PricingPlanRevisionDto, DoorError> {
     let children = AccessScope::for_tenant(tenant);
@@ -155,7 +154,7 @@ async fn revision_body(
     else {
         return Ok(dto);
     };
-    let approval = progress(tx, tenant, &unit, reader).await?;
+    let approval = progress(tx, tenant, &unit).await?;
     Ok(dto.with_units(&instants_of(&unit), approval))
 }
 /// A unit's instants, keyed as the DTOs read them (D-461).
@@ -172,34 +171,35 @@ pub(super) fn instants_of(
     )])
 }
 /// A pending unit's vote progress (D-462, O-9a): the approve votes the quorum counts, by the
-/// approval library's `approve_eligibility` over the unit's stored items and decisions (the rule
-/// the vote door judges by; only its counts are shown, so `reader` changes nothing), and the
-/// quorum; `None` for a unit that is not pending. Two statements, read with the tenant's scope
-/// under the revision read's plan read: counts only, no actor.
+/// approval library's `counted_approvals` over the unit's decisions (the count the vote door
+/// judges by: it reads no item and names no actor), and the quorum; `None` for a unit that is not
+/// pending. One statement, read with the tenant's scope under the revision read's plan read:
+/// counts only.
 pub(super) async fn progress(
     tx: &impl DBRunner,
     tenant: Uuid,
     unit: &bss_approval::Unit,
-    reader: Uuid,
 ) -> Result<Option<PricingPlanApprovalProgress>, DoorError> {
     if unit.state != bss_approval::UnitState::Pending {
         return Ok(None);
     }
-    let children = AccessScope::for_tenant(tenant);
-    let items = approval_repo::items_of_units(tx, &children, tenant, &[unit.id])
-        .await?
-        .remove(&unit.id)
-        .unwrap_or_default();
-    let decisions = approval_repo::decisions_of_units(tx, &children, tenant, &[unit.id])
-        .await?
-        .remove(&unit.id)
-        .unwrap_or_default();
-    let judged = bss_approval::approve_eligibility(unit, &items, &decisions, reader);
-    Ok(Some(PricingPlanApprovalProgress {
+    let decisions =
+        approval_repo::decisions_of_units(tx, &AccessScope::for_tenant(tenant), tenant, &[unit.id])
+            .await?
+            .remove(&unit.id)
+            .unwrap_or_default();
+    Ok(progress_of(unit, &decisions))
+}
+/// [`progress`] over a unit's decisions already read.
+pub(super) fn progress_of(
+    unit: &bss_approval::Unit,
+    decisions: &[bss_approval::Decision],
+) -> Option<PricingPlanApprovalProgress> {
+    (unit.state == bss_approval::UnitState::Pending).then(|| PricingPlanApprovalProgress {
         unit_id: unit.id,
-        approvals: judged.approvals,
+        approvals: bss_approval::counted_approvals(unit, decisions),
         quorum_required: unit.quorum_required,
-    }))
+    })
 }
 fn etag(version: i64) -> Result<u64, CanonicalError> {
     Ok(
@@ -760,20 +760,21 @@ async fn clone_in(
 }
 
 /// `GET /plan-revisions/{id}`: the revision with its items and its version, the instants of the
-/// unit it names (D-461) and, while it is pending, its vote progress (D-462), for `reader`.
+/// unit it names (D-461) and, while it is pending, its vote progress (D-462): counts only, the
+/// same for every reader.
 /// # Errors
 /// 404 for a revision the tenant does not hold.
 pub(super) async fn get_revision(
     tx: &impl DBRunner,
     scope: &AccessScope,
-    (tenant, reader): (Uuid, Uuid),
+    tenant: Uuid,
     id: Uuid,
 ) -> Result<Response, DoorError> {
     let m = find_revision(tx, scope, tenant, id).await?;
     let version = etag(m.version)?;
     Ok(support::response(
         StatusCode::OK,
-        &revision_body(tx, tenant, reader, m).await?,
+        &revision_body(tx, tenant, m).await?,
         Some(version),
     )?)
 }

@@ -1508,10 +1508,17 @@ async fn the_unit_list_reads_a_page_in_the_same_statements_for_10_and_100_units(
         // P-D-228 (plan review H1): the page, its units' decisions and their items, whose
         // authors the flag's separation of duties reads.
         assert_eq!(statements.len(), 3, "{statements:#?}");
+        // The phase 9 review's R73, R74: the items are read for their authors alone, never their
+        // content.
+        let items_read: Vec<&String> = statements
+            .iter()
+            .filter(|sql| sql.contains("products_approval_unit_item"))
+            .collect();
         assert!(
-            statements
-                .iter()
-                .any(|sql| sql.contains("products_approval_unit_item")),
+            items_read.len() == 1
+                && items_read[0].contains("created_by")
+                && !items_read[0].contains("before_json")
+                && !items_read[0].contains("after_json"),
             "{statements:#?}"
         );
         runs.push(statements);
@@ -1542,6 +1549,53 @@ async fn the_unit_list_reads_a_page_in_the_same_statements_for_10_and_100_units(
     }
     assert_eq!(runs[0], runs[1]);
     assert_eq!(count_runs[0], count_runs[1]);
+}
+/// The phase 9 review's R70 and R72 (P-D-228 amended): the submit receipt, the card and the vote
+/// receipt read the unit's item authors alone for `caller_can_approve`, never the items' content;
+/// the engine's own approve still reads its items.
+#[tokio::test]
+async fn the_card_and_the_receipts_read_the_item_authors_alone() {
+    let (f, recorder) = Fixture::recorded(2).await;
+    // (reads of the items' content, reads of their authors alone)
+    let item_reads = || {
+        let reads: Vec<String> = products_statements(&recorder)
+            .into_iter()
+            .filter(|sql| {
+                sql.contains("products_approval_unit_item")
+                    && sql.trim_start().to_ascii_uppercase().starts_with("SELECT")
+            })
+            .collect();
+        let content = reads
+            .iter()
+            .filter(|sql| sql.contains("after_json"))
+            .count();
+        (content, reads.len() - content)
+    };
+    recorder.clear();
+    let unit = f.submit(f.id).await;
+    assert_eq!(item_reads(), (0, 1), "the submit receipt");
+    recorder.clear();
+    let (status, card) = f.units(&format!("/{unit}")).await;
+    assert_eq!(status, 200, "{card}");
+    assert_eq!(card["caller_can_approve"], true, "{card}");
+    assert_eq!(item_reads(), (0, 1), "the card");
+    recorder.clear();
+    let (status, b) = call(
+        &f.app,
+        &f.reviewer,
+        Method::POST,
+        &format!("/approval-units/{unit}/approve"),
+        json!({"generation":1}),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{b}");
+    assert_eq!(b["unit"]["caller_can_approve"], false, "{b}");
+    assert_eq!(
+        item_reads(),
+        (1, 1),
+        "the engine's items and the receipt's authors"
+    );
 }
 /// RS-23 (P-D-226): the SDK's `Sku` and `SkuVersion` read the doors' JSON (instants RFC 3339,
 /// the effective date `YYYY-MM-DD`, as `SkuDto` and `SkuVersionDto` write them) and write it back

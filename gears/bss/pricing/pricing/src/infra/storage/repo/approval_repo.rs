@@ -741,6 +741,53 @@ pub async fn items_of_units(
     }
     Ok(grouped)
 }
+/// One row of [`item_authors_of_units`]: an item's unit and its author.
+#[derive(Debug, sea_orm::FromQueryResult)]
+struct ItemAuthor {
+    unit_id: Uuid,
+    created_by: Uuid,
+}
+/// The authors of the items of every unit among `units`, each unit's in [`Store::items`]' order,
+/// in ONE statement whatever their number, reading only each item's unit and author: what whether
+/// a reader may approve a unit judges (D-471), never the items' content. An empty list reads
+/// nothing, as [`items_of_units`].
+/// # Errors
+/// Returns typed database failures.
+pub async fn item_authors_of_units(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    units: &[Uuid],
+) -> Result<BTreeMap<Uuid, Vec<Uuid>>, RepoError> {
+    use sea_orm::QuerySelect;
+    let mut grouped: BTreeMap<Uuid, Vec<Uuid>> = BTreeMap::new();
+    if units.is_empty() {
+        return Ok(grouped);
+    }
+    for row in approval_unit_item::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(approval_unit_item::Column::TenantId.eq(tenant_id))
+                .add(approval_unit_item::Column::UnitId.is_in(units.iter().copied())),
+        )
+        .order_by(approval_unit_item::Column::UnitId, Order::Asc)
+        .order_by(approval_unit_item::Column::ItemType, Order::Asc)
+        .order_by(approval_unit_item::Column::ItemId, Order::Asc)
+        .project_all(runner, |q| {
+            q.select_only()
+                .column(approval_unit_item::Column::UnitId)
+                .column(approval_unit_item::Column::CreatedBy)
+                .into_model::<ItemAuthor>()
+        })
+        .await
+        .map_err(|e| driver_failure("read the item authors of units".into(), e))?
+    {
+        grouped.entry(row.unit_id).or_default().push(row.created_by);
+    }
+    Ok(grouped)
+}
 /// The decisions of every unit among `units`, each unit's by generation, instant and actor as
 /// [`Store::decisions`] reads them, in ONE statement whatever their number (D-458).
 /// # Errors

@@ -103,20 +103,37 @@ impl Vote {
 }
 
 /// The unit as `reader` reads it: its decisions, and whether `reader` may approve it, judged over
-/// its stored items and its decisions (D-471). Every answer that carries a unit builds it here or
-/// through [`PricingApprovalUnitDto::of`] over rows already read.
+/// its stored items' authors and its decisions (D-471), two statements; the items' content is not
+/// read. Every answer that carries a unit builds it here or through
+/// [`PricingApprovalUnitDto::of`] over rows already read.
 async fn unit_dto(
     tx: &DbTx<'_>,
     store: &PricingApprovalStore,
     unit: Unit,
     reader: Uuid,
 ) -> Result<PricingApprovalUnitDto, DoorError> {
-    let items = store.items(tx, unit.id).await.map_err(approval_failure)?;
-    let decisions = store
-        .decisions(tx, unit.id)
-        .await
-        .map_err(approval_failure)?;
-    Ok(PricingApprovalUnitDto::of(unit, &items, decisions, reader)?)
+    let (authors, decisions) = rows_of(tx, store, unit.id).await?;
+    Ok(PricingApprovalUnitDto::of(
+        unit, &authors, decisions, reader,
+    )?)
+}
+/// One unit's item authors and decisions, one statement each: what its receipt's flag and, for a
+/// plan revision, its progress are built from.
+async fn rows_of(
+    tx: &DbTx<'_>,
+    store: &PricingApprovalStore,
+    unit: Uuid,
+) -> Result<(Vec<Uuid>, Vec<bss_approval::Decision>), DoorError> {
+    let authors = approval_repo::item_authors_of_units(tx, &store.scope, store.tenant_id, &[unit])
+        .await?
+        .remove(&unit)
+        .unwrap_or_default();
+    let decisions = store.decisions(tx, unit).await.map_err(approval_failure)?;
+    Ok((authors, decisions))
+}
+/// The authors of `items`, in their order.
+fn authors_of(items: &[bss_approval::ItemRef]) -> Vec<Uuid> {
+    items.iter().map(|i| i.created_by).collect()
 }
 async fn load_unit(
     tx: &DbTx<'_>,
@@ -129,15 +146,14 @@ async fn load_unit(
         .map_err(approval_failure)?
         .ok_or_else(|| support::missing_what("approval_unit").into())
 }
-/// The unit's prices in its items' order, each with its entry's model (D-427): the prices and
-/// their entries in two statements whatever the number of items (PS-39).
+/// The prices of a unit's `items`, in their order, each with its entry's model (D-427): the prices
+/// and their entries in two statements whatever the number of items (PS-39).
 async fn prices_of(
     tx: &DbTx<'_>,
     store: &PricingApprovalStore,
-    unit: Uuid,
+    items: &[bss_approval::ItemRef],
 ) -> Result<Vec<PricingPriceDto>, DoorError> {
     let scope = AccessScope::for_tenant(store.tenant_id);
-    let items = store.items(tx, unit).await.map_err(approval_failure)?;
     let ids: Vec<Uuid> = items.iter().map(|i| i.item_id).collect();
     let mut found: BTreeMap<Uuid, entity::price::Model> =
         price_repo::find_many(tx, &scope, store.tenant_id, &ids)
@@ -158,7 +174,7 @@ async fn prices_of(
             .map(|e| (e.id, e.model))
             .collect();
     let mut prices = Vec::new();
-    for item in &items {
+    for item in items {
         if let Some(m) = found.remove(&item.item_id) {
             let model = models
                 .get(&m.price_book_entry_id)
@@ -396,10 +412,25 @@ async fn record_prices(
     };
     let submitted = record(tx, outbox, cmd, &Subject::Prices(subject), submission, ids).await?;
     let store = cmd.store();
-    let prices = prices_of(tx, &store, submitted.unit.id).await?;
+    // The unit's items and decisions, read once each: its prices and its unit are built from
+    // them (the phase 9 review's R44).
+    let items = store
+        .items(tx, submitted.unit.id)
+        .await
+        .map_err(approval_failure)?;
+    let decisions = store
+        .decisions(tx, submitted.unit.id)
+        .await
+        .map_err(approval_failure)?;
+    let prices = prices_of(tx, &store, &items).await?;
     let receipt = PricingSubmitReceipt {
         applied: submitted.applied,
-        unit: unit_dto(tx, &store, submitted.unit, cmd.ctx.subject_id()).await?,
+        unit: PricingApprovalUnitDto::of(
+            submitted.unit,
+            &authors_of(&items),
+            decisions,
+            cmd.ctx.subject_id(),
+        )?,
         prices,
     };
     support::answer(
@@ -501,14 +532,21 @@ pub async fn submit_revision(
             let r = plans::find_revision(tx, &children, cmd.tenant(), id).await?;
             let items = plan_item_repo::for_revision(tx, &children, cmd.tenant(), id).await?;
             // A write answers what it wrote (D-453): the unit in hand names its instants (D-461)
-            // and, still pending, its progress (D-462).
-            let approval =
-                plans::progress(tx, cmd.tenant(), &submitted.unit, cmd.ctx.subject_id()).await?;
+            // and, still pending, its progress (D-462). Its item authors and its decisions are
+            // read once each, and both the progress and the unit are built from them (the phase
+            // 9 review's R45).
+            let (authors, decisions) = rows_of(tx, &cmd.store(), submitted.unit.id).await?;
+            let approval = plans::progress_of(&submitted.unit, &decisions);
             let revision = PricingPlanRevisionDto::of(&r, items)?
                 .with_units(&plans::instants_of(&submitted.unit), approval);
             let receipt = PricingPlanRevisionSubmitReceipt {
                 applied: submitted.applied,
-                unit: unit_dto(tx, &cmd.store(), submitted.unit, cmd.ctx.subject_id()).await?,
+                unit: PricingApprovalUnitDto::of(
+                    submitted.unit,
+                    &authors,
+                    decisions,
+                    cmd.ctx.subject_id(),
+                )?,
                 revision,
             };
             support::answer(
@@ -746,8 +784,21 @@ pub async fn list_units(
     })?;
     let ids: Vec<Uuid> = page.items.iter().map(|u| u.id).collect();
     // The items are read whatever the impact: whether the reader may approve judges their
-    // authors (D-471).
-    let mut touched = approval_repo::items_of_units(tx, scope, tenant, &ids).await?;
+    // authors (D-471). Without the impact, their authors alone are read (the phase 9 review's
+    // R46).
+    let (mut touched, mut authors) = if request.impact {
+        let touched = approval_repo::items_of_units(tx, scope, tenant, &ids).await?;
+        let authors = touched
+            .iter()
+            .map(|(id, items)| (*id, authors_of(items)))
+            .collect();
+        (touched, authors)
+    } else {
+        (
+            BTreeMap::new(),
+            approval_repo::item_authors_of_units(tx, scope, tenant, &ids).await?,
+        )
+    };
     let mut decisions = approval_repo::decisions_of_units(tx, scope, tenant, &ids).await?;
     let mut kinds = Vec::with_capacity(page.items.len());
     let mut entries = BTreeSet::new();
@@ -777,8 +828,9 @@ pub async fn list_units(
     for (unit, kind) in page.items.into_iter().zip(kinds) {
         let id = unit.id;
         let touched = touched.remove(&id).unwrap_or_default();
+        let authors = authors.remove(&id).unwrap_or_default();
         let decisions = decisions.remove(&id).unwrap_or_default();
-        let mut dto = PricingApprovalUnitDto::of(unit, &touched, decisions, reader)?;
+        let mut dto = PricingApprovalUnitDto::of(unit, &authors, decisions, reader)?;
         dto.impact = reading
             .as_ref()
             .map(|reading| kind.impact_from(reading, &touched));
@@ -850,7 +902,7 @@ pub async fn get_unit(
     let kind = Kind::of(&unit)?;
     let items = store.items(tx, id).await.map_err(approval_failure)?;
     let decisions = store.decisions(tx, id).await.map_err(approval_failure)?;
-    let mut dto = PricingApprovalUnitDto::of(unit, &items, decisions, reader)?;
+    let mut dto = PricingApprovalUnitDto::of(unit, &authors_of(&items), decisions, reader)?;
     dto.impact = Some(kind.impact(tx, tenant, &items).await?);
     Ok(support::response(StatusCode::OK, &dto, None)?)
 }
