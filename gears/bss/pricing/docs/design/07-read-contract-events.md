@@ -247,3 +247,44 @@ versions, required POST replay and PATCH/PUT preconditions; PostgreSQL serializa
 writer serialization preserve the same invariants. A failed audit/outbox write cannot leave a committed act.
 No timeout releases a live reference. Review and apply retain typed database failures for bounded retry.
 Implementation gates cover both backends and route censuses; document gates cover toc, language and identifier ownership.
+
+### Durable commercial persistence — Task 5a (D-505)
+
+The SDK declares `PricingAcceptanceV1::{acceptance, hold}` and
+`SellabilityV1::{check, check_fulfilment}` with SecurityContext and the plan's exact typed arguments
+and results. CommandMeta carries only the idempotency key. Caller tenant/id is an authenticated
+provider input, never a supplied command field. Signature availability does not imply a registered
+provider: PDP, Contract IR and ClientHub delivery remain Task 5b; acceptance commit orchestration is
+Task 5c; hold/live eligibility delivery is Task 6.
+
+Migration 19 creates `pricing_acceptance`, `pricing_hold` and `pricing_commercial_command` on SQLite
+and PostgreSQL. Each entity is Scopable by catalog tenant and row identity. The repositories require
+AccessScope for every insert/read and additionally filter the explicit catalog tenant. The acceptance
+business key is `(tenant_id, order_id, order_version, line_id)`; the hold key is
+`(tenant_id, acceptance_id)`; the command key includes catalog tenant, caller tenant/id, operation and
+idempotency key. Reusing a key under another caller is a different scope. A hold references its
+acceptance by a composite tenant-qualified FK. Command kind/id selects exactly one of two nullable
+FK targets guarded by a CHECK, preventing dangling or cross-tenant receipt references.
+
+The acceptance primary key indexes tenant/acceptance lookup. Its business unique index indexes order
+lookup; the hold unique index and command target indexes support receipt recovery. Exact u64 order
+versions use bounded canonical decimal strings. Timestamps use fixed-width UTC nanosecond strings,
+including relational columns, for identical precision on both databases. Receipt JSON is stored as
+TEXT without database JSON reformatting. No expiry column or cleanup path exists for commands.
+`hold_until` is an eligibility boundary, never a deletion deadline.
+
+`infra/commercial_terms/wire.rs` owns versioned, typed persistence decoding, separate from Task 4's
+new-sale BillingTerms validation adapter. Acceptance schema 1 stores the full query, including the
+BillingTerms snapshot's own schema version, accepted/deadline timestamps, digests and all selected
+bindings. Hold schema 1 stores its frozen bindings and activation; the retained acceptance supplies
+the referenced BillingTerms. The v1 reader is frozen: a later additive format gets another explicit
+version reader without changing stored digest meaning or supplying missing historical fields.
+Exact decimal/time adapters reject lossy input. Receipt reading does not recalculate digests, choose
+anchors, replace descriptors or require currently sellable catalog content.
+
+Insert-or-get executes scoped INSERT ON CONFLICT DO NOTHING against the specific unique business
+key, then rereads and compares the winner. A different request digest yields ACCEPTANCE_MISMATCH;
+a different command payload/target yields IDEMPOTENCY_CONFLICT. Holds also compare first activation.
+The caller owns the transaction and bounded contention retry; atomic acceptance/command/audit writes
+and authorization-before-replay are application-layer work in the subsequent chunks. No public
+commercial endpoint or partially implemented success response is introduced by persistence alone.

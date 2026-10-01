@@ -2,6 +2,17 @@ COLUMN bss.coord_leases attempts integer NOT NULL DEFAULT 0
 COLUMN bss.coord_leases key text NOT NULL DEFAULT -
 COLUMN bss.coord_leases locked_by uuid NULL DEFAULT -
 COLUMN bss.coord_leases locked_until timestamp with time zone NOT NULL DEFAULT '1970-01-01 00:00:00+00'::timestamp with time zone
+COLUMN bss.pricing_acceptance accepted_at text NOT NULL DEFAULT -
+COLUMN bss.pricing_acceptance created_by uuid NOT NULL DEFAULT -
+COLUMN bss.pricing_acceptance hold_until text NOT NULL DEFAULT -
+COLUMN bss.pricing_acceptance id uuid NOT NULL DEFAULT -
+COLUMN bss.pricing_acceptance line_id uuid NOT NULL DEFAULT -
+COLUMN bss.pricing_acceptance order_id uuid NOT NULL DEFAULT -
+COLUMN bss.pricing_acceptance order_version text NOT NULL DEFAULT -
+COLUMN bss.pricing_acceptance receipt_json text NOT NULL DEFAULT -
+COLUMN bss.pricing_acceptance request_digest text NOT NULL DEFAULT -
+COLUMN bss.pricing_acceptance tenant_id uuid NOT NULL DEFAULT -
+COLUMN bss.pricing_acceptance terms_digest text NOT NULL DEFAULT -
 COLUMN bss.pricing_approval_decision actor uuid NOT NULL DEFAULT -
 COLUMN bss.pricing_approval_decision at timestamp with time zone NOT NULL DEFAULT -
 COLUMN bss.pricing_approval_decision decision text NOT NULL DEFAULT -
@@ -56,10 +67,29 @@ COLUMN bss.pricing_audit subject_kind text NOT NULL DEFAULT -
 COLUMN bss.pricing_audit subject_revision bigint NULL DEFAULT -
 COLUMN bss.pricing_audit tenant_id uuid NOT NULL DEFAULT -
 COLUMN bss.pricing_audit written_at timestamp with time zone NOT NULL DEFAULT -
+COLUMN bss.pricing_commercial_command acceptance_id uuid NULL DEFAULT -
+COLUMN bss.pricing_commercial_command caller_id uuid NOT NULL DEFAULT -
+COLUMN bss.pricing_commercial_command caller_tenant_id uuid NOT NULL DEFAULT -
+COLUMN bss.pricing_commercial_command hold_id uuid NULL DEFAULT -
+COLUMN bss.pricing_commercial_command id uuid NOT NULL DEFAULT -
+COLUMN bss.pricing_commercial_command idempotency_key text NOT NULL DEFAULT -
+COLUMN bss.pricing_commercial_command operation text NOT NULL DEFAULT -
+COLUMN bss.pricing_commercial_command receipt_id uuid NOT NULL DEFAULT -
+COLUMN bss.pricing_commercial_command receipt_kind text NOT NULL DEFAULT -
+COLUMN bss.pricing_commercial_command request_digest text NOT NULL DEFAULT -
+COLUMN bss.pricing_commercial_command tenant_id uuid NOT NULL DEFAULT -
 COLUMN bss.pricing_dimension_key key text NOT NULL DEFAULT -
 COLUMN bss.pricing_dimension_key tenant_id uuid NOT NULL DEFAULT -
 COLUMN bss.pricing_dimension_key values jsonb NOT NULL DEFAULT -
 COLUMN bss.pricing_dimension_key version bigint NOT NULL DEFAULT 1
+COLUMN bss.pricing_hold acceptance_id uuid NOT NULL DEFAULT -
+COLUMN bss.pricing_hold activation_at text NOT NULL DEFAULT -
+COLUMN bss.pricing_hold created_at text NOT NULL DEFAULT -
+COLUMN bss.pricing_hold created_by uuid NOT NULL DEFAULT -
+COLUMN bss.pricing_hold id uuid NOT NULL DEFAULT -
+COLUMN bss.pricing_hold receipt_json text NOT NULL DEFAULT -
+COLUMN bss.pricing_hold tenant_id uuid NOT NULL DEFAULT -
+COLUMN bss.pricing_hold terms_digest text NOT NULL DEFAULT -
 COLUMN bss.pricing_idempotency client_key text NOT NULL DEFAULT -
 COLUMN bss.pricing_idempotency endpoint text NOT NULL DEFAULT -
 COLUMN bss.pricing_idempotency entity_ref uuid NULL DEFAULT -
@@ -251,6 +281,11 @@ COLUMN public.event_broker_producer_registrations producer_id uuid NOT NULL DEFA
 COLUMN public.event_broker_producer_registrations registration_key character varying(1024) NOT NULL DEFAULT -
 COLUMN public.event_broker_producer_registrations updated_at timestamp with time zone NOT NULL DEFAULT now()
 CONSTRAINT bss.coord_leases coord_leases_pkey PRIMARY KEY (key)
+CONSTRAINT bss.pricing_acceptance pricing_acceptance_pkey PRIMARY KEY (tenant_id, id)
+CONSTRAINT bss.pricing_acceptance pricing_acceptance_request_digest_check CHECK ((request_digest ~ '^[0-9a-f]{64}$'::text))
+CONSTRAINT bss.pricing_acceptance pricing_acceptance_terms_digest_check CHECK ((terms_digest ~ '^[0-9a-f]{64}$'::text))
+CONSTRAINT bss.pricing_acceptance pricing_acceptance_version CHECK ((((length(order_version) >= 1) AND (length(order_version) <= 20)) AND (substr(order_version, 1, 1) <> '0'::text) AND ((length(order_version) < 20) OR (order_version <= '18446744073709551615'::text)) AND (order_version ~ '^[0-9]+$'::text)))
+CONSTRAINT bss.pricing_acceptance pricing_acceptance_window CHECK ((hold_until > accepted_at))
 CONSTRAINT bss.pricing_approval_decision pricing_approval_decision_decision_check CHECK ((decision = ANY (ARRAY['approve'::text, 'reject'::text])))
 CONSTRAINT bss.pricing_approval_decision pricing_approval_decision_pkey PRIMARY KEY (unit_id, actor, generation)
 CONSTRAINT bss.pricing_approval_decision pricing_approval_decision_unit_id_fkey FOREIGN KEY (unit_id) REFERENCES bss.pricing_approval_unit(id)
@@ -265,7 +300,16 @@ CONSTRAINT bss.pricing_audit chk_pricing_audit_seal_state CHECK ((seal_state = A
 CONSTRAINT bss.pricing_audit chk_pricing_audit_seq CHECK (((seq IS NULL) OR (seq >= 0)))
 CONSTRAINT bss.pricing_audit chk_pricing_audit_subject_ref CHECK (((subject_id IS NOT NULL) OR (attempted_key IS NOT NULL) OR (session_id IS NOT NULL)))
 CONSTRAINT bss.pricing_audit pricing_audit_pkey PRIMARY KEY (audit_id)
+CONSTRAINT bss.pricing_commercial_command pricing_commercial_command_acceptance_fk FOREIGN KEY (tenant_id, acceptance_id) REFERENCES bss.pricing_acceptance(tenant_id, id)
+CONSTRAINT bss.pricing_commercial_command pricing_commercial_command_hold_fk FOREIGN KEY (tenant_id, hold_id) REFERENCES bss.pricing_hold(tenant_id, id)
+CONSTRAINT bss.pricing_commercial_command pricing_commercial_command_key CHECK ((length(idempotency_key) > 0))
+CONSTRAINT bss.pricing_commercial_command pricing_commercial_command_pkey PRIMARY KEY (tenant_id, id)
+CONSTRAINT bss.pricing_commercial_command pricing_commercial_command_request_digest_check CHECK ((request_digest ~ '^[0-9a-f]{64}$'::text))
+CONSTRAINT bss.pricing_commercial_command pricing_commercial_command_target CHECK ((((operation = 'check'::text) AND (receipt_kind = 'acceptance'::text) AND (acceptance_id IS NOT NULL) AND (receipt_id = acceptance_id) AND (hold_id IS NULL)) OR ((operation = 'hold'::text) AND (receipt_kind = 'hold'::text) AND (hold_id IS NOT NULL) AND (receipt_id = hold_id) AND (acceptance_id IS NULL))))
 CONSTRAINT bss.pricing_dimension_key pricing_dimension_key_pkey PRIMARY KEY (tenant_id, key)
+CONSTRAINT bss.pricing_hold pricing_hold_acceptance_fk FOREIGN KEY (tenant_id, acceptance_id) REFERENCES bss.pricing_acceptance(tenant_id, id)
+CONSTRAINT bss.pricing_hold pricing_hold_pkey PRIMARY KEY (tenant_id, id)
+CONSTRAINT bss.pricing_hold pricing_hold_terms_digest_check CHECK ((terms_digest ~ '^[0-9a-f]{64}$'::text))
 CONSTRAINT bss.pricing_idempotency chk_pricing_idempotency_response_group CHECK ((((state = 'claimed'::text) AND (response_status IS NULL) AND (response_body IS NULL)) OR ((state = 'answered'::text) AND (response_status IS NOT NULL) AND (response_body IS NOT NULL))))
 CONSTRAINT bss.pricing_idempotency chk_pricing_idempotency_state CHECK ((state = ANY (ARRAY['claimed'::text, 'answered'::text])))
 CONSTRAINT bss.pricing_idempotency pricing_idempotency_pkey PRIMARY KEY (tenant_id, endpoint, client_key)
@@ -345,12 +389,20 @@ INDEX bss idx_pricing_audit_subject CREATE INDEX idx_pricing_audit_subject ON bs
 INDEX bss idx_pricing_audit_tenant_time CREATE INDEX idx_pricing_audit_tenant_time ON bss.pricing_audit USING btree (tenant_id, written_at)
 INDEX bss idx_pricing_idempotency_expires CREATE INDEX idx_pricing_idempotency_expires ON bss.pricing_idempotency USING btree (tenant_id, expires_at)
 INDEX bss ix_pricing_approval_unit_queue CREATE INDEX ix_pricing_approval_unit_queue ON bss.pricing_approval_unit USING btree (tenant_id, state, kind, submitted_at)
+INDEX bss pricing_acceptance_business CREATE UNIQUE INDEX pricing_acceptance_business ON bss.pricing_acceptance USING btree (tenant_id, order_id, order_version, line_id)
+INDEX bss pricing_acceptance_pkey CREATE UNIQUE INDEX pricing_acceptance_pkey ON bss.pricing_acceptance USING btree (tenant_id, id)
 INDEX bss pricing_approval_decision_pkey CREATE UNIQUE INDEX pricing_approval_decision_pkey ON bss.pricing_approval_decision USING btree (unit_id, actor, generation)
 INDEX bss pricing_approval_policy_pkey CREATE UNIQUE INDEX pricing_approval_policy_pkey ON bss.pricing_approval_policy USING btree (tenant_id, kind)
 INDEX bss pricing_approval_unit_item_pkey CREATE UNIQUE INDEX pricing_approval_unit_item_pkey ON bss.pricing_approval_unit_item USING btree (unit_id, item_type, item_id)
 INDEX bss pricing_approval_unit_pkey CREATE UNIQUE INDEX pricing_approval_unit_pkey ON bss.pricing_approval_unit USING btree (id)
 INDEX bss pricing_audit_pkey CREATE UNIQUE INDEX pricing_audit_pkey ON bss.pricing_audit USING btree (audit_id)
+INDEX bss pricing_commercial_command_acceptance CREATE INDEX pricing_commercial_command_acceptance ON bss.pricing_commercial_command USING btree (tenant_id, acceptance_id)
+INDEX bss pricing_commercial_command_hold CREATE INDEX pricing_commercial_command_hold ON bss.pricing_commercial_command USING btree (tenant_id, hold_id)
+INDEX bss pricing_commercial_command_pkey CREATE UNIQUE INDEX pricing_commercial_command_pkey ON bss.pricing_commercial_command USING btree (tenant_id, id)
+INDEX bss pricing_commercial_command_scope CREATE UNIQUE INDEX pricing_commercial_command_scope ON bss.pricing_commercial_command USING btree (tenant_id, caller_tenant_id, caller_id, operation, idempotency_key)
 INDEX bss pricing_dimension_key_pkey CREATE UNIQUE INDEX pricing_dimension_key_pkey ON bss.pricing_dimension_key USING btree (tenant_id, key)
+INDEX bss pricing_hold_acceptance CREATE UNIQUE INDEX pricing_hold_acceptance ON bss.pricing_hold USING btree (tenant_id, acceptance_id)
+INDEX bss pricing_hold_pkey CREATE UNIQUE INDEX pricing_hold_pkey ON bss.pricing_hold USING btree (tenant_id, id)
 INDEX bss pricing_idempotency_pkey CREATE UNIQUE INDEX pricing_idempotency_pkey ON bss.pricing_idempotency USING btree (tenant_id, endpoint, client_key)
 INDEX bss pricing_plan_code CREATE UNIQUE INDEX pricing_plan_code ON bss.pricing_plan USING btree (tenant_id, code)
 INDEX bss pricing_plan_item_pkey CREATE UNIQUE INDEX pricing_plan_item_pkey ON bss.pricing_plan_item USING btree (id)

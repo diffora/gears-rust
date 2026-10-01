@@ -1281,3 +1281,57 @@ its query and its binding arguments. No persistence, migration 19, acceptance/ho
 reader, provider implementation or downstream Rating/Billing scheduler is delivered by this task.
 
 **Source:** Pricing Seam Contracts plan revision 3, Task 4; atlas C01/C10 and F22/F23/F24/F31 are read-only design specifications, not downstream integration evidence.
+
+## D-505 — Durable commercial receipt storage (2026-10-01)
+
+Task 5a adds migration `m20260930_000019_commercial_receipts` after the committed policy migration.
+Acceptance, first hold and successful command mappings are separate append-only, tenant-scoped
+records. This is storage delivery; provider authorization/registration and acceptance orchestration
+remain Tasks 5b/5c, and live hold eligibility remains Task 6. The SDK declares the planned receipt
+values and both commercial trait signatures without registering a partial provider.
+
+- `pricing_acceptance`: composite primary key `(tenant_id, id)`; unique
+  `(tenant_id, order_id, order_version, line_id)`; request and terms digests, receipt JSON,
+  accepted instant, original deadline and creator. The business index also serves order lookup;
+  the primary key serves acceptance-ID lookup within the catalog tenant.
+- `pricing_hold`: composite primary key `(tenant_id, id)`; unique `(tenant_id, acceptance_id)`;
+  tenant-qualified acceptance FK; frozen activation, terms digest, held snapshot, creator and
+  creation instant. One hold cannot change activation or extend the acceptance deadline.
+- `pricing_commercial_command`: unique `(tenant_id, caller_tenant_id, caller_id, operation,
+  idempotency_key)` and composite row primary key; request digest and receipt kind/id. Nullable
+  acceptance/hold target columns implement real tenant-qualified FKs. A CHECK requires exactly the
+  target named by receipt kind/id and the matching `check`/`hold` operation. Each target has a
+  tenant-prefixed lookup index. Caller identity must come from SecurityContext in the later provider.
+
+All repositories take an explicit AccessScope and a DBRunner, supporting the caller's transaction.
+They offer insert and scoped lookup, without update/delete/cleanup. Insert-or-get uses a targeted
+ON CONFLICT DO NOTHING followed by a scoped winner read and digest comparison; it never catches a
+unique violation inside an aborted PostgreSQL transaction. Acceptance races compare request digest;
+hold races compare terms digest and activation; command races compare request digest and target.
+The surrounding application owns bounded transaction retry for driver contention and atomic receipt,
+command and audit commit. Those application behaviors are not claimed by this storage chunk.
+
+Receipt JSON is TEXT on both databases so persistence returns the exact stored bytes. Runtime
+`infra/commercial_terms/wire.rs` dispatches explicit receipt schema 1 to frozen typed DTOs, preserving
+BillingTerms' own schema version 1 inside the acceptance snapshot. The hold contains its own schema
+and frozen bindings; its tenant-qualified acceptance reference identifies the retained BillingTerms
+snapshot, which the SDK HeldBindings type does not duplicate. Unknown versions/fields, duplicate
+fields, omitted nullable fields and lossy scalars fail decoding. Readers never rehash issued digests
+or rerun today's sale validator. Future additive schemas require new explicit version readers while
+retaining the v1 reader; they must never rewrite historical digests or default historical terms.
+
+Decimals, integers, UUIDs and digests use explicit exact string adapters. Order versions cover all
+positive u64 values, stored as canonical decimal TEXT with equivalent backend bounds checks. Instants
+use UTC RFC3339 with nine fractional digits in receipt JSON and relational TEXT columns; PostgreSQL
+`timestamptz` would truncate nanoseconds. Lexical deadline ordering is valid for this fixed-width UTC
+profile. Schema-1 timestamps require years 0000–9999. No floating-point path is introduced.
+
+No receipt or command expires from storage after 24 hours. `hold_until` limits eligibility only;
+retention follows the order/financial audit lifecycle, with no automatic cleanup in this slice.
+Mutable catalog rows are not FK parents of immutable receipts, so catalog lifecycle changes cannot
+cascade into issued snapshots. Tenant axes, selected entry/policy/price, descriptors, invoice template
+text/digest/provenance and BillingTerms remain inside the original typed snapshot.
+
+Evidence: `tests/acceptance_receipts.rs`, `tests/postgres_commercial_receipts.rs`, the schema-1 JSON
+golden, both schema goldens and migration/guard tests. The duplicate-business test goes red when its
+unique index is removed and green after restoration from the pre-probe copy.

@@ -255,3 +255,121 @@ impl From<UnsupportedCommercialValue> for toolkit_canonical_errors::CanonicalErr
             .create()
     }
 }
+
+/// Authorized catalog receipt lookup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptanceQuery {
+    /// Catalog.
+    pub catalog: crate::read::CatalogRef,
+    /// Acceptance id.
+    pub acceptance_id: Uuid,
+}
+
+/// Command key; authenticated caller identity comes exclusively from `SecurityContext`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandMeta {
+    /// Idempotency key.
+    pub idempotency_key: String,
+}
+
+/// Immutable issued acceptance; expiry limits eligibility, not retention or replay.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptanceReceipt {
+    /// Acceptance id.
+    pub acceptance_id: Uuid,
+    /// Request digest.
+    pub request_digest: Digest,
+    /// Terms digest.
+    pub terms_digest: Digest,
+    /// Query.
+    pub query: NewSaleQuery,
+    /// Accepted at.
+    pub accepted_at: OffsetDateTime,
+    /// Hold until.
+    pub hold_until: OffsetDateTime,
+    /// Bindings.
+    pub bindings: Vec<crate::read::AcceptedBinding>,
+}
+
+/// Exact accepted terms reference.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptanceRef {
+    /// Acceptance id.
+    pub acceptance_id: Uuid,
+    /// Terms digest.
+    pub terms_digest: Digest,
+}
+
+/// Fresh eligibility request; activation time is business time, not the server clock.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FulfilmentQuery {
+    /// Tenant axes.
+    pub tenant_axes: TenantAxes,
+    /// Acceptance.
+    pub acceptance: AcceptanceRef,
+    /// Current market.
+    pub current_market: Market,
+    /// Activation at.
+    pub activation_at: OffsetDateTime,
+}
+
+/// Live eligibility observation, never a reusable activation permission.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FulfilmentEligibility {
+    /// Acceptance id.
+    pub acceptance_id: Uuid,
+    /// Checked at.
+    pub checked_at: OffsetDateTime,
+    /// Valid before.
+    pub valid_before: OffsetDateTime,
+}
+
+/// Frozen first hold; retries cannot change activation or accepted bindings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldBindings {
+    /// Hold id.
+    pub hold_id: Uuid,
+    /// Acceptance id.
+    pub acceptance_id: Uuid,
+    /// Terms digest.
+    pub terms_digest: Digest,
+    /// Activation at.
+    pub activation_at: OffsetDateTime,
+    /// Bindings.
+    pub bindings: Vec<crate::read::AcceptedBinding>,
+}
+
+/// Receipt capability. Providers are registered only once the complete commercial group is ready.
+#[async_trait::async_trait]
+pub trait PricingAcceptanceV1: Send + Sync {
+    /// `SafeRead`: authorize before immutable receipt lookup.
+    async fn acceptance(
+        &self,
+        ctx: &toolkit_security::SecurityContext,
+        query: AcceptanceQuery,
+    ) -> Result<AcceptanceReceipt, toolkit_canonical_errors::CanonicalError>;
+    /// `IdempotentWrite`: exact authorized replay preserves the first hold.
+    async fn hold(
+        &self,
+        ctx: &toolkit_security::SecurityContext,
+        query: FulfilmentQuery,
+        meta: CommandMeta,
+    ) -> Result<HeldBindings, toolkit_canonical_errors::CanonicalError>;
+}
+/// Commercial admission capability, separate from catalog previews.
+#[async_trait::async_trait]
+pub trait SellabilityV1: Send + Sync {
+    /// `IdempotentWrite`: accept one complete order line/version durably.
+    async fn check(
+        &self,
+        ctx: &toolkit_security::SecurityContext,
+        query: NewSaleQuery,
+        meta: CommandMeta,
+    ) -> Result<AcceptanceReceipt, toolkit_canonical_errors::CanonicalError>;
+    /// `SafeRead`: check live eligibility using Pricing's server clock.
+    async fn check_fulfilment(
+        &self,
+        ctx: &toolkit_security::SecurityContext,
+        query: FulfilmentQuery,
+    ) -> Result<FulfilmentEligibility, toolkit_canonical_errors::CanonicalError>;
+}

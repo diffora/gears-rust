@@ -40,6 +40,21 @@ INDEX idx_pricing_idempotency_expires
 INDEX ix_pricing_approval_unit_queue
   ON pricing_approval_unit
   DDL CREATE INDEX ix_pricing_approval_unit_queue ON pricing_approval_unit (tenant_id, state, kind, submitted_at)
+INDEX pricing_acceptance_business
+  ON pricing_acceptance
+  DDL CREATE UNIQUE INDEX pricing_acceptance_business ON pricing_acceptance (tenant_id, order_id, order_version, line_id)
+INDEX pricing_commercial_command_acceptance
+  ON pricing_commercial_command
+  DDL CREATE INDEX pricing_commercial_command_acceptance ON pricing_commercial_command (tenant_id, acceptance_id)
+INDEX pricing_commercial_command_hold
+  ON pricing_commercial_command
+  DDL CREATE INDEX pricing_commercial_command_hold ON pricing_commercial_command (tenant_id, hold_id)
+INDEX pricing_commercial_command_scope
+  ON pricing_commercial_command
+  DDL CREATE UNIQUE INDEX pricing_commercial_command_scope ON pricing_commercial_command (tenant_id, caller_tenant_id, caller_id, operation, idempotency_key)
+INDEX pricing_hold_acceptance
+  ON pricing_hold
+  DDL CREATE UNIQUE INDEX pricing_hold_acceptance ON pricing_hold (tenant_id, acceptance_id)
 INDEX pricing_plan_code
   ON pricing_plan
   DDL CREATE UNIQUE INDEX pricing_plan_code ON pricing_plan (tenant_id, code)
@@ -143,6 +158,23 @@ TABLE event_broker_producer_registrations
   COLUMN producer_id TEXT NOT NULL DEFAULT - PK 0
   COLUMN registration_key TEXT NULL DEFAULT - PK 1
   COLUMN updated_at TEXT NOT NULL DEFAULT datetime('now') PK 0
+TABLE pricing_acceptance
+  COLUMN accepted_at TEXT NOT NULL DEFAULT - PK 0
+  COLUMN created_by TEXT NOT NULL DEFAULT - PK 0
+  COLUMN hold_until TEXT NOT NULL DEFAULT - PK 0
+  COLUMN id TEXT NOT NULL DEFAULT - PK 2
+  COLUMN line_id TEXT NOT NULL DEFAULT - PK 0
+  COLUMN order_id TEXT NOT NULL DEFAULT - PK 0
+  COLUMN order_version TEXT NOT NULL DEFAULT - PK 0
+  COLUMN receipt_json TEXT NOT NULL DEFAULT - PK 0
+  COLUMN request_digest TEXT NOT NULL DEFAULT - PK 0
+  COLUMN tenant_id TEXT NOT NULL DEFAULT - PK 1
+  COLUMN terms_digest TEXT NOT NULL DEFAULT - PK 0
+  CONSTRAINT pricing_acceptance_pkey PRIMARY KEY (tenant_id, id)
+  CONSTRAINT pricing_acceptance_request_digest_check CHECK (length(request_digest) = 64 AND request_digest NOT GLOB '*[^0-9a-f]*')
+  CONSTRAINT pricing_acceptance_terms_digest_check CHECK (length(terms_digest) = 64 AND terms_digest NOT GLOB '*[^0-9a-f]*')
+  CONSTRAINT pricing_acceptance_version CHECK (length(order_version) BETWEEN 1 AND 20 AND substr(order_version,1,1) <> '0' AND (length(order_version) < 20 OR order_version <= '18446744073709551615') AND order_version NOT GLOB '*[^0-9]*')
+  CONSTRAINT pricing_acceptance_window CHECK (hold_until > accepted_at)
 TABLE pricing_approval_decision
   COLUMN actor TEXT NOT NULL DEFAULT - PK 2
   COLUMN at TEXT NOT NULL DEFAULT - PK 0
@@ -208,11 +240,47 @@ TABLE pricing_audit
   CONSTRAINT chk_pricing_audit_seal_state CHECK (seal_state IN ('unsealed', 'sealed'))
   CONSTRAINT chk_pricing_audit_seq CHECK (seq IS NULL OR seq >= 0)
   CONSTRAINT chk_pricing_audit_subject_ref CHECK (subject_id IS NOT NULL OR attempted_key IS NOT NULL OR session_id IS NOT NULL)
+TABLE pricing_commercial_command
+  COLUMN acceptance_id TEXT NULL DEFAULT - PK 0
+  COLUMN caller_id TEXT NOT NULL DEFAULT - PK 0
+  COLUMN caller_tenant_id TEXT NOT NULL DEFAULT - PK 0
+  COLUMN hold_id TEXT NULL DEFAULT - PK 0
+  COLUMN id TEXT NOT NULL DEFAULT - PK 2
+  COLUMN idempotency_key TEXT NOT NULL DEFAULT - PK 0
+  COLUMN operation TEXT NOT NULL DEFAULT - PK 0
+  COLUMN receipt_id TEXT NOT NULL DEFAULT - PK 0
+  COLUMN receipt_kind TEXT NOT NULL DEFAULT - PK 0
+  COLUMN request_digest TEXT NOT NULL DEFAULT - PK 0
+  COLUMN tenant_id TEXT NOT NULL DEFAULT - PK 1
+  CONSTRAINT pricing_commercial_command_acceptance_fk FOREIGN KEY (tenant_id, acceptance_id)
+  CONSTRAINT pricing_commercial_command_hold_fk FOREIGN KEY (tenant_id, hold_id)
+  CONSTRAINT pricing_commercial_command_key CHECK (length(idempotency_key) > 0)
+  CONSTRAINT pricing_commercial_command_pkey PRIMARY KEY (tenant_id, id)
+  CONSTRAINT pricing_commercial_command_request_digest_check CHECK (length(request_digest) = 64 AND request_digest NOT GLOB '*[^0-9a-f]*')
+  CONSTRAINT pricing_commercial_command_target CHECK ((operation = 'check' AND receipt_kind = 'acceptance' AND acceptance_id IS NOT NULL AND receipt_id = acceptance_id AND hold_id IS NULL) OR (operation = 'hold' AND receipt_kind = 'hold' AND hold_id IS NOT NULL AND receipt_id = hold_id AND acceptance_id IS NULL))
+  FK acceptance_id -> pricing_acceptance.id
+  FK hold_id -> pricing_hold.id
+  FK tenant_id -> pricing_acceptance.tenant_id
+  FK tenant_id -> pricing_hold.tenant_id
 TABLE pricing_dimension_key
   COLUMN key TEXT NOT NULL DEFAULT - PK 2
   COLUMN tenant_id TEXT NOT NULL DEFAULT - PK 1
   COLUMN values TEXT NOT NULL DEFAULT - PK 0
   COLUMN version INTEGER NOT NULL DEFAULT 1 PK 0
+TABLE pricing_hold
+  COLUMN acceptance_id TEXT NOT NULL DEFAULT - PK 0
+  COLUMN activation_at TEXT NOT NULL DEFAULT - PK 0
+  COLUMN created_at TEXT NOT NULL DEFAULT - PK 0
+  COLUMN created_by TEXT NOT NULL DEFAULT - PK 0
+  COLUMN id TEXT NOT NULL DEFAULT - PK 2
+  COLUMN receipt_json TEXT NOT NULL DEFAULT - PK 0
+  COLUMN tenant_id TEXT NOT NULL DEFAULT - PK 1
+  COLUMN terms_digest TEXT NOT NULL DEFAULT - PK 0
+  CONSTRAINT pricing_hold_acceptance_fk FOREIGN KEY (tenant_id, acceptance_id)
+  CONSTRAINT pricing_hold_pkey PRIMARY KEY (tenant_id, id)
+  CONSTRAINT pricing_hold_terms_digest_check CHECK (length(terms_digest) = 64 AND terms_digest NOT GLOB '*[^0-9a-f]*')
+  FK acceptance_id -> pricing_acceptance.id
+  FK tenant_id -> pricing_acceptance.tenant_id
 TABLE pricing_idempotency
   COLUMN client_key TEXT NOT NULL DEFAULT - PK 3
   COLUMN endpoint TEXT NOT NULL DEFAULT - PK 2

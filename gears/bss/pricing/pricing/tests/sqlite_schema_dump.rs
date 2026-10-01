@@ -15,8 +15,8 @@ mod schema_dump;
 
 use schema_dump::{migrate_and_dump_sqlite, normalise_sql, tables_in};
 
-/// Sixteen pricing tables plus coordination and toolkit delivery tables.
-const PRICING_TABLES: usize = 16;
+/// Nineteen pricing tables plus coordination and toolkit delivery tables.
+const PRICING_TABLES: usize = 19;
 
 async fn migrated_dump() -> String {
     let conn = Database::connect("sqlite::memory:")
@@ -79,12 +79,15 @@ async fn the_dump_names_every_table_the_chain_creates() {
             "bss_pricing_outbox_vacuum_counter".to_owned(),
             "coord_leases".to_owned(),
             "event_broker_producer_registrations".to_owned(),
+            "pricing_acceptance".to_owned(),
             "pricing_approval_decision".to_owned(),
             "pricing_approval_policy".to_owned(),
             "pricing_approval_unit".to_owned(),
             "pricing_approval_unit_item".to_owned(),
             "pricing_audit".to_owned(),
+            "pricing_commercial_command".to_owned(),
             "pricing_dimension_key".to_owned(),
+            "pricing_hold".to_owned(),
             "pricing_idempotency".to_owned(),
             "pricing_plan".to_owned(),
             "pricing_plan_item".to_owned(),

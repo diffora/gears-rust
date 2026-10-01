@@ -62,6 +62,8 @@ mod m20260928_000016_unit_submit_note;
 mod m20260929_000017_revision_scheduled;
 mod m20260930_000018_usage_rating_policy;
 
+mod m20260930_000019_commercial_receipts;
+
 /// Coordination followed by pricing-owned migrations.
 pub struct Migrator;
 #[async_trait::async_trait]
@@ -88,6 +90,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260928_000016_unit_submit_note::Migration),
             Box::new(m20260929_000017_revision_scheduled::Migration),
             Box::new(m20260930_000018_usage_rating_policy::Migration),
+            Box::new(m20260930_000019_commercial_receipts::Migration),
         ]
     }
 }
