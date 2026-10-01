@@ -1221,6 +1221,7 @@ outage behavior and VM/cloudlet contract vectors against the real provider. Thes
 are required ownership for handoff, not evidence that another team has accepted or implemented the
 work. Pricing's contract tests certify its consumer behavior only; production readiness remains
 blocked until that external evidence exists.
+E1 = E1a (raw meters, the usage collector / types registry; external) + E1b (derived meters, provided by Products since P-D-233).
 
 **Owner amendment 2026-10-01: E1 has a raw and a derived kind.** A derived (composite) usage meter
 computes one quantity from other usage; a cloudlet is 128 MB of RAM and 400 MHz of CPU. Products
@@ -1240,6 +1241,7 @@ A policy's `MeterRef` names either kind. `UsageMeterSemanticsV1`, `validate_mete
 publication and acceptance gates do not change: one provider behind the port answers both kinds,
 and each kind owes the delivery evidence above against its own source. Pricing computes no derived
 quantity.
+E1 = E1a (raw meters, the usage collector / types registry; external) + E1b (derived meters, provided by Products since P-D-233).
 
 **Amended 2026-10-01 by products P-D-233: E1b is provided; E1a is still external.** Products registers
 the one `UsageMeterSemanticsV1` in the ClientHub. For a derived meter, named
@@ -1253,6 +1255,7 @@ absent provider does (`UNCONFIGURED_DEPENDENCY`): the raw-meter provider (E1a) i
 stays blocked at its semantic gates. A derived meter is sellable: products' `tests/derived_meter_e2e.rs`
 sells a cloudlet through Pricing's entry, price, plan and sellability gates with no test provider.
 Pricing's checks do not change.
+E1 = E1a (raw meters, the usage collector / types registry; external) + E1b (derived meters, provided by Products since P-D-233).
 
 **Source:** Pricing Seam Contracts plan revision 3, Task 3 (G2). Extends D-393, D-408 and D-502; preserves D-449–D-453 scheduling. The externally owned atlas C01/C10 is not modified by this task. Amended 2026-10-01 by the owner: E1a/E1b (products P-D-229, rating T-D-39 on branch `bss/pricebook-meters`). Amended 2026-10-01 by products P-D-233: E1b is provided by Products; E1a is still external.
 
@@ -1301,6 +1304,7 @@ unavailable revisions and inactive/unsellable SKUs return NotSellable; missing c
 ResolutionChanged. That shape intentionally does not distinguish retired from deprecated or off-sale.
 Provider failures are not observations of commercial ineligibility: missing E1 remains 400
 UNCONFIGURED_DEPENDENCY naming UsageMeterSemanticsV1, configured outage remains 503 and denial 403.
+E1 = E1a (raw meters, the usage collector / types registry; external) + E1b (derived meters, provided by Products since P-D-233).
 
 Commercial RuleError carries a typed reason alongside its stable uppercase code. Canonical invalid
 arguments retain the concrete reason in field-violation metadata (400); resolution/payload/expiry/
@@ -1422,6 +1426,7 @@ check_fulfilment remain the same until Task 6. Each refuses only after authoriza
 nothing. This intermediate boundary commit is not a public commercial release: G3 must complete
 before consumers can rely on successful commercial commands. Production meter semantics (E1),
 consumer delivery and deployment PDP grants remain external obligations.
+E1 = E1a (raw meters, the usage collector / types registry; external) + E1b (derived meters, provided by Products since P-D-233).
 
 #### D-507 [H] Atomic acceptance and durable authenticated command replay
 
@@ -1459,6 +1464,7 @@ A pre-commit failure leaves no receipt, command or acceptance audit. A committed
 new database pool/service and replays after expiry, policy changes, provider outage or supersession.
 Hold and check_fulfilment remain authorized NotYetAvailable until Task 6. Acceptance is not a grant
 to activate an order; release still requires Task 6 and the G3 controller gate. E1 remains external.
+E1 = E1a (raw meters, the usage collector / types registry; external) + E1b (derived meters, provided by Products since P-D-233).
 
 Evidence: acceptance_receipts (real AcceptanceFixture, atomic audit failure/restart, replay and
 provider failures), deterministic detached-provider generation/clock/scheduled-switch races, and
@@ -1509,6 +1515,7 @@ hold, expiry/closing boundaries, off-sale/retirement, denial/outage, concurrency
 restart, bounded recapture and immutable entry/policy/invoice pins. Mutation probes reject using
 successor effective_to as expiry, checking eligibility before replay, and renewing TTL on a new
 key. The G3 controller gate follows this task; consumer implementation and E1 remain external.
+E1 = E1a (raw meters, the usage collector / types registry; external) + E1b (derived meters, provided by Products since P-D-233).
 
 #### D-509 [H] Executable Pricing seam fixtures and transport boundary
 
@@ -1548,7 +1555,9 @@ Atlas 1.1.0 source SHA-256: 95ca93b9814b7ff131711990d4d9fea246776704820370407c97
 Its older C01 method placement and C10 plan-item ownership remain a publishing-owner reconciliation;
 the delivered SDK ports and entry ownership are authoritative for these executable provider fixtures.
 No external atlas file is edited, no consumer integration status is promoted, and E1 production meter
-semantics remains externally blocked. Task 8 and the shared G4 controller gate follow this slice.
+semantics remains externally blocked.
+E1 = E1a (raw meters, the usage collector / types registry; external) + E1b (derived meters, provided by Products since P-D-233).
+Task 8 and the shared G4 controller gate follow this slice.
 
 
 #### D-510 [H] Database parity and provider handoff
@@ -1582,7 +1591,7 @@ lists exact changes and final-SHA implementation/test links; it is not a publish
 certificate. F07/F22/F31 provider evidence and F23/F24 Pricing input/math evidence remain distinct
 from unexecuted downstream scheduler, collection and invoicing specifications.
 
-**External production obligations remain open.** E1a (raw meters): Types Registry owns immutable
+**External production obligations remain open.** E1 = E1a (raw meters, the usage collector / types registry; external) + E1b (derived meters, provided by Products since P-D-233). E1a (raw meters): Types Registry owns immutable
 declarations, Usage Collector the authorized exact-version semantic adapter, and source/IRM owners
 the accrual provenance. E1b (derived meters; products P-D-229 and rating T-D-39) is delivered by
 Products (products P-D-233): the one provider behind `UsageMeterSemanticsV1` answers a derived usage

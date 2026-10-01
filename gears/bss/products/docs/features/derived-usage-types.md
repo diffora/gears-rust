@@ -69,7 +69,7 @@ writes ask `author` on the resource `derived_usage_type`; the reads ask `sku:rea
 - [DESIGN](../DESIGN.md): §3.1 (the derived usage declaration, type and pin), §3.3 (the doors and the SKU doors' derived
   codes), §3.5 (the catalog port's derived sibling and pricing's meter semantics), §3.7 (the tables).
 - [DECISIONS](../DECISIONS.md): P-D-229, P-D-230, P-D-231, P-D-232, P-D-233; pricing D-503 (amended).
-- The plan: `docs/superpowers/plans/2026-10-01-products-derived-usage-types.md` in the main checkout, rev 3, runs 2 to 4.
+- The plan: `docs/superpowers/plans/2026-10-01-products-derived-usage-types.md` in the main checkout, rev 3, runs 1 to 4.
 
 ## 2. Actor Flows (CDSL)
 
@@ -174,7 +174,14 @@ These definitions own this feature's 5 DoDs. Design constraints: `cpt-cf-bss-pro
 
 - [x] `p1` - **ID**: `cpt-cf-bss-products-dod-derived-usage-type-store`
 
-Verified by the plan's run 2 (the tests P-D-231 lists); implementation markers in
+Verified by `m20261001_000011_derived_usage_type_tests::a_version_refuses_update_and_delete`,
+`m20261001_000011_derived_usage_type_tests::a_version_cannot_name_another_tenants_type`,
+`m20261001_000011_derived_usage_type_tests::the_checks_and_the_code_index_hold`,
+`postgres_derived_usage_type::a_version_refuses_update_and_delete`,
+`postgres_derived_usage_type::a_version_cannot_name_another_tenants_type`,
+`derived_usage_type_repo_tests::a_type_and_its_versions_read_back_as_written`,
+`derived_usage_type_repo_tests::the_code_is_unique_per_tenant` and
+`derived_usage_type_repo_tests::another_tenant_reads_nothing`. Implementation markers in
 `products/src/infra/storage/migrations/m20261001_000011_derived_usage_type.rs` and
 `products/src/infra/storage/repo/derived_usage_type_repo.rs`.
 
@@ -187,7 +194,13 @@ maps the code index and the version key to typed refusals (DESIGN §3.7; P-D-231
 
 - [x] `p1` - **ID**: `cpt-cf-bss-products-dod-derived-usage-type-rules`
 
-Verified by the plan's run 2 (the tests P-D-231 lists); implementation marker in `products/src/domain/derived.rs`.
+Verified by `bss_products_sdk::derived::tests` (the declaration, the grammar and the evaluator),
+`domain::derived_tests::every_declaration_error_names_a_rule_of_its_own`,
+`domain::derived_tests::an_sdk_refusal_is_derived_declaration_invalid_naming_its_rule`,
+`domain::derived_tests::the_digest_is_the_sha256_of_the_canonical_bytes`,
+`derived_usage_types_tests::every_declaration_refusal_is_derived_declaration_invalid_naming_its_rule`
+and `derived_usage_types_tests::the_catalog_answers_unresolved_400_unreachable_503_denied_403`.
+Implementation marker in `products/src/domain/derived.rs`.
 
 A declaration is refused with 400 DERIVED_DECLARATION_INVALID naming its rule, one per SDK variant plus the wire shape's;
 the digest is the SHA-256 of the canonical bytes, stored and never recomputed; the inputs resolve through the usage-type
@@ -197,7 +210,13 @@ catalog as the caller (403, 503, 400); the SDK's caps are tied to the gear's by 
 
 - [x] `p1` - **ID**: `cpt-cf-bss-products-dod-derived-usage-type-doors`
 
-Verified by the plan's run 2 (the tests P-D-231 lists); implementation marker in
+Verified by `derived_usage_types_tests::create_gives_version_1_and_a_new_version_leaves_version_1_as_it_was`,
+`derived_usage_types_tests::writes_ask_derived_author_and_reads_ask_sku_read`,
+`derived_usage_types_tests::each_create_and_version_writes_one_audit_row_with_the_uuid_subject`,
+`derived_usage_types_tests::an_idempotent_replay_answers_the_first_receipt_and_writes_once`,
+`derived_usage_types_tests::a_foreign_tenant_reads_nothing`,
+`derived_usage_types_tests::the_list_pages_50_by_default_200_at_most_and_walks_by_cursor` and
+`derived_usage_types_tests::the_version_read_carries_the_meter_ref_unit_and_accrual`. Implementation marker in
 `products/src/api/rest/derived_usage_types.rs`.
 
 Two writes under `author` on `derived_usage_type` and three reads under `sku:read`, registered through OperationBuilder with
@@ -209,7 +228,15 @@ does (DESIGN §3.3; P-D-231).
 
 - [x] `p1` - **ID**: `cpt-cf-bss-products-dod-derived-usage-type-pin`
 
-Verified by the plan's run 3 (the tests P-D-232 lists); implementation markers in `products/src/domain/derived.rs`,
+Verified by `derived_binding_tests::a_usage_sku_on_a_derived_version_is_created_submitted_and_approved_without_the_catalog`,
+`derived_binding_tests::an_unknown_derived_version_is_refused_at_draft_save`,
+`derived_binding_tests::a_unit_other_than_the_output_unit_is_refused`,
+`derived_binding_tests::a_draft_moves_its_derived_pin_until_its_first_publish`,
+`derived_binding_tests::after_its_first_publish_a_usage_sku_keeps_its_derived_pin`,
+`derived_binding_tests::a_published_gts_usage_sku_cannot_take_a_derived_pin`,
+`derived_binding_tests::a_stale_change_is_refused_at_apply_when_a_concurrent_write_pinned_a_derived_type`,
+`domain::derived_tests::a_derived_ref_binds_to_its_version_and_its_output_unit` and
+`domain::derived_tests::the_pin_moves_only_between_gts_refs`. Implementation markers in `products/src/domain/derived.rs`,
 `products/src/domain/approvals/change.rs` and `products/src/api/rest/governance.rs`.
 
 A usage SKU's `products.derived/<code>@<n>` ref is judged from the tenant's store first, at draft save, submit and apply,
@@ -221,7 +248,17 @@ codes name the SKU (DESIGN §3.1, §3.3, §3.5; P-D-232).
 
 - [x] `p1` - **ID**: `cpt-cf-bss-products-dod-derived-meter-semantics`
 
-Verified by the plan's run 4 (the tests P-D-233 lists); implementation marker in `products/src/infra/meter_semantics.rs`.
+Verified by `meter_semantics_tests::a_derived_meter_answers_its_stored_version`,
+`meter_semantics_tests::a_raw_meter_answers_exactly_as_an_absent_provider`,
+`meter_semantics_tests::a_version_off_the_id_is_a_policy_mismatch`,
+`meter_semantics_tests::an_unknown_code_version_or_tenant_is_one_answer`,
+`meter_semantics_tests::a_store_failure_is_503_and_a_corrupt_row_500`,
+`meter_semantics_tests::a_caller_without_a_tenant_or_a_subject_is_403`,
+`meter_semantics_tests::a_denied_sku_read_is_403_and_an_unreachable_pdp_503`,
+`meter_semantics_tests::the_callers_tenant_is_pinned`,
+`meter_semantics_tests::the_hubs_meter_semantics_is_products_dispatcher_after_the_gears_init` and
+`derived_meter_e2e::a_cloudlet_sells_through_pricing_on_products_meter_semantics`. Implementation marker in
+`products/src/infra/meter_semantics.rs`.
 
 The gear's init registers one `dyn UsageMeterSemanticsV1` in the ClientHub, as it registers `PricingReferenceRegistry`. It
 answers a derived meter from the store, in the caller's tenant under `sku:read`: the output unit, `Sum`,

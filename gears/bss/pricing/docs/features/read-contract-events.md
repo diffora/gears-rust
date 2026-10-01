@@ -261,5 +261,6 @@ remain specified/unexecuted here. The one provider behind `UsageMeterSemanticsV1
 (products P-D-233): it answers derived meters from Products' derived usage type at its exact version
 (E1b), and raw meters stay unconfigured until Types Registry declarations answer through the Usage
 Collector (E1a); E1a remains a test declaration in these tests until that provider is delivered.
+E1 = E1a (raw meters, the usage collector / types registry; external) + E1b (derived meters, provided by Products since P-D-233).
 Commands stay SDK-only; later remote transport binds these exact ports. Task 8
 and the shared G4 controller gate complete the implementation handoff after this provider fixture slice.

@@ -460,7 +460,7 @@ ClientHub's one `dyn UsageMeterSemanticsV1`, beside `PricingReferenceRegistry` a
 caller's tenant (the store's key, beside the `sku:read` scope): the version's output unit as `canonical_unit`, a `Sum` fold,
 `derived-v1:<stored digest>` as `accrual_policy_version`, `source_integrated`, and the stored digest. A `version` that is not
 canonical or disagrees with `@<n>` is 400 `METER_POLICY_MISMATCH`; an unknown code, version or tenant is one 400
-`METER_VERSION_UNKNOWN`; a store failure is 503 and a denied `sku:read` 403. Every other meter answers exactly as an absent
+`METER_VERSION_UNKNOWN`; a store failure is 503, a stored row that does not read is 500, and a denied `sku:read` 403. Every other meter answers exactly as an absent
 provider does (`UNCONFIGURED_DEPENDENCY`). The raw-meter provider (E1a) is not built: when it exists, it registers under a
 `products-sdk` trait that this dispatcher calls for every non-derived id.
 

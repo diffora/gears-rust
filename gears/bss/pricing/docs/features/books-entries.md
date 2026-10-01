@@ -91,8 +91,7 @@ returns the confirmed receipt. Unversioned persisted creates decode as legacy an
 null policy; new versioned usage creates cannot take that path. Re-reserve and delete preserve the
 original entry reference. Migration assigns no policy to old entries, including published plans;
 they continue to read and resolve. D-503 adds meter verification, publication gates and resolve
-policy projection; E1 remains an external production dependency, for raw meters (E1a) and derived
-meters (E1b).
+policy projection. E1 = E1a (raw meters, the usage collector / types registry; external) + E1b (derived meters, provided by Products since P-D-233).
 
 D-503 adds exact-version semantic validation to D-502. Pricing consumes
 `pricing-sdk::meter_semantics::UsageMeterSemanticsV1::resolve(ctx, MeterRef)` as the authorized
@@ -113,6 +112,7 @@ one provider. It answers a derived meter from its own store, in the caller's ten
 unit, SUM, `derived-v1:<stored digest hex>`, source integrated, and the stored digest. It answers every raw
 meter exactly as an absent provider does (`UNCONFIGURED_DEPENDENCY`). A derived meter is sellable; a raw
 one stays blocked at its semantic gates until E1a is delivered.
+E1 = E1a (raw meters, the usage collector / types registry; external) + E1b (derived meters, provided by Products since P-D-233).
 
 New entry-create work uses schema version 2 and persists the captured declaration before reservation.
 Recovery validates that captured evidence against the reservation's SKU without another meter lookup.
@@ -260,5 +260,6 @@ commands are SDK-only; historical replay never refreshes the original 24-hour se
 E1a (real raw meter declarations/adapter/provenance), E2 (resolved terms, authenticated market and
 consumer fencing), E3 (runtime PDP grants) and E4 (source history and safe policy transitions) remain
 external; E1b (Products' derived usage types) is provided by Products (products P-D-233).
+E1 = E1a (raw meters, the usage collector / types registry; external) + E1b (derived meters, provided by Products since P-D-233).
 The atlas owner reconciles C00/C01/C10; downstream Rating scheduling and Billing invoicing remain
 unexecuted integration obligations, even when Pricing provider parity is green.

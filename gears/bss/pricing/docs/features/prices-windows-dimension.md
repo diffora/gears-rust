@@ -256,5 +256,6 @@ commands are SDK-only; historical replay never refreshes the original 24-hour se
 E1a (real raw meter declarations/adapter/provenance), E2 (resolved terms, authenticated market and
 consumer fencing), E3 (runtime PDP grants) and E4 (source history and safe policy transitions) remain
 external; E1b (Products' derived usage types) is provided by Products (products P-D-233).
+E1 = E1a (raw meters, the usage collector / types registry; external) + E1b (derived meters, provided by Products since P-D-233).
 The atlas owner reconciles C00/C01/C10; downstream Rating scheduling and Billing invoicing remain
 unexecuted integration obligations, even when Pricing provider parity is green.

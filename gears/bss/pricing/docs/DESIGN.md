@@ -332,6 +332,7 @@ outage behavior and VM/cloudlet contract vectors against the real provider. Thes
 are required ownership for handoff, not evidence that another team has accepted or implemented the
 work. Pricing's contract tests certify its consumer behavior only; production readiness remains
 blocked until that external evidence exists.
+E1 = E1a (raw meters, the usage collector / types registry; external) + E1b (derived meters, provided by Products since P-D-233).
 
 **Owner amendment of D-503, 2026-10-01: E1 has a raw and a derived kind.** A derived (composite)
 usage meter computes one quantity from other usage; a cloudlet is 128 MB of RAM and 400 MHz of CPU.
@@ -351,6 +352,7 @@ A policy's `MeterRef` names either kind. `UsageMeterSemanticsV1`, `validate_mete
 publication and acceptance gates do not change: one provider behind the port answers both kinds,
 and each kind owes the delivery evidence above against its own source. Pricing computes no derived
 quantity.
+E1 = E1a (raw meters, the usage collector / types registry; external) + E1b (derived meters, provided by Products since P-D-233).
 
 **Amended 2026-10-01 by products P-D-233: E1b is provided; E1a is still external.** Products registers
 the one `UsageMeterSemanticsV1` in the ClientHub. For a derived meter, named
@@ -364,6 +366,7 @@ absent provider does (`UNCONFIGURED_DEPENDENCY`): the raw-meter provider (E1a) i
 stays blocked at its semantic gates. A derived meter is sellable: products' `tests/derived_meter_e2e.rs`
 sells a cloudlet through Pricing's entry, price, plan and sellability gates with no test provider.
 Pricing's checks do not change.
+E1 = E1a (raw meters, the usage collector / types registry; external) + E1b (derived meters, provided by Products since P-D-233).
 
 D-502 binds an immutable UsageRatingPolicy to each new usage entry. The create requires
 `usage_rating_policy` for usage (`MISSING_RATING_POLICY` otherwise) and refuses it for recurring
@@ -390,8 +393,7 @@ returns the confirmed receipt. Unversioned persisted creates decode as legacy an
 null policy; new versioned usage creates cannot take that path. Re-reserve and delete preserve the
 original entry reference. Migration assigns no policy to old entries, including published plans;
 they continue to read and resolve. D-503 adds meter verification, publication gates and resolve
-policy projection; E1 remains an external production dependency, for raw meters (E1a) and derived
-meters (E1b).
+policy projection. E1 = E1a (raw meters, the usage collector / types registry; external) + E1b (derived meters, provided by Products since P-D-233).
 
 D-502: a plan item remains a SKU and its selected entry (D-467), with no policy override,
 treatment, included quantity or minimum quantity. Copy/clone within a book preserves entry IDs.
@@ -1114,7 +1116,7 @@ Concurrent identical-policy creates have one entry winner; different policies cr
 and identical content is interned once per tenant. PostgreSQL goldens are compared, never regenerated.
 G4 controller certification and atlas publication are orchestrator/atlas-owner work, separate from these tests.
 
-**External production obligations remain open.** E1a (raw meters): Types Registry owns immutable
+**External production obligations remain open.** E1 = E1a (raw meters, the usage collector / types registry; external) + E1b (derived meters, provided by Products since P-D-233). E1a (raw meters): Types Registry owns immutable
 declarations, Usage Collector the authorized exact-version semantic adapter, and source/IRM owners
 the accrual provenance. E1b (derived meters; products P-D-229 and rating T-D-39) is delivered by
 Products (products P-D-233): the one provider behind `UsageMeterSemanticsV1` answers a derived usage
