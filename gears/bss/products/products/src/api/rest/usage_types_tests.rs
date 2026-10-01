@@ -471,3 +471,29 @@ async fn a_kind_outside_the_closed_set_is_400_and_asks_nobody() {
         );
     }
 }
+
+/// P-D-247 (ask 56): a page of the picker carries `Cache-Control: private, max-age=60`. It is read
+/// as the caller, so only the caller's own cache may keep it, for a minute; a refusal carries no
+/// cache header.
+#[tokio::test]
+async fn a_picker_page_may_be_kept_privately_for_a_minute() {
+    let tenant = Uuid::new_v4();
+    let catalog = Arc::new(Recording::default());
+    let (app, _) = rest_app_with_catalog(tenant, router, catalog, "registry").await;
+    let cache = |r: &axum::response::Response| {
+        r.headers()
+            .get(axum::http::header::CACHE_CONTROL)
+            .map(|v| v.to_str().unwrap().to_owned())
+    };
+    for uri in [
+        PICKER.to_owned(),
+        format!("{PICKER}?q=storage&kind=counter&limit=5"),
+    ] {
+        let r = get(&app, tenant, &uri).await;
+        assert_eq!(r.status(), StatusCode::OK, "{uri}");
+        assert_eq!(cache(&r).as_deref(), Some("private, max-age=60"), "{uri}");
+    }
+    let refused = get(&app, tenant, &format!("{PICKER}?kind=bogus")).await;
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(cache(&refused), None, "a refusal is not kept");
+}
