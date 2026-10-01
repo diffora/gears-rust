@@ -51,11 +51,22 @@ fn set(pairs: &[(&str, &str)]) -> BTreeSet<(String, String)> {
         .map(|(m, p)| ((*m).to_owned(), (*p).to_owned()))
         .collect()
 }
+/// The served text of one op. An op the spec does not serve, or one without a text, fails the test:
+/// a check that a text does NOT say something must read a text that is there (the phase 9
+/// review's R28).
 fn description(api: &Value, method: &str, path: &str) -> String {
     api["paths"][path][method]["description"]
         .as_str()
-        .unwrap_or_default()
+        .unwrap_or_else(|| panic!("{method} {path}: no served op with a description"))
         .to_owned()
+}
+
+/// R28's positive control: the text of an op the spec does not serve is a failure, never "".
+#[tokio::test]
+#[should_panic(expected = "no served op with a description")]
+async fn an_op_that_is_not_served_has_no_text_to_read() {
+    let api = served().await;
+    description(&api, "patch", "/bss-pricing/v1/plan-items/{id}/nowhere");
 }
 
 #[tokio::test]

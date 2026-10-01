@@ -457,10 +457,12 @@ async fn the_entry_reads_carry_the_price_in_force_and_the_approved_prices_by_dat
     stored_price(
         &f,
         quiet,
-        Row::new(1, "approved", today() - days(1)).on("eu"),
+        Row::new(1, "approved", today() - days(5)).on("eu"),
     )
     .await;
-    stored_price(&f, quiet, Row::new(2, "approved", today() + days(1))).await;
+    // Five days off today, never one: the server reads its own day per request, so a test that
+    // straddles 00:00 UTC must not move a price across it (the phase 9 review's R25).
+    stored_price(&f, quiet, Row::new(2, "approved", today() + days(5))).await;
     let read = ok(&f, &format!("/price-book-entries/{entry}")).await;
     assert_eq!(read["usage"], dated((1, 2, 1), 1, 3, 0, 0), "{read:#}");
     assert_eq!(
@@ -554,8 +556,9 @@ async fn approved_is_always_scheduled_plus_active_plus_superseded() {
         vec![
             Row::new(1, "approved", t - days(40)).to(t - days(20)),
             Row::new(2, "approved", t - days(20)).to(t),
-            Row::new(3, "approved", t).to(t + days(1)),
-            Row::new(4, "approved", t + days(1)),
+            // Five days, never one (R25): a run across 00:00 UTC keeps every count.
+            Row::new(3, "approved", t).to(t + days(5)),
+            Row::new(4, "approved", t + days(5)),
         ],
         // A temporary promo in force with its scheduled return, and an ended gap before it.
         vec![
@@ -2353,8 +2356,10 @@ async fn the_next_price_is_shown_only_with_price_book_read_on_its_book() {
     let t = today();
     let sku = catalog.sku(SkuType::Usage);
     let entry = stored_entry(&f, eur, sku, "per_unit", time::OffsetDateTime::now_utc()).await;
-    stored_price(&f, entry, Row::new(1, "approved", t - days(1))).await;
-    let next = stored_price(&f, entry, Row::new(2, "approved", t + days(1))).await;
+    // Five days off today, never one (the phase 9 review's R25): the server reads its own day per
+    // request, so a run across 00:00 UTC must not put the next price in force.
+    stored_price(&f, entry, Row::new(1, "approved", t - days(5))).await;
+    let next = stored_price(&f, entry, Row::new(2, "approved", t + days(5))).await;
     let paths = [
         format!("/price-book-entries/{entry}"),
         format!("/price-books/{eur}/entries"),

@@ -585,6 +585,13 @@ fn every_check_code_names_the_items_that_turn_it_red() {
     early.revision.available_from = Some(date("2025-12-01"));
     table.push(("ITEM_UNCOVERED", early, vec![1, 2]));
     table.push(("FREQUENCY_MIXED", basic(), vec![1, 3]));
+    // The phase 9 review's R57: FREQUENCY_MIXED names the recurring items priced in the plan's
+    // book; a recurring item priced in another book (here monthly, the partner book's) is left out.
+    let mut beside_a_foreign_item = basic();
+    beside_a_foreign_item
+        .items
+        .push(item(4, WP_BASIC, Some(E_P_WPB_M)));
+    table.push(("FREQUENCY_MIXED", beside_a_foreign_item, vec![1, 3]));
     table.push((
         "METER_DUPLICATE",
         ctx(
