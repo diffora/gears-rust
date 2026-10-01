@@ -272,3 +272,29 @@ fn validate_invoice(b: &AcceptedBinding) -> Result<(), RuleError> {
     }
     Ok(())
 }
+
+/// Server-time expiry is half-open and independent of requested activation time.
+/// # Errors
+/// `HOLD_EXPIRED` at and after the persisted acceptance deadline.
+pub fn validate_hold_time(
+    now: time::OffsetDateTime,
+    hold_until: time::OffsetDateTime,
+) -> Result<(), RuleError> {
+    if now >= hold_until {
+        return Err(R::HoldExpired.into());
+    }
+    Ok(())
+}
+/// A first hold may choose any instant inside the accepted activation window.
+/// # Errors
+/// `ACTIVATION_OUTSIDE_ACCEPTED_WINDOW` before start or at/after the deadline.
+pub fn validate_activation_window(
+    start_at: time::OffsetDateTime,
+    activation_at: time::OffsetDateTime,
+    hold_until: time::OffsetDateTime,
+) -> Result<(), RuleError> {
+    if activation_at < start_at || activation_at >= hold_until {
+        return Err(R::ActivationOutsideAcceptedWindow.into());
+    }
+    Ok(())
+}

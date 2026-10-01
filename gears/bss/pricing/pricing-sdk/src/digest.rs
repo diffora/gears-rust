@@ -562,3 +562,31 @@ pub fn terms_digest(
         ]),
     )
 }
+
+/// Exact hold command identity; caller and key belong to the authenticated command scope.
+#[must_use]
+pub fn fulfilment_digest(q: &crate::acceptance::FulfilmentQuery) -> Digest {
+    hash_document(
+        "pricing.fulfilment-request.v1",
+        object([
+            (
+                "tenant_axes",
+                object([
+                    ("seller_tenant_id", text(q.tenant_axes.seller_tenant_id)),
+                    ("payer_tenant_id", text(q.tenant_axes.payer_tenant_id)),
+                    ("resource_tenant_id", text(q.tenant_axes.resource_tenant_id)),
+                ]),
+            ),
+            ("acceptance_id", text(q.acceptance.acceptance_id)),
+            ("terms_digest", hex(&q.acceptance.terms_digest)),
+            (
+                "current_market",
+                object([
+                    ("currency", text(&q.current_market.currency)),
+                    ("region", optional(q.current_market.region.as_ref(), text)),
+                ]),
+            ),
+            ("activation_at", instant(q.activation_at)),
+        ]),
+    )
+}

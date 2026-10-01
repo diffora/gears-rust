@@ -41,6 +41,19 @@ pub struct AcceptanceFixture {
     pub catalog: Arc<p::Catalog>,
 }
 impl AcceptanceFixture {
+    pub fn fulfilment_query(
+        receipt: &bss_pricing_sdk::acceptance::AcceptanceReceipt,
+    ) -> bss_pricing_sdk::acceptance::FulfilmentQuery {
+        bss_pricing_sdk::acceptance::FulfilmentQuery {
+            tenant_axes: receipt.query.tenant_axes.clone(),
+            acceptance: bss_pricing_sdk::acceptance::AcceptanceRef {
+                acceptance_id: receipt.acceptance_id,
+                terms_digest: receipt.terms_digest,
+            },
+            current_market: receipt.query.market.clone(),
+            activation_at: receipt.query.start_at,
+        }
+    }
     pub async fn new() -> Self {
         let (fixture, catalog) = p::setup().await;
         let book = p::book(&fixture, "acceptance").await;

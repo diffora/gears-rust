@@ -1,5 +1,5 @@
 //! Receipt capability, separate from catalog preview and money reads.
-use crate::{authz::actions, infra::commercial_terms::CommercialTermsService};
+use crate::infra::commercial_terms::CommercialTermsService;
 use bss_pricing_sdk::acceptance::{
     AcceptanceQuery, AcceptanceReceipt, CommandMeta, FulfilmentQuery, HeldBindings,
     PricingAcceptanceV1,
@@ -7,7 +7,7 @@ use bss_pricing_sdk::acceptance::{
 use std::sync::Arc;
 use toolkit_canonical_errors::CanonicalError;
 use toolkit_security::SecurityContext;
-/// Authorized receipt reads and the pending Task 6 hold boundary.
+/// Authorized receipt reads and durable frozen holds.
 pub struct PricingAcceptanceProvider {
     service: Arc<CommercialTermsService>,
 }
@@ -31,16 +31,8 @@ impl PricingAcceptanceV1 for PricingAcceptanceProvider {
         &self,
         ctx: &SecurityContext,
         query: FulfilmentQuery,
-        _meta: CommandMeta,
+        meta: CommandMeta,
     ) -> Result<HeldBindings, CanonicalError> {
-        self.service
-            .scope(
-                ctx,
-                query.tenant_axes.seller_tenant_id,
-                actions::HOLD,
-                Some(query.acceptance.acceptance_id),
-            )
-            .await?;
-        Err(self.service.pending("PricingAcceptanceV1::hold"))
+        self.service.hold(ctx, query, meta).await
     }
 }

@@ -34,6 +34,7 @@
   - [Frozen consumer golden responses](#frozen-consumer-golden-responses)
 - [6. Acceptance Criteria](#6-acceptance-criteria)
   - [Durable accepted terms (D-507)](#durable-accepted-terms-d-507)
+  - [Frozen fulfilment (D-508)](#frozen-fulfilment-d-508)
 
 <!-- /toc -->
 
@@ -227,5 +228,20 @@ authenticated command receipt and local audit commit atomically. Authorized retr
 original terms and deadline; another key on the same order line/version shares that receipt, while
 changed intent conflicts. The acceptance fixture obtains its query from a real SDK resolve and
 covers concurrency, provider failure, transaction rollback/restart, price/revision races and frozen
-history. Receipt schema 1 remains stable. Task 6 supplies hold and fresh fulfilment eligibility;
+history. Receipt schema 1 remains stable. D-508 supplies hold and fresh fulfilment eligibility;
 acceptance alone never grants activation, and the public release awaits the complete G3 gate.
+
+### Frozen fulfilment (D-508)
+
+The production SDK providers retain the accepted entry, policy, price, SKU descriptors and invoice
+inputs through successor publication, deprecation and off-sale. Every fresh eligibility check
+compares the exact receipt axes, digest and current market, checks live retirement and original
+price closing metadata, and applies server-time expiry. Successor effective_to never ends the
+accepted binding; explicit and temporary ends do, at their UTC boundary. A delayed first activation
+inside [start_at, hold_until) is allowed and pinned by the hold. Hold and command insert atomically;
+exact replay remains available after expiry, and another key cannot renew the deadline.
+
+The fulfilment_holds suite exercises these rules, provider failure, generation/clock races,
+concurrent holds, rollback/restart, and successor revisions selecting another policy window.
+Subscriptions keeps its own committed order and attempt fencing. Eligibility observations are
+never reusable admission tokens, and Pricing does not implement downstream activation.

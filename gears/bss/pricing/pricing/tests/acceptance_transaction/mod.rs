@@ -379,17 +379,28 @@ async fn seller_policy_change_preserves_issued_deadline_and_receipt_is_not_fulfi
     assert_eq!(
         sell.check_fulfilment(&f.ctx, fq.clone())
             .await
-            .unwrap_err()
-            .status_code(),
-        501
+            .unwrap()
+            .valid_before,
+        first.hold_until
     );
-    assert_eq!(
-        PricingAcceptanceProvider::new(service)
+    // An issued acceptance still requires live retirement validation at fulfilment.
+    f.catalog
+        .skus
+        .lock()
+        .unwrap()
+        .get_mut(&first.bindings[0].sku_id)
+        .unwrap()
+        .lifecycle = bss_products_sdk::models::Lifecycle::Retired;
+    reason(
+        &sell.check_fulfilment(&f.ctx, fq.clone()).await.unwrap_err(),
+        "SkuRetired",
+    );
+    reason(
+        &PricingAcceptanceProvider::new(service)
             .hold(&f.ctx, fq, f.meta.clone())
             .await
-            .unwrap_err()
-            .status_code(),
-        501
+            .unwrap_err(),
+        "SkuRetired",
     );
 }
 #[test]

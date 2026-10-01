@@ -124,6 +124,8 @@ pub enum CommercialReason {
     IdempotencyConflict,
     /// `HOLD_EXPIRED` refusal.
     HoldExpired,
+    /// The requested activation is outside the immutable accepted window.
+    ActivationOutsideAcceptedWindow,
     /// `PRICE_CLOSED` refusal.
     PriceClosed,
     /// `SKU_RETIRED` refusal.
@@ -167,6 +169,7 @@ impl CommercialReason {
             Self::AcceptanceMismatch => "ACCEPTANCE_MISMATCH",
             Self::IdempotencyConflict => "IDEMPOTENCY_CONFLICT",
             Self::HoldExpired => "HOLD_EXPIRED",
+            Self::ActivationOutsideAcceptedWindow => "ACTIVATION_OUTSIDE_ACCEPTED_WINDOW",
             Self::PriceClosed => "PRICE_CLOSED",
             Self::SkuRetired => "SKU_RETIRED",
             Self::MarketChanged => "MARKET_CHANGED",
@@ -205,6 +208,7 @@ impl CommercialReason {
             Self::AcceptanceMismatch => "AcceptanceMismatch",
             Self::IdempotencyConflict => "IdempotencyConflict",
             Self::HoldExpired => "HoldExpired",
+            Self::ActivationOutsideAcceptedWindow => "ActivationOutsideAcceptedWindow",
             Self::PriceClosed => "PriceClosed",
             Self::SkuRetired => "SkuRetired",
             Self::MarketChanged => "MarketChanged",
@@ -223,6 +227,7 @@ impl From<CommercialReason> for toolkit_canonical_errors::CanonicalError {
             | R::ResolutionChanged
             | R::IdempotencyConflict
             | R::AcceptanceMismatch
+            | R::ActivationOutsideAcceptedWindow
             | R::HoldExpired
             | R::PriceClosed
             | R::SkuRetired
@@ -353,7 +358,8 @@ pub trait PricingAcceptanceV1: Send + Sync {
         ctx: &toolkit_security::SecurityContext,
         query: AcceptanceQuery,
     ) -> Result<AcceptanceReceipt, toolkit_canonical_errors::CanonicalError>;
-    /// `IdempotentWrite`: exact authorized replay preserves the first hold.
+    /// `IdempotentWrite`: exact authorized replay preserves the first hold, even after expiry.
+    /// A new key requires fresh eligibility and cannot extend the deadline or change activation.
     async fn hold(
         &self,
         ctx: &toolkit_security::SecurityContext,
@@ -371,7 +377,9 @@ pub trait SellabilityV1: Send + Sync {
         query: NewSaleQuery,
         meta: CommandMeta,
     ) -> Result<AcceptanceReceipt, toolkit_canonical_errors::CanonicalError>;
-    /// `SafeRead`: check live eligibility using Pricing's server clock.
+    /// `SafeRead`: always check live eligibility using Pricing's server clock, even after a hold.
+    /// This observation is never an admission token. Subscriptions owns committed order and
+    /// fulfilment attempt fencing immediately before its activation intent.
     async fn check_fulfilment(
         &self,
         ctx: &toolkit_security::SecurityContext,

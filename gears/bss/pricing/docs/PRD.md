@@ -528,7 +528,7 @@ its query and its binding arguments. D-505–D-507 deliver migration 19, the sha
 immutable receipt reads and atomic acceptance/command/audit persistence. Successful replay preserves
 the original deadline, including another command key for identical order/line/version intent.
 Changed content conflicts; changed commercial intent needs a new order version. Provider failure
-leaves no acceptance or poisoned command. Hold/live fulfilment remain Task 6, and acceptance alone
+leaves no acceptance or poisoned command. D-508 supplies hold/live fulfilment, and acceptance alone
 does not authorize activation. No downstream Rating/Billing scheduler is delivered here.
 
 ### 7.2 External Integration Contracts
@@ -540,6 +540,16 @@ ProductCatalogClientV1 transport exists for compatibility until later demolition
 Pricing fills Products' SkuUsageV1 port, which gives each SKU read its count of entries, their currencies, prices
 by state and distinct plans (D-428, Products P-D-197), and the priced and in-plan SKU sets the Products list
 filters by (Products P-D-212).
+
+D-508 delivers the SDK hold and fresh fulfilment capabilities. Accepting EUR 10/SKU v3 then publishing
+EUR 12/SKU v4 retains the old entry, policy, money, descriptors and invoice inputs in the hold, even
+after deprecation/off-sale or a successor revision. Retirement, explicit/temporary price ends and
+server-time expiry refuse fresh eligibility at their boundary; successor effective_to is ignored.
+A first activation may occur later than submit inside the accepted window and is pinned permanently.
+Exact successful hold replay remains historical; new keys cannot extend TTL. Subscriptions owns
+committed order/version and attempt fencing and checks immediately before its first activation
+intent: no eligibility observation is a reusable admission token. G3 release validation and external
+E1/consumer integration are separate obligations.
 
 ## 8. Use Cases
 

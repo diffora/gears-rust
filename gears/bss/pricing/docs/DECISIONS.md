@@ -108,6 +108,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-469 | M | The served contract declares every door's 503, every ETag it sets and the refusals of the plan doors | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 2); phase 9 plan rev 2 (M1 and W1, binding; decisions 8 and 9; L8) |
 | D-502 | H | Immutable usage policies belong to entries and their semantic key | DECIDED 2026-10-01 · Pricing Seam Contracts Task 2; amends D-386, D-401, D-427 |
 | D-504 | H | Pure new-sale terms validate a bounded commercial profile and snapshot integrity | DECIDED 2026-10-01 · Pricing Seam Contracts Task 4 |
+| D-508 | H | Frozen first holds, original-price eligibility and durable replay | DECIDED 2026-10-01 · Pricing Seam Contracts Task 6 |
 
 ## Entries
 
@@ -1410,3 +1411,44 @@ Evidence: acceptance_receipts (real AcceptanceFixture, atomic audit failure/rest
 provider failures), deterministic detached-provider generation/clock/scheduled-switch races, and
 mutation probes removing generation checks, moving replay ahead of authorization and refreshing
 hold_until on replay. No migration or reinterpretation of previously issued receipts is needed.
+
+## D-508 — Frozen first holds and fresh original-binding eligibility (2026-10-01)
+
+Task 6 replaces the D-506/D-507 pending hold and fulfilment answers on CommercialTermsService.
+Authorize the receipt action and look up the exact acceptance under the complete PDP scope before
+child-row access or exact replay. Hold/command IDs differ from the acceptance ID: use the PDP scope's
+tenant_only projection for these related rows only after the scoped parent lookup succeeds, retaining
+explicit catalog/caller/key predicates and checking the replayed hold's parent. The canonical hold request
+hash includes all tenant axes, acceptance ID and terms digest, current market and UTC activation
+instant; caller and command key remain authenticated command-scope fields. Exact successful hold
+commands return their stored receipt even after expiry, retirement, closing or provider outage.
+They never attest current eligibility.
+
+Every check_fulfilment, and every hold without exact command replay, loads the authorized original
+acceptance, compares the complete tenant axes, terms digest and market, validates frozen BillingTerms
+compatibility, and reads the live SKU for retirement. Deprecation and off-sale are allowed. Original
+price IDs supply current closing metadata; no successor walk, current-revision check, meter refresh
+or descriptor replacement occurs. Server time and activation must precede the persisted hold_until
+and any original temporary_until or explicit effective_to at midnight UTC. Successor-induced
+effective_to alone is never an accepted-binding end. A future explicit/temporary end bounds
+valid_before. A backdated activation cannot revive an expired acceptance or ended price.
+
+A first hold permits start_at <= activation_at < hold_until, including ordinary workflow delay.
+The commit transaction rereads all captured original price rows, samples the server Clock, checks
+half-open boundaries, and atomically inserts one hold and its authenticated command mapping.
+Local drift or contention retries the complete detached observation with the existing bounded
+budget; exhaustion is ResolutionChanged. An identical activation under another key returns the
+original hold after fresh checks, without extending TTL. Another activation conflicts. The first
+activation, entry identity, policy content/digest, money, SKU descriptors and invoice inputs stay
+frozen; a successor revision selecting a different-window entry cannot change them.
+
+An eligibility observation is never a reusable admission token. Subscriptions must check fresh
+eligibility immediately before its first activation intent and fence the committed order version
+and fulfilment attempt itself; it also owns actual served intervals. Pricing makes no cross-gear
+atomicity claim. Receipt schema 1 and permanent historical price/acceptance reads are unchanged.
+
+Evidence: fulfilment_holds covers F07 EUR 10/SKU v3 versus EUR 12/SKU v4, a 10:00 submit and 10:03
+hold, expiry/closing boundaries, off-sale/retirement, denial/outage, concurrency, atomic rollback,
+restart, bounded recapture and immutable entry/policy/invoice pins. Mutation probes reject using
+successor effective_to as expiry, checking eligibility before replay, and renewing TTL on a new
+key. The G3 controller gate follows this task; consumer implementation and E1 remain external.

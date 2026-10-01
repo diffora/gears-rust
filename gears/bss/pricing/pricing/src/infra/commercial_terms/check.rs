@@ -401,7 +401,7 @@ async fn attach(tx: &impl DBRunner, r: &Request, row: &acceptance::Model) -> Res
     .await?;
     Ok(())
 }
-fn failure(e: DoorError) -> CanonicalError {
+pub(super) fn failure(e: DoorError) -> CanonicalError {
     match e {
         DoorError::Repo(RepoError::Conflict {
             code: "ACCEPTANCE_MISMATCH",

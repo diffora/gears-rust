@@ -968,7 +968,7 @@ act with 500 instead of being retried by the transaction; Products has the same 
 &[AcceptedBinding])` and `validate_new_sale_observation(&SaleObservation)`. The exact matrix,
 anchor rules, reason mapping and integration boundary are recorded in PRD §7.1 and D-504.
 SDK `acceptance.rs` contains query/market/tenant/term/error values and the commercial capabilities;
-`terms.rs` adds the Subscriptions-owned BillingTerms snapshot projection. D-505–D-507 add
+`terms.rs` adds the Subscriptions-owned BillingTerms snapshot projection. D-505–D-508 add
 versioned receipt persistence and authorized acceptance orchestration. `infra/commercial_terms_wire.rs` strictly decodes that snapshot without defaults.
 The existing canonical JSON encoder now also hashes billing terms, request intent and accepted
 terms. Runtime validation recomputes digests and reuses money tier validation. Authoritative
@@ -982,7 +982,13 @@ rows and resolves complete selections with detached Products/meter observations.
 transaction rechecks local generations, samples the injected clock, enforces price windows and the
 seller-policy version, and persists acceptance, command and audit. Bounded recapture prevents mixed
 generations. Receipt schema 1 is unchanged. Exact retries and new keys on an identical order line
-retain the original terms and deadline. Hold/live fulfilment remain Task 6; see design slice 07.
+retain the original terms and deadline. D-508 adds original-binding fulfilment and frozen holds;
+see design slice 07. Fresh checks compare receipt axes/digest/market, live SKU retirement and current
+original-price ends, without traversing successors or replacing descriptors. Hold commits reread
+local prices and sample Clock before atomically inserting the hold and command. Exact replay is
+historical; another key requires fresh checks and never renews TTL. The first activation is pinned
+inside the accepted window. Subscriptions retains committed order/attempt fencing; an eligibility
+observation is never a reusable admission token.
 
 ## 5. Traceability
 

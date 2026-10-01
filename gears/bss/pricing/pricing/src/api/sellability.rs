@@ -1,5 +1,5 @@
-//! Authorized acceptance command and pending Task 6 fulfilment boundary.
-use crate::{authz::actions, infra::commercial_terms::CommercialTermsService};
+//! Authorized acceptance command and live fulfilment checks.
+use crate::infra::commercial_terms::CommercialTermsService;
 use bss_pricing_sdk::acceptance::{
     AcceptanceReceipt, CommandMeta, FulfilmentEligibility, FulfilmentQuery, NewSaleQuery,
     SellabilityV1,
@@ -33,14 +33,6 @@ impl SellabilityV1 for SellabilityProvider {
         ctx: &SecurityContext,
         query: FulfilmentQuery,
     ) -> Result<FulfilmentEligibility, CanonicalError> {
-        self.service
-            .scope(
-                ctx,
-                query.tenant_axes.seller_tenant_id,
-                actions::READ,
-                Some(query.acceptance.acceptance_id),
-            )
-            .await?;
-        Err(self.service.pending("SellabilityV1::check_fulfilment"))
+        self.service.check_fulfilment(ctx, query).await
     }
 }

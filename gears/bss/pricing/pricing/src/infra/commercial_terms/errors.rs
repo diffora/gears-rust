@@ -24,21 +24,6 @@ impl From<UnconfiguredDependency> for CanonicalError {
     }
 }
 
-/// Pending fulfilment/hold boundary, replaced by Task 6 before public release.
-#[derive(Debug, Clone, Copy, thiserror::Error)]
-#[error("NotYetAvailable: {operation}")]
-pub struct NotYetAvailable {
-    /// Method whose implementation is pending.
-    pub operation: &'static str,
-}
-impl From<NotYetAvailable> for CanonicalError {
-    fn from(error: NotYetAvailable) -> Self {
-        AcceptanceResource::unimplemented(error.to_string())
-            .with_resource(error.operation)
-            .create()
-    }
-}
-
 pub(super) fn authorization(error: AuthzError) -> CanonicalError {
     match error {
         AuthzError::Denied(attempt) => AcceptanceResource::permission_denied()

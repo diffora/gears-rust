@@ -485,3 +485,45 @@ fn commercial_digests_cover_intent_and_sort_sets_without_reordering_tiers() {
     }
     assert_ne!(before, terms_digest(&q, &[b]));
 }
+
+#[test]
+fn fulfilment_identity_covers_every_field_and_normalizes_instants() {
+    use acceptance::{AcceptanceRef, FulfilmentQuery, Market, TenantAxes};
+    use bss_pricing_sdk::digest::fulfilment_digest;
+    let q = FulfilmentQuery {
+        tenant_axes: TenantAxes {
+            seller_tenant_id: uuid::Uuid::from_u128(1),
+            payer_tenant_id: uuid::Uuid::from_u128(2),
+            resource_tenant_id: uuid::Uuid::from_u128(3),
+        },
+        acceptance: AcceptanceRef {
+            acceptance_id: uuid::Uuid::from_u128(4),
+            terms_digest: [5; 32],
+        },
+        current_market: Market {
+            currency: "EUR".into(),
+            region: None,
+        },
+        activation_at: time::OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap(),
+    };
+    let digest = fulfilment_digest(&q);
+    let mut offset = q.clone();
+    offset.activation_at = offset
+        .activation_at
+        .to_offset(time::UtcOffset::from_hms(2, 0, 0).unwrap());
+    assert_eq!(fulfilment_digest(&offset), digest);
+    for field in 0..8 {
+        let mut changed = q.clone();
+        match field {
+            0 => changed.tenant_axes.seller_tenant_id = uuid::Uuid::from_u128(100),
+            1 => changed.tenant_axes.payer_tenant_id = uuid::Uuid::from_u128(100),
+            2 => changed.tenant_axes.resource_tenant_id = uuid::Uuid::from_u128(100),
+            3 => changed.acceptance.acceptance_id = uuid::Uuid::from_u128(100),
+            4 => changed.acceptance.terms_digest[0] ^= 1,
+            5 => changed.current_market.currency = "USD".into(),
+            6 => changed.current_market.region = Some(String::new()),
+            _ => changed.activation_at += time::Duration::nanoseconds(1),
+        }
+        assert_ne!(fulfilment_digest(&changed), digest);
+    }
+}

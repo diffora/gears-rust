@@ -196,7 +196,7 @@ async fn receipt_lookup_is_restricted_to_the_explicit_catalog_even_with_two_tena
 }
 
 #[tokio::test]
-async fn pending_methods_authorize_each_action_and_bind_the_security_context_caller() {
+async fn commercial_methods_authorize_each_action_and_bind_the_security_context_caller() {
     let (db, _dir, _) = database().await;
     let receipt = wire::decode_acceptance(&row().receipt_json).unwrap();
     let tenant = receipt.query.tenant_axes.seller_tenant_id;
@@ -235,12 +235,9 @@ async fn pending_methods_authorize_each_action_and_bind_the_security_context_cal
         if expected == 403 {
             assert!(problem.contains("COMMERCIAL_ACCESS_DENIED"), "{problem}");
         }
-        if expected == 501 {
-            assert!(matches!(e, CanonicalError::Unimplemented { .. }));
-        }
     }
     clock.advance(time::Duration::hours(25));
-    for (kind, expected) in [("create", 403), ("read", 501), ("outage", 503)] {
+    for (kind, expected) in [("create", 403), ("read", 404), ("outage", 503)] {
         assert_eq!(
             sell.check_fulfilment(&ctx(kind), fq.clone())
                 .await
@@ -249,7 +246,7 @@ async fn pending_methods_authorize_each_action_and_bind_the_security_context_cal
             expected
         );
     }
-    for (kind, expected) in [("read", 403), ("hold", 501), ("outage", 503)] {
+    for (kind, expected) in [("read", 403), ("hold", 404), ("outage", 503)] {
         assert_eq!(
             accept
                 .hold(&ctx(kind), fq.clone(), meta.clone())
@@ -259,8 +256,10 @@ async fn pending_methods_authorize_each_action_and_bind_the_security_context_cal
             expected
         );
     }
-    let observed = clock.observed.lock();
-    assert!(observed.contains(&(time::OffsetDateTime::UNIX_EPOCH + time::Duration::hours(25))));
+    assert!(
+        clock.observed.lock().is_empty(),
+        "missing receipts never sample eligibility time"
+    );
     for request in pdp.requests.lock().iter() {
         assert_eq!(request.subject.id, ctx("read").subject_id());
         assert_eq!(
@@ -284,7 +283,7 @@ async fn pending_methods_authorize_each_action_and_bind_the_security_context_cal
 
 #[test]
 fn boundary_failures_keep_canonical_categories_and_concrete_metadata() {
-    use bss_pricing::infra::commercial_terms::errors::{NotYetAvailable, UnconfiguredDependency};
+    use bss_pricing::infra::commercial_terms::errors::UnconfiguredDependency;
     use bss_pricing_sdk::acceptance::CommercialReason;
     for (reason, status) in [
         (CommercialReason::UnsupportedModel, 400),
@@ -306,11 +305,4 @@ fn boundary_failures_keep_canonical_categories_and_concrete_metadata() {
     assert!(
         problem.contains("UNCONFIGURED_DEPENDENCY") && problem.contains("UsageMeterSemanticsV1")
     );
-    let e: CanonicalError = NotYetAvailable {
-        operation: "SellabilityV1::check",
-    }
-    .into();
-    assert!(matches!(e, CanonicalError::Unimplemented { .. }));
-    let problem = serde_json::to_string(&toolkit_canonical_errors::Problem::from(e)).unwrap();
-    assert!(problem.contains("NotYetAvailable") && problem.contains("SellabilityV1::check"));
 }

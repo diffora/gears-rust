@@ -1,6 +1,7 @@
 //! Shared authorized commercial boundary over immutable versioned receipts.
 mod check;
 pub mod errors;
+mod fulfilment;
 pub mod wire;
 use crate::{
     api::rest::authoring::AuthoringState,
@@ -92,11 +93,5 @@ impl CommercialTermsService {
                 .map_err(errors::storage)?
                 .ok_or_else(|| CanonicalError::from(CommercialReason::ReceiptNotFound))?;
         wire::decode_acceptance(&row.receipt_json).map_err(errors::storage)
-    }
-    /// Diagnostic server observation only; it neither issues a receipt nor evaluates eligibility.
-    pub(crate) fn pending(&self, operation: &'static str) -> CanonicalError {
-        let observed_at = self.clock.now();
-        tracing::debug!(%observed_at, hold_policy_version = self.policy.version, operation, "commercial operation not yet available");
-        errors::NotYetAvailable { operation }.into()
     }
 }

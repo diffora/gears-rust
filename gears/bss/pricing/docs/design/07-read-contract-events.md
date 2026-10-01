@@ -299,9 +299,9 @@ Contract IR marks check/hold IdempotentWrite; every other C01 method is SafeRead
 | Method | PDP resource/action | Current delivery |
 | --- | --- | --- |
 | SellabilityV1::check | acceptance:create, catalog collection | Atomic acceptance/command/audit transaction (D-507) |
-| SellabilityV1::check_fulfilment | acceptance:read, receipt id | Authorized typed unimplemented; Task 6 supplies live eligibility |
+| SellabilityV1::check_fulfilment | acceptance:read, receipt id | Fresh original-binding eligibility (D-508) |
 | PricingAcceptanceV1::acceptance | acceptance:read, receipt id | Stored immutable receipt read |
-| PricingAcceptanceV1::hold | acceptance:hold, receipt id | Authorized typed unimplemented; Task 6 supplies the hold |
+| PricingAcceptanceV1::hold | acceptance:hold, receipt id | Atomic frozen first hold and command replay (D-508) |
 
 The resource label is `gts.cf.bss.pricing.acceptance.v1~`. SecurityContext supplies caller identity;
 CommandMeta has only an idempotency key. The requested seller/catalog must belong to the PDP scope,
@@ -314,14 +314,13 @@ require both positive integer fields; startup rejects invalid values before prov
 No issued receipt changes when deployment configuration changes. `infra::clock::{Clock,SystemClock}`
 reuses the reference recovery Clock/WallClock implementation, including its harmless default jitter
 hook; it introduces no second server-time source. Tests inject an explicitly advanced FixedClock.
-For 5b, only pending-operation diagnostics observe it; receipt reads require no clock observation.
+Acceptance and hold sample it inside the final transaction; receipt reads require no clock observation.
 
 Canonical failures preserve typed commercial reasons: invalid argument 400, conflict 409, permission
 denied 403 and authorized not found 404. Configured PDP/storage outages are 503; a missing required
-provider names its UNCONFIGURED_DEPENDENCY. Pending methods return typed NotYetAvailable as canonical
-unimplemented 501 after authorization, never a fabricated commercial success. Tests pin identity,
+provider names its UNCONFIGURED_DEPENDENCY. Tests pin identity,
 actions, multi-tenant filtering, unknown ids, byte-identical restart reads and separate registrations.
-No public command release is claimed until 5c, Task 6 and the complete G3 gate are delivered.
+The complete G3 controller gate remains required before public release.
 
 ### Acceptance transaction — Task 5c (D-507)
 
@@ -344,4 +343,31 @@ inserts the immutable receipt, successful command mapping and local audit with o
 provenance. Targeted insert-or-get rereads unique winners; no persistent in-flight claim is needed.
 A crash before commit rolls back all three records; restart after commit returns the original v1
 receipt even with providers down. Changing seller TTL or selecting another entry in a successor
-revision cannot rewrite it. Hold and live eligibility remain the authorized Task 6 stubs.
+revision cannot rewrite it. D-508 supplies holds and live fulfilment eligibility.
+
+### Frozen holds and fresh fulfilment — Task 6 (D-508)
+
+check_fulfilment always performs an authorized acceptance lookup, exact terms-digest/tenant-axis/
+current-market comparison, frozen BillingTerms compatibility, live Products retirement check and
+original-price metadata reads. Retirement, explicit close/end, temporary end and server-time TTL
+expiry refuse eligibility. Deprecation, off-sale and revision supersession are allowed. There is no
+renewal resolution, successor traversal, historical meter refresh or current descriptor substitution.
+A successor-induced effective_to is not an end. Future original ends bound valid_before at 00:00Z.
+Both server time and requested activation must precede price ends and hold_until; activation cannot
+precede original price effectiveness or accepted start_at.
+
+hold authorizes and finds the exact acceptance under the full PDP scope before exact command replay.
+Its related hold/command rows use the PDP-derived tenant_only scope after that parent check, since
+their primary keys are different resources. A revoked receipt-ID grant cannot replay an old command.
+Without a replay, it performs these fresh checks,
+rereads original price generations and samples Clock inside its serializable commit transaction.
+Hold and command mapping commit together. Unique-key winners preserve the original hold; another
+key with identical activation passes fresh checks and cannot extend TTL. The first chosen activation
+instant is pinned. Another activation conflicts, while a 10:00 submission may first hold at 10:03.
+Exact successful commands replay after expiry; new keys and check_fulfilment cannot use that replay
+as fresh eligibility. Local drift recaptures within the existing bounded retry budget.
+
+Eligibility is never a reusable admission token. Subscriptions must fence its committed order
+version and attempt, revalidate immediately before its first activation intent, and own actual
+served intervals. Entry ID, immutable policy, original money, SKU v3 descriptors and invoice inputs
+survive successor prices and revisions. Historical receipt reads remain independent of eligibility.
