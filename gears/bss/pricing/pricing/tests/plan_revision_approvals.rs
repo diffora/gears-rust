@@ -989,9 +989,13 @@ async fn an_approved_repricing_reaches_the_published_revision_and_a_rejected_one
         .await;
     assert_eq!(s, 201, "{receipt}");
     assert_eq!(receipt["applied"], true, "{receipt}");
-    // The published revision did not move: it still names the entry whose chain now carries the
-    // new money from today.
-    assert_eq!(revision(&f, g.revision).await, published);
+    // The published revision did not move: its items and version stay, and the sale-date price
+    // is the new money from today (D-480).
+    let after = revision(&f, g.revision).await;
+    assert_eq!(after["version"], published["version"]);
+    assert_eq!(after["state"], published["state"]);
+    assert_eq!(after["items"], published["items"]);
+    assert_eq!(after["entries"][0]["price_on_sale_date"]["id"], price);
     let (s, export, _) = f
         .call(
             "GET",

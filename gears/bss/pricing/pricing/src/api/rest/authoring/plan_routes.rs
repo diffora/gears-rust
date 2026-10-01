@@ -186,17 +186,23 @@ pub(super) fn routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .summary("Read a plan revision")
         .description(
             "Returns one plan revision with its items and its state as it reads today (D-447), \
-             when it was submitted and approved (D-461) and, while it is pending, its vote \
-             progress: the approve votes counted toward the quorum and the quorum, counts only, \
-             under plan read (D-462). Its version is the ETag a following PATCH sends back as \
-             If-Match. Refusals: 404 for a revision the tenant does not hold.",
+             when it was submitted and approved (D-461), its vote progress while pending (D-462) \
+             and, beside those, its sale_date, one entry summary per distinct entry its items \
+             name and, while it is draft or pending, carried_sku_ids (D-480). Each summary's \
+             price_on_sale_date is the default chain's approved price in force on sale_date, or \
+             null when the caller's price_book read does not admit that entry's book, when only \
+             a value chain prices it, or when none is in force. reservations_settled is true when \
+             no item is unreserved or confirmation_pending; lost counts as settled. Its version \
+             is the ETag a following PATCH sends back as If-Match. Refusals: 403 without plan \
+             read; 503 when the policy cannot judge the money; 404 for a revision the tenant \
+             does not hold.",
         )
         .tag("Pricing")
         .authenticated()
         .no_license_required()
         .path_param("id", "Plan revision id")
         .handler(get_revision)
-        .json_response_with_schema::<dto::PricingPlanRevisionDto>(
+        .json_response_with_schema::<dto::PricingPlanRevisionReadDto>(
             openapi,
             StatusCode::OK,
             "Response",
@@ -466,9 +472,36 @@ async fn get_revision(
     )
     .await
     .map_err(authz_failure)?;
+    // D-440: the sale-date price is money, judged after plan read and before the revision's 404.
+    let books = super::money_scope(&enforcer, &ctx).await?;
+    transaction(&state.db.db(), move |tx| {
+        let (scope, books, ctx) = (scope.clone(), books.clone(), ctx.clone());
+        Box::pin(async move {
+            plans::get_revision(tx, &scope, books.as_ref(), ctx.subject_tenant_id(), id).await
+        })
+    })
+    .await
+}
+async fn get_reservations(
+    Extension(state): Extension<Arc<AuthoringState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    ctx: Option<Extension<SecurityContext>>,
+    Path(id): Path<Uuid>,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(ctx)?;
+    let scope = authz::access_scope(
+        &enforcer,
+        &ctx,
+        &resource_types::PLAN,
+        actions::READ,
+        None,
+        None,
+    )
+    .await
+    .map_err(authz_failure)?;
     transaction(&state.db.db(), move |tx| {
         let (scope, ctx) = (scope.clone(), ctx.clone());
-        Box::pin(async move { plans::get_revision(tx, &scope, ctx.subject_tenant_id(), id).await })
+        Box::pin(async move { plans::reservations(tx, &scope, ctx.subject_tenant_id(), id).await })
     })
     .await
 }
@@ -636,13 +669,37 @@ pub(super) fn item_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Rout
         .standard_errors(openapi)
         .error_503(openapi)
         .register(router, openapi);
+    let router = OperationBuilder::get("/bss-pricing/v1/plan-revisions/{id}/reservations")
+        .operation_id("bss_pricing.get_plan_revision_reservations")
+        .summary("Read a revision's item reservations")
+        .description(
+            "Returns each item of the revision with its item_id, reference_state and \
+             reservation_id, and settled: true when no item is unreserved or \
+             confirmation_pending. lost counts as settled, so settled is not a green check \
+             (D-480). Two statements under plan read. Refusals: 404 for a revision the tenant \
+             does not hold; 503 when the policy cannot judge.",
+        )
+        .tag("Pricing")
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "Plan revision id")
+        .handler(get_reservations)
+        .json_response_with_schema::<dto::PricingPlanReservationsDto>(
+            openapi,
+            StatusCode::OK,
+            "Response",
+        )
+        .standard_errors(openapi)
+        .error_503(openapi)
+        .register(router, openapi);
     OperationBuilder::get("/bss-pricing/v1/plan-revisions/{id}/checks")
         .operation_id("bss_pricing.get_plan_revision_checks")
         .summary("Check a plan revision")
         .description(
             "Returns every check of the revision on its sale date (coverage, SKUs, references, \
-             book) and whether it may be submitted, from fresh SKU reads. Refusals: 404 for a \
-             revision the tenant does not hold; Products' own refusal; 503 REGISTRY_UNAVAILABLE.",
+             book), whether it may be submitted, and quorum_required, the plan_revision quorum a \
+             submit will need (D-481), from fresh SKU reads. Refusals: 404 for a revision the \
+             tenant does not hold; Products' own refusal; 503 REGISTRY_UNAVAILABLE.",
         )
         .tag("Pricing")
         .authenticated()

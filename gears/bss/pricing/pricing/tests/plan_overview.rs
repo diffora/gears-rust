@@ -419,6 +419,16 @@ async fn seeded_plans(f: &Fixture, catalog: &Catalog, eur: Uuid, from: usize, n:
         item(f, rev1, catalog.sku(SkuType::Usage), None, "included").await;
         if i % 2 == 0 {
             plan_support::publish(f, id_of(&created["id"]), rev1).await;
+            // A draft beside the published revision (D-480): in_effect is not the current one.
+            let draft = copy(f, id_of(&created["id"]), &format!("beside-{i}")).await;
+            item(
+                f,
+                id_of(&draft["id"]),
+                catalog.sku(SkuType::Usage),
+                None,
+                "included",
+            )
+            .await;
         } else {
             plan_support::lock(f, rev1).await;
         }
@@ -446,9 +456,17 @@ async fn the_plan_list_reads_in_four_statements_for_10_and_100_plans() {
     assert_eq!(ten, hundred, "the same statements, whatever the size");
     let listed = get(&f, "/plans").await;
     for p in listed["items"].as_array().unwrap() {
-        assert_eq!(p["current"]["item_count"], 1, "{p}");
         let header = &p["revisions"][0];
         assert!(header["submitted_at"].is_string(), "{p}");
+        if p["current"]["state"] == "draft" {
+            assert_eq!(p["current"]["item_count"], 2, "{p}");
+            let sold = &p["in_effect"]["sku_ids"];
+            assert_eq!(sold.as_array().unwrap().len(), 1, "the published SKUs: {p}");
+            assert_ne!(sold, &p["current"]["sku_ids"], "not the draft's SKUs: {p}");
+        } else {
+            assert_eq!(p["current"]["item_count"], 1, "{p}");
+            assert!(p["in_effect"].is_null(), "{p}");
+        }
     }
 }
 
@@ -818,7 +836,10 @@ async fn every_write_answer_carries_the_new_fields() {
     assert_eq!(s, 200, "{renamed}");
     assert_eq!(renamed["current"]["revision_id"], rev1);
     assert_eq!(renamed["current"]["state"], "published");
-    assert_eq!(renamed["in_effect"], json!({"revision_id":rev1,"rev_no":1}));
+    assert_eq!(
+        renamed["in_effect"],
+        json!({"revision_id":rev1,"rev_no":1,"sku_ids":[p.sku]})
+    );
     assert_eq!(
         instants(&renamed["revisions"][0]),
         (unit["submitted_at"].clone(), unit["decided_at"].clone())

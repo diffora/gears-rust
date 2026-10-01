@@ -1075,6 +1075,65 @@ async fn a_cursor_replayed_under_another_narrowing_is_refused() {
     }
 }
 
+/// D-480 (amending D-442): `$filter` names `id`, with `eq` and `in`, on this backend. A malformed
+/// uuid is 400. The cursor's hash covers the filter, so replaying it under another `id` is 400
+/// `FILTER_MISMATCH`.
+#[tokio::test]
+async fn the_book_list_filters_by_id() {
+    let (f, _) = setup().await;
+    let euro = door_book(&f, "a-eur", "Euro", "EUR", None, None).await;
+    let other = door_book(&f, "b-eur", "Other", "EUR", None, None).await;
+    let dollars = door_book(&f, "c-usd", "Dollars", "USD", None, None).await;
+    assert_eq!(
+        codes(
+            &ok(
+                &f,
+                &format!("/price-books?{}", encode(&format!("$filter=id eq {euro}")))
+            )
+            .await
+        ),
+        ["a-eur"]
+    );
+    assert_eq!(
+        codes(
+            &ok(
+                &f,
+                &format!(
+                    "/price-books?{}",
+                    encode(&format!("$filter=id in ({other}, {dollars})"))
+                ),
+            )
+            .await
+        ),
+        ["b-eur", "c-usd"]
+    );
+    let (s, body, _) = get(
+        &f,
+        &format!("/price-books?{}", encode("$filter=id eq not-a-uuid")),
+    )
+    .await;
+    assert_eq!(s, 400, "{body}");
+    let first = ok(
+        &f,
+        &format!(
+            "/price-books?{}",
+            encode(&format!("$filter=id in ({euro}, {other})&$top=1"))
+        ),
+    )
+    .await;
+    let cursor = first["page_info"]["next_cursor"].as_str().unwrap();
+    let (s, body, _) = get(
+        &f,
+        &format!(
+            "/price-books?{}",
+            encode(&format!("$filter=id eq {dollars}&cursor={cursor}"))
+        ),
+    )
+    .await;
+    assert_eq!(s, 400, "{body}");
+    assert!(code_of(&body).contains("FILTER_MISMATCH"), "{body}");
+}
+
 #[tokio::test]
 async fn the_book_list_refuses_what_it_does_not_take() {
     let (f, _) = setup().await;

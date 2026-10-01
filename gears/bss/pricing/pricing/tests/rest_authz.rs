@@ -58,6 +58,8 @@ fn census() -> census::Routes {
         ("PATCH", "/bss-pricing/v1/dimension-keys"),
         ("GET", "/bss-pricing/v1/price-book-entries/{id}/prices"),
         ("POST", "/bss-pricing/v1/plan-revisions/{id}/unschedule"),
+        ("GET", "/bss-pricing/v1/plan-revisions/{id}/reservations"),
+        ("GET", "/bss-pricing/v1/approval-policy/{kind}/effective"),
     ]
     .into_iter()
     .map(|(m, p)| (m.to_owned(), p.to_owned()))
@@ -80,7 +82,7 @@ async fn the_census_covers_every_route_the_routers_register() {
     assert_eq!(census::source_routes(), registered);
     assert_eq!(census::readers("require_authenticated("), registered);
     assert_eq!(census::readers("authz::access_scope("), registered);
-    assert_eq!(registered.len(), 52);
+    assert_eq!(registered.len(), 54);
     assert_eq!(bss_pricing::authz::labels::ALL.len(), 6);
     let permissions: Vec<_> = toolkit_gts::inventory::iter::<toolkit_gts::InventoryInstance>
         .into_iter()
@@ -125,7 +127,7 @@ async fn no_rest_door_serves_pricings_system_actor() {
             (method.to_owned(), path.to_owned())
         })
         .collect();
-    assert_eq!(doors.len(), 52, "every served door");
+    assert_eq!(doors.len(), 54, "every served door");
     for (method, template) in doors {
         let path = template
             .replace("{id}", &uuid::Uuid::new_v4().to_string())
@@ -166,7 +168,7 @@ async fn no_rest_door_serves_pricings_system_actor() {
 
 #[test]
 fn the_authentication_and_authz_parsers_have_positive_controls() {
-    // One per route (52), and more: `require_authenticated(` is also its own definition;
+    // One per route (54), and more: `require_authenticated(` is also its own definition;
     // `authz::access_scope(` is also the SKU usage port, which authorizes the Products caller it
     // serves (D-428), and the money's second judgement, price_book read, in the one helper the
     // SKU's entry list, the two entry reads and an entry's prices call (D-434, D-440). Both are
@@ -174,7 +176,7 @@ fn the_authentication_and_authz_parsers_have_positive_controls() {
     // the counts doors do, once, in one helper (D-490); its card and votes call the doors.
     for (needle, more) in [("require_authenticated(", 2), ("authz::access_scope(", 3)] {
         assert_eq!(census::count_in_functions(census::CONTROL, needle), 2);
-        assert_eq!(census::production_count(needle), 52 + more, "{needle}");
+        assert_eq!(census::production_count(needle), 54 + more, "{needle}");
     }
     let routes = census::registrations(census::CONTROL);
     assert_eq!(
@@ -184,7 +186,7 @@ fn the_authentication_and_authz_parsers_have_positive_controls() {
             .count(),
         2
     );
-    assert_eq!(census::source_routes().len(), 52);
+    assert_eq!(census::source_routes().len(), 54);
 }
 
 #[test]
@@ -259,7 +261,7 @@ fn every_mounted_router_is_merged_into_both_censuses() {
 // GET /plans/{id} plan:read false false
 // PATCH /plans/{id} plan:author true false
 // POST /plans/{id}/revisions plan:author false true
-// GET /plan-revisions/{id} plan:read false false
+// GET /plan-revisions/{id} plan:read (then price_book:read for the sale-date price, D-480) false false
 // PATCH /plan-revisions/{id} plan:author (then price_book:read when it names a book, D-456) true false
 // DELETE /plan-revisions/{id} plan:author false false
 
@@ -288,3 +290,7 @@ fn every_mounted_router_is_merged_into_both_censuses() {
 
 // Run 8.2 (D-452): method | path | resource:action | If-Match | Idempotency-Key
 // POST /plan-revisions/{id}/unschedule plan:submit false true
+
+// Run 9.6 (D-480, D-481): method | path | resource:action | If-Match | Idempotency-Key
+// GET /plan-revisions/{id}/reservations plan:read false false
+// GET /approval-policy/{kind}/effective price_book_entry:read for prices, plan:read for plan_revision false false

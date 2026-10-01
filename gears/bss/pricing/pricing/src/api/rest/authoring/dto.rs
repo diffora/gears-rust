@@ -733,11 +733,14 @@ pub struct PricingPlanCurrent {
 pub struct PricingPlanInEffect {
     pub revision_id: Uuid,
     pub rev_no: i32,
+    /// The SKUs of that revision's items, one per item, in ascending order (D-480). The same set
+    /// a draft or pending revision reports as `carried_sku_ids`.
+    pub sku_ids: Vec<Uuid>,
 }
-/// What the plan DTO shows beside its own rows (D-460, D-461): the item SKUs of the current
-/// revisions, by revision id, and the instants of the units the revisions name, by unit id. A
-/// read fills it from its two grouped reads; a write from the rows it holds (D-453: a write
-/// answers what it wrote).
+/// What the plan DTO shows beside its own rows (D-460, D-461, D-480): the item SKUs of the
+/// current revisions and of the revisions in effect, by revision id, and the instants of the
+/// units the revisions name, by unit id. A read fills it from its two grouped reads; a write from
+/// the rows it holds (D-453: a write answers what it wrote).
 #[derive(Debug, Default, Clone)]
 pub struct PlanReading {
     pub skus: BTreeMap<Uuid, Vec<Uuid>>,
@@ -796,6 +799,7 @@ impl PricingPlanDto {
         let in_effect = plan::in_effect(&effective).map(|r| PricingPlanInEffect {
             revision_id: r.id,
             rev_no: r.rev_no,
+            sku_ids: reading.skus.get(&r.id).cloned().unwrap_or_default(),
         });
         Ok(Self {
             id: m.id,
@@ -826,6 +830,16 @@ pub fn current_revision(
     today: time::Date,
 ) -> Result<Option<Uuid>, RepoError> {
     Ok(plan::current(&effective_revisions(revisions, today)?).map(|r| r.id))
+}
+/// The published revision in effect among one plan's revisions as they read on `today` (D-447,
+/// D-480): the revision whose SKUs `in_effect.sku_ids` and a draft's `carried_sku_ids` name.
+/// # Errors
+/// `CorruptRow` for a state outside the closed set.
+pub fn in_effect_revision(
+    revisions: &[entity::plan_revision::Model],
+    today: time::Date,
+) -> Result<Option<Uuid>, RepoError> {
+    Ok(plan::in_effect(&effective_revisions(revisions, today)?).map(|r| r.id))
 }
 /// The units `revisions` name (D-461): each one's pending or approving unit.
 #[must_use]
@@ -883,6 +897,9 @@ pub struct PricingPlanRevisionDto {
     /// The vote progress of a pending revision (D-462), readable under plan read; null for any
     /// other state.
     pub approval: Option<PricingPlanApprovalProgress>,
+    /// True when no item is `unreserved` or `confirmation_pending` (D-480). `lost` counts as
+    /// settled, so settled is not a green check. Computed from the items in hand, on every answer.
+    pub reservations_settled: bool,
     pub items: Vec<PricingPlanItemDto>,
 }
 impl PricingPlanRevisionDto {
@@ -915,6 +932,11 @@ impl PricingPlanRevisionDto {
         m: &entity::plan_revision::Model,
         items: Vec<entity::plan_item::Model>,
     ) -> Result<Self, RepoError> {
+        let items = items
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect::<Result<Vec<_>, _>>()?;
+        let reservations_settled = reservations_settled(&items);
         Ok(Self {
             id: m.id,
             tenant_id: m.tenant_id,
@@ -936,10 +958,8 @@ impl PricingPlanRevisionDto {
             submitted_at: None,
             approved_at: None,
             approval: None,
-            items: items
-                .into_iter()
-                .map(TryInto::try_into)
-                .collect::<Result<_, _>>()?,
+            reservations_settled,
+            items,
         })
     }
     /// The instants of the unit the revision names among `units` (D-461), and the vote progress
@@ -957,6 +977,110 @@ impl PricingPlanRevisionDto {
         self.approval = approval.filter(|_| self.state == PricingRevisionState::Pending);
         self
     }
+}
+/// True when no item is `unreserved` or `confirmation_pending` (D-480). `confirmed` and `lost`
+/// are settled, so settled is not a green check. An empty item list is settled.
+fn reservations_settled(items: &[PricingPlanItemDto]) -> bool {
+    items.iter().all(|item| {
+        !matches!(
+            item.reference_state,
+            PricingItemReferenceState::Unreserved | PricingItemReferenceState::ConfirmationPending
+        )
+    })
+}
+/// One distinct entry a revision's items name, with the default chain's price in force on the
+/// revision's sale date (D-480).
+#[toolkit_macros::api_dto(response)]
+pub struct PricingPlanEntrySummary {
+    pub price_book_entry_id: Uuid,
+    pub book_id: Uuid,
+    pub charge_kind: PricingChargeKind,
+    pub period: Option<PricingPeriod>,
+    pub model: PricingModel,
+    pub dimension_key: Option<String>,
+    /// The default chain's approved price in force on the revision's sale date, chosen by
+    /// `price_book_entries::headline` (D-440, D-472). Null when only value chains price the
+    /// entry, when none is in force, or when the caller's `price_book` read does not admit the
+    /// entry's book (D-434).
+    pub price_on_sale_date: Option<PricingPriceDto>,
+}
+impl PricingPlanEntrySummary {
+    /// The entry as the revision read shows it, with `price` already judged for the book.
+    /// # Errors
+    /// `CorruptRow` for a stored token outside its closed set.
+    pub fn of(
+        m: entity::price_book_entry::Model,
+        price: Option<PricingPriceDto>,
+    ) -> Result<Self, RepoError> {
+        let id = m.id;
+        Ok(Self {
+            price_book_entry_id: id,
+            book_id: m.book_id,
+            charge_kind: PricingChargeKind::stored(
+                &m.charge_kind,
+                &format_args!("entry {id} charge_kind"),
+            )?,
+            period: m
+                .period
+                .as_deref()
+                .map(|p| PricingPeriod::stored(p, &format_args!("entry {id} period")))
+                .transpose()?,
+            model: PricingModel::stored(&m.model, &format_args!("entry {id} model"))?,
+            dimension_key: m.dimension_key,
+            price_on_sale_date: price,
+        })
+    }
+}
+/// `GET /plan-revisions/{id}` (D-480): the revision, its sale date, one summary per distinct
+/// entry its items name, and, while it is draft or pending, the SKUs the plan sells today.
+/// Write answers keep [`PricingPlanRevisionDto`].
+#[toolkit_macros::api_dto(response)]
+pub struct PricingPlanRevisionReadDto {
+    #[serde(flatten)]
+    pub revision: PricingPlanRevisionDto,
+    /// The checks' sale date (`domain::plan::sale_date`): `available_from`, or today for "at
+    /// publish". A past `available_from` answers that past date, as the checks do.
+    pub sale_date: String,
+    /// One per distinct entry the items name, in entry id order.
+    pub entries: Vec<PricingPlanEntrySummary>,
+    /// Draft or pending only (null otherwise): the SKU ids of the plan's published revision in
+    /// effect today (D-447), `[]` when none is in effect. The set a re-add of a deprecated SKU
+    /// judges (D-465).
+    pub carried_sku_ids: Option<Vec<Uuid>>,
+}
+/// `GET /plan-revisions/{id}/reservations` (D-480): each item's reference, and whether they have
+/// all settled.
+#[toolkit_macros::api_dto(response)]
+pub struct PricingPlanReservationsDto {
+    pub items: Vec<PricingPlanReservationItemDto>,
+    /// The same rule as the revision's `reservations_settled`: `lost` counts as settled.
+    pub settled: bool,
+}
+/// One item on the reservations read (D-480).
+#[toolkit_macros::api_dto(response)]
+pub struct PricingPlanReservationItemDto {
+    pub item_id: Uuid,
+    pub reference_state: PricingItemReferenceState,
+    pub reservation_id: Option<Uuid>,
+}
+impl TryFrom<&entity::plan_item::Model> for PricingPlanReservationItemDto {
+    type Error = RepoError;
+    fn try_from(m: &entity::plan_item::Model) -> Result<Self, RepoError> {
+        Ok(Self {
+            item_id: m.id,
+            reference_state: PricingItemReferenceState::stored(
+                &m.reference_state,
+                &format_args!("plan item {} reference_state", m.id),
+            )?,
+            reservation_id: m.reservation_id,
+        })
+    }
+}
+/// `GET /approval-policy/{kind}/effective` (D-481): the quorum a submit of `kind` needs now.
+#[toolkit_macros::api_dto(response)]
+pub struct PricingEffectivePolicyDto {
+    pub kind: PricingApprovalKind,
+    pub quorum_required: u32,
 }
 /// `PATCH /plan-revisions/{id}`, draft only: the book and the sale date, never an item list
 /// (D-407). A book change remaps each item to the new book's entry of the same (SKU, charge kind,
@@ -1077,6 +1201,9 @@ pub struct PricingPlanChecksDto {
     pub ready: bool,
     /// `available_from`, or today for a revision sold from its publication.
     pub sale_date: String,
+    /// The `plan_revision` quorum a submit of this revision needs (D-481): the tenant's effective
+    /// policy, the number the APPROVAL info row already shows. The revision itself has no quorum.
+    pub quorum_required: u32,
 }
 #[toolkit_macros::api_dto(response)]
 pub struct PricingReferenceOpDto {
