@@ -60,6 +60,7 @@
 | P-D-225 | M | Every text a request writes has an explicit length cap (twin of pricing D-457) | DECIDED 2026-09-29 · Whole-branch review RS-10, RS-11, RS-37, RS-38 (fix run W1b); the dispositions' "Length caps" |
 | P-D-226 | M | The SDK's SKU types serialize as the wire carries them | DECIDED 2026-09-30 · Whole-branch review RS-22, RS-23, RS-24 (fix run W1b) |
 | P-D-229 | H | A derived usage meter is a catalog declaration that Rating evaluates | DECIDED 2026-10-01 · Owner, 2026-10-01 (who computes a cloudlet from RAM and CPU); supersedes the PriceBook spec §3 item 11 disposition for derived meters; rating T-D-39 |
+| P-D-230 | H | A derived usage type is versioned data with one evaluator, in the SDK | DECIDED 2026-10-01 · Derived usage types plan rev 3 (design decisions 1–4, run 1); implements P-D-229 and its amendment |
 
 ## Entries
 
@@ -1163,3 +1164,66 @@ evaluates, the usage collector stays raw").
 - **The pin.** A usage SKU's derived ref is fixed at its first publish. A new formula version is sold through a new SKU, as a
   usage chain's metering is fixed (pricing D-402).
 
+#### P-D-230 [H] A derived usage type is versioned data with one evaluator, in the SDK
+
+**Status:** DECIDED 2026-10-01.
+
+P-D-229 has Products declare a derived usage meter and Rating evaluate it. This entry fixes what a declaration is, how it is
+checked, how it computes, and how it is encoded. All of it lives in `bss_products_sdk::derived`, which is pure: no I/O, no
+serde, no hashing. Rating evaluates through the same function Products validates with, so a declaration Products accepts is
+the declaration Rating computes.
+- **The declaration.** `DerivedUsageDeclaration` names:
+  - `output_unit` (the selling SKU's unit equals it), `granularity` (`Hour` only), `output_scale` and `output_round`;
+  - `inputs`, each a `DerivedInput`: a `name` (`^[a-z][a-z0-9_]{0,31}$`), a raw GTS `usage_type_ref` at its exact version, a
+    `granule_fold` (`Sum`, `Peak` or `TimeWeighted`), a `max_hold_seconds` for a time-weighted input only, and a `unit`;
+  - `formula`, an `Expr`.
+- **The grammar.** `Expr` is `Input`, `Const`, `Add`, `Sub`, `Mul`, `DivConst` (by a constant only, so nothing divides by a
+  quantity), `Max` and `Min` (two or more operands), `Ceil`, `Floor` and `Round` (a scale and a mode). `RoundMode` is
+  `HalfEven` (a midpoint goes to the even neighbour), `HalfUp` (a midpoint goes away from zero), `Up` (away from zero) and
+  `Down` (toward zero).
+- **`validate` refuses**, with one `DeclarationError` variant per rule, so Products can name the rule in its 400:
+  - an unknown input name, an unused input, a duplicate name, fewer than two inputs, a derived input (`products.derived/…`);
+  - a `DivConst` by zero, a `Max` or `Min` with fewer than two operands;
+  - a formula deeper than 32 (a leaf is depth 1) or of more than 256 nodes (every `Expr` counts), a scale above 12 (the
+    output's or a `Round`'s);
+  - a `max_hold_seconds` missing on `TimeWeighted`, present on `Sum` or `Peak`, or outside `1..=86_400` (rating T-D-17);
+  - an empty or blank unit, or one over 64 characters (the SKU unit cap, P-D-225);
+  - an input name off its pattern, and an empty input ref or one over 512 characters (the SKU usage-type ref cap). These two
+    are not in the plan's list; the pattern is its type comment, and P-D-225 caps every text a request writes.
+
+  The walk over the formula is iterative, so an unbounded formula is refused at its bound and never overflows the stack.
+- **`evaluate`** answers one granule's output. It validates first (`EvalError::Invalid`). Its map holds the granule's folded
+  input quantities by name: a missing name is `MissingInput`, an extra one `ExtraInput`, a value below zero `NegativeInput`.
+  `Add`, `Sub`, `Mul`, `DivConst`, `Ceil` and `Floor` are checked: `Overflow`, never a panic. A rounding only lowers a scale
+  and cannot overflow (measured at the extremes of the range). The result is rounded to `output_scale` by `output_round`,
+  then normalized (`-0` → `0`, trailing zeros dropped); a negative result is `NegativeResult`.
+- **The window.** `evaluate_window` sums a window's granule outputs, checked and normalized. The formula applies per granule,
+  never to the window's summed inputs (P-D-229's amendment): RAM 256 MB with no CPU in one hour and 800 MHz with no RAM in the
+  next are 2 + 2 = 4 cloudlet-hours, where the summed hours would give 2. The plan has Rating sum; this function is that sum
+  written once, so the order is code and not only prose. Rating may call it or sum `evaluate`'s outputs itself.
+- **The canonical bytes.** `canonical_bytes` writes canonical JSON (RFC 8785 strings, keys in byte order) of
+  `{"domain":"products.derived_usage_declaration.v1","payload":…}`:
+  - a decimal is its normalized text, so `128` and `128.0` give the same bytes;
+  - the inputs are in name order, because the formula reads an input by name, never by position;
+  - every field is written, an absent hold as `null`.
+
+  A golden test pins the cloudlet's bytes. A change to the encoding is a new domain tag, because stored digests hash these
+  bytes. The products runtime hashes them (SHA-256 through `aws-lc-rs`) and stores the digest; the SDK does not hash.
+- **The meter id.** `MeterId` parses and formats `products.derived/<code>@<n>`: the code is `^[a-z0-9][a-z0-9._-]{0,63}$`;
+  `<n>` is a canonical decimal (digits only, no leading zero, from 1 to `u32::MAX`). `meter_ref()` is pricing's pair
+  `("products.derived/<code>@<n>", "<n>")`, and `parse_version` judges a version string alone. Its fields are private and
+  `MeterId::new` checks them, so `format` always writes an id `parse` reads back.
+- **Measured.** `rust_decimal` 1.41 already rounds -0.3 to a positive zero, but truncation keeps the sign: `Ceil(-0.3)` is a
+  negative zero. The result's normalization is what answers `0` there.
+- **Not built yet.** Versions are stored, served and digested in a later run, a usage SKU pins one in the next, and Products
+  answers pricing's meter semantics after that (the plan's runs 2–4). Until then nothing reads a declaration, and no derived
+  meter can be sold (P-D-229).
+- **The tests.** `products-sdk/src/derived_tests.rs`: the cloudlet vector (RAM 300 / CPU 500 → 3, RAM 100 / CPU 900 → 3,
+  idle → 0) and the per-granule window; every refusal, with the boundaries (depth 32 and 256 nodes accepted, 33 and 257
+  refused; scale 12 accepted, 13 refused; holds 1 and 86,400 accepted, 0 and 86,401 refused; units at 64 two-byte characters
+  accepted, 65 refused); every `EvalError`, with a constructed overflow of `Add`, `Sub`, `Mul` and `DivConst`; each
+  `RoundMode` at and off the midpoint, positive and negative; the canonical bytes (input order, `128` vs `128.0`, a
+  constant, a fold and a hold) and two goldens; the meter id's round trip and each refusal.
+
+**Source:** The derived usage types implementation plan, rev 3: design decisions 1–4 and run 1, on the owner's answers of
+2026-10-01 (O-2, the meter id). Implements P-D-229 and its amendment.

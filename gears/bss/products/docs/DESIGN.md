@@ -56,6 +56,7 @@ Every PRD FR and NFR appears once in this allocation. Section references identif
 | `cpt-cf-bss-products-fr-sku-type-frozen` | Live references exclude type changes | §2.1 Fence before count; §3.1 type fence; §3.7 registry predicates |
 | `cpt-cf-bss-products-fr-sku-descriptors` | Governed, dated billing descriptors | §3.1 SkuVersion; §3.6 GL change |
 | `cpt-cf-bss-products-fr-sku-metering` | Usage metering resolves at submit and apply | §3.1 type rules; §3.5 usage-type catalog |
+| `cpt-cf-bss-products-fr-derived-usage-type` | A derived meter is data with one evaluator | §3.1 derived usage declaration; §3.4 products-sdk |
 | `cpt-cf-bss-products-fr-sku-bundle` | Bundle identity supports sold-as only | §3.1 bundle rules; §3.5 Pricing; §3.6 reserve/write/confirm |
 | `cpt-cf-bss-products-fr-sku-lifecycle` | One approval shape governs lifecycle | §3.1 lifecycle; §3.2 Approvals; §3.6 fenced retirement |
 | `cpt-cf-bss-products-fr-sku-versions` | Durable history determines dated truth | §3.3 dated read; §3.7 version table and ordering |
@@ -75,7 +76,8 @@ Every PRD FR and NFR appears once in this allocation. Section references identif
 
 ### 1.3 Architecture Layers
 
-`products-sdk` remains the public contract crate for typed clients, DTOs, errors and event payloads.
+`products-sdk` remains the public contract crate for typed clients, DTOs, errors and event payloads. It also holds
+the derived usage declaration and its one pure evaluator (§3.1, P-D-230).
 Within `products`, `contract` declares REST/OpenAPI, `api` implements authenticated doors, `domain`
 owns SKU rules and the three approval subjects, and `infra` supplies repositories, migrations, outbox
 and port adapters. Domain rules depend on ports; infrastructure implements them. `bss-approval` is a
@@ -169,10 +171,28 @@ A pending lock is business ownership, not a database row lock (P-D-192; spec §2
 | `ApprovalUnit` | Shared crate type: kind, subject reference, state, quorum, generation, snapshot/hash, date, submitter, decision metadata and concurrency version. |
 | `Decision` | Shared crate type: unit, actor, generation, approve/reject, note, timestamp and stale flag. One vote per actor per generation. |
 | `SkuReference` | Tenant, id, sku_id, owner_gear, price_book_entry/plan_item/sold_as kind, ref_id, reserved/confirmed/released state, timestamps, released_by and release_reason. Released attempts remain recorded. |
+| `DerivedUsageDeclaration` | One version of a derived usage type (P-D-229, P-D-230), in `products-sdk`'s `derived` module: output unit, granularity (an hour), at least two raw inputs (name, GTS ref at its exact version, granule fold, a hold bound for a time-weighted input, unit), a formula over them, output scale and rounding. Not stored yet. |
 
 A usage SKU needs both `usage_type_ref` and `unit` at publication; submit and apply resolve the reference.
 Metering fields are usage-only. Bundles reject metering, have no composition, and can only be sold as a
 Pricing plan, never priced or included as a plan item (P-D-184–185).
+
+**The derived usage declaration** (P-D-229, P-D-230). The `derived` module of `products-sdk` holds the declaration, its
+grammar and its one evaluator. It is pure (no I/O, serde or hashing), so Rating evaluates through the function Products
+validates with:
+- `validate` refuses a declaration with one `DeclarationError` variant per rule: an unknown, unused or duplicate input, fewer
+  than two inputs, a derived input, a division by zero, a `Max` or `Min` of fewer than two operands, a formula deeper than 32
+  or of more than 256 nodes, a scale above 12, a hold missing on a time-weighted input, present elsewhere or outside
+  1..=86,400 seconds, an input name off its pattern, and an empty or over-cap unit or input ref. Its walk is iterative.
+- `evaluate` applies the formula to one granule's folded input quantities, keyed by input name, with checked decimal
+  arithmetic, and rounds and normalizes the result; every failure is an `EvalError`, never a panic. `evaluate_window` sums
+  a window's granule outputs, so the formula applies per granule and never to the window's summed inputs.
+- `canonical_bytes` is the declaration's deterministic encoding (canonical JSON under a domain tag, decimals normalized,
+  inputs in name order). The runtime hashes it and stores the digest.
+- `MeterId` parses and formats `products.derived/<code>@<n>` and gives pricing's `(usage_type_id, version)` pair.
+
+Storing versions, their doors, a usage SKU's pin and the meter-semantics provider are later runs; until they land, no
+derived meter can be sold.
 
 The `sku` row holds the latest applied content, possibly future-effective. `revision` is the SKU concurrency
 version for ETag, If-Match and compare-and-swap; `published_version` identifies each published
@@ -377,7 +397,7 @@ authoring behavior is defined in §3.5; these codes do not turn a catalog non-an
 | toolkit-db / SecureORM | SecureConn and scoped transactions; PolicyEnforcer-derived AccessScope on all reads/writes, including audit, replay and child records. Conditional writes, no raw unscoped connection. |
 | toolkit-db outbox | State, audit and outbox records share the same transaction; dispatch happens after commit, and the outbox's sequencer is woken only after it (P-D-221). No success event escapes a rollback. |
 | toolkit REST / PolicyEnforcer | OperationBuilder, authenticated operations, RFC-9457 errors and deny-by-default resource/action checks. |
-| products-sdk / ClientHub | Public SKU/version/catalog contracts and usage-type port; consumers resolve typed clients without importing gear internals. |
+| products-sdk / ClientHub | Public SKU/version/catalog contracts, usage-type port, and the derived usage declaration with its pure evaluator (P-D-230); consumers resolve typed clients without importing gear internals. |
 
 Outbound events are `SkuPublished`, `SkuChanged`, `SkuRetired`, `ApprovalUnitDecided` and
 `ReferenceForceReleased`. Broker events follow this gear's camelCase convention. `SkuChanged` carries
@@ -917,6 +937,7 @@ defined here.
 | `cpt-cf-bss-products-fr-sku-type-frozen` | 02 | `sku-categories` |
 | `cpt-cf-bss-products-fr-sku-descriptors` | 03 | `lifecycle-approvals` |
 | `cpt-cf-bss-products-fr-sku-metering` | 02 | `sku-categories` |
+| `cpt-cf-bss-products-fr-derived-usage-type` | none yet | none yet (P-D-230: the SDK module only) |
 | `cpt-cf-bss-products-fr-sku-bundle` | 02 | `sku-categories` |
 | `cpt-cf-bss-products-fr-sku-lifecycle` | 03 | `lifecycle-approvals` |
 | `cpt-cf-bss-products-fr-sku-versions` | 02 | `sku-categories` |
@@ -935,4 +956,4 @@ registry and Pricing protocol; P-D-196 → the optional category; P-D-197 → th
 P-D-198–P-D-204 → the rules carried from the backup register (replay mechanics, event delivery, the audit
 shape, the request digest, the validation answer, the usage-type resolve bound, the authz label registration);
 P-D-205 → the policy's `If-Match`; P-D-206 → the draft delete; P-D-207 → usage types as the caller and the
-picker; P-D-208 → category retirement; P-D-209 → the fence TTL as a deployment setting; P-D-216 → the override reset; P-D-218 → moving the default category; P-D-219 → the submitter's note on the unit; P-D-220 → a retired category is never the default. Spec §2.2, §4, §6, §7.2–§7.3 and §13 govern the corresponding sections.
+picker; P-D-208 → category retirement; P-D-209 → the fence TTL as a deployment setting; P-D-216 → the override reset; P-D-218 → moving the default category; P-D-219 → the submitter's note on the unit; P-D-220 → a retired category is never the default; P-D-229 → derived usage meters (Products declares, Rating evaluates); P-D-230 → the declaration, grammar, evaluator and canonical bytes. Spec §2.2, §4, §6, §7.2–§7.3 and §13 govern the corresponding sections.

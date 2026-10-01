@@ -71,6 +71,7 @@ reference. The prototype model and the explicit dispositions in spec §3 define 
 | Category | An optional flat grouping, at most one per SKU, with code, name, default flag, sort order and active/retired status. |
 | Descriptors | `gl_code`, `tax_category` and `invoice_line_template`, bound by pricing from a dated SKU version. |
 | Metering | A usage SKU's `usage_type_ref` and `unit`; the reference resolves through the usage-type catalog port. |
+| Derived usage type | A meter computed per granule from other usage, such as a cloudlet-hour from RAM and CPU; declared by Products as versioned data and evaluated by Rating (P-D-229). |
 | Lifecycle | `draft`, `published`, `deprecated`, `retiring`, `retired`; `retiring` is the transient retirement fence. |
 | SKU version | An append-only snapshot identified by SKU and `published_version`, with `effective_from`. |
 | Concurrency version | A mutable row's optimistic concurrency token; distinct from the published SKU version. |
@@ -136,8 +137,8 @@ from its own registry (spec §2 decision 17, §4, §7.3, §13).
 
 ### 4.1 In Scope
 
-Typed SKUs; flat categories; billing descriptors and billing-timing override; usage-type resolution; lifecycle;
-durable dated versions; the three SKU approval kinds; policy settings; reference reservations and fences;
+Typed SKUs; flat categories; billing descriptors and billing-timing override; usage-type resolution; derived
+usage types (P-D-229); lifecycle; durable dated versions; the three SKU approval kinds; policy settings; reference reservations and fences;
 concurrency and idempotency; browse/search and reference summaries; audit and transactional events
 (spec §3 D, §4, §6, §7.2–§7.3).
 
@@ -222,6 +223,35 @@ A usage SKU shall declare the meter reference and unit needed by consumers befor
 - Submit validates the proposed content and apply revalidates it before publication or change.
 
 **Rationale**: spec §4 (usage rule), §6 (subject validation), §15 (usage-type catalog design retained).
+
+#### `fr-derived-usage-type`
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-fr-derived-usage-type`
+
+The registry shall declare a derived usage type, a meter computed per granule from other usage (a cloudlet-hour from RAM and
+CPU, for example), as versioned data with one evaluator that Rating calls (P-D-229, P-D-230).
+
+**Rules**
+
+- A version names its output unit, its granularity (an hour), at least two raw inputs, a formula over them, and the
+  output's scale and rounding. Each input is a GTS usage type at its exact version, with its granule fold and, for a
+  time-weighted input, its hold bound. A version never changes; a new formula is a new version.
+- The formula is data in a closed grammar: inputs, constants, add, subtract, multiply, divide by a non-zero constant, the
+  larger and the smaller of two or more, ceil, floor and round. A declaration that breaks a rule is refused with the rule
+  named: an unknown, unused or duplicate input, a derived input, a division by zero, a max or min of fewer than two
+  operands, a formula deeper than 32 or of more than 256 nodes, a scale above 12, a hold that is missing, misplaced or
+  outside 1 to 86,400 seconds, or an empty or over-cap unit.
+- The formula applies per granule, to that granule's folded input quantities; a window's quantity is the sum of its granule
+  outputs. The arithmetic is exact decimal and checked: an overflow, a missing, extra or negative input and a negative
+  result are errors, never a panic. A result is rounded, then normalized (`-0` is `0`).
+- A derived meter is named `products.derived/<code>@<n>`, with `<n>` a canonical version from 1. The prefix is reserved;
+  a GTS id never starts with it.
+- A declaration has one canonical encoding (decimals normalized, a fixed field order), and its digest identifies the
+  version.
+- Storing versions, their doors, a usage SKU's pin and the meter-semantics answer to pricing are not built yet. Until they
+  are, no derived meter can be sold.
+
+**Rationale**: owner decision of 2026-10-01 (P-D-229; rating T-D-39); the declaration, grammar and evaluator (P-D-230).
 
 #### `fr-sku-bundle`
 
@@ -843,6 +873,7 @@ in their actor, requirement or use-case blocks above.
 | `fr-sku-define`, `fr-sku-type-frozen`, `fr-category-flat` | Spec §2 decisions 3, 12 and 17; §3 D; §4. |
 | `fr-sku-descriptors`, `fr-sku-versions` | Spec §2 decision 14; §2.2; §4; §7.1; §8; §12. |
 | `fr-sku-metering`, `fr-sku-bundle` | Spec §3 D; §4; §5; §15. |
+| `fr-derived-usage-type` | Owner decision of 2026-10-01 (P-D-229; rating T-D-39); P-D-230. |
 | `fr-sku-lifecycle`, `fr-sku-retire-fenced`, `fr-reference-registry` | Spec §2 decision 17; §2.2; §4; §6; §7.2; §13. |
 | `fr-approval-units`, `fr-concurrency-idempotency` | Spec §2 decision 8; §2.2; §3 items 23 and 27; §6; §7.2; §14. |
 | `fr-events`, `fr-read-model` | Spec §3 item 43; §4; §6; §7.3; §12–§13. |
