@@ -12980,6 +12980,10 @@
               "book_name": {
                 "type": "string"
               },
+              "changing": {
+                "description": "A draft or a pending price exists (D-486).",
+                "type": "boolean"
+              },
               "currency": {
                 "type": "string"
               },
@@ -13003,6 +13007,10 @@
                   }
                 ]
               },
+              "status": {
+                "$ref": "#/components/schemas/PricingSkuEntryStatus",
+                "description": "`priced` when an approved price is in force today, else `scheduled` when one starts\nlater, else `unpriced` (D-486)."
+              },
               "usage": {
                 "$ref": "#/components/schemas/PricingEntryUsage"
               }
@@ -13011,27 +13019,43 @@
               "book_code",
               "book_name",
               "currency",
-              "usage"
+              "usage",
+              "status",
+              "changing"
             ],
             "type": "object"
           }
         ],
-        "description": "One entry of a SKU as `GET /price-book-entries?sku_id=` answers it (D-434): the entry, its\nbook's code, name and currency, its usage (D-428), the default chain's price in force today\nand its `next_price` (D-472), chosen as the entry reads choose it (the highest `version_no`\norders the drafts and pending prices) — each `null` when there is none, or when the caller\ndoes not hold `price_book` read (the export's grant)."
+        "description": "One entry of a SKU as `GET /price-book-entries?sku_id=` answers it (D-434, D-486): the entry,\nits book's code, name and currency, its usage (D-428), its `status` and `changing` on today,\nthe default chain's price in force today (`current_price`) and its `next_price` (D-472),\nchosen as the entry reads choose it (the highest `version_no` orders the drafts and pending\nprices). Each price is `null` when there is none, or when the caller does not hold\n`price_book` read (the export's grant). `status` and `changing` are not money."
       },
       "PricingSkuEntryList": {
-        "description": "`GET /price-book-entries?sku_id=`: the SKU's entries in every book of the tenant.",
+        "description": "`GET /price-book-entries?sku_id=` (D-486): one page of the SKU's entries.",
         "properties": {
           "items": {
             "items": {
               "$ref": "#/components/schemas/PricingSkuEntryDto"
             },
             "type": "array"
+          },
+          "page_info": {
+            "$ref": "#/components/schemas/PageInfo",
+            "description": "`limit` is the page size. `next_cursor` continues the page."
           }
         },
         "required": [
-          "items"
+          "items",
+          "page_info"
         ],
         "type": "object"
+      },
+      "PricingSkuEntryStatus": {
+        "description": "Where a SKU's entry stands today (D-486): an approved price in force, else one that\nstarts later, else neither. Not a price's display status.",
+        "enum": [
+          "priced",
+          "scheduled",
+          "unpriced"
+        ],
+        "type": "string"
       },
       "PricingSubmitReceipt": {
         "description": "The unit a submission recorded and its prices after the transaction.",
@@ -37804,7 +37828,7 @@
     },
     "/bss-pricing/v1/price-book-entries": {
       "get": {
-        "description": "Lists the tenant's price book entries of one SKU across its books (D-434), each with its book's code, name and currency, its usage (D-428), its current_price, the default chain's approved price in force today, and its next_price, the default chain's earliest price scheduled after today, else its newest draft or pending price (the highest version_no), else null (D-472). Both prices are shown to a caller who also holds price_book read (the export's grant) and are null otherwise. Refusals: 400 QUERY_INVALID without exactly one well-formed sku_id, or with any other key.",
+        "description": "Lists one page of the tenant's price book entries of one SKU across its books (D-434, D-486), each with its book's code, name and currency, its usage (D-428), its status and changing on today, its current_price, the default chain's approved price in force today, and its next_price, the default chain's earliest price scheduled after today, else its newest draft or pending price (the highest version_no), else null (D-472). status is priced when an approved price is in force today, else scheduled when an approved price starts later, else unpriced; changing is true when a draft or pending price exists. Both prices are shown to a caller who also holds price_book read (the export's grant) and are null otherwise; status and changing are not money. The list narrows in memory by book_id (1 to 50 distinct ids), currency, q (a case-insensitive literal substring of the book's code or name), status (priced, scheduled, unpriced) and changing (true or false). $orderby is book_name (the default) or status, asc or desc; the id breaks a tie in that direction. limit (default 500, clamped at 500) and cursor from page_info page it; a cursor carries the order and a hash of the plain keys, so a continuation sends no $orderby. Refusals: 400 QUERY_INVALID without exactly one well-formed sku_id, for a repeated key, for any other key, for $filter, $select or $count, for a malformed book_id, currency, status, changing or limit, or for more than 50 book ids; 400 INVALID_ORDERBY_FIELD for any other order; 400 ORDER_WITH_CURSOR for $orderby beside a cursor; 400 FILTER_MISMATCH for a cursor replayed under another narrowing; 400 for a cursor that does not read.",
         "operationId": "bss_pricing.list_sku_entries",
         "parameters": [
           {
@@ -37812,6 +37836,78 @@
             "in": "query",
             "name": "sku_id",
             "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "1 to 50 distinct price book ids, comma-separated",
+            "in": "query",
+            "name": "book_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Three-letter currency code",
+            "in": "query",
+            "name": "currency",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Case-insensitive literal substring of the book's code or name",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "priced, scheduled or unpriced, comma-separated",
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "true when a draft or pending price exists",
+            "in": "query",
+            "name": "changing",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Page size (default 500, clamped at 500)",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Continuation from page_info",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OData v4 orderby expression\n- book_name asc\n- book_name desc\n- status asc\n- status desc",
+            "in": "query",
+            "name": "$orderby",
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -37917,7 +38013,15 @@
         "summary": "Where a SKU is priced",
         "tags": [
           "Pricing"
-        ]
+        ],
+        "x-odata-orderby": {
+          "allowedFields": [
+            "book_name asc",
+            "book_name desc",
+            "status asc",
+            "status desc"
+          ]
+        }
       }
     },
     "/bss-pricing/v1/price-book-entries/{id}": {

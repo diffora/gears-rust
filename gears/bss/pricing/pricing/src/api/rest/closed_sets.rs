@@ -205,6 +205,15 @@ closed_set!(
     /// Where a resolved invoice input came from (D-421).
     PricingResolveSource from Source { Entry => "entry", Sku => "sku", Tenant => "tenant" }
 );
+closed_set!(
+    /// Where a SKU's entry stands today (D-486): an approved price in force, else one that
+    /// starts later, else neither. Not a price's display status.
+    PricingSkuEntryStatus {
+        Priced => "priced",
+        Scheduled => "scheduled",
+        Unpriced => "unpriced",
+    }
+);
 
 #[cfg(test)]
 #[path = "closed_sets_tests.rs"]

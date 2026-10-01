@@ -23,6 +23,8 @@ const PRICE_STATUS: &[&str] = &[
     "active",
     "superseded",
 ];
+/// Where a SKU's entry stands today (D-486). Not a price's display status.
+const SKU_ENTRY_STATUS: &[&str] = &["priced", "scheduled", "unpriced"];
 const ITEM_REFERENCE: &[&str] = &["unreserved", "confirmation_pending", "confirmed", "lost"];
 const REVISION: &[&str] = &["draft", "pending", "scheduled", "published", "superseded"];
 const RESOLVED_REVISION: &[&str] = &["published", "superseded", "scheduled"];
@@ -57,6 +59,7 @@ const CLOSED: &[Closed] = &[
     ("PricingPriceDto", "eligibility", ELIGIBILITY, false),
     ("PricingPriceDto", "state", PRICE_STATE, false),
     ("PricingPriceDto", "status", PRICE_STATUS, false),
+    ("PricingSkuEntryDto", "status", SKU_ENTRY_STATUS, false),
     (
         "PricingPlanItemDto",
         "reference_state",

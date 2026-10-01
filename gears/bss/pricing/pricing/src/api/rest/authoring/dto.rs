@@ -4,8 +4,8 @@ use crate::api::rest::closed_sets::{
     PricingApprovalKind, PricingBillingTiming, PricingChargeKind, PricingDecisionKind,
     PricingEligibility, PricingEntryReferenceState, PricingItemReferenceState, PricingModel,
     PricingPeriod, PricingPriceState, PricingPriceStatus, PricingReferenceOpKind,
-    PricingReferenceOpRefKind, PricingReferenceOpState, PricingRevisionState, PricingUnitState,
-    PricingVoteOutcome,
+    PricingReferenceOpRefKind, PricingReferenceOpState, PricingRevisionState,
+    PricingSkuEntryStatus, PricingUnitState, PricingVoteOutcome,
 };
 use crate::domain::plan::{self, EffectiveRevision};
 use crate::infra::plan_revisions::{effective_revisions, stored_revisions};
@@ -253,11 +253,12 @@ pub struct PricingPriceBookReadDto {
     pub book: PriceBookDto,
     pub stats: PricingPriceBookStats,
 }
-/// One entry of a SKU as `GET /price-book-entries?sku_id=` answers it (D-434): the entry, its
-/// book's code, name and currency, its usage (D-428), the default chain's price in force today
-/// and its `next_price` (D-472), chosen as the entry reads choose it (the highest `version_no`
-/// orders the drafts and pending prices) — each `null` when there is none, or when the caller
-/// does not hold `price_book` read (the export's grant).
+/// One entry of a SKU as `GET /price-book-entries?sku_id=` answers it (D-434, D-486): the entry,
+/// its book's code, name and currency, its usage (D-428), its `status` and `changing` on today,
+/// the default chain's price in force today (`current_price`) and its `next_price` (D-472),
+/// chosen as the entry reads choose it (the highest `version_no` orders the drafts and pending
+/// prices). Each price is `null` when there is none, or when the caller does not hold
+/// `price_book` read (the export's grant). `status` and `changing` are not money.
 #[toolkit_macros::api_dto(response)]
 pub struct PricingSkuEntryDto {
     #[serde(flatten)]
@@ -266,19 +267,20 @@ pub struct PricingSkuEntryDto {
     pub book_name: String,
     pub currency: String,
     pub usage: PricingEntryUsage,
+    /// `priced` when an approved price is in force today, else `scheduled` when one starts
+    /// later, else `unpriced` (D-486).
+    pub status: PricingSkuEntryStatus,
+    /// A draft or a pending price exists (D-486).
+    pub changing: bool,
     pub current_price: Option<PricingPriceDto>,
     pub next_price: Option<PricingPriceDto>,
 }
-/// `GET /price-book-entries?sku_id=`: the SKU's entries in every book of the tenant.
+/// `GET /price-book-entries?sku_id=` (D-486): one page of the SKU's entries.
 #[toolkit_macros::api_dto(response)]
 pub struct PricingSkuEntryList {
     pub items: Vec<PricingSkuEntryDto>,
-}
-/// The query of `GET /price-book-entries`: exactly one `sku_id`.
-#[derive(Default, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct PricingSkuEntryQuery {
-    pub sku_id: Option<Uuid>,
+    /// `limit` is the page size. `next_cursor` continues the page.
+    pub page_info: toolkit_odata::PageInfo,
 }
 #[toolkit_macros::api_dto(response)]
 pub struct PricingPriceDto {

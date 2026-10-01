@@ -29,7 +29,10 @@ use dto::{
 };
 use std::sync::Arc;
 use support::{authz_failure, etag, header, require_authenticated, response, transaction};
-use toolkit::api::{OpenApiRegistry, operation_builder::OperationBuilder};
+use toolkit::api::{
+    OpenApiRegistry,
+    operation_builder::{OperationBuilder, OperationBuilderODataExt},
+};
 use toolkit_canonical_errors::CanonicalError;
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
@@ -406,18 +409,62 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .operation_id("bss_pricing.list_sku_entries")
         .summary("Where a SKU is priced")
         .description(
-            "Lists the tenant's price book entries of one SKU across its books (D-434), each with \
-             its book's code, name and currency, its usage (D-428), its current_price, the \
-             default chain's approved price in force today, and its next_price, the default \
-             chain's earliest price scheduled after today, else its newest draft or pending price \
-             (the highest version_no), else null (D-472). Both prices are shown to a caller who \
-             also holds price_book read (the export's grant) and are null otherwise. Refusals: \
-             400 QUERY_INVALID without exactly one well-formed sku_id, or with any other key.",
+            "Lists one page of the tenant's price book entries of one SKU across its books \
+             (D-434, D-486), each with its book's code, name and currency, its usage (D-428), \
+             its status and changing on today, its current_price, the default chain's approved \
+             price in force today, and its next_price, the default chain's earliest price \
+             scheduled after today, else its newest draft or pending price (the highest \
+             version_no), else null (D-472). status is priced when an approved price is in force \
+             today, else scheduled when an approved price starts later, else unpriced; changing \
+             is true when a draft or pending price exists. Both prices are shown to a caller who \
+             also holds price_book read (the export's grant) and are null otherwise; status and \
+             changing are not money. The list narrows in memory by book_id (1 to 50 distinct \
+             ids), currency, q (a case-insensitive literal substring of the book's code or \
+             name), status (priced, scheduled, unpriced) and changing (true or false). $orderby \
+             is book_name (the default) or status, asc or desc; the id breaks a tie in that \
+             direction. limit (default 500, clamped at 500) and cursor from page_info page it; a \
+             cursor carries the order and a hash of the plain keys, so a continuation sends no \
+             $orderby. Refusals: 400 QUERY_INVALID without exactly one well-formed sku_id, for a \
+             repeated key, for any other key, for $filter, $select or $count, for a malformed \
+             book_id, currency, status, changing or limit, or for more than 50 book ids; 400 \
+             INVALID_ORDERBY_FIELD for any other order; 400 ORDER_WITH_CURSOR for $orderby \
+             beside a cursor; 400 FILTER_MISMATCH for a cursor replayed under another narrowing; \
+             400 for a cursor that does not read.",
         )
         .tag("Pricing")
         .authenticated()
         .no_license_required()
         .query_param("sku_id", true, "The SKU whose entries are listed")
+        .query_param(
+            "book_id",
+            false,
+            "1 to 50 distinct price book ids, comma-separated",
+        )
+        .query_param("currency", false, "Three-letter currency code")
+        .query_param(
+            "q",
+            false,
+            "Case-insensitive literal substring of the book's code or name",
+        )
+        .query_param(
+            "status",
+            false,
+            "priced, scheduled or unpriced, comma-separated",
+        )
+        .query_param_typed(
+            "changing",
+            false,
+            "true when a draft or pending price exists",
+            "boolean",
+        )
+        .query_param_typed(
+            "limit",
+            false,
+            "Page size (default 500, clamped at 500)",
+            "integer",
+        )
+        .query_param_typed("cursor", false, "Continuation from page_info", "string")
+        .with_odata_orderby::<price_book_entries::SkuEntryOrderField>()
         .handler(list_sku_entries)
         .json_response_with_schema::<dto::PricingSkuEntryList>(openapi, StatusCode::OK, "Response")
         .standard_errors(openapi)
@@ -2066,25 +2113,21 @@ async fn list_sku_entries(
     )
     .await
     .map_err(authz_failure)?;
-    let axum::extract::Query(query) =
-        axum::extract::Query::<dto::PricingSkuEntryQuery>::try_from_uri(&uri)
-            .map_err(|_| support::invalid("query", "QUERY_INVALID"))?;
-    let sku = query
-        .sku_id
-        .ok_or_else(|| support::invalid("sku_id", "QUERY_INVALID"))?;
+    // D-486: the query, including $filter, $select and $count, is judged before any read.
+    let query = price_book_entries::sku_entries_query(&uri)?;
     // D-434: the money is the export's — price_book read. Without it the entries still list, each
-    // with a null current_price; only an unavailable policy fails the read.
+    // with a null current_price; only an unavailable policy fails the read. Status is not money.
     let books = money_scope(&enforcer, &ctx).await?;
     let today = time::OffsetDateTime::now_utc().date();
     transaction(&state.db.db(), move |tx| {
-        let (scope, books, ctx) = (scope.clone(), books.clone(), ctx.clone());
+        let (scope, books, ctx, query) = (scope.clone(), books.clone(), ctx.clone(), query.clone());
         Box::pin(async move {
             let body = price_book_entries::for_sku(
                 tx,
                 &scope,
                 books.as_ref(),
                 ctx.subject_tenant_id(),
-                sku,
+                &query,
                 today,
             )
             .await?;
