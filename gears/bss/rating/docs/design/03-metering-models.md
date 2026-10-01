@@ -192,7 +192,7 @@ All value objects; model parameters are frozen snapshot content, never authored 
 - **`ModelParams`** — the frozen per-kind parameter set: `unitPrice` (flat/per_unit), open-top marginal bands (graduated/volume A), `packageSize`/`packagePrice` (package), `quantitySource` (per_unit), and the **level-aggregation triple** `aggregationFunction`/`aggregationGranularity`/`maxHold` (non-`sum` usage rows — D-44/T-D-17, §4.3; 2026-07-28 review fix: §4.3 consumed them but this list omitted them).
 - **`TierWindowSpec`** — the resolved `tierAggregationWindow` value + concrete UTC boundaries (anchor policy applied); recorded in metadata and frozen in the snapshot.
 - **`QCounterRef`** — the window-aggregated `Q` for `(subscription, meter, dimensionKey, window)` — Rating-owned, consumed frozen; never written here.
-- **`CompositeFormula`** — the frozen formula-as-data: input unit set (≥ 2), window-`sum` derivation, output unit; catalog-declared (pricing Slice 10).
+- **`CompositeFormula`** — the frozen formula-as-data: input unit set (≥ 2), window-`sum` derivation, output unit; declared by Products as a derived usage type at an exact version (products P-D-229, T-D-39).
 - **`ModelLineOutcome`** — per-line model result: effective rate(s), band/block placement, quantities in/out, feeding steps 4+ and the outcome lineage.
 
 ### 3.2 Component Model

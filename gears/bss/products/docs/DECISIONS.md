@@ -61,6 +61,7 @@
 | P-D-226 | M | The SDK's SKU types serialize as the wire carries them | DECIDED 2026-09-30 · Whole-branch review RS-22, RS-23, RS-24 (fix run W1b) |
 | P-D-227 | M | The approval units are counted by state and kind and list newest first on request (twin of pricing D-470) | DECIDED 2026-09-30 · Owner, 2026-09-30 (the approvals option 1, "ok"); pricing phase 9 plan rev 2 (decision 10; plan review M4, L11); amends P-D-224 |
 | P-D-228 | M | A unit says whether its reader may approve it (twin of pricing D-471) | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 4, "ok"); pricing phase 9 plan rev 2 (decision 11; W2; plan review H1, M2); amends P-D-224 |
+| P-D-229 | H | A derived usage meter is a catalog declaration that Rating evaluates | DECIDED 2026-10-01 · Owner, 2026-10-01 (who computes a cloudlet from RAM and CPU); supersedes the PriceBook spec §3 item 11 disposition for derived meters; rating T-D-39 |
 
 ## Entries
 
@@ -1202,3 +1203,39 @@ H1). The list and the card read no unit items, so the screen could not judge it.
 
 **Source:** Owner, 2026-09-30 (validation 3 item 4, "ok"); pricing phase 9 plan rev 2 (decision 11; W2, binding; plan review
 H1, M2). Amends P-D-224 (the page's statements).
+
+#### P-D-229 [H] A derived usage meter is a catalog declaration that Rating evaluates
+
+**Status:** DECIDED 2026-10-01.
+
+A derived (composite) usage meter computes one quantity from other usage. A cloudlet, for example, is 128 MB of RAM and
+400 MHz of CPU, and a cloudlet-hour is computed from the RAM and CPU usage of the hour. The old implementation had such meters.
+The owner decided who does what:
+- **Products declares it.** A derived usage type, with an immutable version, names:
+  - its input usage types, each at an exact version (at least two);
+  - the formula as data: how the input quantities combine (for example the larger of the two shares), and the rounding;
+  - the granularity the formula applies at (per rating window, for example per UTC hour);
+  - its output unit.
+
+  A new formula is a new version; a published version never changes. What a cloudlet is, is a product decision, versioned
+  with the catalog.
+- **Rating evaluates it** (rating T-D-39), per subscription line and rating window. It folds each input over the window as
+  that input's own meter declares, applies the formula, then prices the output. The order matters: the larger share in each
+  hour is not the larger of the hourly sums.
+- **The usage collector reports raw meters only.** It is not asked to compute a derived quantity, and the raw levels stay
+  available for audit and for re-rating a past period.
+- **Pricing references a derived usage type exactly as a raw one.** A usage entry's rating policy names the usage type and
+  its version. The meter-semantics provider of the pricing seam plan (its external dependency E1) answers:
+  - a derived type from this declaration: the canonical unit, the inputs and their versions, the formula version;
+  - a raw type from the collector and the types registry.
+- **Not built yet.** Today a usage SKU declares exactly one metering unit, and Products has no formula store
+  (`gears/bss/rating/docs/SEAMS.md` RG2). Building the declaration (storage, authoring, and the read the provider serves) is a
+  separate run. Until then no derived meter can be sold.
+- **Supersedes:**
+  - the PriceBook spec's §3 item 11 disposition ("D — metering's concern") for derived meters; level aggregation stays
+    Rating's (rating T-D-17);
+  - Rating's "declared and delivered by the pricing gear (Slice 10)": that legacy pricing gear is gone (pricing D-423).
+
+**Source:** Owner, 2026-10-01 (asked who should compute a cloudlet from RAM and CPU usage; chose "Products declares, Rating
+evaluates, the usage collector stays raw").
+
