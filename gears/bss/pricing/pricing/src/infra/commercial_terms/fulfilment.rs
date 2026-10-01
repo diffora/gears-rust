@@ -1,5 +1,5 @@
 //! Fresh original-binding eligibility and atomic, replayable first holds.
-use super::{CommercialTermsService, check::failure, wire};
+use super::{CommercialTermsService, check::failure, errors, wire};
 use crate::{
     api::{
         pricing_read::PricingReadProvider,
@@ -92,11 +92,8 @@ impl CommercialTermsService {
                 Some(query.acceptance.acceptance_id),
             )
             .await?;
-        if meta
-            .as_ref()
-            .is_some_and(|m| m.idempotency_key.trim().is_empty())
-        {
-            return Err(R::UnsupportedTerms.into());
+        if let Some(meta) = &meta {
+            crate::api::rest::preconditions::validate_idempotency_key(&meta.idempotency_key)?;
         }
         query.activation_at = query.activation_at.to_offset(time::UtcOffset::UTC);
         let related_scope = scope.tenant_only();
@@ -226,13 +223,16 @@ impl CommercialTermsService {
                 .await?;
             let row = price_repo::find(&conn, &scope, tenant, binding.price.price_id)
                 .await?
-                .ok_or_else(|| CanonicalError::from(R::PriceClosed))?;
+                .ok_or_else(|| CanonicalError::from(R::PermissionDenied))?;
             prices.push((scope, row));
         }
         let registry = reference_registry::resolve(&self.state.hub)
             .map_err(|e| support::registry_unavailable(&e))?;
         for binding in &receipt.bindings {
-            let sku = registry.sku_for_write(ctx, tenant, binding.sku_id).await?;
+            let sku = registry
+                .sku_for_write(ctx, tenant, binding.sku_id)
+                .await
+                .map_err(errors::products)?;
             if sku.lifecycle == bss_products_sdk::models::Lifecycle::Retired {
                 return Err(CanonicalError::from(R::SkuRetired).into());
             }

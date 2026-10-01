@@ -410,8 +410,8 @@ async fn a_legacy_included_item_in_a_draft_is_item_entry_missing_until_its_autho
     let unit = &b["unit"];
     assert_eq!(
         unit["snapshot"]["after"]["items"],
-        json!([{"sku_id":paid.sku_id,"price_book_entry_id":paid.price_book_entry_id,"usage_policy":null}]),
-        "D-503 fingerprints the selected entry and its optional policy identity"
+        json!([{"sku_id":paid.sku_id,"price_book_entry_id":paid.price_book_entry_id}]),
+        "D-511 preserves policy-less pre-seam approval content"
     );
 }
 

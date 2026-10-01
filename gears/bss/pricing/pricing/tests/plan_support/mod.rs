@@ -59,6 +59,7 @@ pub struct Entry {
 pub struct Catalog {
     pub skus: Mutex<BTreeMap<Uuid, Entry>>,
     pub down: AtomicBool,
+    pub contended: AtomicBool,
     /// Every `sku_for_write` call, answered or not.
     pub reads: AtomicUsize,
     pub reserve_kinds: Mutex<Vec<ReferenceKind>>,
@@ -338,6 +339,11 @@ impl ReferenceRegistryV1 for Catalog {
         tenant: Uuid,
         id: Uuid,
     ) -> Result<Sku, CanonicalError> {
+        if self.contended.load(Ordering::SeqCst) {
+            return Err(SkuResource::aborted("contended")
+                .with_reason("CONTENDED")
+                .create());
+        }
         self.reads.fetch_add(1, Ordering::SeqCst);
         self.calls.fetch_add(1, Ordering::SeqCst);
         self.read_denied(ctx)?;

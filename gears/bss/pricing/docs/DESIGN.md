@@ -1072,7 +1072,10 @@ the runtime and reopen persisted storage with a new pool. Scoped persisted reads
 The [upgrade proof](../pricing/tests/seam_parity_support/migration.rs) starts at the committed phase-9
 chain through migration 17 and seeds policy-less usage entries, published revisions and old entry/item
 reference-operation payloads. Migrations 18/19 preserve bindings and payloads, add no policy columns
-to items or prices, leave receipt tables empty and match a fresh install on each engine. Existing entries
+to items or prices, leave receipt tables empty and match a fresh install on each engine.
+The SQLite review regression additionally compares pre/post migration-18 sqlite_master DDL,
+normalizing only quoting, formatting, clause order and the explicitly added policy clauses; every
+old CHECK and UNIQUE clause survives, including unnamed constraints (D-511). Existing entries
 remain readable without invented policy; new usage-entry authoring requires an explicit policy.
 Concurrent identical-policy creates have one entry winner; different policies create distinct entries
 and identical content is interned once per tenant. PostgreSQL goldens are compared, never regenerated.

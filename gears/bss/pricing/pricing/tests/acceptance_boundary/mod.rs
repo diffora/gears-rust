@@ -301,8 +301,17 @@ fn boundary_failures_keep_canonical_categories_and_concrete_metadata() {
         dependency: "UsageMeterSemanticsV1",
     }
     .into();
-    let problem = serde_json::to_string(&toolkit_canonical_errors::Problem::from(e)).unwrap();
-    assert!(
-        problem.contains("UNCONFIGURED_DEPENDENCY") && problem.contains("UsageMeterSemanticsV1")
+    let problem = serde_json::to_value(toolkit_canonical_errors::Problem::from(e)).unwrap();
+    assert_eq!(
+        problem["context"]["violations"][0]["type"], "UNCONFIGURED_DEPENDENCY",
+        "{problem}"
+    );
+    assert_eq!(
+        problem["context"]["violations"][0]["description"],
+        "unconfigured dependency: UsageMeterSemanticsV1"
+    );
+    assert_eq!(
+        problem["context"]["violations"][0]["subject"],
+        "UsageMeterSemanticsV1"
     );
 }

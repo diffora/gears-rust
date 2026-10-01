@@ -13,12 +13,6 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 
 - [Register](#register)
 - [Entries](#entries)
-- [D-505 — Durable commercial receipt storage (2026-10-01)](#d-505--durable-commercial-receipt-storage-2026-10-01)
-- [D-506 — Authorized commercial provider boundary (2026-10-01)](#d-506--authorized-commercial-provider-boundary-2026-10-01)
-- [D-507 — Atomic acceptance and durable authenticated command replay (2026-10-01)](#d-507--atomic-acceptance-and-durable-authenticated-command-replay-2026-10-01)
-- [D-508 — Frozen first holds and fresh original-binding eligibility (2026-10-01)](#d-508--frozen-first-holds-and-fresh-original-binding-eligibility-2026-10-01)
-- [D-509 — Executable Pricing seam fixtures and transport boundary (2026-10-01)](#d-509--executable-pricing-seam-fixtures-and-transport-boundary-2026-10-01)
-- [D-510 — Database parity and provider handoff (2026-10-01)](#d-510--database-parity-and-provider-handoff-2026-10-01)
 
 <!-- /toc -->
 
@@ -112,10 +106,17 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-467 | H | A plan item is a SKU and its entry: no treatment, no included quantity, no minimum quantity | DECIDED 2026-09-30 · Owner, 2026-09-30 (the included quantity, then the treatment, then qty_min removed); phase 9 plan rev 2 (run 9.2); amends D-388, D-394, D-407, D-413, D-419, D-420, D-421, D-439 |
 | D-468 | M | A new plan's code follows a declared rule | DECIDED 2026-09-30 · Owner, 2026-09-30 (ask 39, "do it"); phase 9 run 9.2 scope addition; extends D-456, D-457 |
 | D-469 | M | The served contract declares every door's 503, every ETag it sets and the refusals of the plan doors | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 2); phase 9 plan rev 2 (M1 and W1, binding; decisions 8 and 9; L8) |
-| D-502 | H | Immutable usage policies belong to entries and their semantic key | DECIDED 2026-10-01 · Pricing Seam Contracts Task 2; amends D-386, D-401, D-427 |
+| D-501 | H | Authorized SDK reads share the frozen preview snapshot and canonical JSON digests | DECIDED 2026-10-01 · Pricing Seam Contracts Task 1 |
+| D-502 | H | Immutable usage policies belong to entries and their semantic key | DECIDED 2026-10-01 · Pricing Seam Contracts Task 2 |
+| D-503 | H | Exact meter evidence gates usage publication and stays out of historical reads | DECIDED 2026-10-01 · Pricing Seam Contracts Task 3 |
 | D-504 | H | Pure new-sale terms validate a bounded commercial profile and snapshot integrity | DECIDED 2026-10-01 · Pricing Seam Contracts Task 4 |
-| D-508 | H | Frozen first holds, original-price eligibility and durable replay | DECIDED 2026-10-01 · Pricing Seam Contracts Task 6 |
-| D-510 | H | Database parity evidence and bounded provider handoff | DECIDED 2026-10-01 · Pricing Seam Contracts Task 8 |
+| D-505 | H | Durable commercial receipt storage | DECIDED 2026-10-01 · Pricing Seam Contracts Task 5a |
+| D-506 | H | Authorized commercial provider boundary | DECIDED 2026-10-01 · Pricing Seam Contracts Task 5b |
+| D-507 | H | Atomic acceptance and durable authenticated command replay | DECIDED 2026-10-01 · Pricing Seam Contracts Task 5c |
+| D-508 | H | Frozen first holds and fresh original-binding eligibility | DECIDED 2026-10-01 · Pricing Seam Contracts Task 6 |
+| D-509 | H | Executable Pricing seam fixtures and transport boundary | DECIDED 2026-10-01 · Pricing Seam Contracts Task 7 |
+| D-510 | H | Database parity and provider handoff | DECIDED 2026-10-01 · Pricing Seam Contracts Task 8 |
+| D-511 | H | Commercial commands enforce scoped prices and nonempty activation windows | DECIDED 2026-10-01 · Pricing Seam Contracts review fix run |
 
 ## Entries
 
@@ -1237,7 +1238,8 @@ D-504 defines the pure new-sale profile, narrower than the readable catalog:
 | Usage BillingCycle | PerUnit, Volume or Graduated; period null; immutable explicit policy | MissingRatingPolicy / MeterPolicyMismatch |
 | Usage CalendarHour | Same usage models; UTC, SUM, subscription_line or resource scope; no minimum fee, including zero | UnsupportedTerms |
 | BillingCycle minimum fee | SubscriptionLine only; any Resource-scoped floor is refused | UnsupportedTerms |
-| Package, FX, promotions, phases, allowances, quarter | Not part of new-sale terms; historical catalog reads remain intact | UnsupportedModel / UnsupportedTerms |
+| FX / cross-currency sale | Currency must equal the selected price currency | CURRENCY_MISMATCH |
+| Package, promotions, phases, allowances, quarter | Not part of new-sale terms; historical catalog reads remain intact | UnsupportedModel / UnsupportedTerms |
 
 Invoice terms must be schema version 1, month/year and UTC, with explicit order or positive,
 non-nil seller-policy provenance. Orders resolves this Subscriptions-owned snapshot before Pricing
@@ -1290,7 +1292,11 @@ reader, provider implementation or downstream Rating/Billing scheduler is delive
 
 **Source:** Pricing Seam Contracts plan revision 3, Task 4; atlas C01/C10 and F22/F23/F24/F31 are read-only design specifications, not downstream integration evidence.
 
-## D-505 — Durable commercial receipt storage (2026-10-01)
+#### D-505 [H] Durable commercial receipt storage
+
+**Status:** DECIDED 2026-10-01
+
+**Source:** Pricing Seam Contracts plan, Task 5a.
 
 Task 5a adds migration `m20260930_000019_commercial_receipts` after the committed policy migration.
 Acceptance, first hold and successful command mappings are separate append-only, tenant-scoped
@@ -1344,7 +1350,11 @@ Evidence: `tests/acceptance_receipts.rs`, `tests/postgres_commercial_receipts.rs
 golden, both schema goldens and migration/guard tests. The duplicate-business test goes red when its
 unique index is removed and green after restoration from the pre-probe copy.
 
-## D-506 — Authorized commercial provider boundary (2026-10-01)
+#### D-506 [H] Authorized commercial provider boundary
+
+**Status:** DECIDED 2026-10-01
+
+**Source:** Pricing Seam Contracts plan, Task 5b.
 
 Task 5b registers separate `dyn SellabilityV1` and `dyn PricingAcceptanceV1` providers in ClientHub.
 They share `CommercialTermsService::new(state, enforcer, clock, policy)`. PricingReadProvider still
@@ -1381,7 +1391,11 @@ nothing. This intermediate boundary commit is not a public commercial release: G
 before consumers can rely on successful commercial commands. Production meter semantics (E1),
 consumer delivery and deployment PDP grants remain external obligations.
 
-## D-507 — Atomic acceptance and durable authenticated command replay (2026-10-01)
+#### D-507 [H] Atomic acceptance and durable authenticated command replay
+
+**Status:** DECIDED 2026-10-01
+
+**Source:** Pricing Seam Contracts plan, Task 5c.
 
 Task 5c implements SellabilityV1::check on the D-506 shared service and D-505 receipt schema 1.
 Acceptance create and plan read authorization precede digest computation and every replay. New
@@ -1419,7 +1433,11 @@ provider failures), deterministic detached-provider generation/clock/scheduled-s
 mutation probes removing generation checks, moving replay ahead of authorization and refreshing
 hold_until on replay. No migration or reinterpretation of previously issued receipts is needed.
 
-## D-508 — Frozen first holds and fresh original-binding eligibility (2026-10-01)
+#### D-508 [H] Frozen first holds and fresh original-binding eligibility
+
+**Status:** DECIDED 2026-10-01
+
+**Source:** Pricing Seam Contracts plan, Task 6.
 
 Task 6 replaces the D-506/D-507 pending hold and fulfilment answers on CommercialTermsService.
 Authorize the receipt action and look up the exact acceptance under the complete PDP scope before
@@ -1460,7 +1478,11 @@ restart, bounded recapture and immutable entry/policy/invoice pins. Mutation pro
 successor effective_to as expiry, checking eligibility before replay, and renewing TTL on a new
 key. The G3 controller gate follows this task; consumer implementation and E1 remain external.
 
-## D-509 — Executable Pricing seam fixtures and transport boundary (2026-10-01)
+#### D-509 [H] Executable Pricing seam fixtures and transport boundary
+
+**Status:** DECIDED 2026-10-01
+
+**Source:** Pricing Seam Contracts plan, Task 7.
 
 The five schema-1 JSON fixtures in pricing/tests/seam_fixtures are decoded by test-only typed serde
 DTOs with a closed scenario enum. Their combined commercial view separates entry-owned immutable
@@ -1475,7 +1497,12 @@ F02/F23/F24 arithmetic invokes existing domain::money::decode and amount_for as 
 checks. Source integration, UTC hourly scheduling, counter reset, manifests, monthly composition and
 invoice rounding are external obligations, not executed consumer integrations. F07 preserves every
 accepted pin after successor publication and delayed activation; F22/F31 exercise typed refusals and
-strict wire boundaries. Unsupported wire values cannot be represented by the SDK's closed enums.
+strict wire boundaries. Missing BillingTerms, quarterly, and unknown fx/phases/promotions keys are
+wire-adapter vectors with no production transport. These five cases only run the decoder or parse
+step; they issue no provider command, so receipt-count assertions for them would be vacuous and
+are omitted. The other six refusal cases execute provider/REST commands and retain persistence
+assertions. A typed cross-currency sale reaches the provider and returns CURRENCY_MISMATCH.
+Unsupported wire values cannot be represented by the SDK's closed enums.
 The illustrative vm-hours/cloudlet-hours names remain declarations of the existing test provider only.
 
 The commercial command surface is SDK-only: check and hold are IdempotentWrite; resolve, price,
@@ -1492,7 +1519,11 @@ No external atlas file is edited, no consumer integration status is promoted, an
 semantics remains externally blocked. Task 8 and the shared G4 controller gate follow this slice.
 
 
-## D-510 — Database parity and provider handoff (2026-10-01)
+#### D-510 [H] Database parity and provider handoff
+
+**Status:** DECIDED 2026-10-01
+
+**Source:** Pricing Seam Contracts plan, Task 8.
 
 Retain D-501–D-509's final typed ports, refusal reasons, PDP authorization and indefinite receipt
 retention. Task 8 adds a common SQLite/PostgreSQL conformance suite and actual persisted-database
@@ -1530,3 +1561,29 @@ privilege. E4: Collector retains immutable source history, Subscriptions schedul
 changes at the next UTC hour boundary, and Rating consumes the original history. Rating owns hourly
 scheduling/reset/catch-up and exact amounts; Billing sums exact contributions before HALF_EVEN invoice
 rounding. Pricing tests do not certify those downstream behaviors.
+
+
+#### D-511 [H] Commercial commands enforce scoped prices and nonempty activation windows
+
+**Status:** DECIDED 2026-10-01
+
+**Source:** Pricing Seam Contracts review fix run; security/concurrency M1–M2 and L1–L5,
+data/docs L1–L4. Refines D-503, D-507 and D-508.
+
+New acceptance reads every selected price under its returned PDP price-read scope. A scoped-out
+price is PermissionDenied (403), including fresh hold and check_fulfilment; a foreign receipt remains
+ReceiptNotFound (404). At the commit clock, start_at must be strictly before hold_until. Otherwise
+ActivationOutsideAcceptedWindow refuses the command before receipt, command or audit insertion.
+A start inside the half-open window can be held normally.
+
+SDK check/hold keys share REST's invalid-argument validation: nonempty, at most 255 printable ASCII
+bytes. Products definite refusals propagate; contention, rate limits and outages map to registry
+unavailability (503). UnconfiguredDependency places its code in type, dependency in subject and
+message in description.
+
+Policy-less plan selections omit usage_policy from approval content, preserving the pre-seam
+fingerprint. A real policy reference still fingerprints its id, version and digest. The regression
+freezes the hash produced by edb532550 on the same rows. SQLite migration 18's pre/post sqlite_master
+DDL comparison preserves every old clause, including unnamed CHECKs and the price entry/version
+UNIQUE; only identifier quoting, formatting, clause order and the explicitly added policy clauses
+are normalized. A removed-CHECK mutation must fail this test.

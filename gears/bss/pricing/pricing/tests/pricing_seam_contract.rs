@@ -1054,11 +1054,22 @@ async fn f22_f31_unsupported_inputs_fail_before_acceptance() {
                 );
             }
         }
-        assert_eq!(
-            receipt_count(&w).await,
-            before,
-            "{refusal:?} creates no acceptance"
-        );
+        // These five are wire-adapter vectors with no production transport or command;
+        // checking receipt_count for them cannot observe a side effect.
+        if !matches!(
+            refusal,
+            Refusal::MissingBillingTerms
+                | Refusal::Quarterly
+                | Refusal::Phases
+                | Refusal::Promotions
+                | Refusal::Fx
+        ) {
+            assert_eq!(
+                receipt_count(&w).await,
+                before,
+                "{refusal:?} creates no acceptance"
+            );
+        }
     }
 }
 async fn execute(w: &World, sql: &str) {

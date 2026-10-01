@@ -156,12 +156,20 @@ pub fn content(
         "available_from": revision.available_from.map(|d| d.to_string()),
         "items": items
             .iter()
-            .map(|i| json!({
-                "sku_id": i.sku_id,
-                "price_book_entry_id": i.price_book_entry_id,
-                "usage_policy": entries.iter().find(|e| Some(e.id) == i.price_book_entry_id).and_then(|e|
-                    e.usage_policy_id.map(|id| json!({"policy_id":id, "version":e.usage_policy_version.map(|v| v.to_string()), "digest":e.usage_policy_digest}))),
-            }))
+            .map(|i| {
+                let mut item = json!({
+                    "sku_id": i.sku_id,
+                    "price_book_entry_id": i.price_book_entry_id,
+                });
+                if let Some(entry) = entries.iter().find(|e| Some(e.id) == i.price_book_entry_id)
+                    && let Some(id) = entry.usage_policy_id
+                {
+                    item["usage_policy"] = json!({"policy_id": id,
+                        "version": entry.usage_policy_version.map(|v| v.to_string()),
+                        "digest": entry.usage_policy_digest});
+                }
+                item
+            })
             .collect::<Vec<_>>(),
     })
 }

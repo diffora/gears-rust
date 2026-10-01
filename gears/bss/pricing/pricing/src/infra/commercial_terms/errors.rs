@@ -16,9 +16,9 @@ impl From<UnconfiguredDependency> for CanonicalError {
     fn from(error: UnconfiguredDependency) -> Self {
         AcceptanceResource::failed_precondition()
             .with_precondition_violation(
-                "UNCONFIGURED_DEPENDENCY",
                 error.dependency,
                 error.to_string(),
+                "UNCONFIGURED_DEPENDENCY",
             )
             .create()
     }
@@ -53,5 +53,14 @@ pub(super) fn storage(error: RepoError) -> CanonicalError {
                 .with_detail("PricingStorage: receipt storage unavailable")
                 .create()
         }
+    }
+}
+
+/// Keep definite Products refusals; transient contention and outages are unavailable.
+pub(super) fn products(error: CanonicalError) -> CanonicalError {
+    if crate::infra::reference_work::definite_refusal(&error) {
+        error
+    } else {
+        crate::api::rest::authoring::support::registry_unavailable(&error)
     }
 }

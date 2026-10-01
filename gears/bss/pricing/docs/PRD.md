@@ -476,7 +476,8 @@ D-504 defines the pure new-sale profile, narrower than the readable catalog:
 | Usage BillingCycle | PerUnit, Volume or Graduated; period null; immutable explicit policy | MissingRatingPolicy / MeterPolicyMismatch |
 | Usage CalendarHour | Same usage models; UTC, SUM, subscription_line or resource scope; no minimum fee, including zero | UnsupportedTerms |
 | BillingCycle minimum fee | SubscriptionLine only; any Resource-scoped floor is refused | UnsupportedTerms |
-| Package, FX, promotions, phases, allowances, quarter | Not part of new-sale terms; historical catalog reads remain intact | UnsupportedModel / UnsupportedTerms |
+| FX / cross-currency sale | Currency must equal the selected price currency | CURRENCY_MISMATCH |
+| Package, promotions, phases, allowances, quarter | Not part of new-sale terms; historical catalog reads remain intact | UnsupportedModel / UnsupportedTerms |
 
 Invoice terms must be schema version 1, month/year and UTC, with explicit order or positive,
 non-nil seller-policy provenance. Orders resolves this Subscriptions-owned snapshot before Pricing

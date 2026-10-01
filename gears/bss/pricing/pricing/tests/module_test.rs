@@ -558,9 +558,17 @@ async fn absent_pdp_is_a_named_unconfigured_dependency() {
         .unwrap();
     assert_eq!(canonical.status_code(), 400);
     let problem =
-        serde_json::to_string(&toolkit_canonical_errors::Problem::from(canonical.clone())).unwrap();
-    assert!(
-        problem.contains("UNCONFIGURED_DEPENDENCY") && problem.contains("AuthZResolverApi"),
+        serde_json::to_value(toolkit_canonical_errors::Problem::from(canonical.clone())).unwrap();
+    assert_eq!(
+        problem["context"]["violations"][0]["type"], "UNCONFIGURED_DEPENDENCY",
         "{problem}"
+    );
+    assert_eq!(
+        problem["context"]["violations"][0]["description"],
+        "unconfigured dependency: AuthZResolverApi"
+    );
+    assert_eq!(
+        problem["context"]["violations"][0]["subject"],
+        "AuthZResolverApi"
     );
 }

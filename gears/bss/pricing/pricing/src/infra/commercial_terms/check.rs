@@ -19,6 +19,7 @@ use crate::{
             repo::{
                 acceptance_repo, audit_repo,
                 commercial_command_repo::{self, CommandScope},
+                price_repo,
             },
         },
     },
@@ -56,9 +57,7 @@ impl CommercialTermsService {
         let plan_scope = reader
             .scope(ctx, tenant, &resource_types::PLAN, query.plan_revision_id)
             .await?;
-        if meta.idempotency_key.trim().is_empty() {
-            return Err(R::UnsupportedTerms.into());
-        }
+        crate::api::rest::preconditions::validate_idempotency_key(&meta.idempotency_key)?;
         query.start_at = query.start_at.to_offset(time::UtcOffset::UTC);
         query.billing_terms.anchor_at = query
             .billing_terms
@@ -148,9 +147,12 @@ impl CommercialTermsService {
             let resolved = project_resolution(&snapshot)?;
             let bindings = selected(&request.query, &resolved)?;
             for binding in &bindings {
-                reader
+                let price_scope = reader
                     .scope(ctx, tenant, &resource_types::PRICE, binding.price.price_id)
                     .await?;
+                price_repo::find(&db.conn()?, &price_scope, tenant, binding.price.price_id)
+                    .await?
+                    .ok_or_else(|| CanonicalError::from(R::PermissionDenied))?;
             }
             let evidence = self
                 .observe(ctx, &request.query, &snapshot, &bindings)
@@ -195,7 +197,8 @@ impl CommercialTermsService {
         for b in bindings {
             let sku = registry
                 .sku_for_write(ctx, q.tenant_axes.seller_tenant_id, b.sku_id)
-                .await?;
+                .await
+                .map_err(errors::products)?;
             if let Some(policy) = &b.usage_rating_policy {
                 let meter =
                     meter_semantics::resolve(&self.state.hub, ctx, &(&policy.content).into(), &sku)
@@ -288,13 +291,17 @@ async fn commit(
             return Err(CanonicalError::from(R::PriceClosed).into());
         }
     }
+    let hold_until = now + time::Duration::seconds(i64::from(policy.duration_seconds));
+    if r.query.start_at >= hold_until {
+        return Err(CanonicalError::from(R::ActivationOutsideAcceptedWindow).into());
+    }
     let receipt = AcceptanceReceipt {
         acceptance_id: Uuid::now_v7(),
         request_digest: r.digest,
         terms_digest: terms_digest(&r.query, bindings),
         query: r.query.clone(),
         accepted_at: now,
-        hold_until: now + time::Duration::seconds(i64::from(policy.duration_seconds)),
+        hold_until,
         bindings: bindings.clone(),
     };
     let row = acceptance_repo::from_receipt(&receipt, r.key.caller_id)?;

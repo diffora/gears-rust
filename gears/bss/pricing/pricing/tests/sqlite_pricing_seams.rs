@@ -70,3 +70,6 @@ async fn phase9_upgrade_and_fresh_install() {
     let (_, _, _, fresh) = plan_support::entry_support::test_db().await;
     seam_parity_support::migration::upgrade(db, dsn, fresh).await;
 }
+
+#[path = "review_fix/sqlite_schema.rs"]
+mod review_schema;

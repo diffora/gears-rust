@@ -371,3 +371,10 @@ Eligibility is never a reusable admission token. Subscriptions must fence its co
 version and attempt, revalidate immediately before its first activation intent, and own actual
 served intervals. Entry ID, immutable policy, original money, SKU v3 descriptors and invoice inputs
 survive successor prices and revisions. Historical receipt reads remain independent of eligibility.
+
+
+D-511 tightens the command boundary: check reads each selected price under its compiled price-read
+scope; a price outside that scope yields 403, as do fresh hold/check_fulfilment reads. A foreign
+receipt reference remains 404. At commit, start_at >= hold_until yields
+ActivationOutsideAcceptedWindow before any acceptance or command is stored. SDK command keys use
+the same bounded printable-ASCII invalid-argument rule as REST. Products contention maps to 503.

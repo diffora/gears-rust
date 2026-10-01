@@ -895,3 +895,6 @@ async fn receipt_id_scoped_grant_applies_to_parent_before_child_rows_or_replay()
     );
     assert_eq!(hold_counts(&f).await, (1, 2));
 }
+
+#[path = "review_fix/mod.rs"]
+mod review_fix;
