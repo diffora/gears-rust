@@ -103,21 +103,134 @@ fn lifecycle(value: Option<&str>) -> Result<Option<Lifecycle>, RepoError> {
         })
         .transpose()
 }
-fn entry_of(m: audit_log::Model) -> Result<SkuHistoryEntry, RepoError> {
-    let from_lifecycle = lifecycle(m.from_lifecycle.as_deref())?;
-    let to_lifecycle = lifecycle(m.to_lifecycle.as_deref())?;
+
+/// One history row before its legacy `retiring` tokens are mapped (P-D-248).
+struct Staged {
+    audit_id: Uuid,
+    at: OffsetDateTime,
+    actor: Uuid,
+    action: String,
+    from_raw: Option<String>,
+    to_raw: Option<String>,
+    unit_id: Option<Uuid>,
+    note: Option<String>,
+}
+/// A row the mapping may consult: the page, and every audit row of the page's units.
+struct MoveRow {
+    audit_id: Uuid,
+    action: String,
+    from: Option<String>,
+    to: Option<String>,
+    unit_id: Option<Uuid>,
+}
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "the pager maps a row through a Result, and this step does not fail"
+)]
+fn stage(m: audit_log::Model) -> Result<Staged, RepoError> {
     let unit_id = (m.subject_kind == "approval_unit")
         .then_some(m.subject_id)
         .flatten();
-    Ok(SkuHistoryEntry {
+    Ok(Staged {
+        audit_id: m.audit_id,
         at: m.written_at,
         actor: m.actor_ref,
         action: m.action,
-        from_lifecycle,
-        to_lifecycle,
+        from_raw: m.from_lifecycle,
+        to_raw: m.to_lifecycle,
         unit_id,
-        unit_kind: None,
         note: m.reason,
+    })
+}
+fn both(token: Option<&str>) -> (Option<String>, Option<String>) {
+    let owned = token.map(str::to_owned);
+    (owned.clone(), owned)
+}
+fn non_retiring<'a>(from: Option<&'a str>, to: Option<&'a str>) -> Option<&'a str> {
+    [from, to]
+        .into_iter()
+        .flatten()
+        .find(|token| *token != "retiring")
+}
+/// The lifecycle a retire submit really left, when its stored `from` is already `retiring`:
+/// the earlier row that entered `retiring`, or nothing when that row is not in hand.
+fn entered_from(context: &[MoveRow], before: Uuid) -> Option<String> {
+    context
+        .iter()
+        .filter(|row| {
+            row.audit_id < before
+                && row.to.as_deref() == Some("retiring")
+                && row.from.as_deref() != Some("retiring")
+        })
+        .max_by_key(|row| row.audit_id)
+        .and_then(|row| row.from.clone())
+}
+fn submit_lifecycle(context: &[MoveRow], unit: Uuid) -> Option<String> {
+    let submit = context
+        .iter()
+        .filter(|row| row.unit_id == Some(unit) && row.action == "approval.submit")
+        .min_by_key(|row| row.audit_id)?;
+    match submit.from.as_deref() {
+        Some("retiring") => entered_from(context, submit.audit_id),
+        other if submit.to.as_deref() == Some("retiring") => other.map(str::to_owned),
+        other => non_retiring(other, submit.to.as_deref()).map(str::to_owned),
+    }
+}
+/// Map a legacy `retiring` token on the raw strings, before [`Lifecycle::parse`] (P-D-248). A
+/// token that remains is a corrupt row; the mapping leaves none.
+fn map_legacy(row: &Staged, context: &[MoveRow]) -> (Option<String>, Option<String>) {
+    let from = row.from_raw.as_deref();
+    let to = row.to_raw.as_deref();
+    if from != Some("retiring") && to != Some("retiring") {
+        return (row.from_raw.clone(), row.to_raw.clone());
+    }
+    let resolved = row.unit_id.and_then(|id| submit_lifecycle(context, id));
+    match row.action.as_str() {
+        "approval.submit" if to == Some("retiring") && from != Some("retiring") => both(from),
+        "approval.submit" => match resolved.or_else(|| entered_from(context, row.audit_id)) {
+            Some(lifecycle) => both(Some(lifecycle.as_str())),
+            None => (None, None),
+        },
+        "approval.vote" | "approval.refreshed" => match resolved {
+            Some(lifecycle) => both(Some(lifecycle.as_str())),
+            None => (None, None),
+        },
+        "approval.applied" | "approval.approved"
+            if from == Some("retiring") && to == Some("retired") =>
+        {
+            match resolved {
+                Some(lifecycle) => (Some(lifecycle), Some("retired".to_owned())),
+                None => (None, Some("retired".to_owned())),
+            }
+        }
+        "approval.rejected" | "approval.withdrawn" | "sku.unfence" | "sku.fence_expired" => {
+            match non_retiring(from, to).map(str::to_owned).or(resolved) {
+                Some(lifecycle) => both(Some(lifecycle.as_str())),
+                None => (None, None),
+            }
+        }
+        _ if to == Some("retiring") && from != Some("retiring") => both(from),
+        _ if from == Some("retiring") && to == Some("retired") => match resolved {
+            Some(lifecycle) => (Some(lifecycle), Some("retired".to_owned())),
+            None => (None, Some("retired".to_owned())),
+        },
+        _ => match non_retiring(from, to).map(str::to_owned).or(resolved) {
+            Some(lifecycle) => both(Some(lifecycle.as_str())),
+            None => (None, None),
+        },
+    }
+}
+fn entry_of(row: &Staged, context: &[MoveRow]) -> Result<SkuHistoryEntry, RepoError> {
+    let (from, to) = map_legacy(row, context);
+    Ok(SkuHistoryEntry {
+        at: row.at,
+        actor: row.actor,
+        action: row.action.clone(),
+        from_lifecycle: lifecycle(from.as_deref())?,
+        to_lifecycle: lifecycle(to.as_deref())?,
+        unit_id: row.unit_id,
+        unit_kind: None,
+        note: row.note.clone(),
     })
 }
 
@@ -151,8 +264,8 @@ fn history_condition(tenant: Uuid, sku: Uuid) -> Condition {
 /// with its unit's kind from ONE read of the page's units. The caller has found the SKU in its
 /// scope.
 /// # Errors
-/// [`SkuListError::Query`] for a cursor the pager refuses; [`SkuListError::Repo`] for storage and
-/// a stored lifecycle outside the five.
+/// [`SkuListError::Query`] for a cursor the pager refuses; [`SkuListError::Repo`] for storage.
+/// A stored `retiring` is mapped before it is parsed (P-D-248), so it is never a 500.
 pub async fn page_sku_history(
     runner: &impl DBRunner,
     tenant: Uuid,
@@ -171,11 +284,11 @@ pub async fn page_sku_history(
         .secure()
         .scope_with(&scope)
         .filter(history_condition(tenant, sku));
-    let mut page = paginate_odata_try::<
+    let page = paginate_odata_try::<
         HistoryField,
         HistoryMapping,
         audit_log::Entity,
-        SkuHistoryEntry,
+        Staged,
         _,
         RepoError,
         _,
@@ -185,7 +298,7 @@ pub async fn page_sku_history(
         &query,
         (HistoryField::AuditId.name(), SortDir::Asc),
         HISTORY_PAGE,
-        entry_of,
+        stage,
     )
     .await
     .map_err(|e| match e {
@@ -202,38 +315,86 @@ pub async fn page_sku_history(
     let mut units: Vec<Uuid> = page.items.iter().filter_map(|e| e.unit_id).collect();
     units.sort_unstable();
     units.dedup();
-    if units.is_empty() {
-        return Ok(page);
-    }
-    let kinds: HashMap<Uuid, String> = approval_unit::Entity::find()
-        .secure()
-        .scope_with(&scope)
-        .filter(
-            Condition::all()
-                .add(approval_unit::Column::TenantId.eq(tenant))
-                .add(approval_unit::Column::Id.is_in(units)),
-        )
-        .all(runner)
-        .await
-        .map_err(|e| SkuListError::Repo(driver_failure("read history units".into(), e)))?
-        .into_iter()
-        // A unit's kind is read through its closed set here too: a kind products does not
-        // record is a corrupt row, as on every unit read (the phase 9 review's theme C).
-        .map(|u| {
-            crate::domain::approvals::ApprovalKind::parse(&u.kind)
-                .map(|k| (u.id, k.as_str().to_owned()))
-                .ok_or_else(|| {
-                    SkuListError::Repo(RepoError::CorruptRow(format!(
-                        "approval unit {} has unknown kind {}",
-                        u.id, u.kind
-                    )))
-                })
+    let mut context: Vec<MoveRow> = page
+        .items
+        .iter()
+        .map(|row| MoveRow {
+            audit_id: row.audit_id,
+            action: row.action.clone(),
+            from: row.from_raw.clone(),
+            to: row.to_raw.clone(),
+            unit_id: row.unit_id,
         })
-        .collect::<Result<_, _>>()?;
-    for entry in &mut page.items {
-        entry.unit_kind = entry.unit_id.and_then(|id| kinds.get(&id).cloned());
-    }
-    Ok(page)
+        .collect();
+    let kinds: HashMap<Uuid, String> = if units.is_empty() {
+        HashMap::new()
+    } else {
+        let unit_rows = audit_log::Entity::find()
+            .secure()
+            .scope_with(&scope)
+            .filter(
+                Condition::all()
+                    .add(audit_log::Column::TenantId.eq(tenant))
+                    .add(audit_log::Column::SubjectKind.eq("approval_unit"))
+                    .add(audit_log::Column::SubjectId.is_in(units.clone())),
+            )
+            .all(runner)
+            .await
+            .map_err(|e| SkuListError::Repo(driver_failure("read history unit rows".into(), e)))?;
+        for row in unit_rows {
+            if context.iter().any(|seen| seen.audit_id == row.audit_id) {
+                continue;
+            }
+            let unit_id = (row.subject_kind == "approval_unit")
+                .then_some(row.subject_id)
+                .flatten();
+            context.push(MoveRow {
+                audit_id: row.audit_id,
+                action: row.action,
+                from: row.from_lifecycle,
+                to: row.to_lifecycle,
+                unit_id,
+            });
+        }
+        approval_unit::Entity::find()
+            .secure()
+            .scope_with(&scope)
+            .filter(
+                Condition::all()
+                    .add(approval_unit::Column::TenantId.eq(tenant))
+                    .add(approval_unit::Column::Id.is_in(units)),
+            )
+            .all(runner)
+            .await
+            .map_err(|e| SkuListError::Repo(driver_failure("read history units".into(), e)))?
+            .into_iter()
+            // A unit's kind is read through its closed set here too: a kind products does not
+            // record is a corrupt row, as on every unit read (the phase 9 review's theme C).
+            .map(|u| {
+                crate::domain::approvals::ApprovalKind::parse(&u.kind)
+                    .map(|k| (u.id, k.as_str().to_owned()))
+                    .ok_or_else(|| {
+                        SkuListError::Repo(RepoError::CorruptRow(format!(
+                            "approval unit {} has unknown kind {}",
+                            u.id, u.kind
+                        )))
+                    })
+            })
+            .collect::<Result<_, _>>()?
+    };
+    let items = page
+        .items
+        .iter()
+        .map(|row| {
+            let mut entry = entry_of(row, &context).map_err(SkuListError::Repo)?;
+            entry.unit_kind = row.unit_id.and_then(|id| kinds.get(&id).cloned());
+            Ok(entry)
+        })
+        .collect::<Result<Vec<_>, SkuListError>>()?;
+    Ok(Page {
+        items,
+        page_info: page.page_info,
+    })
 }
 
 #[cfg(test)]

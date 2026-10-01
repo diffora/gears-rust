@@ -136,18 +136,18 @@ async fn every_lifecycle_move_is_stamped_by_the_act_that_made_it() {
             "approval.approved sku_publish draft>published",
             "approval.submit sku_change published>published",
             "approval.applied sku_change published>deprecated",
-            "approval.submit sku_retire deprecated>retiring",
-            "approval.withdrawn sku_retire retiring>deprecated",
+            "approval.submit sku_retire deprecated>deprecated",
+            "approval.withdrawn sku_retire deprecated>deprecated",
             // a test fence (retire) came between: no act of the doors made it
-            "sku.unfence - retiring>deprecated",
+            "sku.unfence - deprecated>deprecated",
             // a test fence (type change) came between: it moves no lifecycle
             "sku.unfence - deprecated>deprecated",
             // a test fence (retire, two hours old) came between, expired by the card's read
-            "sku.fence_expired - retiring>deprecated",
+            "sku.fence_expired - deprecated>deprecated",
             // and again, expired by the list's read
-            "sku.fence_expired - retiring>deprecated",
-            "approval.submit sku_retire deprecated>retiring",
-            "approval.applied sku_retire retiring>retired",
+            "sku.fence_expired - deprecated>deprecated",
+            "approval.submit sku_retire deprecated>deprecated",
+            "approval.applied sku_retire deprecated>retired",
         ]
     );
     assert_eq!(
@@ -229,8 +229,8 @@ async fn a_delete_a_refresh_a_rejected_retire_and_a_reference_stamp_their_rows()
             "approval.rejected sku_publish draft>draft",
             "approval.submit sku_publish draft>draft",
             "approval.applied sku_publish draft>published",
-            "approval.submit sku_retire published>retiring",
-            "approval.rejected sku_retire retiring>published",
+            "approval.submit sku_retire published>published",
+            "approval.rejected sku_retire published>published",
         ]
     );
     assert_eq!(
@@ -414,7 +414,7 @@ async fn the_history_reads_every_act_with_its_actor_unit_and_note_in_order() {
         (
             "sku.fence_expired",
             &system,
-            json!("retiring"),
+            json!("published"),
             json!("published"),
             Value::Null,
             Value::Null,

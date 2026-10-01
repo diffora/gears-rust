@@ -437,7 +437,14 @@ async fn subjects_publish_change_refuse_corrupt_reference_and_withdraw() {
             .unwrap()
             .unwrap()
             .lifecycle,
-        Lifecycle::Retiring
+        Lifecycle::Published
+    );
+    assert!(
+        repo::find_sku(&conn, &scope, tenant, id)
+            .await
+            .unwrap()
+            .unwrap()
+            .retire_pending
     );
     assert_eq!(enqueued_event_count(&dsn, SkuRetired::TYPE_ID).await, 0);
     in_tx(&db.db(), move |tx| {

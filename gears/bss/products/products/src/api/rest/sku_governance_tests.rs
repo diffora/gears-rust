@@ -932,7 +932,8 @@ async fn a_reserve_and_a_fence_racing_end_consistent() {
         }
         (409, 200) => {
             assert_eq!(problem_code(&reserve.1), "SKU_FENCED");
-            assert_eq!(f.card().await["lifecycle"], "retiring");
+            assert_eq!(f.card().await["lifecycle"], "published");
+            assert_eq!(f.card().await["retire_pending"], true);
         }
         other => panic!("inconsistent race {other:?}: {reserve:?}, {retire:?}"),
     }
@@ -2601,18 +2602,6 @@ async fn bound_registry_refusals_match_rest_codes() {
         problem_code(&rest)
     );
     assert_eq!(problem_code(&rest), "SKU_FENCED");
-    // SKU_RETIRING is the existing domain refusal for an unfenced retiring head.
-    assert_eq!(
-        canonical_code(
-            crate::domain::references::reservation_allowed(
-                bss_products_sdk::Lifecycle::Retiring,
-                false
-            )
-            .unwrap_err()
-            .into()
-        ),
-        "SKU_RETIRING"
-    );
 }
 #[tokio::test]
 async fn bound_registry_fresh_head_and_dated_versions() {
@@ -2767,26 +2756,26 @@ async fn bound_registry_serves_a_principal_without_a_subject_type() {
     );
 }
 #[tokio::test]
-async fn bound_registry_unfenced_retiring_head_matches_rest_refusal() {
-    use bss_products_sdk::{Lifecycle, ReferenceKind, ReferenceRegistryV1};
+async fn bound_registry_retire_pending_matches_rest_refusal() {
+    use bss_products_sdk::{ReferenceKind, ReferenceRegistryV1};
     let f = Fixture::new(0).await;
     f.publish().await;
     let db = f.state.db.db();
     let conn = db.conn().unwrap();
     let scope = toolkit_db::secure::AccessScope::for_tenant(f.tenant);
-    repo::set_lifecycle(
+    repo::fence_sku(
         &conn,
         &scope,
         f.tenant,
         f.id,
-        &[Lifecycle::Published],
-        Lifecycle::Retiring,
+        repo::Fence::Retire,
+        uuid::Uuid::new_v4(),
         time::OffsetDateTime::now_utc(),
     )
     .await
     .unwrap();
     let (_, rest) = f.reserve(Uuid::new_v4()).await;
-    assert_eq!(problem_code(&rest), "SKU_RETIRING");
+    assert_eq!(problem_code(&rest), "SKU_FENCED");
     let error = local(&f, "pricing")
         .reserve(
             &f.author,
@@ -3606,7 +3595,7 @@ async fn a_unit_of_an_unknown_kind_or_state_is_a_corrupt_row_on_every_read() {
     stored_unit(&f, "sku_publish", f.id, UnitState::Pending, at).await;
     let foreign = stored_unit(&f, "promotion", f.id, UnitState::Pending, at).await;
     for path in [
-        "".to_owned(),
+        String::new(),
         "?state=pending".to_owned(),
         format!("?ref_id={}", f.id),
         "/counts".to_owned(),
@@ -3642,7 +3631,7 @@ async fn a_unit_of_an_unknown_kind_or_state_is_a_corrupt_row_on_every_read() {
     );
     raw.close().await.unwrap();
     for path in [
-        "".to_owned(),
+        String::new(),
         "/counts".to_owned(),
         "/counts?kind=sku_publish".to_owned(),
         format!("/{poisoned}"),

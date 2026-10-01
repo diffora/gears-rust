@@ -361,6 +361,8 @@ impl ReferenceRegistryV1 for Catalog {
             usage_type_ref: entry.meter,
             unit: None,
             type_change_pending: false,
+            retire_pending: false,
+            lifecycle_next: None,
             pending_unit_id: None,
             approved_by_unit_id: None,
             created_by: Uuid::nil(),

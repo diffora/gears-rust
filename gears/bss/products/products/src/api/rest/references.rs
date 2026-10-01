@@ -483,21 +483,8 @@ pub(crate) async fn reserve_tx(
         return Ok((row, false));
     }
     let s = g::find(tx, &scope, tenant, id).await?;
-    // Distinguish the actual retirement fence from an unfenced retiring head.
-    // Both refuse adoption; normal retire operations retain their existing SKU_FENCED code.
-    let retiring_fence = if s.lifecycle == bss_products_sdk::Lifecycle::Retiring {
-        repo::find_sku_fence(tx, &scope, tenant, id)
-            .await
-            .map_err(TxError::Repo)?
-            .is_some_and(|row| {
-                row.fenced_at.is_some()
-                    || row.fence_op_id.is_some()
-                    || row.pending_unit_id.is_some()
-            })
-    } else {
-        false
-    };
-    reservation_allowed(s.lifecycle, s.type_change_pending || retiring_fence)
+    // A retire under review refuses a new reservation as a fence does (P-D-248): SKU_FENCED.
+    reservation_allowed(s.lifecycle, s.type_change_pending || s.retire_pending)
         .map_err(TxError::Refused)?;
     let row = repo::reserve_reference(
         tx,

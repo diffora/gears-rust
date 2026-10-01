@@ -16,9 +16,9 @@ async fn configured_gear_registers_implemented_routes() -> anyhow::Result<()> {
     assert!(gear.runtime.load_full().is_some());
     assert_eq!(
         crate::infra::storage::migrations::Migrator::migrations().len(),
-        12,
-        "the schema guard, coordination and the ten PriceBook migrations (000009: the unit's \
-         note, P-D-219; 000010: no retired default, P-D-220)"
+        13,
+        "the schema guard, coordination and the eleven PriceBook migrations (000009: the unit's \
+         note, P-D-219; 000010: no retired default, P-D-220; 000011: retire_pending, P-D-248)"
     );
     let openapi = OpenApiRegistryImpl::new();
     let router = gear.register_rest(&ctx, Router::new(), &openapi)?;
@@ -145,6 +145,7 @@ async fn served_query_parameters_are_typed_and_the_list_publishes_its_odata_voca
             "lifecycle",
             "name",
             "pending_unit_id",
+            "retire_pending",
             "type"
         ],
         "{list}"
@@ -317,7 +318,7 @@ async fn registered_products_client_reads_drafts_and_hides_foreign_rows() {
 // ------------------------------------------------------------------ P-D-217: closed sets
 
 const SKU_TYPE: &[&str] = &["recurring", "usage", "one_time", "bundle"];
-const LIFECYCLE: &[&str] = &["draft", "published", "deprecated", "retiring", "retired"];
+const LIFECYCLE: &[&str] = &["draft", "published", "deprecated", "retired"];
 const TIMING: &[&str] = &["advance", "arrears"];
 const CATEGORY_STATUS: &[&str] = &["active", "retired"];
 const UNIT_STATE: &[&str] = &["pending", "approved", "rejected", "withdrawn"];
@@ -332,6 +333,7 @@ type Closed = (&'static str, &'static str, &'static [&'static str], bool);
 const CLOSED: &[Closed] = &[
     ("SkuDto", "type", SKU_TYPE, false),
     ("SkuDto", "lifecycle", LIFECYCLE, false),
+    ("LifecycleNextDto", "lifecycle", LIFECYCLE, false),
     ("SkuDto", "billing_timing", TIMING, true),
     ("SkuContentDto", "type", SKU_TYPE, false),
     ("SkuContentDto", "billing_timing", TIMING, true),

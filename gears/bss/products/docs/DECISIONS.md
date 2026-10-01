@@ -61,6 +61,8 @@
 | P-D-226 | M | The SDK's SKU types serialize as the wire carries them | DECIDED 2026-09-30 · Whole-branch review RS-22, RS-23, RS-24 (fix run W1b) |
 | P-D-227 | M | The approval units are counted by state and kind and list newest first on request (twin of pricing D-470) | DECIDED 2026-09-30 · Owner, 2026-09-30 (the approvals option 1, "ok"); pricing phase 9 plan rev 2 (decision 10; plan review M4, L11); amends P-D-224; amended by the phase 9 review (C, R32; fix run 9.5d-1) |
 | P-D-228 | M | A unit says whether its reader may approve it (twin of pricing D-471) | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 4, "ok"); pricing phase 9 plan rev 2 (decision 11; W2; plan review H1, M2); amends P-D-224; amended by the phase 9 review (E, fix run 9.5d-1) |
+| P-D-248 | H | A retire under review keeps the SKU's lifecycle; `retire_pending` is the fence | DECIDED 2026-10-01 · Owner, 2026-10-01; phase 9 plan rev 4 run 9.8d; amends P-D-189, P-D-208, P-D-211, P-D-213 |
+| P-D-249 | H | A lifecycle change honours its date | DECIDED 2026-10-01 · Owner, 2026-10-01; phase 9 plan rev 4 run 9.8d; amends P-D-191 |
 
 ## Entries
 
@@ -139,6 +141,11 @@ Apply revalidates the reference environment. A failed retirement check is `APPLY
 `SKU_REFERENCED`; the apply transaction rolls back and the SKU stays `retiring` until withdrawal or
 rejection. Pricing also refuses a new price book entry or plan item on a retiring SKU (`SKU_RETIRING`).
 
+P-D-248 amends this entry: the fence is `retire_pending`, not a `retiring` lifecycle. The SKU keeps
+`published` or `deprecated` until apply sets `retired` and clears the flag. Reject, withdraw, unfence
+and the orphan recovery clear the flag and restore nothing. A new reservation on it is still
+`SKU_FENCED`.
+
 **Traceability:** [PRD `fr-sku-retire-fenced`](PRD.md#fr-sku-retire-fenced),
 [`fr-sku-type-frozen`](PRD.md#fr-sku-type-frozen), [`fr-sku-lifecycle`](PRD.md#fr-sku-lifecycle),
 [`fr-reference-registry`](PRD.md#fr-reference-registry); spec §2 decision 17, §2.2, §4, §6.
@@ -165,7 +172,8 @@ spec §2 decision 8, §6, §14; Task 5 specifies the missing-policy fail-safe.
 
 Publish and every applied `sku_change` append a durable
 `sku_version (sku_id, published_version, effective_from, snapshot)`. A change carries `effective_from`,
-defaulting to today; publication is effective immediately. Pricing reads
+defaulting to today; publication is effective immediately. P-D-249 amends the lifecycle half: a change
+whose `effective_from` is after today stores `lifecycle_next` and leaves `lifecycle` until that date. Pricing reads
 `GET /skus/{id}/versions?as_of=<date>` for the version in force at a period's start. Earlier bindings keep
 their descriptors; no per-book approval or refreeze action exists.
 
@@ -505,7 +513,7 @@ the `q` search, 2026-09-28 (the collector's plugin takes no `contains`).
 #### P-D-208 [M] A retired SKU no longer keeps its category in use
 
 Amends P-D-186 (#9). Category retirement is refused (409 `CATEGORY_IN_USE`) only while a SKU in `draft`,
-`published`, `deprecated` or `retiring` names the category. A `retired` SKU no longer counts: nothing moves a
+`published` or `deprecated` names the category. P-D-248: a retire under review keeps one of those, so it still holds the category. The old `retiring` lifecycle no longer exists. A `retired` SKU no longer counts: nothing moves a
 retired SKU (`sku_change` takes only published or deprecated), so under P-D-186 a category that ever held one
 could never retire. `retiring` still counts, because a rejected or withdrawn retirement returns the SKU to its
 prior lifecycle. The check stays one conditional write with a `NOT EXISTS` over those four lifecycles, in the
@@ -581,8 +589,8 @@ review H1, L1–L5, L10); phase 6 review (queries F1: null equality opt-in per f
 
 #### P-D-211 [M] The SKU list's tab counts: `GET /skus/counts`
 
-`GET /skus/counts` answers `{ all, draft, published, deprecated, retiring, retired, in_review }` for the tabs
-of the SKUs screen: every SKU the narrowing keeps, those in each lifecycle, and those a pending unit locks
+`GET /skus/counts` answers `{ all, draft, published, deprecated, retired, in_review }` for the tabs
+of the SKUs screen (P-D-248 drops `retiring`; `$filter` gains `retire_pending`, and `lifecycle eq 'retiring'` is 400): every SKU the narrowing keeps, those in each lifecycle, and those a pending unit locks
 (`pending_unit_id` set, in any lifecycle). It narrows as the list does, by `q`, P-D-212's `priced` and `in_plan`, and `$filter`, except that `$filter`'s `lifecycle` terms are dropped, because the counts count every
 lifecycle. Only a term that is a top-level `and` conjunct is dropped; a `lifecycle` term under `or` or `not`
 cannot go without changing what the rest means, so it is 400 `INVALID_FILTER`. The whole filter is checked as
@@ -663,16 +671,18 @@ when the fence goes), and the orphan-fence expiry wrote no row at all (plan revi
 | `sku.delete` | none | `draft` | null |
 | `approval.submit` | `sku_publish` | `draft` | `draft` |
 | `approval.submit` | `sku_change` | L | L (a type-change fence moves no lifecycle) |
-| `approval.submit` | `sku_retire` | L, or `retiring` when an orphan fence is resumed | `retiring` |
+| `approval.submit` | `sku_retire` | L | L (P-D-248: a retire submit moves no lifecycle) |
 | `approval.vote`, `approval.refreshed` | any | the lifecycle found | the same |
 | `approval.applied` (the apply at submit, quorum 0), `approval.approved` | `sku_publish` | `draft` | `published` |
 | `approval.applied`, `approval.approved` | `sku_change` | L | the proposed lifecycle, or L |
-| `approval.applied`, `approval.approved` | `sku_retire` | `retiring` | `retired` |
+| `approval.applied`, `approval.approved` | `sku_retire` | L | `retired` |
 | `approval.rejected`, `approval.withdrawn` | `sku_publish` | `draft` | `draft` |
 | `approval.rejected`, `approval.withdrawn` | `sku_change` | L | L |
-| `approval.rejected`, `approval.withdrawn` | `sku_retire` | `retiring` | the lifecycle before the fence |
-| `sku.unfence` | none | `retiring` (retire fence) or L (type-change fence) | the lifecycle before the fence, or L |
+| `approval.rejected`, `approval.withdrawn` | `sku_retire` | L | L |
+| `sku.unfence` | none | L | L (a retire fence clears `retire_pending` and moves no lifecycle) |
 | `sku.fence_expired` | none | as `sku.unfence` | as `sku.unfence` |
+
+P-D-248: rows already stored with `retiring` stay in the log (the audit CHECK still allows the token). `GET /skus/{id}/history` maps them at read, on the raw strings before `Lifecycle::parse`, so the tab never shows `retiring` and a legacy row is never a 500. A retire submit is no move, an apply is `L → retired`, and a reject, withdraw, unfence or expiry is no move.
 
 - **The orphan-fence expiry is audited** (amends P-D-189). Every SKU read runs the expiry: the list, the
   counts, the card, the versions, the references, the unit card, and the submit and reference doors. It
@@ -1238,3 +1248,21 @@ items with their before and after content; still three statements per page. The 
 change and retire receipts and the vote receipts) read their unit's item authors the same way, beside its decisions;
 the engine's own approve still reads its items. `api/rest/sku_governance_tests.rs`: the list's statement test pins the
 projection, and the card, the submit receipt and the vote receipt read the authors alone.
+
+#### P-D-248 [H] A retire under review keeps the SKU's lifecycle
+
+**Status:** DECIDED 2026-10-01.
+
+`retiring` is not a SKU lifecycle. While a `sku_retire` unit is in review the SKU keeps `published` or `deprecated` and `retire_pending` is true, the twin of `type_change_pending`. Apply sets `retired` and clears the flag. Reject, withdraw, `POST /skus/{id}/unfence` and the orphan-fence recovery clear the flag and do not change the lifecycle. Migration `m20261001_000011_sku_lifecycle_honesty` adds the flag, converts a stored `retiring` row to `lifecycle = fence_prior_lifecycle` with the flag set, drops `fence_prior_lifecycle`, and tightens the lifecycle CHECK to draft, published, deprecated and retired. On SQLite it rebuilds the whole `m000007` family. A new reservation on a retire-pending SKU is `SKU_FENCED`. The counts drop `retiring`. `$filter` gains `retire_pending`. `lifecycle eq 'retiring'` is 400. The history maps a legacy `retiring` token at read time, on the raw strings before `Lifecycle::parse`, so the tab never shows it and the read is never a 500. New acts record the move they serve: a retire submit, reject, withdraw, unfence or expiry is no move, and an apply is `L → retired`.
+
+Pricing reads `retire_pending` instead of a `retiring` lifecycle. An entry or item create answers `SKU_RETIRING`. The revision checks answer `ITEM_SKU_UNAVAILABLE`. A lost reference is not re-reserved.
+
+**Source:** Owner, 2026-10-01 ("давай уберем этот статус и сделаем что он еще не retired пока не согласовали а сохраняется старый статус"). Phase 9 plan rev 4, run 9.8d. Amends P-D-189, P-D-208, P-D-211 and P-D-213.
+
+#### P-D-249 [H] A lifecycle change honours its date
+
+**Status:** DECIDED 2026-10-01.
+
+A `sku_change` whose `effective_from` is after today stores `lifecycle_next` and `lifecycle_next_from` and leaves `lifecycle` as it is. A change dated today or earlier sets `lifecycle` now. The lifecycle in force on a day is `lifecycle_next` when `lifecycle_next_from` has arrived, otherwise `lifecycle`. One Rust function, `effective_lifecycle`, serves the SDK `Sku.lifecycle` and `SkuDto.lifecycle`. One SQL `CASE`, bound to the gear clock's today, serves the list filter, the counts and the other lifecycle predicates. `SkuDto.lifecycle_next` is `{ lifecycle, from }`, null when none is pending. A later change replaces a pending next, or clears it when the target is the lifecycle in force. A retire apply clears it. The first statement of a head write folds a due next into `lifecycle`, so `set_lifecycle` sees the lifecycle in force. A read does not depend on that fold. The same migration as P-D-248 adds the two columns. They are both null or both set, and a next lifecycle is never `retired`.
+
+**Source:** Owner, 2026-10-01. Phase 9 plan rev 4, run 9.8d. Amends P-D-191.

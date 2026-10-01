@@ -664,6 +664,8 @@ impl ReferenceRegistryV1 for Script {
             unit: None,
             // Mode 4 is a fenced SKU: a pending type change refuses every new reference.
             type_change_pending: mode == 4,
+            retire_pending: mode == 22,
+            lifecycle_next: None,
             pending_unit_id: None,
             approved_by_unit_id: None,
             created_by: Uuid::new_v4(),

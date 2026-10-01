@@ -39,7 +39,7 @@ fn only_the_four_non_nullable_keys_order_and_only_the_two_nullable_fields_compar
 #[test]
 fn the_closed_fields_compare_with_their_values_and_take_the_text_functions() {
     for (field, good, bad) in [
-        (SkuListField::Lifecycle, "retiring", "active"),
+        (SkuListField::Lifecycle, "published", "retiring"),
         (SkuListField::Type, "one_time", "onetime"),
     ] {
         for op in [FilterOp::Eq, FilterOp::Ne, FilterOp::In] {

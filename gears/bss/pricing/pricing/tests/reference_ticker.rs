@@ -479,6 +479,31 @@ async fn a_released_reference_is_lost_only_behind_a_fence_and_found_again_when_i
         assert_eq!(lost_events(&f, &t).await.len(), 1);
     }
 }
+
+/// A SKU in retire review keeps its lifecycle and sets `retire_pending` (P-D-248). A lost
+/// reference of that SKU is not re-reserved: `admits` refuses it beside a type-change fence.
+#[tokio::test]
+async fn a_retire_pending_sku_is_not_rereserved() {
+    for kind in KINDS {
+        let (f, script, t, input) = setup(kind).await;
+        let c = f.caller();
+        script.set(7);
+        let created = t.create(&c, input, "one").await;
+        assert_eq!(created.1["reference_state"], "confirmation_pending");
+        script.set(22);
+        let mut ticker = Ticker::new(f.state.clone(), clock(), 10, 1);
+        ticker.tick().await.unwrap();
+        let read = t.read(&c, &created.1["id"]).await;
+        assert_eq!(read["reference_state"], "lost", "{kind:?}: {read}");
+        let reserves = Script::count(&script.reserve_calls);
+        ticker.tick().await.unwrap();
+        assert_eq!(
+            Script::count(&script.reserve_calls),
+            reserves,
+            "{kind:?}: a retire-pending SKU mints no rereserve"
+        );
+    }
+}
 #[tokio::test]
 async fn a_rereserve_refused_for_another_reason_is_retried_never_lost() {
     for kind in KINDS {

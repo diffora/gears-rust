@@ -39,6 +39,7 @@ pub enum SkuListField {
     Type,
     CategoryId,
     PendingUnitId,
+    RetirePending,
     UpdatedAt,
 }
 impl FilterField for SkuListField {
@@ -50,6 +51,7 @@ impl FilterField for SkuListField {
         Self::Type,
         Self::CategoryId,
         Self::PendingUnitId,
+        Self::RetirePending,
         Self::UpdatedAt,
     ];
     fn name(&self) -> &'static str {
@@ -61,12 +63,14 @@ impl FilterField for SkuListField {
             Self::Type => "type",
             Self::CategoryId => "category_id",
             Self::PendingUnitId => "pending_unit_id",
+            Self::RetirePending => "retire_pending",
             Self::UpdatedAt => "updated_at",
         }
     }
     fn kind(&self) -> FieldKind {
         match self {
             Self::Id | Self::CategoryId | Self::PendingUnitId => FieldKind::Uuid,
+            Self::RetirePending => FieldKind::Bool,
             Self::Code | Self::Name | Self::Lifecycle | Self::Type => FieldKind::String,
             Self::UpdatedAt => FieldKind::DateTimeUtc,
         }
@@ -102,6 +106,7 @@ impl FieldToColumn<SkuListField> for SkuListMapping {
             SkuListField::Type => sku::Column::Type,
             SkuListField::CategoryId => sku::Column::CategoryId,
             SkuListField::PendingUnitId => sku::Column::PendingUnitId,
+            SkuListField::RetirePending => sku::Column::RetirePending,
             SkuListField::UpdatedAt => sku::Column::UpdatedAt,
         }
     }
@@ -149,6 +154,7 @@ impl ODataFieldMapping<SkuListField> for SkuListMapping {
             SkuListField::Type => sea_orm::Value::String(Some(model.r#type.clone())),
             SkuListField::CategoryId => sea_orm::Value::Uuid(model.category_id),
             SkuListField::PendingUnitId => sea_orm::Value::Uuid(model.pending_unit_id),
+            SkuListField::RetirePending => sea_orm::Value::Bool(Some(model.retire_pending)),
             SkuListField::UpdatedAt => {
                 sea_orm::Value::TimeDateTimeWithTimeZone(Some(model.updated_at))
             }
@@ -285,6 +291,65 @@ pub enum SkuListError {
     Repo(RepoError),
 }
 
+fn is_lifecycle(expr: &toolkit_odata::ast::Expr) -> bool {
+    matches!(expr, toolkit_odata::ast::Expr::Identifier(name) if name == "lifecycle")
+}
+fn lifecycle_token(expr: &toolkit_odata::ast::Expr) -> Result<String, String> {
+    match expr {
+        toolkit_odata::ast::Expr::Value(toolkit_odata::ast::Value::String(token))
+            if Lifecycle::parse(token).is_some() =>
+        {
+            Ok(token.clone())
+        }
+        toolkit_odata::ast::Expr::Value(toolkit_odata::ast::Value::String(token)) => {
+            Err(format!("unknown lifecycle: {token}"))
+        }
+        _ => Err("unknown lifecycle".into()),
+    }
+}
+/// Pull top-level `lifecycle` comparisons out of `expr` so they compare the effective lifecycle.
+fn take_lifecycle(
+    expr: toolkit_odata::ast::Expr,
+) -> Result<(Option<toolkit_odata::ast::Expr>, Condition), String> {
+    use toolkit_odata::ast::{CompareOperator, Expr};
+    match expr {
+        Expr::And(left, right) => {
+            let (left, left_cond) = take_lifecycle(*left)?;
+            let (right, right_cond) = take_lifecycle(*right)?;
+            let rest = match (left, right) {
+                (Some(left), Some(right)) => Some(Expr::And(Box::new(left), Box::new(right))),
+                (Some(one), None) | (None, Some(one)) => Some(one),
+                (None, None) => None,
+            };
+            Ok((rest, left_cond.add(right_cond)))
+        }
+        Expr::Compare(left, op, right) if is_lifecycle(&left) => {
+            let token = lifecycle_token(&right)?;
+            let effective = super::sku_repo::effective_lifecycle_expr(
+                crate::infra::storage::stored_now().date(),
+            );
+            let cond = match op {
+                CompareOperator::Eq => Condition::all().add(effective.eq(token)),
+                CompareOperator::Ne => Condition::all().add(effective.ne(token)),
+                _ => {
+                    return Err("lifecycle compares with eq, ne or in".to_owned());
+                }
+            };
+            Ok((None, cond))
+        }
+        Expr::In(left, values) if is_lifecycle(&left) => {
+            let mut tokens = Vec::new();
+            for value in values {
+                tokens.push(lifecycle_token(&value)?);
+            }
+            let effective = super::sku_repo::effective_lifecycle_expr(
+                crate::infra::storage::stored_now().date(),
+            );
+            Ok((None, Condition::all().add(effective.is_in(tokens))))
+        }
+        other => Ok((Some(other), Condition::all())),
+    }
+}
 /// One page of the tenant's SKUs: `filter`'s narrowing, then the query's `$filter`, cursor and
 /// order (`code` when it names none), tie-broken by `id`; `$top` defaults to 50 and is clamped
 /// at 200.
@@ -300,6 +365,20 @@ pub async fn page_skus(
     query: &ODataQuery,
 ) -> Result<Page<Sku>, SkuListError> {
     let mut query = query.clone();
+    // The toolkit maps a field to a column, so it cannot express the effective-lifecycle CASE.
+    // Top-level `lifecycle` comparisons (and those joined by `and`) are applied as that CASE
+    // before the pager sees the rest (P-D-249). A `lifecycle` term under `or` or `not` stays on
+    // the stored column.
+    let lifecycle_filter = match query.filter.take() {
+        Some(filter) => {
+            let (rest, cond) = take_lifecycle(*filter).map_err(|message| {
+                SkuListError::Query(toolkit_odata::Error::InvalidFilter(message))
+            })?;
+            query.filter = rest.map(Box::new);
+            cond
+        }
+        None => Condition::all(),
+    };
     if query.cursor.is_none() && query.order.0.is_empty() {
         query.order = ODataOrderBy(vec![OrderKey {
             field: SkuListField::Code.name().to_owned(),
@@ -309,7 +388,8 @@ pub async fn page_skus(
     let select = sku::Entity::find()
         .secure()
         .scope_with(scope)
-        .filter(list_condition(tenant, filter, backend));
+        .filter(list_condition(tenant, filter, backend))
+        .filter(lifecycle_filter);
     paginate_odata_try::<SkuListField, SkuListMapping, sku::Entity, Sku, _, RepoError, _>(
         select,
         runner,
@@ -340,7 +420,6 @@ pub struct SkuCounts {
     pub draft: u64,
     pub published: u64,
     pub deprecated: u64,
-    pub retiring: u64,
     pub retired: u64,
     /// SKUs a pending approval unit locks (`pending_unit_id` set), in any lifecycle.
     pub in_review: u64,
@@ -376,14 +455,17 @@ pub async fn count_skus(
         .scope_with(scope)
         .filter(c)
         .project_all(runner, |q| {
+            let effective = super::sku_repo::effective_lifecycle_expr(
+                crate::infra::storage::stored_now().date(),
+            );
             q.select_only()
-                .column(sku::Column::Lifecycle)
+                .expr_as(effective.clone(), "lifecycle")
                 .column_as(Expr::col((sku::Entity, sku::Column::Id)).count(), "n")
                 .column_as(
                     Expr::col((sku::Entity, sku::Column::PendingUnitId)).count(),
                     "in_review",
                 )
-                .group_by(sku::Column::Lifecycle)
+                .group_by(effective)
                 .into_model::<LifecycleCount>()
         })
         .await
@@ -395,7 +477,6 @@ pub async fn count_skus(
             Some(Lifecycle::Draft) => &mut counts.draft,
             Some(Lifecycle::Published) => &mut counts.published,
             Some(Lifecycle::Deprecated) => &mut counts.deprecated,
-            Some(Lifecycle::Retiring) => &mut counts.retiring,
             Some(Lifecycle::Retired) => &mut counts.retired,
             None => {
                 return Err(RepoError::CorruptRow(format!(

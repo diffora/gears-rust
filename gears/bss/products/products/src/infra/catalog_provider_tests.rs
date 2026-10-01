@@ -34,7 +34,6 @@ async fn both_transports_serve_the_same_published_catalog_and_pages() {
         ("B", "storage", Lifecycle::Published),
         ("C", "storage legacy", Lifecycle::Deprecated),
         ("D", "storage retired", Lifecycle::Retired),
-        ("E", "storage retiring", Lifecycle::Retiring),
         ("F", "O'Brien_%", Lifecycle::Published),
     ] {
         let s = repo::insert_sku(

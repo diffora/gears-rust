@@ -102,7 +102,22 @@ impl<'a> ApprovalSubject<DbTx<'a>> for SkuChange {
             .await
             .map_err(store_err)?;
             if let Some(target) = proposal.lifecycle {
-                if matches!(
+                let today = b.now.date();
+                let written = if target == current.lifecycle {
+                    repo::clear_lifecycle_next(tx, &b.scope, b.tenant_id, s.id, b.now).await
+                } else if self.effective_from > today {
+                    repo::set_lifecycle_next(
+                        tx,
+                        &b.scope,
+                        b.tenant_id,
+                        s.id,
+                        &[current.lifecycle],
+                        target,
+                        self.effective_from,
+                        b.now,
+                    )
+                    .await
+                } else {
                     repo::set_lifecycle(
                         tx,
                         &b.scope,
@@ -110,12 +125,11 @@ impl<'a> ApprovalSubject<DbTx<'a>> for SkuChange {
                         s.id,
                         &[current.lifecycle],
                         target,
-                        b.now
+                        b.now,
                     )
                     .await
-                    .map_err(store_err)?,
-                    repo::HeadWrite::Unmatched
-                ) {
+                };
+                if matches!(written.map_err(store_err)?, repo::HeadWrite::Unmatched) {
                     return Err(apply_error(invalid(
                         "ILLEGAL_TRANSITION",
                         "lifecycle",
@@ -204,6 +218,7 @@ impl SkuChange {
             }
             let proposed: SkuProposal = decode(&i.after)?;
             if let Some(target) = proposed.lifecycle
+                && target != s.lifecycle
                 && (!matches!(target, Lifecycle::Published | Lifecycle::Deprecated)
                     || !lifecycle_edge(s.lifecycle, target))
             {
