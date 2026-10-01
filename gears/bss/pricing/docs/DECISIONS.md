@@ -1335,3 +1335,40 @@ text/digest/provenance and BillingTerms remain inside the original typed snapsho
 Evidence: `tests/acceptance_receipts.rs`, `tests/postgres_commercial_receipts.rs`, the schema-1 JSON
 golden, both schema goldens and migration/guard tests. The duplicate-business test goes red when its
 unique index is removed and green after restoration from the pre-probe copy.
+
+## D-506 — Authorized commercial provider boundary (2026-10-01)
+
+Task 5b registers separate `dyn SellabilityV1` and `dyn PricingAcceptanceV1` providers in ClientHub.
+They share `CommercialTermsService::new(state, enforcer, clock, policy)`. PricingReadProvider still
+implements only resolve, price and current_revision. Explicit Contract IR classifies check/hold as
+IdempotentWrite and acceptance/check_fulfilment as SafeRead; command metadata contains only a key.
+Caller identity always comes from SecurityContext. No commercial REST command is introduced.
+
+All four commercial methods first authenticate and ask the PDP for
+`gts.cf.bss.pricing.acceptance.v1~`, with existing owner_tenant_id/resource_id constraints. Check uses
+create on the catalog collection; acceptance and check_fulfilment use read on the receipt; hold uses
+hold on the receipt. The shared gate verifies the requested catalog belongs to the compiled tenant
+scope. Receipt lookup then retains both PDP constraints and an explicit catalog-tenant filter, even
+when the principal has grants for several catalogs. Unknown or foreign-catalog ids are not found
+within an authorized catalog; an unauthorized catalog is denied before storage.
+
+Acceptance reading decodes the stored v1 snapshot through the 5a repository without consulting the
+current catalog, recomputing digests, checking expiry or selecting seller defaults. Restart reads
+retain the exact stored bytes when re-encoded. The SDK commercial reason mapping now names the
+acceptance resource and preserves concrete invalid-argument/conflict/denial/not-found metadata.
+PDP or storage outages remain 503. A missing required PDP is a named UNCONFIGURED_DEPENDENCY;
+a supplied canonical PDP outage detail is retained, while raw database diagnostics stay in logs.
+
+Configuration key `seller_hold_policy` contains positive `version: u64` and
+`duration_seconds: u32`; absent policy defaults to version 1 / 86400. An explicitly supplied policy
+must provide both fields and contain no unknown fields. Startup validates before registering any
+provider. Clock reuses `reference_work::Clock`; `infra::clock::SystemClock` re-exports its existing
+WallClock. The inherited default jitter hook remains for reference recovery and is unused here.
+The test-only FixedClock stores an instant and advances explicitly, without sleeping. Pending
+operations sample it for diagnostics only; authoritative commit-time sampling belongs to 5c/6.
+
+Check remains typed NotYetAvailable / canonical unimplemented (501) until 5c; hold and
+check_fulfilment remain the same until Task 6. Each refuses only after authorization and writes
+nothing. This intermediate boundary commit is not a public commercial release: G3 must complete
+before consumers can rely on successful commercial commands. Production meter semantics (E1),
+consumer delivery and deployment PDP grants remain external obligations.

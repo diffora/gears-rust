@@ -209,7 +209,7 @@ impl CommercialReason {
         }
     }
 }
-#[toolkit_canonical_errors::resource_error("gts.cf.bss.pricing.plan.v1~")]
+#[toolkit_canonical_errors::resource_error("gts.cf.bss.pricing.acceptance.v1~")]
 struct CommercialResource;
 impl From<CommercialReason> for toolkit_canonical_errors::CanonicalError {
     fn from(reason: CommercialReason) -> Self {
@@ -372,4 +372,86 @@ pub trait SellabilityV1: Send + Sync {
         ctx: &toolkit_security::SecurityContext,
         query: FulfilmentQuery,
     ) -> Result<FulfilmentEligibility, toolkit_canonical_errors::CanonicalError>;
+}
+
+/// Explicit receipt capability IR: historical read and durable hold command.
+#[must_use]
+pub fn pricing_acceptance_v1_ir() -> toolkit_contract::ir::contract::ContractIr {
+    commercial_ir(
+        "PricingAcceptanceV1",
+        &[
+            ("acceptance", "AcceptanceQuery", "AcceptanceReceipt", false),
+            ("hold", "FulfilmentQuery", "HeldBindings", true),
+        ],
+    )
+}
+
+/// Explicit sellability IR: acceptance command and fresh eligibility read.
+#[must_use]
+pub fn sellability_v1_ir() -> toolkit_contract::ir::contract::ContractIr {
+    commercial_ir(
+        "SellabilityV1",
+        &[
+            ("check", "NewSaleQuery", "AcceptanceReceipt", true),
+            (
+                "check_fulfilment",
+                "FulfilmentQuery",
+                "FulfilmentEligibility",
+                false,
+            ),
+        ],
+    )
+}
+fn commercial_ir(
+    name: &str,
+    methods: &[(&str, &str, &str, bool)],
+) -> toolkit_contract::ir::contract::ContractIr {
+    use toolkit_contract::ir::contract::{
+        ContractIr, FieldIr, FieldRole, Idempotency, InputShape, MethodIr, MethodKind, TypeRef,
+    };
+    ContractIr {
+        name: name.into(),
+        gear: "bss-pricing".into(),
+        version: "v1".into(),
+        methods: methods
+            .iter()
+            .map(|&(name, input, output, command)| {
+                let mut fields = vec![
+                    FieldIr {
+                        name: "ctx".into(),
+                        ty: TypeRef::Named("SecurityContext".into()),
+                        optional: false,
+                        role: FieldRole::SecurityContext,
+                    },
+                    FieldIr {
+                        name: "query".into(),
+                        ty: TypeRef::Named(input.into()),
+                        optional: false,
+                        role: FieldRole::Wire,
+                    },
+                ];
+                if command {
+                    fields.push(FieldIr {
+                        name: "meta".into(),
+                        ty: TypeRef::Named("CommandMeta".into()),
+                        optional: false,
+                        role: FieldRole::Wire,
+                    });
+                }
+                MethodIr {
+                    name: name.into(),
+                    kind: MethodKind::Unary,
+                    input: InputShape { fields },
+                    output: TypeRef::Named(output.into()),
+                    error: Some(TypeRef::Named("CanonicalError".into())),
+                    idempotency: if command {
+                        Idempotency::IdempotentWrite
+                    } else {
+                        Idempotency::SafeRead
+                    },
+                    optional: false,
+                }
+            })
+            .collect(),
+    }
 }

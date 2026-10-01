@@ -16,6 +16,7 @@ pub mod labels {
     /// A plan, its revisions and their items: one label, read and author (phase 3), and submit
     /// for a revision's approval (D-418), as `price:submit` is for a price.
     pub const PLAN: &str = gts_id!("cf.bss.pricing.plan.v1~");
+    pub const ACCEPTANCE: &str = gts_id!("cf.bss.pricing.acceptance.v1~");
     pub const ALL: &[&str] = &[
         PRICE_BOOK,
         PRICE_BOOK_ENTRY,
@@ -23,10 +24,13 @@ pub mod labels {
         APPROVAL_UNIT,
         CONFIG,
         PLAN,
+        ACCEPTANCE,
     ];
 }
 /// Independent authoring and governance actions.
 pub mod actions {
+    pub const CREATE: &str = "create";
+    pub const HOLD: &str = "hold";
     pub const READ: &str = "read";
     pub const AUTHOR: &str = "author";
     pub const SUBMIT: &str = "submit";
@@ -36,6 +40,8 @@ pub mod actions {
 /// Resource descriptors retain tenant and resource constraints.
 pub mod resource_types {
     use super::{ResourceType, SUPPORTED_PROPERTIES, labels};
+    pub const ACCEPTANCE: ResourceType =
+        ResourceType::from_static(labels::ACCEPTANCE, SUPPORTED_PROPERTIES);
     pub const PRICE_BOOK: ResourceType =
         ResourceType::from_static(labels::PRICE_BOOK, SUPPORTED_PROPERTIES);
     pub const PRICE_BOOK_ENTRY: ResourceType =

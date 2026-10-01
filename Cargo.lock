@@ -2021,6 +2021,7 @@ dependencies = [
  "cf-gears-toolkit-security",
  "cf-gears-types-registry",
  "cf-gears-types-registry-sdk",
+ "parking_lot",
  "rust_decimal",
  "sea-orm",
  "sea-orm-migration",

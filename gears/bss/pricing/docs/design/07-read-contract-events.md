@@ -288,3 +288,37 @@ a different command payload/target yields IDEMPOTENCY_CONFLICT. Holds also compa
 The caller owns the transaction and bounded contention retry; atomic acceptance/command/audit writes
 and authorization-before-replay are application-layer work in the subsequent chunks. No public
 commercial endpoint or partially implemented success response is introduced by persistence alone.
+
+### Commercial provider boundary — Task 5b (D-506)
+
+ClientHub now registers three independent SDK capabilities. PricingReadV1 keeps only
+resolve/price/current_revision. SellabilityProvider and PricingAcceptanceProvider share one
+CommercialTermsService with AuthoringState, PolicyEnforcer, Clock and SellerHoldPolicy. Explicit
+Contract IR marks check/hold IdempotentWrite; every other C01 method is SafeRead.
+
+| Method | PDP resource/action | Delivery in this chunk |
+| --- | --- | --- |
+| SellabilityV1::check | acceptance:create, catalog collection | Authorized typed unimplemented; 5c supplies the transaction |
+| SellabilityV1::check_fulfilment | acceptance:read, receipt id | Authorized typed unimplemented; Task 6 supplies live eligibility |
+| PricingAcceptanceV1::acceptance | acceptance:read, receipt id | Stored immutable receipt read |
+| PricingAcceptanceV1::hold | acceptance:hold, receipt id | Authorized typed unimplemented; Task 6 supplies the hold |
+
+The resource label is `gts.cf.bss.pricing.acceptance.v1~`. SecurityContext supplies caller identity;
+CommandMeta has only an idempotency key. The requested seller/catalog must belong to the PDP scope,
+and the repository filters that exact tenant in addition to all returned tenant/resource predicates.
+Even a two-catalog grant cannot reveal another catalog's receipt through the requested one. Receipt
+reading preserves the 5a versioned snapshot and never re-evaluates expiry or live sale policy.
+
+The gear's `seller_hold_policy` defaults to `{version: 1, duration_seconds: 86400}`. Explicit policies
+require both positive integer fields; startup rejects invalid values before provider registration.
+No issued receipt changes when deployment configuration changes. `infra::clock::{Clock,SystemClock}`
+reuses the reference recovery Clock/WallClock implementation, including its harmless default jitter
+hook; it introduces no second server-time source. Tests inject an explicitly advanced FixedClock.
+For 5b, only pending-operation diagnostics observe it; receipt reads require no clock observation.
+
+Canonical failures preserve typed commercial reasons: invalid argument 400, conflict 409, permission
+denied 403 and authorized not found 404. Configured PDP/storage outages are 503; a missing required
+provider names its UNCONFIGURED_DEPENDENCY. Pending methods return typed NotYetAvailable as canonical
+unimplemented 501 after authorization, never a fabricated commercial success. Tests pin identity,
+actions, multi-tenant filtering, unknown ids, byte-identical restart reads and separate registrations.
+No public command release is claimed until 5c, Task 6 and the complete G3 gate are delivered.

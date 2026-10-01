@@ -459,3 +459,6 @@ async fn hold_and_command_rereads_preserve_winners_and_refuse_changed_intent() {
             .is_err()
     );
 }
+
+#[path = "acceptance_boundary/mod.rs"]
+mod boundary;
