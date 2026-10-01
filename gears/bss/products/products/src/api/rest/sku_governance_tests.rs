@@ -3879,6 +3879,18 @@ async fn a_cursor_keeps_its_order_and_one_minted_before_the_order_still_continue
             "{bad}: {b}"
         );
     }
+    // A limit of 0 reads one unit, in either order, as the house pager does. The toolkit's `OData`
+    // extractor would refuse it (400 INVALID_LIMIT), one reason the list keeps its own parse (the
+    // phase 9 review's theme I).
+    for (order, first) in [
+        ("", named(&units[..1])),
+        ("&$orderby=submitted_at%20desc", named(&newest_first[..1])),
+    ] {
+        let (status, page) = f.units(&format!("?limit=0{order}")).await;
+        assert_eq!(status, 200, "{order}: {page}");
+        assert_eq!(unit_ids(&page), first, "{order}");
+        assert_eq!(page["page_info"]["limit"], 1, "{order}: {page}");
+    }
 }
 
 // ------------------------------------------------------------------ whether a reader may approve (P-D-228)

@@ -585,10 +585,24 @@ pub enum UnitListError {
     /// Storage; a driver failure keeps its message for the retry classifier.
     Repo(RepoError),
 }
-/// One page of the tenant's units under `scope`, narrowed by `filter`, in submission order
-/// (`direction`: ascending by default, D-458, or descending, D-470) with the id breaking a tie in
-/// the same direction: `$top`'s `limit` defaults to 200 and is clamped at 500, and the query's
-/// cursor continues it in the order it carries (`direction` is then not read). ONE statement.
+/// The unit list's order (D-470): `submitted_at`, then the unit id breaking a tie, both in
+/// `direction`. The door sets it from `$orderby`; [`page_units`] reads it from the query alone.
+pub fn submission_order(direction: SortDir) -> ODataOrderBy {
+    ODataOrderBy(
+        [UnitListField::SubmittedAt, UnitListField::Id]
+            .into_iter()
+            .map(|field| OrderKey {
+                field: field.name().to_owned(),
+                dir: direction,
+            })
+            .collect(),
+    )
+}
+/// One page of the tenant's units under `scope`, narrowed by `filter`, in the query's one order
+/// (the phase 9 review's R36): [`submission_order`] as the door set it, ascending when the query
+/// names none (D-458), descending on request (D-470), the id breaking a tie in the direction of
+/// the first key; a continuation follows the order its cursor carries. `limit` defaults to 200 and
+/// is clamped at 500. ONE statement.
 /// # Errors
 /// [`UnitListError::Query`] for a cursor the pager refuses; [`UnitListError::Repo`] for storage
 /// and a stored row outside its closed sets.
@@ -598,20 +612,12 @@ pub async fn page_units(
     tenant_id: Uuid,
     filter: &UnitListFilter,
     query: &ODataQuery,
-    direction: SortDir,
 ) -> Result<Page<Unit>, UnitListError> {
     let mut query = query.clone();
-    if query.cursor.is_none() {
-        query.order = ODataOrderBy(
-            [UnitListField::SubmittedAt, UnitListField::Id]
-                .into_iter()
-                .map(|field| OrderKey {
-                    field: field.name().to_owned(),
-                    dir: direction,
-                })
-                .collect(),
-        );
+    if query.cursor.is_none() && query.order.0.is_empty() {
+        query.order = submission_order(SortDir::Asc);
     }
+    let tie = query.order.0.first().map_or(SortDir::Asc, |key| key.dir);
     let select = approval_unit::Entity::find()
         .secure()
         .scope_with(scope)
@@ -628,7 +634,7 @@ pub async fn page_units(
         select,
         runner,
         &query,
-        (UnitListField::Id.name(), direction),
+        (UnitListField::Id.name(), tie),
         UNIT_PAGE,
         |m| unit_from_model(m).map_err(|e| RepoError::CorruptRow(e.to_string())),
     )

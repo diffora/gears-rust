@@ -2015,6 +2015,17 @@ async fn a_cursor_keeps_its_order_and_one_minted_before_the_order_still_continue
         assert_eq!(s, 400, "{bad}: {b}");
         assert!(code_of(&b).contains("INVALID_ORDERBY_FIELD"), "{bad}: {b}");
     }
+    // A limit of 0 reads one unit, in either order, as the house pager does (D-486 says the same
+    // of a SKU's entries). The toolkit's `OData` extractor would refuse it (400 INVALID_LIMIT), one
+    // reason the list keeps its own parse (the phase 9 review's theme I).
+    for (order, first) in [
+        ("", named(&units[..1])),
+        ("&$orderby=submitted_at%20desc", named(&newest_first[..1])),
+    ] {
+        let page = ok(&f, &format!("/approval-units?kind=prices&limit=0{order}")).await;
+        assert_eq!(ids(&page), first, "{order}");
+        assert_eq!(page["page_info"]["limit"], 1, "{order}: {page}");
+    }
 }
 
 /// The tables the last request's statements on pricing's tables read, in order.

@@ -217,6 +217,20 @@ async fn the_unit_reads_say_how_they_count_and_order() {
     for name in ["$orderby", "impact"] {
         assert!(listed.iter().any(|n| n == name), "{name}: {listed:?}");
     }
+    // The phase 9 review's theme I (R41): the order is declared through the toolkit, so the
+    // contract lists the one field it takes, in both directions; `$orderby` is one parameter, and
+    // the counts take no order.
+    assert_eq!(
+        list["x-odata-orderby"]["allowedFields"],
+        serde_json::json!(["submitted_at asc", "submitted_at desc"]),
+        "{list}"
+    );
+    assert_eq!(
+        listed.iter().filter(|n| *n == "$orderby").count(),
+        1,
+        "{listed:?}"
+    );
+    assert!(counts["x-odata-orderby"].is_null(), "{counts}");
     let text = description(&api, "get", "/bss-pricing/v1/approval-units");
     for said in [
         "submitted_at desc",

@@ -664,6 +664,20 @@ async fn the_unit_reads_say_how_they_count_and_order() -> anyhow::Result<()> {
     );
     let list = &api["paths"]["/bss-products/v1/approval-units"]["get"];
     assert!(names(list).iter().any(|n| n == "$orderby"), "{list}");
+    // The phase 9 review's theme I (R66): the order is declared through the toolkit, so the
+    // contract lists the one field it takes, in both directions; `$orderby` is one parameter, and
+    // the counts take no order.
+    assert_eq!(
+        list["x-odata-orderby"]["allowedFields"],
+        serde_json::json!(["submitted_at asc", "submitted_at desc"]),
+        "{list}"
+    );
+    assert_eq!(
+        names(list).iter().filter(|n| *n == "$orderby").count(),
+        1,
+        "{list}"
+    );
+    assert!(counts["x-odata-orderby"].is_null(), "{counts}");
     let text = list["description"].as_str().unwrap_or_default();
     for said in [
         "submitted_at desc",

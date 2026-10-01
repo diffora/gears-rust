@@ -46,7 +46,9 @@ use bss_products_sdk::models::SkuContent;
 use std::sync::Arc;
 use time::OffsetDateTime;
 use toolkit::api::{
-    OpenApiRegistry, canonical_prelude::CanonicalError, operation_builder::OperationBuilder,
+    OpenApiRegistry,
+    canonical_prelude::CanonicalError,
+    operation_builder::{OperationBuilder, OperationBuilderODataExt},
 };
 use toolkit_db::{DbTx, secure::AccessScope};
 use toolkit_security::SecurityContext;
@@ -125,12 +127,7 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
             "integer",
         )
         .query_param_typed("cursor", false, "Continuation from page_info", "string")
-        .query_param_typed(
-            "$orderby",
-            false,
-            "submitted_at asc (the default) or submitted_at desc; the id breaks a tie the same way",
-            "string",
-        )
+        .with_odata_orderby::<UnitOrderField>()
         .handler(list)
         .json_response_with_schema::<UnitList>(openapi, StatusCode::OK, "Result")
         .error_400(openapi)
@@ -341,7 +338,7 @@ async fn list(
     let Query(q) =
         query.map_err(|e| CanonicalError::from(g::validation("query", e.to_string())))?;
     let filter = narrowing(q.state.as_deref(), q.kind.as_deref(), q.ref_id)?;
-    let (page, direction) = unit_page(&filter, q.limit, q.cursor.as_deref(), q.orderby.as_deref())?;
+    let page = unit_page(&filter, q.limit, q.cursor.as_deref(), q.orderby.as_deref())?;
     let (tenant, reader) = (ctx.subject_tenant_id(), ctx.subject_id());
     let list = state
         .db
@@ -351,7 +348,7 @@ async fn list(
             Box::pin(async move {
                 // One page, all its units' decisions and all their items, one read each
                 // (P-D-224, P-D-228): the same statements whatever the page's size.
-                let page = repo::page_units(tx, &scope, tenant, &filter, &page, direction)
+                let page = repo::page_units(tx, &scope, tenant, &filter, &page)
                     .await
                     .map_err(|e| match e {
                         repo::UnitListError::Query(e) => TxError::OData(e),
@@ -419,26 +416,60 @@ fn narrowing(
         ref_id,
     })
 }
+/// The one field the unit list's `$orderby` takes (P-D-227): `submitted_at`, ascending or
+/// descending. The unit id breaks a tie in the same direction; it is the pager's tie-break, not a
+/// client key, so it is not declared. `.with_odata_orderby` publishes it in the served contract
+/// (`x-odata-orderby`), and [`unit_order`] accepts exactly it (the phase 9 review's theme I).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum UnitOrderField {
+    SubmittedAt,
+}
+impl UnitOrderField {
+    const fn field(self) -> repo::UnitListField {
+        match self {
+            Self::SubmittedAt => repo::UnitListField::SubmittedAt,
+        }
+    }
+}
+impl toolkit_odata::filter::FilterField for UnitOrderField {
+    const FIELDS: &'static [Self] = &[Self::SubmittedAt];
+    fn name(&self) -> &'static str {
+        toolkit_odata::filter::FilterField::name(&self.field())
+    }
+    fn kind(&self) -> toolkit_odata::filter::FieldKind {
+        toolkit_odata::filter::FilterField::kind(&self.field())
+    }
+    fn from_name(name: &str) -> Option<Self> {
+        Self::FIELDS
+            .iter()
+            .copied()
+            .find(|f| toolkit_odata::filter::FilterField::name(f) == name)
+    }
+}
 /// The unit list's order (P-D-227): `submitted_at` ascending (also when omitted, P-D-224) or
 /// descending, the id breaking a tie in the same direction. Any other `$orderby` is 400
-/// `INVALID_ORDERBY_FIELD`, the toolkit's refusal of an order a list does not take.
+/// `INVALID_ORDERBY_FIELD`, the toolkit's refusal of an order a list does not take. The list parses
+/// its own query rather than take the toolkit's `OData` extractor, which would refuse `limit=0`
+/// (the house pager reads one unit), drop a cursor's cause from its refusal, and bind the `$`
+/// options this list does not read (theme I).
 fn unit_order(orderby: Option<&str>) -> Result<toolkit_odata::SortDir, CanonicalError> {
     let Some(raw) = orderby else {
         return Ok(toolkit_odata::SortDir::Asc);
     };
     let order = toolkit::api::odata::parse_orderby(raw).map_err(CanonicalError::from)?;
+    let declared = |key: &toolkit_odata::OrderKey| {
+        <UnitOrderField as toolkit_odata::filter::FilterField>::from_name(&key.field).is_some()
+    };
     match order.0.as_slice() {
         [] => Ok(toolkit_odata::SortDir::Asc),
-        [key] if key.field == "submitted_at" => Ok(key.dir),
+        [key] if declared(key) => Ok(key.dir),
         // The refusal names the key it refuses, never the whole order, so a supported field is
         // never called unsupported (the phase 9 review's R67).
         keys => Err(toolkit_odata::Error::InvalidOrderByField(
-            keys.iter()
-                .find(|key| key.field != "submitted_at")
-                .map_or_else(
-                    || "only one key, submitted_at, is accepted".to_owned(),
-                    |key| key.field.clone(),
-                ),
+            keys.iter().find(|key| !declared(key)).map_or_else(
+                || "only one key, submitted_at, is accepted".to_owned(),
+                |key| key.field.clone(),
+            ),
         )
         .into()),
     }
@@ -448,13 +479,15 @@ fn unit_order(orderby: Option<&str>) -> Result<toolkit_odata::SortDir, Canonical
 /// `FILTER_MISMATCH`, as pricing's list's is (D-458). The order is not part of the hash
 /// (P-D-227): a cursor carries its own (`CursorV1.s`) and a continuation follows it, so every
 /// cursor minted before the descending order still reads. `$orderby` beside a cursor is the toolkit's 400
-/// `ORDER_WITH_CURSOR`, judged first, as its `OData` extractor does.
+/// `ORDER_WITH_CURSOR`, judged first, as its `OData` extractor does. Without a cursor, the query
+/// carries the order (`repo::submission_order`), the one source the repository reads (the phase 9
+/// review's R36).
 fn unit_page(
     filter: &repo::UnitListFilter,
     limit: Option<u64>,
     cursor: Option<&str>,
     orderby: Option<&str>,
-) -> Result<(toolkit_odata::ODataQuery, toolkit_odata::SortDir), CanonicalError> {
+) -> Result<toolkit_odata::ODataQuery, CanonicalError> {
     if cursor.is_some() && orderby.is_some() {
         return Err(toolkit_odata::Error::OrderWithCursor.into());
     }
@@ -475,8 +508,10 @@ fn unit_page(
             return Err(toolkit_odata::Error::FilterMismatch.into());
         }
         query = query.with_cursor(cursor);
+    } else {
+        query = query.with_order(repo::submission_order(direction));
     }
-    Ok((query, direction))
+    Ok(query)
 }
 /// `GET /approval-units/counts` (P-D-227): under the list's grant, the list's narrowing, counted
 /// by state and kind in ONE grouped statement, read outside any transaction.

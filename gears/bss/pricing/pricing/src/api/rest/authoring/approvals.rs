@@ -744,14 +744,12 @@ pub fn state_filter(state: Option<&str>) -> Result<Option<UnitState>, CanonicalE
         .map(|s| UnitState::parse(s).ok_or_else(|| support::invalid("state", "UNIT_STATE_INVALID")))
         .transpose()
 }
-/// What one read of the unit list asks for: its narrowing, its page, its order and whether it
-/// reads the live impact (D-458, D-470).
+/// What one read of the unit list asks for: its narrowing, its page (which carries its order, or
+/// a cursor that carries its own) and whether it reads the live impact (D-458, D-470).
 #[derive(Clone)]
 pub struct UnitListRequest {
     pub filter: approval_repo::UnitListFilter,
     pub page: toolkit_odata::ODataQuery,
-    /// Submission order, ascending by default; a cursor carries its own.
-    pub direction: toolkit_odata::SortDir,
     /// `false` (`impact=false`): no plan is read and every unit answers `impact: null`.
     pub impact: bool,
 }
@@ -769,19 +767,12 @@ pub async fn list_units(
     reader: Uuid,
     request: &UnitListRequest,
 ) -> Result<Response, DoorError> {
-    let page = approval_repo::page_units(
-        tx,
-        scope,
-        tenant,
-        &request.filter,
-        &request.page,
-        request.direction,
-    )
-    .await
-    .map_err(|e| match e {
-        approval_repo::UnitListError::Query(e) => DoorError::Api(e.into()),
-        approval_repo::UnitListError::Repo(e) => DoorError::Repo(e),
-    })?;
+    let page = approval_repo::page_units(tx, scope, tenant, &request.filter, &request.page)
+        .await
+        .map_err(|e| match e {
+            approval_repo::UnitListError::Query(e) => DoorError::Api(e.into()),
+            approval_repo::UnitListError::Repo(e) => DoorError::Repo(e),
+        })?;
     let ids: Vec<Uuid> = page.items.iter().map(|u| u.id).collect();
     // The items are read whatever the impact: whether the reader may approve judges their
     // authors (D-471). Without the impact, their authors alone are read (the phase 9 review's
