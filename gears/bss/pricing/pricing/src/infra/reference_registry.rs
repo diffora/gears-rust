@@ -1,6 +1,6 @@
 //! Lazy resolution permits pricing to boot before Products registers its owner-bound client.
 //!
-//! The registry's three reads (`states`, `sku_for_write`, `sku_version_as_of`) run on a task of
+//! The registry's reads (`states`, `sku_for_write`, `skus_for_write`, `sku_version_as_of`) run on a task of
 //! their own. The approval subjects read SKUs inside the unit's transaction (D-408; D-402's dated
 //! metering), and Products' in-process registry opens a connection to its own database, which
 //! toolkit-db refuses on a task that is inside a transaction (`ConnRequestedInsideTx`): on the
@@ -84,6 +84,17 @@ impl ReferenceRegistryV1 for Detached {
     ) -> Result<Sku, CanonicalError> {
         let (inner, ctx) = (self.0.clone(), ctx.clone());
         tokio::spawn(async move { inner.sku_for_write(&ctx, tenant, id).await })
+            .await
+            .map_err(|e| unfinished(&e))?
+    }
+    async fn skus_for_write(
+        &self,
+        ctx: &SecurityContext,
+        tenant: Uuid,
+        ids: &[Uuid],
+    ) -> Result<Vec<Sku>, CanonicalError> {
+        let (inner, ctx, ids) = (self.0.clone(), ctx.clone(), ids.to_vec());
+        tokio::spawn(async move { inner.skus_for_write(&ctx, tenant, &ids).await })
             .await
             .map_err(|e| unfinished(&e))?
     }

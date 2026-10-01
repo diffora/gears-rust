@@ -13463,6 +13463,47 @@
         ],
         "type": "string"
       },
+      "PricingRevisionChecksBatchDto": {
+        "description": "`GET /plan-revisions/checks` (D-482): the checks of the revisions the caller may read, and\nthe ids the tenant does not hold or the plan-read scope does not admit.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PricingRevisionChecksDto"
+            },
+            "type": "array"
+          },
+          "missing": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "items",
+          "missing"
+        ],
+        "type": "object"
+      },
+      "PricingRevisionChecksDto": {
+        "description": "`GET /plan-revisions/checks` (D-482): one revision's checks, the single read's answer.",
+        "properties": {
+          "checks": {
+            "$ref": "#/components/schemas/PricingPlanChecksDto",
+            "description": "Byte-identical to `GET /plan-revisions/{id}/checks` for this revision."
+          },
+          "revision_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "revision_id",
+          "checks"
+        ],
+        "type": "object"
+      },
       "PricingRevisionState": {
         "description": "A plan revision's state.",
         "enum": [
@@ -38095,6 +38136,124 @@
           }
         ],
         "summary": "Change a plan item",
+        "tags": [
+          "Pricing"
+        ]
+      }
+    },
+    "/bss-pricing/v1/plan-revisions/checks": {
+      "get": {
+        "description": "Returns the checks of 1 to 50 revisions, each byte-identical to GET /plan-revisions/{id}/checks, and missing: the ids the tenant does not hold or the caller's plan-read scope does not admit (that door's 404). One stored read and one Products call over the union of SKUs. An answer that is all missing makes no Products call. The plans list gains no ready flag (D-460). Refusals: 400 QUERY_INVALID for an empty list, more than 50 ids, a repeated id, a repeated revision_ids key, a malformed id, or any other key; Products' own refusal; 503 REGISTRY_UNAVAILABLE.",
+        "operationId": "bss_pricing.get_plan_revision_checks_batch",
+        "parameters": [
+          {
+            "description": "1 to 50 distinct plan revision ids, comma-separated. Required: an empty or missing list is 400 QUERY_INVALID.",
+            "in": "query",
+            "name": "revision_ids",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PricingRevisionChecksBatchDto"
+                }
+              }
+            },
+            "description": "Response"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Check many plan revisions",
         "tags": [
           "Pricing"
         ]

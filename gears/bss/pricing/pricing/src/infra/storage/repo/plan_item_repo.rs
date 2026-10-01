@@ -169,6 +169,34 @@ pub async fn for_revision(
         .await
         .map_err(|e| driver_failure("list plan items of a revision".into(), e))
 }
+/// The items of every revision among `revisions`, each revision's in identity order, in ONE
+/// statement whatever their number (D-482). A revision without items has no rows.
+///
+/// # Errors
+/// Returns typed database failures.
+pub async fn for_revisions(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    revisions: &[Uuid],
+) -> Result<Vec<e::Model>, RepoError> {
+    if revisions.is_empty() {
+        return Ok(Vec::new());
+    }
+    e::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(e::Column::TenantId.eq(tenant))
+                .add(e::Column::RevisionId.is_in(revisions.iter().copied())),
+        )
+        .order_by(e::Column::RevisionId, Order::Asc)
+        .order_by(e::Column::Id, Order::Asc)
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure("list plan items of revisions".into(), e))
+}
 /// One item's revision and SKU, a row of [`skus_of_revisions`].
 #[derive(Debug, sea_orm::FromQueryResult)]
 struct RevisionSkuRow {

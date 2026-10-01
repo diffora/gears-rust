@@ -44,7 +44,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-405 | M | Publish changes completes a selected pair | DECIDED 2026-09-25 · Phase 2 plan and reconciliation row 23; Phase 2 review (docs F4) |
 | D-406 | H | A temporary window is not crossed | DECIDED 2026-09-25 · Phase 2 second review (behaviour MEDIUM-2) |
 | D-407 | H | Plan items are reserved references; items are a sub-resource | DECIDED 2026-09-25 · Phase 3 plan rev 2; plan review HIGH 2; owner, 2026-09-25 (kind plan_item only); deviation from spec §7.2; amended by D-467 |
-| D-408 | H | Plan checks read every SKU fresh; descriptors are information, never content | DECIDED 2026-09-25 · Phase 3 plan rev 2; plan review MEDIUM 6; phase 2 "owed to phase 3"; amended by D-453, D-465; extended by D-466 |
+| D-408 | H | Plan checks read every SKU fresh; descriptors are information, never content | DECIDED 2026-09-25 · Phase 3 plan rev 2; plan review MEDIUM 6; phase 2 "owed to phase 3"; amended by D-453, D-465, D-482; extended by D-466 |
 | D-409 | H | Promotions are deferred (owner, 2026-09-25) | DECIDED 2026-09-25 · Owner, 2026-09-25, during Run 3.1; Phase 3 plan rev 3; spec §2.4 |
 | D-410 | H | Migration requests and plan retirement are deferred (owner, 2026-09-25) | DECIDED 2026-09-25 · Owner, 2026-09-25, during Run 3.1; spec §11 phase 3 |
 | D-411 | H | The sold-as bundle and plan grants are deferred (owner, 2026-09-25) | DECIDED 2026-09-25 · Owner, 2026-09-25, during Run 3.1; spec §5 plan_revision |
@@ -96,7 +96,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-457 | M | Every text a request writes has an explicit length cap | DECIDED 2026-09-29 · Whole-branch review PS-09, PS-10, X-01 (fix run W1a); twin of a products decision in W1b; extended by D-468 |
 | D-458 | M | The approval-unit list pages and reads its page set-based | DECIDED 2026-09-29 · Owner, 2026-09-29 (dispositions O2, "2"); whole-branch review PS-13 (fix run W1a); amended by D-470 |
 | D-459 | M | One approve-eligibility predicate for the engine and its readers | DECIDED 2026-09-30 · Phase 9 plan rev 2 (W2, binding; plan review W2, L5); extends D-393; amended by the phase 9 review (E, fix run 9.5d-1) |
-| D-460 | M | The plans list names each plan's current revision and the one in effect | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 1); phase 9 plan rev 2 (decision 1; plan review M6, M7, W3, L4); amends D-434, D-453; amended by D-461 |
+| D-460 | M | The plans list names each plan's current revision and the one in effect | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 1); phase 9 plan rev 2 (decision 1; plan review M6, M7, W3, L4); amends D-434, D-453; amended by D-461, D-480, D-482 |
 | D-461 | M | A revision says who made it and when it was submitted and approved | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 7); phase 9 plan rev 2 (decision 2; plan review M6, M7, L1, L9); amends D-434, D-453, D-460 |
 | D-462 | M | A pending revision shows its vote progress under plan read | DECIDED 2026-09-30 · Owner, 2026-09-30 (O-9a, "yes"); phase 9 plan rev 2 (decision 4; plan review M7, L5); amended by the phase 9 review (E, fix run 9.5d-1) |
 | D-463 | M | A plan's sale date on create and clone | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 7); phase 9 plan rev 2 (decision 3; plan review L10); amends D-451, extends D-456 |
@@ -112,6 +112,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-473 | M | The book's entries list reads its prices on a date | DECIDED 2026-10-01 · Owner, 2026-09-30 (validation 3 item 7, "ok"); phase 9 plan rev 2 (decision 13; plan review M5, L6); amends D-440, D-472; amended by the phase 9 review R1 (fix run 9.5d-1), D-483 |
 | D-480 | M | A revision read carries its entries, sale-date prices and reservation state | DECIDED 2026-10-01 · phase 9 plan rev 4 (run 9.6, asks 48, 49, 50); amends D-442, D-460, D-462 |
 | D-481 | M | The quorum a submit needs is on the checks and on an effective-policy read | DECIDED 2026-10-01 · phase 9 plan rev 4 (run 9.6, asks 54, 55); amends D-435, D-462 |
+| D-482 | M | The checks read their context as a set, and many revisions in one read | DECIDED 2026-10-01 · phase 9 plan rev 4 (run 9.7, ask 47); amends D-408, D-460 |
 | D-483 | M | A book's entries page on the toolkit's pager, in the order (sku_id, charge_kind, model, id) | DECIDED 2026-10-01 · Owner, 2026-10-01 (asks v4, 51); phase 9 plan rev 4 (run 9.8; review H3, A4); amends D-434, D-473 |
 | D-486 | M | A SKU's entries narrow, order and page in memory | DECIDED 2026-10-01 · Owner, 2026-10-01 (#25, form A); phase 9 plan rev 4 (run 9.8c; N5); amends D-434 |
 | D-490 | M | Pricing's approval units answer the approvals inbox through pricing's own doors | DECIDED 2026-10-01 · Owner, 2026-10-01 (option A, "yes, A, agreed", then "write the plan"; Run 2 started before 9.5d-2); approvals inbox plan rev 2 (Run 2; design 1 and 3; plan review H1, H3, H4, M1, M5, L1); amends D-470 |
@@ -311,7 +312,9 @@ D-465 amends this entry: "newly added" does not cover a re-add. The item create 
 
 D-466 extends this entry: each check row names the items that turn it red and the pending prices behind its blocked_by.
 
-**Source:** Phase 3 plan rev 2; plan review MEDIUM 6; phase 2 "owed to phase 3" (fresh SKU reads, current descriptors in snapshots). Amended by D-453, D-465; extended by D-466.
+D-482 amends this entry: checks, submit and apply read their item SKUs in one `skus_for_write` (products P-D-245), not one `sku_for_write` per SKU. A SKU Products no longer knows is still left out, so the checks show it unavailable. The checks doors read the stored context on a connection, as a set (`stored_contexts`).
+
+**Source:** Phase 3 plan rev 2; plan review MEDIUM 6; phase 2 "owed to phase 3" (fresh SKU reads, current descriptors in snapshots). Amended by D-453, D-465, D-482; extended by D-466.
 
 #### D-409 [H] Promotions are deferred (owner, 2026-09-25)
 
@@ -956,14 +959,14 @@ The plans screen shows, per plan, the revision being changed or waiting and the 
 - **Not the SKU filter.** sku_ids names every item of the current revision; GET /plans?sku_id= keeps a plan for an item with an entry, judged on the stored state of its draft, pending, scheduled or published revisions (D-434). The two may differ, and the served text says so.
 - **The reads.** The items come from one grouped read over the listed plans' current revisions (plan_item_repo::skus_of_revisions: revision and SKU only). GET /plans makes three statements whatever the number of plans: the plans, their revisions and the current revisions' items; one when the tenant has no plan. The grouped read runs for an empty list too, so the count does not depend on the rows. The QueryRecorder shows the same statements for 10 and for 100 plans.
 - **The write answers.** A write answers what it wrote (D-453): the create answers its empty draft (item_count 0), the clone its new draft with the items it copied, and the rename the plan as its read shows it.
-- **No ready flag.** The list carries no ready flag and no count of red checks: the checks read every item SKU from Products (D-408), so the list would make a Products read per SKU of every draft. The screen reads GET /plan-revisions/{id}/checks per draft.
+- **No ready flag.** The list carries no ready flag and no count of red checks: the checks read every item SKU from Products (D-408), so the list would make a Products read per SKU of every draft. The screen reads GET /plan-revisions/{id}/checks per draft, or GET /plan-revisions/checks for up to 50 drafts in one read (D-482).
 - **The tests.** tests/plan_overview.rs: the current revision and the one in effect for a draft only, a pending only, a published only, a draft, a pending and a waiting scheduled revision beside the published one, a due scheduled revision whose switch is not persisted (both name it, and its stored state stays scheduled), and a plan without revisions; the plan read agrees with its list row; sku_ids against the SKU filter; the create, clone and rename answers; the statements for 10 and 100 plans. domain::plan's tests pin the choice over the effective states. Probes that chose the published revision before the scheduled one, and that read the items per plan, were caught.
 
 D-461 amends this entry: the plan list also reads the units its revisions name, in one grouped statement more, so GET /plans makes four statements whatever the number of plans (one when there is none): the plans, their revisions, the current revisions' items and the units.
 
 D-480 amends this entry: in_effect gains sku_ids, the item SKUs of the revision in effect, in ascending order. The grouped items read names the current revision and the one in effect, still one statement, so GET /plans stays at four. A draft beside a published revision shows the published revision's SKUs, not an empty list and not the draft's.
 
-**Source:** Owner, 2026-09-30 (validation 3 item 1); phase 9 plan rev 2 (decision 1; plan review M6, M7, W3, L4). Amends D-434 and D-453. Amended by D-461, D-480.
+**Source:** Owner, 2026-09-30 (validation 3 item 1); phase 9 plan rev 2 (decision 1; plan review M6, M7, W3, L4). Amends D-434 and D-453. Amended by D-461, D-480, D-482.
 
 #### D-461 [M] A revision says who made it and when it was submitted and approved
 
@@ -1255,6 +1258,20 @@ The book page and the plan page showed a quorum the submit would need only by re
 - **Not price read.** The quorum is not money. Pricing serves no price read of its own (GET /prices/{id} is a price, D-440's list is price_book_entry read plus the money's second judgement), so price read is not this door's grant.
 
 **Source:** Phase 9 plan rev 4 (run 9.6, asks 54 and 55; A3). Amends D-435 and D-462.
+
+#### D-482 [M] The checks read their context as a set, and many revisions in one read
+
+**Status:** DECIDED 2026-10-01.
+
+The plan page read each revision's checks on its own, and each check read its entries and prices one at a time (ask 47). Fifty revisions of twenty entries were thousands of statements in one serializable transaction.
+
+- **The context.** `stored_contexts` reads, once for the whole set, the revisions, their plans, their items, the entries, the prices, the books, the dimensions, the plans' revisions, the in-effect items, the policy and the settings. Eleven statements whatever the number of revisions and entries, once any revision is held. `stored_context` is that read for one id, so the single checks and the batch are the same function. Submit and apply keep calling it inside their transaction. The checks doors read it on a connection, not under a serializable transaction.
+- **The SKUs.** One `skus_for_write` over the union (D-408, products P-D-245). A left-out SKU is unavailable. An answer that is all missing makes no Products call.
+- **The batch.** GET /bss-pricing/v1/plan-revisions/checks?revision_ids= takes 1 to 50 distinct ids and answers { items: [{ revision_id, checks }], missing }. Each checks is byte-identical to GET /plan-revisions/{id}/checks. A revision the tenant does not hold, or one outside the caller's plan-read scope, is missing, which is that door's 404. GET /plan-revisions/{id} is unchanged. The plans list gains no ready flag (D-460).
+- **Refusals.** 400 QUERY_INVALID for an empty list, more than 50, a repeated id, a repeated revision_ids key, a malformed id, or any other key. 503 REGISTRY_UNAVAILABLE. Products' definite refusal as it gave it (D-416). Under plan read.
+- **The statements.** tests/plan_checks_batch.rs pins 11 for one revision, for 5 revisions of 1 entry and for 50 of 20, the same SQL, none of them inside a transaction.
+
+**Source:** Phase 9 plan rev 4 (run 9.7, ask 47; review H2, A2, L5). Amends D-408 and D-460.
 
 #### D-483 [M] A book's entries page on the toolkit's pager, in the order (sku_id, charge_kind, model, id)
 

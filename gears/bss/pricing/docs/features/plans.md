@@ -101,7 +101,7 @@ legacy approved prices and published revisions remain readable.
 
 1. [x] - `p1` - Product Manager copies published structure into a new draft revision, or starts a new plan. - `inst-plans-flow-1`
 2. [x] - `p1` - Select one book, items (each a SKU and its entry in the book, D-467) and availability; add each item through the item sub-resource, which reserves its reference before the write (D-407), while a copied item attaches its reference after the copy is written (D-413). Grants and the sold-as bundle SKU are deferred by the owner (D-411). - `inst-plans-flow-2`
-3. [x] - `p1` - Read checks for the sale date and all dimension values; show ITEM_UNCOVERED and computed blocked_by price units when coverage is missing. - `inst-plans-flow-3`
+3. [x] - `p1` - Read checks for the sale date and all dimension values, for one revision or for up to 50 in one read (D-482); show ITEM_UNCOVERED and computed blocked_by price units when coverage is missing. - `inst-plans-flow-3`
 4. [x] - `p1` - After checks pass, submit a separate plan_revision unit; revalidate on apply. - `inst-plans-flow-4`
 5. [x] - `p1` - On approval publish the revision, supersede the previous published revision and advance plan.published_rev atomically; existing subscription pins remain unchanged. - `inst-plans-flow-5`
 
@@ -111,7 +111,7 @@ legacy approved prices and published revisions remain readable.
 
 - [x] `p1` - **ID**: `cpt-cf-bss-pricing-algo-plans-revision-checks`
 
-1. [x] - `p1` - Read every item SKU fresh and check it is allowed, non-bundle and not newly deprecated (D-408); validate every item reference's receipt (D-413) and that every item names an entry (ITEM_ENTRY_MISSING, D-467). - `inst-plans-revision-checks-1`
+1. [x] - `p1` - Read every item SKU fresh, in one call, and check it is allowed, non-bundle and not newly deprecated (D-408, D-482); validate every item reference's receipt (D-413) and that every item names an entry (ITEM_ENTRY_MISSING, D-467). - `inst-plans-revision-checks-1`
 2. [x] - `p1` - Enforce one recurring frequency and a unique usage meter among the items with an entry; reject foreign-book entries. - `inst-plans-revision-checks-2`
 3. [x] - `p1` - For every registered dimension value, verify sale-date coverage and an open tail through its own or the default chain; check book validity. - `inst-plans-revision-checks-3`
 4. [x] - `p1` - When uncovered, compute blocking pending price unit ids from current prices, with the pending prices behind them, and name on every row the items that turn it red (D-466); return checks, never persist blocked_by or create a unit while red. - `inst-plans-revision-checks-4`

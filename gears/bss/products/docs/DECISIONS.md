@@ -54,7 +54,7 @@
 | P-D-219 | M | The submitter's note travels with the approval unit (twin of pricing D-445) | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amends P-D-213; its Pricing bullet amended by pricing D-464 |
 | P-D-220 | M | A retired category is never the default; retiring the default clears it | DECIDED 2026-09-28 · Owner, 2026-09-28; amends P-D-218 |
 | P-D-221 | M | The outbox wakes its sequencer after the commit (twin of pricing D-455) | DECIDED 2026-09-29 · Main sync of 2026-09-29 (toolkit-db 2bfc76aec); pricing phase 8 plan rev 2 (run 8.2b) |
-| P-D-222 | H | The registry trusts pricing's system actor in-process only; no REST door serves that actor | DECIDED 2026-09-29 · Owner, 2026-09-29 (dispositions O1, "ok"); whole-branch review RS-02 (fix run W1b); second review of W1b M1 (fix run W1c); keeps pricing D-424 |
+| P-D-222 | H | The registry trusts pricing's system actor in-process only; no REST door serves that actor | DECIDED 2026-09-29 · Owner, 2026-09-29 (dispositions O1, "ok"); whole-branch review RS-02 (fix run W1b); second review of W1b M1 (fix run W1c); keeps pricing D-424; amended by P-D-245 |
 | P-D-223 | M | A refusal keeps its class and names its resource | DECIDED 2026-09-29 · Whole-branch review RS-06, RS-07, RS-09, RS-25, RS-32 and W1a's `UnitNotFound` note (fix run W1b) |
 | P-D-224 | M | The approval-unit list pages and reads its page set-based (twin of pricing D-458) | DECIDED 2026-09-29 · Owner, 2026-09-29 (dispositions O2, "ok"); whole-branch review RS-03 (fix run W1b); amended by P-D-227, P-D-228 |
 | P-D-225 | M | Every text a request writes has an explicit length cap (twin of pricing D-457) | DECIDED 2026-09-29 · Whole-branch review RS-10, RS-11, RS-37, RS-38 (fix run W1b); the dispositions' "Length caps" |
@@ -66,6 +66,7 @@
 | P-D-231 | H | Derived usage types are stored append-only and served by five doors | DECIDED 2026-10-01 · Owner, 2026-10-01 (O-1, O-2, O-3); derived usage types plan rev 3 (design decisions 4, 8, 9, run 2); implements P-D-229 and P-D-230 |
 | P-D-232 | H | A usage SKU pins a derived usage type at its first publish | DECIDED 2026-10-01 · Owner, 2026-10-01 (M1, O-2); derived usage types plan rev 3 (design decision 7, run 3); implements P-D-229's pin; amends P-D-184, P-D-207, P-D-231 |
 | P-D-233 | H | Products answers pricing's meter semantics for its derived usage types (E1b) | DECIDED 2026-10-01 · Derived usage types plan rev 3 (design decisions 5 and 6, run 4); implements P-D-229's pricing reference; amends P-D-229, P-D-230, P-D-231, P-D-232; pricing D-503 and D-510 amended |
+| P-D-245 | M | The reference registry reads many SKUs in one call | DECIDED 2026-10-01 · phase 9 plan rev 4 (run 9.7); amends P-D-222 |
 | P-D-246 | M | The SKU pickers narrow by one book or one plan revision (`priced_in`, `not_priced_in`, `not_in_revision`) through the port's scoped sets | DECIDED 2026-10-01 · Owner, 2026-10-01 (asks v4, 52 and 46); phase 9 plan rev 4 (run 9.8; review M5, M6, M8); amends P-D-210, P-D-212 |
 | P-D-247 | L | A usage-type picker page may be kept privately for a minute | DECIDED 2026-10-01 · Owner, 2026-10-01 (asks v4, 56); phase 9 plan rev 4 (run 9.8); extends P-D-207 |
 | P-D-248 | H | A retire under review keeps the SKU's lifecycle; `retire_pending` is the fence | DECIDED 2026-10-01 · Owner, 2026-10-01; phase 9 plan rev 4 run 9.8d; amends P-D-189, P-D-208, P-D-211, P-D-213 |
@@ -1058,8 +1059,10 @@ review asked whether a caller could assert it (RS-02). The owner kept the trust 
 - *Rejected alternative:* a PDP role for the system actor (the way account-management's `am.system` goes through its PDP). vhp-core's
   PDP does not know `bss-pricing.system` (D-424's note), so every resolve and every ticker call would be refused until it did.
 
+P-D-245 amends this entry: `skus_for_write` judges the caller once for the whole call. A 403 or a 503 fails the call. An id the tenant does not hold, or the caller's scope does not admit, is left out, which is that id's 404, and does not fail the others.
+
 **Source:** Owner, 2026-09-29 (the dispositions' O1, answered "ok"); whole-branch review RS-02 (fix run W1b); the second review of
-W1b, M1 (fix run W1c). Keeps pricing D-424.
+W1b, M1 (fix run W1c). Keeps pricing D-424. Amended by P-D-245.
 
 #### P-D-223 [M] A refusal keeps its class and names its resource
 
@@ -1663,6 +1666,18 @@ plan. `infra/meter_semantics.rs` and `gear.rs` carry it; pricing's checks do not
 
 **Source:** The derived usage types implementation plan, rev 3: design decisions 5 and 6 and run 4. Implements P-D-229's
 pricing reference (its amendment) and the E1b half of pricing's E1 (D-503).
+
+#### P-D-245 [M] The reference registry reads many SKUs in one call
+
+**Status:** DECIDED 2026-10-01.
+
+Pricing's checks, submit and apply read every item SKU fresh (pricing D-408). Reading them one `sku_for_write` at a time made one statement and one caller check per SKU.
+
+- **The method.** `ReferenceRegistryV1::skus_for_write` returns the SKU heads of the distinct ids the caller may read, in the order asked. An id the tenant does not hold, or the caller's scope does not admit, is left out. That is the per-id 404, and it does not fail the batch. This is the exception to the trait's rule that a missing batch entry fails the batch.
+- **The caller, once.** The caller is judged once for the call (P-D-222): 403 and 503 fail the whole call. Products' registry reads the rows in one statement, the id set bound once, the form P-D-212 uses. The default, which the test doubles keep, reads `sku_for_write` per id, skips a 404 and propagates the rest. Pricing's `Detached` forwards the call on a task of its own, as it forwards `sku_for_write`.
+- **The tests.** The default and the override agree for 1, 10 and 100 ids, a missing id and an unadmitted id left out of both. 403 and 503 fail the whole call. The statement is the same, one bind, for 1 and for 100. On Postgres the id set is one `uuid[]`.
+
+**Source:** Phase 9 plan rev 4 (run 9.7; review H1, L1, L2). Amends P-D-222.
 
 #### P-D-246 [M] The SKU pickers narrow by one book or one plan revision
 

@@ -1228,6 +1228,20 @@ pub struct PricingPlanChecksDto {
     /// policy, the number the APPROVAL info row already shows. The revision itself has no quorum.
     pub quorum_required: u32,
 }
+/// `GET /plan-revisions/checks` (D-482): one revision's checks, the single read's answer.
+#[toolkit_macros::api_dto(response)]
+pub struct PricingRevisionChecksDto {
+    pub revision_id: Uuid,
+    /// Byte-identical to `GET /plan-revisions/{id}/checks` for this revision.
+    pub checks: PricingPlanChecksDto,
+}
+/// `GET /plan-revisions/checks` (D-482): the checks of the revisions the caller may read, and
+/// the ids the tenant does not hold or the plan-read scope does not admit.
+#[toolkit_macros::api_dto(response)]
+pub struct PricingRevisionChecksBatchDto {
+    pub items: Vec<PricingRevisionChecksDto>,
+    pub missing: Vec<Uuid>,
+}
 #[toolkit_macros::api_dto(response)]
 pub struct PricingReferenceOpDto {
     pub op_id: Uuid,
