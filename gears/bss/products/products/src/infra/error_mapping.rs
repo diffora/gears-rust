@@ -9,6 +9,8 @@ struct SkuResource;
 struct CategoryResource;
 #[resource_error(gts_id!("cf.bss.products.approval_unit.v1~"))]
 struct ApprovalUnitResource;
+#[resource_error(gts_id!("cf.bss.products.derived_usage_type.v1~"))]
+struct DerivedUsageTypeResource;
 
 /// The resource a refusal names (RS-25): one of the gear's registered authz labels
 /// (`crate::authz::labels`), picked from what the refusal carries. Every refusal used to name
@@ -18,6 +20,7 @@ enum Refused {
     Sku,
     Category,
     ApprovalUnit,
+    DerivedUsageType,
 }
 
 /// Build `$method($args)` on the resource `$resource` names; every arm has one builder type.
@@ -27,16 +30,36 @@ macro_rules! on {
             Refused::Sku => SkuResource::$method($($arg),*),
             Refused::Category => CategoryResource::$method($($arg),*),
             Refused::ApprovalUnit => ApprovalUnitResource::$method($($arg),*),
+            Refused::DerivedUsageType => DerivedUsageTypeResource::$method($($arg),*),
         }
     };
 }
 
 impl Refused {
     /// A missing row names its kind (`what`); a reference is a SKU's. An approval refusal and a
-    /// stale unit refuse the unit, and a `CATEGORY_` code the category. Every other refusal is a
-    /// write or a read of a SKU, the registry's own resource.
+    /// stale unit refuse the unit, a `CATEGORY_` code the category, and a `DERIVED_` code of the
+    /// derived doors the derived usage type (P-D-231). The binding's `DERIVED_` codes refuse a
+    /// SKU's write, so they name the SKU (P-D-232). Every other refusal is a write or a read of a
+    /// SKU, the registry's own resource.
     fn of(err: &DomainError) -> Self {
         match err {
+            DomainError::NotFound {
+                what: "derived_usage_type",
+                ..
+            } => Self::DerivedUsageType,
+            DomainError::Conflict { code, .. } | DomainError::Forbidden { code, .. }
+                if names_the_derived_type(code) =>
+            {
+                Self::DerivedUsageType
+            }
+            DomainError::Validation(report)
+                if report
+                    .violations()
+                    .iter()
+                    .any(|v| names_the_derived_type(v.code)) =>
+            {
+                Self::DerivedUsageType
+            }
             DomainError::NotFound {
                 what: "category", ..
             } => Self::Category,
@@ -54,6 +77,11 @@ impl Refused {
             _ => Self::Sku,
         }
     }
+}
+
+/// A `DERIVED_` code of the derived doors (P-D-231), not of a SKU's binding (P-D-232).
+fn names_the_derived_type(code: &str) -> bool {
+    code.starts_with("DERIVED_") && !crate::domain::derived::SKU_BINDING_CODES.contains(&code)
 }
 
 /// Shared canonical error constructor.
@@ -88,6 +116,8 @@ pub(crate) fn permission_denied(label: &str, reason: String) -> CanonicalError {
         Refused::Category
     } else if label == labels::APPROVAL_UNIT {
         Refused::ApprovalUnit
+    } else if label == labels::DERIVED_USAGE_TYPE {
+        Refused::DerivedUsageType
     } else {
         Refused::Sku
     };
@@ -118,8 +148,9 @@ fn catalog_denied(detail: &str) -> CanonicalError {
 }
 
 /// A validation report: a catalog's refusal of the caller is a 403 and a catalog outage a 503,
-/// whichever stage reported them; otherwise every violation, in the order collected (P-D-202).
-fn validation(report: &ValidationReport) -> CanonicalError {
+/// whichever stage reported them; otherwise every violation, in the order collected (P-D-202), on
+/// the resource [`Refused::of`] picked.
+fn validation(resource: Refused, report: &ValidationReport) -> CanonicalError {
     // A catalog that refused the caller is a permission, never a field fix (P-D-207).
     if report
         .violations()
@@ -145,7 +176,7 @@ fn validation(report: &ValidationReport) -> CanonicalError {
         return CanonicalError::internal("products: validation failed with an empty report")
             .create();
     };
-    let mut builder = SkuResource::failed_precondition().with_precondition_violation(
+    let mut builder = on!(resource, failed_precondition()).with_precondition_violation(
         first.subject.clone(),
         first.detail.clone(),
         first.code,
@@ -202,7 +233,7 @@ impl From<DomainError> for CanonicalError {
                 }
                 other => aborted(resource, r.detail, other),
             },
-            D::Validation(report) => validation(&report),
+            D::Validation(report) => validation(resource, &report),
             D::StaleRevision { expected, found } => aborted(
                 resource,
                 format!("expected {expected}, found {found}"),

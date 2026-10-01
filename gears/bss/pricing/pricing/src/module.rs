@@ -35,7 +35,7 @@ impl BssPricingGear {
     /// Spawn the reference recovery task and cancel in-flight work on shutdown. Its ticker runs
     /// every second: the plan switch duty first, on the first tick and every
     /// `reference_ticker::SWITCH_EVERY` (60) after it (D-450), then at most 100 due reference ops,
-    /// and a reconciliation every 10 ticks. The knobs are fixed here; the gear has no config key.
+    /// and a reconciliation every 10 ticks. The knobs are fixed here; the ticker has no config key.
     /// The outbox pipeline is stopped however the task ends, a panic included; the task's
     /// failure is returned after that (PS-36).
     pub(crate) async fn serve(self: Arc<Self>, cancel: CancellationToken) -> Result<()> {
@@ -87,17 +87,29 @@ mod module_tests;
 #[async_trait]
 impl Gear for BssPricingGear {
     async fn init(&self, ctx: &GearCtx) -> Result<()> {
-        match ctx.config::<BssPricingConfig>() {
-            Ok(_) | Err(ConfigError::MissingConfigSection { .. }) => {}
+        let config = match ctx.config::<BssPricingConfig>() {
+            Ok(config) => config,
+            Err(ConfigError::MissingConfigSection { .. }) => BssPricingConfig::default(),
             Err(ConfigError::GearNotFound { .. }) => return Ok(()),
             Err(error) => return Err(error).context("bss-pricing: invalid config"),
-        }
+        };
+        config
+            .seller_hold_policy
+            .validate()
+            .context("bss-pricing: invalid config")?;
         let db = ctx
             .db_required()
             .context("bss-pricing: database is required")?;
         let authz_client = ctx
             .client_hub()
             .get::<dyn authz_resolver_sdk::AuthZResolverApi>()
+            .map_err(|_| {
+                toolkit_canonical_errors::CanonicalError::from(
+                    crate::infra::commercial_terms::errors::UnconfiguredDependency {
+                        dependency: "AuthZResolverApi",
+                    },
+                )
+            })
             .context(
                 "bss-pricing: AuthZResolverApi absent from ClientHub; \
                  authz-resolver module must be registered",
@@ -137,6 +149,24 @@ impl Gear for BssPricingGear {
         ctx.client_hub()
             .register::<dyn bss_products_sdk::sku_usage::SkuUsageV1>(Arc::new(
                 crate::api::sku_usage::PricingSkuUsage::new(state.clone(), (*enforcer).clone()),
+            ));
+        ctx.client_hub()
+            .register::<dyn bss_pricing_sdk::read::PricingReadV1>(Arc::new(
+                crate::api::pricing_read::PricingReadProvider::new(state.clone(), enforcer.clone()),
+            ));
+        let commercial = Arc::new(crate::infra::commercial_terms::CommercialTermsService::new(
+            state.clone(),
+            enforcer.clone(),
+            Arc::new(crate::infra::clock::SystemClock),
+            config.seller_hold_policy,
+        ));
+        ctx.client_hub()
+            .register::<dyn bss_pricing_sdk::acceptance::SellabilityV1>(Arc::new(
+                crate::api::sellability::SellabilityProvider::new(commercial.clone()),
+            ));
+        ctx.client_hub()
+            .register::<dyn bss_pricing_sdk::acceptance::PricingAcceptanceV1>(Arc::new(
+                crate::api::pricing_acceptance::PricingAcceptanceProvider::new(commercial),
             ));
         // D-490: the approvals inbox reads and votes on pricing's units through this source, as
         // the caller, under the gear's own doors.

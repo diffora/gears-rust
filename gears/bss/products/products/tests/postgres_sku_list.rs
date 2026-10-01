@@ -379,3 +379,52 @@ async fn a_usage_set_filters_through_one_uuid_array_on_postgres() {
     assert!(f.page(empty(true), &ODataQuery::default()).await.is_empty());
     assert_eq!(f.page(empty(false), &ODataQuery::default()).await.len(), 4);
 }
+
+/// P-D-246 on Postgres: a picker's book set (kept for `priced_in`, negated for `not_priced_in`)
+/// and its revision set (negated for `not_in_revision`) are each one `uuid[]` bind, beside the
+/// usage sets, in the list and in the counts, whatever their size.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn a_picker_scope_filters_through_one_uuid_array_on_postgres() {
+    let (_pg, f) = Fixture::new().await;
+    let mut ids = Vec::new();
+    for code in ["A", "B", "C", "D"] {
+        ids.push(f.sku(code, code, None, Lifecycle::Draft, None).await);
+    }
+    for extra in [0_usize, 5000] {
+        let mut book = vec![ids[0], ids[1]];
+        book.extend((0..extra).map(|_| Uuid::new_v4()));
+        let filter = |member: bool| SkuListFilter {
+            book: Some(SetFilter {
+                member,
+                ids: book.clone(),
+            }),
+            revision: Some(SetFilter {
+                member: false,
+                ids: vec![ids[1], ids[2]],
+            }),
+            ..SkuListFilter::default()
+        };
+        assert_eq!(
+            f.page(filter(true), &ODataQuery::default()).await,
+            ["A"],
+            "priced_in and not_in_revision: {extra}"
+        );
+        assert_eq!(
+            f.page(filter(false), &ODataQuery::default()).await,
+            ["D"],
+            "not_priced_in and not_in_revision: {extra}"
+        );
+        let counts = repo::count_skus(
+            &f.db.conn().unwrap(),
+            &f.scope,
+            f.tenant,
+            DbBackend::Postgres,
+            &filter(true),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!((counts.all, counts.draft), (1, 1), "{extra}");
+    }
+}

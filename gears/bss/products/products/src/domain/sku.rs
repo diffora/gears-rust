@@ -2,8 +2,9 @@
 //! Pure SKU content validation, patching and lifecycle rules.
 //! @cpt-dod:cpt-cf-bss-products-dod-bundle-unpriced:p1
 use crate::domain::caps;
+use crate::domain::derived;
 use crate::domain::error::DomainError;
-use crate::domain::recognized::UsageTypeAnswer;
+use crate::domain::recognized::{UsageRefAnswer, UsageTypeAnswer};
 use crate::domain::validation::ValidationReport;
 use bss_products_sdk::models::{BillingTiming, Lifecycle, SkuContent, SkuType};
 use uuid::Uuid;
@@ -175,7 +176,7 @@ fn check_texts(
 
 /// @cpt-cf-bss-products-fr-sku-metering · @cpt-cf-bss-products-fr-sku-bundle
 #[must_use]
-pub fn validate_publish(c: &SkuContent, usage_type: Option<&UsageTypeAnswer>) -> ValidationReport {
+pub fn validate_publish(c: &SkuContent, usage_type: Option<&UsageRefAnswer>) -> ValidationReport {
     let mut r = ValidationReport::new();
     match c.r#type {
         SkuType::Usage => {
@@ -193,36 +194,20 @@ pub fn validate_publish(c: &SkuContent, usage_type: Option<&UsageTypeAnswer>) ->
                     "a usage SKU names its unit before publish",
                 );
             }
-            match usage_type {
-                Some(UsageTypeAnswer::Unavailable) => r.violate(
-                    "USAGE_TYPE_UNAVAILABLE",
-                    "usage_type_ref",
-                    "the usage type catalog did not answer",
-                ),
-                // Unreachable from the doors (`governance::resolve` answers a denial as 403
-                // before any report is built); kept so the pure validator never admits it.
-                Some(UsageTypeAnswer::Forbidden) => r.violate(
-                    "USAGE_TYPE_FORBIDDEN",
-                    "usage_type_ref",
-                    "the usage type catalog refused this caller",
-                ),
-                Some(UsageTypeAnswer::Unresolved) => r.violate(
-                    "USAGE_TYPE_UNRESOLVED",
-                    "usage_type_ref",
-                    "the usage type catalog does not know this ref",
-                ),
-                None if c
-                    .usage_type_ref
-                    .as_deref()
-                    .is_some_and(|value| !value.trim().is_empty()) =>
-                {
-                    r.violate(
-                        "USAGE_TYPE_UNRESOLVED",
-                        "usage_type_ref",
-                        "the usage type was not resolved",
-                    );
-                }
-                Some(UsageTypeAnswer::Resolved(_)) | None => {}
+            // P-D-232: a derived ref is judged first, by the tenant's stored version the door
+            // read. No catalog answer binds it, and a derived answer binds no GTS ref.
+            if let Some(reference) = c
+                .usage_type_ref
+                .as_deref()
+                .filter(|reference| derived::is_derived_ref(reference))
+            {
+                let pin = match usage_type {
+                    Some(UsageRefAnswer::Derived(pin)) => Some(pin),
+                    _ => None,
+                };
+                derived::judge_binding(&mut r, reference, c.unit.as_deref(), pin);
+            } else {
+                catalog_verdict(&mut r, c, usage_type);
             }
         }
         SkuType::Bundle => {
@@ -244,6 +229,45 @@ pub fn validate_publish(c: &SkuContent, usage_type: Option<&UsageTypeAnswer>) ->
         SkuType::Recurring | SkuType::OneTime => {}
     }
     r
+}
+
+/// A GTS ref's verdict: the usage-type catalog's answer, as the door resolved it (P-D-184).
+fn catalog_verdict(r: &mut ValidationReport, c: &SkuContent, usage_type: Option<&UsageRefAnswer>) {
+    let catalog = match usage_type {
+        Some(UsageRefAnswer::Catalog(answer)) => Some(answer),
+        _ => None,
+    };
+    match catalog {
+        Some(UsageTypeAnswer::Unavailable) => r.violate(
+            "USAGE_TYPE_UNAVAILABLE",
+            "usage_type_ref",
+            "the usage type catalog did not answer",
+        ),
+        // Unreachable from the doors (`governance::resolve` answers a denial as 403
+        // before any report is built); kept so the pure validator never admits it.
+        Some(UsageTypeAnswer::Forbidden) => r.violate(
+            "USAGE_TYPE_FORBIDDEN",
+            "usage_type_ref",
+            "the usage type catalog refused this caller",
+        ),
+        Some(UsageTypeAnswer::Unresolved) => r.violate(
+            "USAGE_TYPE_UNRESOLVED",
+            "usage_type_ref",
+            "the usage type catalog does not know this ref",
+        ),
+        None if c
+            .usage_type_ref
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty()) =>
+        {
+            r.violate(
+                "USAGE_TYPE_UNRESOLVED",
+                "usage_type_ref",
+                "the usage type was not resolved",
+            );
+        }
+        Some(UsageTypeAnswer::Resolved(_)) | None => {}
+    }
 }
 
 /// @cpt-cf-bss-products-fr-sku-type-frozen

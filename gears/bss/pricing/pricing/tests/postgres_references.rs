@@ -15,6 +15,7 @@ use bss_pricing::{
     },
 };
 use bss_products_sdk::models::ReferenceState;
+use entry_support::policy_support;
 use entry_support::{Caller, KINDS, Kind, Script, Target, app_for, request, state_on, user_of};
 use sea_orm::{ConnectionTrait, DbBackend, Statement};
 use serde_json::{Value, json};
@@ -362,7 +363,7 @@ async fn postgres_removing_a_dimension_key_an_entry_names_is_refused_409() {
         .call(
             "POST",
             &p.target.endpoint(),
-            json!({"sku_id":Uuid::new_v4(),"dimension_key":"region","model":"per_unit"}),
+            json!({"usage_rating_policy":policy_support::input(),"sku_id":Uuid::new_v4(),"dimension_key":"region","model":"per_unit"}),
             Some("one"),
         )
         .await;

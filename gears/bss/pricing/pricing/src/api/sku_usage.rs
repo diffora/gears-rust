@@ -6,13 +6,15 @@
 //! the scope that grant gives, in the tenant asked for, and the counts are read in one
 //! transaction with a fixed number of statements. `usage_sets` answers the SKU list's `priced`
 //! and `in_plan` filters (P-D-212) under the same rule, in two set-based statements. Pricing reads only the SKU ids it is given;
-//! nothing Products holds flows back into pricing.
+//! nothing Products holds flows back into pricing. `sku_ids_in` answers the pickers' scopes
+//! (P-D-246) in one statement each: a book's SKUs under the same rule, and a revision's SKUs,
+//! which are plan content, under `plan:read` as well.
 use crate::api::rest::authoring::{AuthoringState, support};
 use crate::authz::{self, actions, resource_types};
 use async_trait::async_trait;
 use authz_resolver_sdk::PolicyEnforcer;
 use bss_products_sdk::sku_usage::{
-    SkuUsage, SkuUsageSets, SkuUsageV1, sku_usage_denied, sku_usage_unavailable,
+    SkuUsage, SkuUsageSets, SkuUsageV1, UsageScope, sku_usage_denied, sku_usage_unavailable,
 };
 use std::sync::Arc;
 use toolkit_canonical_errors::CanonicalError;
@@ -34,25 +36,28 @@ impl PricingSkuUsage {
     /// The scope `price_book_entry:read` gives the caller; a denial is the port's 403, a PDP
     /// outage its 503.
     async fn entry_scope(&self, ctx: &SecurityContext) -> Result<AccessScope, CanonicalError> {
-        authz::access_scope(
-            &self.enforcer,
-            ctx,
-            &resource_types::PRICE_BOOK_ENTRY,
-            actions::READ,
-            None,
-            None,
-        )
-        .await
-        .map_err(|error| match error {
-            authz::AuthzError::Denied(denial) => {
-                tracing::debug!(reason = %denial.reason, "bss-pricing: SKU usage refused");
-                sku_usage_denied()
-            }
-            authz::AuthzError::Unavailable(detail) => {
-                tracing::warn!(detail, "bss-pricing: SKU usage authorization unavailable");
-                sku_usage_unavailable("pricing authorization is unavailable")
-            }
-        })
+        self.read_scope(ctx, &resource_types::PRICE_BOOK_ENTRY)
+            .await
+    }
+    /// The scope `read` on `resource` gives the caller; a denial is the port's 403, a PDP outage
+    /// its 503.
+    async fn read_scope(
+        &self,
+        ctx: &SecurityContext,
+        resource: &authz_resolver_sdk::pep::ResourceType,
+    ) -> Result<AccessScope, CanonicalError> {
+        authz::access_scope(&self.enforcer, ctx, resource, actions::READ, None, None)
+            .await
+            .map_err(|error| match error {
+                authz::AuthzError::Denied(denial) => {
+                    tracing::debug!(reason = %denial.reason, "bss-pricing: SKU usage refused");
+                    sku_usage_denied()
+                }
+                authz::AuthzError::Unavailable(detail) => {
+                    tracing::warn!(detail, "bss-pricing: SKU usage authorization unavailable");
+                    sku_usage_unavailable("pricing authorization is unavailable")
+                }
+            })
     }
 }
 #[async_trait]
@@ -94,6 +99,43 @@ impl SkuUsageV1 for PricingSkuUsage {
         .map_err(|error| {
             tracing::warn!(error = %error, diagnostic = error.diagnostic().unwrap_or_default(), "bss-pricing: SKU usage sets could not be read");
             sku_usage_unavailable("pricing could not read the SKU usage sets")
+        })
+    }
+    /// P-D-246: a book's SKUs under `price_book_entry:read`, read under the scope it gives; a
+    /// revision's SKUs under `price_book_entry:read` and `plan:read`, the revision read under the
+    /// plan scope. One statement either way; a book or a revision the tenant does not hold is the
+    /// empty set.
+    async fn sku_ids_in(
+        &self,
+        ctx: &SecurityContext,
+        tenant: Uuid,
+        scope: UsageScope,
+    ) -> Result<Vec<Uuid>, CanonicalError> {
+        use crate::infra::storage::repo::{plan_item_repo, price_book_entry_repo};
+        let entries = self.entry_scope(ctx).await?;
+        // The scope each read runs under: the entries' for a book, the plans' for a revision.
+        let under = match scope {
+            UsageScope::Book(_) => entries,
+            // A revision's SKUs are plan content (P-D-246).
+            UsageScope::Revision(_) => self.read_scope(ctx, &resource_types::PLAN).await?,
+        };
+        support::transaction(&self.state.db.db(), move |tx| {
+            let under = under.clone();
+            Box::pin(async move {
+                Ok(match scope {
+                    UsageScope::Book(book) => {
+                        price_book_entry_repo::skus_in_book(tx, &under, tenant, book).await?
+                    }
+                    UsageScope::Revision(revision) => {
+                        plan_item_repo::skus_of_revision(tx, &under, tenant, revision).await?
+                    }
+                })
+            })
+        })
+        .await
+        .map_err(|error| {
+            tracing::warn!(error = %error, diagnostic = error.diagnostic().unwrap_or_default(), ?scope, "bss-pricing: a SKU usage scope could not be read");
+            sku_usage_unavailable("pricing could not read the SKUs of the scope")
         })
     }
 }

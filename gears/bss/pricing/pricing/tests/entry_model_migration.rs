@@ -131,7 +131,9 @@ impl Lite {
         let chain = BssPricingGear::default()
             .migrations()
             .into_iter()
-            .filter(|m| Some(m.name()) != without)
+            .filter(|m| {
+                Some(m.name()) != without && m.name() != "m20260930_000018_usage_rating_policy"
+            })
             .collect();
         run_migrations_for_testing(&self.pool().await, chain).await
     }
@@ -699,9 +701,16 @@ async fn the_forward_migration_moves_the_model_to_the_entry_and_keeps_every_row(
     );
     // An upgraded database and a fresh one hold the same schema.
     let fresh = Database::connect("sqlite::memory:").await.unwrap();
+    let manager = sea_orm_migration::SchemaManager::new(&fresh);
+    for migration in schema_dump::name_ordered_chain()
+        .into_iter()
+        .filter(|m| m.name() != "m20260930_000018_usage_rating_policy")
+    {
+        migration.up(&manager).await.unwrap();
+    }
     assert_eq!(
         dump_after,
-        stanza_lines(&schema_dump::migrate_and_dump_sqlite(&fresh).await)
+        stanza_lines(&schema_dump::sqlite_dump(&fresh).await)
     );
     // The guard, made pending again, passes the upgraded database.
     db.forget(GUARD).await;
@@ -714,6 +723,10 @@ async fn the_forward_migration_moves_the_model_to_the_entry_and_keeps_every_row(
 async fn the_application_reads_the_backfilled_models() {
     let db = seeded().await;
     db.migrate(None).await.unwrap();
+    // Current application entities require the complete schema after the historical migration assertions.
+    run_migrations_for_testing(&db.pool().await, BssPricingGear::default().migrations())
+        .await
+        .unwrap();
     let state = state_on(
         DBProvider::new(db.pool().await),
         Arc::new(Script::default()),
@@ -766,6 +779,10 @@ async fn an_entry_op_stored_before_the_migration_resumes_after_it() {
     let db = seeded().await;
     db.migrate(None).await.unwrap();
     let script = Arc::new(Script::default());
+    // Current application entities require the complete schema after the historical migration assertions.
+    run_migrations_for_testing(&db.pool().await, BssPricingGear::default().migrations())
+        .await
+        .unwrap();
     let state = state_on(DBProvider::new(db.pool().await), script.clone()).await;
     let system = system_actor(TENANT).unwrap();
 
@@ -850,6 +867,10 @@ async fn an_in_flight_create_for_a_taken_key_meets_it_after_the_model_moved() {
         "the key holder's model is not the usage default"
     );
     let script = Arc::new(Script::default());
+    // Current application entities require the complete schema after the historical migration assertions.
+    run_migrations_for_testing(&db.pool().await, BssPricingGear::default().migrations())
+        .await
+        .unwrap();
     let state = state_on(DBProvider::new(db.pool().await), script.clone()).await;
     let system = system_actor(TENANT).unwrap();
 

@@ -18,7 +18,7 @@ use bss_pricing::infra::storage::{
 };
 use bss_products_sdk::models::SkuType;
 use plan_support::{
-    Catalog, Fixture, book, entry, id_of, items, plan, publish, scope, setup, text,
+    Catalog, Fixture, book, id_of, items, plan, policy_entry as entry, publish, scope, setup, text,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -461,7 +461,7 @@ async fn a_legacy_included_item_in_a_draft_is_item_entry_missing_until_its_autho
     assert_eq!(
         unit["snapshot"]["after"]["items"],
         json!([{"sku_id":paid.sku_id,"price_book_entry_id":paid.price_book_entry_id}]),
-        "a unit written from D-467 on carries an item's SKU and entry only"
+        "D-511 preserves policy-less pre-seam approval content"
     );
 }
 

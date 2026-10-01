@@ -3,9 +3,14 @@ use super::{driver_failure, map_unique, matched};
 use crate::infra::storage::{RepoError, entity::price_book_entry as e};
 use sea_orm::sea_query::{Expr, ExprTrait};
 use sea_orm::{ColumnTrait, Condition, EntityTrait, Order, Set};
+use toolkit_db::odata::sea_orm_filter::{
+    FieldToColumn, LimitCfg, ODataFieldMapping, PaginateOdataTryError, paginate_odata_try,
+};
 use toolkit_db::secure::{
     AccessScope, DBRunner, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
 };
+use toolkit_odata::filter::{FieldKind, FilterField, FilterOp, ODataValue};
+use toolkit_odata::{ODataOrderBy, ODataQuery, OrderKey, Page, SortDir};
 use uuid::Uuid;
 fn key(tenant: Uuid, id: Uuid) -> Condition {
     Condition::all()
@@ -43,6 +48,9 @@ pub async fn insert(
         charge_kind: Set(m.charge_kind),
         period: Set(m.period),
         model: Set(m.model),
+        usage_policy_id: Set(m.usage_policy_id),
+        usage_policy_version: Set(m.usage_policy_version),
+        usage_policy_digest: Set(m.usage_policy_digest),
         dimension_key: Set(m.dimension_key),
         invoice_line_override: Set(m.invoice_line_override),
         reservation_id: Set(m.reservation_id),
@@ -181,6 +189,181 @@ pub async fn for_book(
         .all(runner)
         .await
         .map_err(|e| driver_failure("list price book entries of a book".into(), e))
+}
+// ------------------------------------------------------------------ a book's entries pager (D-483)
+
+/// The page size when the caller names none, and the most a page holds (`limit` is clamped): a
+/// book of 500 entries or fewer stays on one page (D-483).
+pub const ENTRY_PAGE: LimitCfg = LimitCfg {
+    default: 500,
+    max: 500,
+};
+
+/// Every field of a book's entries pager: the filter fields the door publishes (`sku_id`,
+/// `charge_kind`, `model`, `reference_state`) and the order's keys (`sku_id`, `charge_kind`,
+/// `model` and the tie-break `id`), every one non-null, as the cursor codec needs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EntryListField {
+    Id,
+    SkuId,
+    ChargeKind,
+    Model,
+    ReferenceState,
+}
+impl FilterField for EntryListField {
+    const FIELDS: &'static [Self] = &[
+        Self::Id,
+        Self::SkuId,
+        Self::ChargeKind,
+        Self::Model,
+        Self::ReferenceState,
+    ];
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Id => "id",
+            Self::SkuId => "sku_id",
+            Self::ChargeKind => "charge_kind",
+            Self::Model => "model",
+            Self::ReferenceState => "reference_state",
+        }
+    }
+    fn kind(&self) -> FieldKind {
+        match self {
+            Self::Id | Self::SkuId => FieldKind::Uuid,
+            Self::ChargeKind | Self::Model | Self::ReferenceState => FieldKind::String,
+        }
+    }
+    fn from_name(name: &str) -> Option<Self> {
+        Self::FIELDS.iter().copied().find(|f| f.name() == name)
+    }
+}
+/// The order of a book's entries (D-483): `(sku_id, charge_kind, model)` ascending, then `id`, the
+/// pager's tie-break. `period` is not a key: it is null for usage and one-time entries, and the
+/// cursor codec cannot carry a null.
+pub const ENTRY_ORDER: [EntryListField; 3] = [
+    EntryListField::SkuId,
+    EntryListField::ChargeKind,
+    EntryListField::Model,
+];
+/// How the pager reads the entry row for each field.
+pub struct EntryListMapping;
+impl FieldToColumn<EntryListField> for EntryListMapping {
+    type Column = e::Column;
+    fn map_field(field: EntryListField) -> e::Column {
+        match field {
+            EntryListField::Id => e::Column::Id,
+            EntryListField::SkuId => e::Column::SkuId,
+            EntryListField::ChargeKind => e::Column::ChargeKind,
+            EntryListField::Model => e::Column::Model,
+            EntryListField::ReferenceState => e::Column::ReferenceState,
+        }
+    }
+    /// `reference_state` filters only.
+    fn is_orderable(field: EntryListField) -> bool {
+        !matches!(field, EntryListField::ReferenceState)
+    }
+    /// `charge_kind`, `model` and `reference_state` compare (`eq`, `ne`, `in`) with one of their
+    /// closed values only, so a filter never names a token no entry can hold. The text functions
+    /// take any text there, as on any text field.
+    fn map_value(
+        field: EntryListField,
+        op: FilterOp,
+        value: &ODataValue,
+    ) -> Result<ODataValue, String> {
+        use crate::domain::price_book_entry::{ChargeKind, Model, ReferenceState};
+        use std::str::FromStr;
+        let closed = matches!(op, FilterOp::Eq | FilterOp::Ne | FilterOp::In);
+        if let (true, ODataValue::String(token)) = (closed, value) {
+            let known = match field {
+                EntryListField::ChargeKind => Some(ChargeKind::from_str(token).is_ok()),
+                EntryListField::Model => Some(Model::from_str(token).is_ok()),
+                EntryListField::ReferenceState => Some(ReferenceState::from_str(token).is_ok()),
+                EntryListField::Id | EntryListField::SkuId => None,
+            };
+            if known == Some(false) {
+                return Err(format!(
+                    "`{token}` is not a {} an entry holds",
+                    field.name()
+                ));
+            }
+        }
+        Ok(value.clone())
+    }
+}
+impl ODataFieldMapping<EntryListField> for EntryListMapping {
+    type Entity = e::Entity;
+    fn extract_cursor_value(model: &e::Model, field: EntryListField) -> sea_orm::Value {
+        match field {
+            EntryListField::Id => sea_orm::Value::Uuid(Some(model.id)),
+            EntryListField::SkuId => sea_orm::Value::Uuid(Some(model.sku_id)),
+            EntryListField::ChargeKind => sea_orm::Value::String(Some(model.charge_kind.clone())),
+            EntryListField::Model => sea_orm::Value::String(Some(model.model.clone())),
+            EntryListField::ReferenceState => {
+                sea_orm::Value::String(Some(model.reference_state.clone()))
+            }
+        }
+    }
+}
+/// A page read refused or failed.
+#[derive(Debug)]
+pub enum EntryListError {
+    /// The query itself: a filter value, a cursor (400).
+    Query(toolkit_odata::Error),
+    /// Storage; a driver failure keeps its message for the retry classifier.
+    Repo(RepoError),
+}
+/// One page of `book`'s entries under `scope` (D-483): the query's `$filter` and cursor, in
+/// [`ENTRY_ORDER`] tie-broken by `id`; `limit` defaults to 500 and is clamped at 500. The door
+/// takes no `$orderby`: a query without a cursor is ordered here, and a cursor carries the order.
+/// ONE statement.
+/// # Errors
+/// [`EntryListError::Query`] for a value or a cursor the pager refuses; [`EntryListError::Repo`]
+/// for storage.
+pub async fn page_of_book(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    book: Uuid,
+    query: &ODataQuery,
+) -> Result<Page<e::Model>, EntryListError> {
+    let mut query = query.clone();
+    if query.cursor.is_none() {
+        query.order = ODataOrderBy(
+            ENTRY_ORDER
+                .iter()
+                .map(|field| OrderKey {
+                    field: field.name().to_owned(),
+                    dir: SortDir::Asc,
+                })
+                .collect(),
+        );
+    }
+    let select = e::Entity::find().secure().scope_with(scope).filter(
+        Condition::all()
+            .add(e::Column::TenantId.eq(tenant))
+            .add(e::Column::BookId.eq(book)),
+    );
+    paginate_odata_try::<EntryListField, EntryListMapping, e::Entity, e::Model, _, RepoError, _>(
+        select,
+        runner,
+        &query,
+        (EntryListField::Id.name(), SortDir::Asc),
+        ENTRY_PAGE,
+        Ok,
+    )
+    .await
+    .map_err(|e| match e {
+        // The pager renders the driver's error as text; kept as a driver failure so the door's
+        // retry still sees a serialization failure or a busy database by its message.
+        PaginateOdataTryError::OData(toolkit_odata::Error::Db(message)) => {
+            EntryListError::Repo(RepoError::Driver {
+                context: "list a page of a book's price book entries".into(),
+                source: sea_orm::DbErr::Custom(message),
+            })
+        }
+        PaginateOdataTryError::OData(other) => EntryListError::Query(other),
+        PaginateOdataTryError::MapError(e) => EntryListError::Repo(e),
+    })
 }
 /// The tenant's entries of the SKUs, in every book and every reference state, in ONE statement
 /// (D-428).
@@ -357,6 +540,25 @@ pub async fn priced_skus(
         tenant,
         Condition::all(),
         "list the SKUs of price book entries",
+    )
+    .await
+}
+/// The SKUs with an entry in `book`, in any reference state, under `scope`: a picker's book set
+/// (P-D-246), in ONE statement. A book the tenant does not hold has no entry: the empty set.
+/// # Errors
+/// Returns typed database failures.
+pub async fn skus_in_book(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    book: Uuid,
+) -> Result<Vec<Uuid>, RepoError> {
+    distinct_skus(
+        runner,
+        scope,
+        tenant,
+        Condition::all().add(e::Column::BookId.eq(book)),
+        "list the SKUs of a book's price book entries",
     )
     .await
 }

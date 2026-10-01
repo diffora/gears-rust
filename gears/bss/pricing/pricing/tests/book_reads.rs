@@ -1473,13 +1473,13 @@ async fn submit_reads(
     f: &Fixture,
     catalog: &Catalog,
     recorder: &toolkit_db::test_support::QueryRecorder,
-    now: time::OffsetDateTime,
+    _now: time::OffsetDateTime,
     quorum: u32,
 ) {
     let mut runs = Vec::new();
     for n in [10_i32, 100] {
         let b = plan_support::book(f, &format!("submit-{quorum}-{n}")).await;
-        let e = stored_entry(f, b, catalog.sku(SkuType::Usage), "per_unit", now).await;
+        let e = plan_support::policy_entry(f, b, catalog.sku(SkuType::Usage), "usage", None).await;
         for i in 1..=n {
             stored_price(f, e, Row::new(i, "draft", today() + days(i64::from(i)))).await;
         }
@@ -2667,12 +2667,13 @@ async fn the_entries_list_refuses_a_date_it_cannot_read_and_any_other_key() {
             "{bad}: {b}"
         );
     }
+    // D-483: `limit`, `cursor`, `$top`, `$skiptoken` and `$filter` are the pager's keys now.
     for query in [
         "?asof=2026-01-05",
-        "?limit=5",
+        "?page=5",
         "?as_of=2026-01-05&as_of=2026-01-06",
         "?status=active",
-        "?$top=5",
+        "?top=5",
     ] {
         let (s, b, _) = get(&f, &format!("{path}{query}")).await;
         assert_eq!(s, 400, "{query}: {b}");

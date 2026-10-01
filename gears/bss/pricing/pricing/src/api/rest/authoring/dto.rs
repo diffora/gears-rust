@@ -49,6 +49,8 @@ impl From<entity::price_book::Model> for PriceBookDto {
 }
 #[toolkit_macros::api_dto(response)]
 pub struct PricingPriceBookEntryDto {
+    /// Immutable policy materialized from the entry; null for legacy/non-usage entries.
+    pub usage_rating_policy: Option<crate::infra::usage_policy_wire::UsageRatingPolicy>,
     pub id: Uuid,
     pub tenant_id: Uuid,
     pub book_id: Uuid,
@@ -72,6 +74,7 @@ impl TryFrom<entity::price_book_entry::Model> for PricingPriceBookEntryDto {
     fn try_from(m: entity::price_book_entry::Model) -> Result<Self, RepoError> {
         let id = m.id;
         Ok(Self {
+            usage_rating_policy: None,
             id,
             tenant_id: m.tenant_id,
             book_id: m.book_id,
@@ -97,6 +100,26 @@ impl TryFrom<entity::price_book_entry::Model> for PricingPriceBookEntryDto {
             created_at: m.created_at,
             updated_at: m.updated_at,
         })
+    }
+}
+impl PricingPriceBookEntryDto {
+    /// Materialize immutable policy content along with an entry.
+    /// # Errors
+    /// Refuses corrupt or dangling policy references and storage failures.
+    pub async fn load(
+        tx: &impl toolkit_db::secure::DBRunner,
+        m: entity::price_book_entry::Model,
+    ) -> Result<Self, RepoError> {
+        let policy = crate::infra::storage::repo::usage_policy_repo::for_entries(
+            tx,
+            m.tenant_id,
+            std::slice::from_ref(&m),
+        )
+        .await?
+        .remove(&m.id);
+        let mut dto = Self::try_from(m)?;
+        dto.usage_rating_policy = policy;
+        Ok(dto)
     }
 }
 /// An entry's prices by state; a rejected price is not counted (D-428). The approved ones are
@@ -179,13 +202,6 @@ impl PricingPriceBookEntryReadDto {
 #[toolkit_macros::api_dto(response)]
 pub struct PricingEntryPriceList {
     pub items: Vec<PricingPriceDto>,
-}
-/// The query of `GET /price-books/{id}/entries` (D-473): an optional `as_of`, the day its prices
-/// are judged on.
-#[derive(Default, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct PricingEntryListQuery {
-    pub as_of: Option<String>,
 }
 /// The query of `GET /price-book-entries/{id}/prices`: an optional `status`, one display status
 /// or several comma-separated.
@@ -409,9 +425,13 @@ fn nullable_date<'de, D: serde::Deserializer<'de>>(
 ) -> Result<Option<Option<String>>, D::Error> {
     <Option<String> as serde::Deserialize>::deserialize(d).map(Some)
 }
+/// One page of a book's entries (D-483), ordered `(sku_id, charge_kind, model, id)`.
 #[toolkit_macros::api_dto(response)]
 pub struct PricingPriceBookEntryList {
     pub items: Vec<PricingPriceBookEntryReadDto>,
+    /// `limit` is the page size (500 by default and at most); `next_cursor` continues the page and
+    /// carries the list's `$filter` and day.
+    pub page_info: toolkit_odata::PageInfo,
 }
 #[toolkit_macros::api_dto(response)]
 pub struct PricingExportEntry {
@@ -509,6 +529,8 @@ pub struct PricingSettingsDto {
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PricingPriceBookEntryCreate {
+    /// Required for usage entries; immutable after creation. Identity is server assigned.
+    pub usage_rating_policy: Option<crate::infra::usage_policy_wire::UsageRatingPolicyInput>,
     pub sku_id: Uuid,
     /// Required and fixed for the entry's life (D-427): `flat`, `per_unit`, `graduated`,
     /// `volume` or `package`, one the SKU's charge kind allows.
@@ -1084,7 +1106,8 @@ pub struct PricingEffectivePolicyDto {
 }
 /// `PATCH /plan-revisions/{id}`, draft only: the book and the sale date, never an item list
 /// (D-407). A book change remaps each item to the new book's entry of the same (SKU, charge kind,
-/// period); an unmatched item keeps its entry and the checks show it foreign.
+/// period, model, policy digest) and equal dimension key (D-502); an unmatched item keeps its
+/// entry and the checks show it foreign.
 #[toolkit_macros::api_dto(request)]
 #[derive(Clone)]
 #[serde(deny_unknown_fields)]

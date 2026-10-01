@@ -6,11 +6,12 @@ use crate::infra::storage::repo;
 use crate::test_support::{body_json, get, problem_code, resolved_usage_types, rest_app_on_db};
 use axum::{Router, http::StatusCode};
 use bss_products_sdk::models::{Lifecycle, SkuType};
+use sea_orm::{ColumnTrait, Condition, EntityTrait};
 use serde_json::Value;
 use std::sync::Arc;
 use time::OffsetDateTime;
 use toolkit::api::OpenApiRegistry;
-use toolkit_db::secure::AccessScope;
+use toolkit_db::secure::{AccessScope, SecureEntityExt};
 use uuid::Uuid;
 
 fn doors(s: Arc<ApiState>, o: &dyn OpenApiRegistry) -> Router {
@@ -275,9 +276,7 @@ async fn every_filter_field_narrows_the_list() {
             "pending_unit_id ne null or type eq 'bundle'".to_owned(),
             vec!["B", "D"],
         ),
-        ("not (lifecycle eq 'draft')".to_owned(), vec!["A", "C", "D"]),
-        // The text functions the contract publishes for every text field.
-        ("contains(lifecycle, 'pub')".to_owned(), vec!["A"]),
+        // Text functions stay on an open text field. `lifecycle` does not take them (P-D-249).
         ("startswith(type, 'us')".to_owned(), vec!["B", "E"]),
     ] {
         assert_eq!(
@@ -297,6 +296,8 @@ async fn every_filter_field_narrows_the_list() {
         "updated_at gt 2026-01-01T00:00:00Z",
         "sellable eq true",
         "category_id gt null",
+        "not (lifecycle eq 'draft')",
+        "contains(lifecycle, 'pub')",
     ] {
         let body = d.refused(&list(&[("$filter", filter)])).await;
         assert_eq!(problem_code(&body), "INVALID_FILTER", "{filter}: {body}");
@@ -664,6 +665,9 @@ async fn the_counts_follow_the_list_without_its_lifecycle_terms() {
         "category_id eq null and (lifecycle eq 'draft' or code eq 'A')",
         "lifecycle eq 'bad'",
         "updated_at gt 2026-01-01T00:00:00Z",
+        "contains(lifecycle, 'draft')",
+        "startswith(lifecycle, 'dra')",
+        "endswith(lifecycle, 'aft')",
     ] {
         let body = d.refused(&counts(&[("$filter", filter)])).await;
         assert_eq!(problem_code(&body), "INVALID_FILTER", "{filter}: {body}");
@@ -919,7 +923,7 @@ async fn the_fence_expiry_reads_in_the_same_statements_for_1_and_5_expired_fence
 
 // ------------------------------------------------------------------ P-D-212: usage filters
 
-use bss_products_sdk::sku_usage::{SkuUsage, SkuUsageSets, SkuUsageV1};
+use bss_products_sdk::sku_usage::{SkuUsage, SkuUsageSets, SkuUsageV1, UsageScope};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use toolkit::api::canonical_prelude::CanonicalError;
@@ -941,6 +945,10 @@ enum Answer {
 struct SetsPort {
     answer: Answer,
     sets: SkuUsageSets,
+    /// The SKUs each scope holds (P-D-246); a scope not set holds none.
+    scoped: Mutex<Vec<(UsageScope, Vec<Uuid>)>>,
+    /// Every scope `sku_ids_in` was asked, in call order.
+    asked: Mutex<Vec<UsageScope>>,
     calls: Mutex<Vec<&'static str>>,
     abandoned: AtomicUsize,
 }
@@ -963,12 +971,22 @@ impl SetsPort {
                 priced: sorted(priced),
                 in_plan: sorted(in_plan),
             },
+            scoped: Mutex::default(),
+            asked: Mutex::default(),
             calls: Mutex::default(),
             abandoned: AtomicUsize::default(),
         })
     }
     fn calls(&self) -> Vec<&'static str> {
         std::mem::take(&mut *self.calls.lock().unwrap())
+    }
+    /// Declare the SKUs `scope` holds.
+    fn scope(&self, scope: UsageScope, ids: &[Uuid]) {
+        self.scoped.lock().unwrap().push((scope, ids.to_vec()));
+    }
+    /// The scopes asked since the last call, in call order.
+    fn asked(&self) -> Vec<UsageScope> {
+        std::mem::take(&mut *self.asked.lock().unwrap())
     }
     async fn answer<T>(&self, ok: T) -> Result<T, CanonicalError> {
         match self.answer {
@@ -1013,7 +1031,29 @@ impl SkuUsageV1 for SetsPort {
         self.calls.lock().unwrap().push("usage_sets");
         self.answer(self.sets.clone()).await
     }
+    async fn sku_ids_in(
+        &self,
+        _ctx: &SecurityContext,
+        _tenant: Uuid,
+        scope: UsageScope,
+    ) -> Result<Vec<Uuid>, CanonicalError> {
+        self.calls.lock().unwrap().push("sku_ids_in");
+        self.asked.lock().unwrap().push(scope);
+        let ids = self
+            .scoped
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(held, _)| *held == scope)
+            .map(|(_, ids)| ids.clone())
+            .unwrap_or_default();
+        self.answer(ids).await
+    }
 }
+
+/// The picker scopes (P-D-246) and the multi-id read (ask 46).
+#[path = "sku_list_picker_tests.rs"]
+mod pickers;
 
 /// `priced` and `in_plan` keep or drop pricing's sets, alone, together and beside `q` and
 /// `$filter`; the counts narrow alike. A read asks `usage_sets` once when it filters by usage and
@@ -1270,4 +1310,93 @@ async fn an_empty_usage_set_keeps_nothing_and_its_negation_everything() {
     assert_eq!(d.codes(&list(&[("priced", "false")])).await, ["A", "B"]);
     assert!(d.codes(&list(&[("in_plan", "true")])).await.is_empty());
     assert_eq!(d.codes(&list(&[("in_plan", "false")])).await, ["A", "B"]);
+}
+
+/// A due `lifecycle_next` is the lifecycle in force. The `CASE` serves a top-level `eq`, `ne` or
+/// `in`, and those joined by `and`. `or`, `not` and the text functions are 400 on the list and
+/// the counts, the counts' text, and the stored column is not compared (P-D-249).
+#[tokio::test]
+async fn a_due_lifecycle_is_filtered_through_the_case_or_refused() {
+    let d = Door::new().await;
+    let due = d
+        .sku(Seed {
+            lifecycle: Lifecycle::Published,
+            ..seed("DUE")
+        })
+        .await;
+    d.sku(Seed {
+        lifecycle: Lifecycle::Published,
+        ..seed("STAY")
+    })
+    .await;
+    let now = crate::infra::storage::stored_now();
+    let written = repo::set_lifecycle_next(
+        &d.state.db.conn().unwrap(),
+        &d.scope,
+        d.tenant,
+        due,
+        &[Lifecycle::Published],
+        Lifecycle::Deprecated,
+        now.date(),
+        now,
+    )
+    .await
+    .unwrap();
+    assert!(matches!(written, repo::HeadWrite::Written(_)));
+    let stored = crate::infra::storage::entity::sku::Entity::find()
+        .secure()
+        .scope_with(&d.scope)
+        .filter(Condition::all().add(crate::infra::storage::entity::sku::Column::Code.eq("DUE")))
+        .one(&d.state.db.conn().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.lifecycle, "published");
+    assert_eq!(stored.lifecycle_next.as_deref(), Some("deprecated"));
+    assert!(stored.lifecycle_next_from.is_some());
+
+    for filter in [
+        "lifecycle eq 'deprecated'",
+        "lifecycle ne 'published'",
+        "lifecycle in ('deprecated')",
+        "lifecycle eq 'deprecated' and code eq 'DUE'",
+    ] {
+        let (status, body) = d.get(&list(&[("$filter", filter)])).await;
+        assert_eq!(status, StatusCode::OK, "{filter}: {body}");
+        assert_eq!(codes(&body), ["DUE"], "{filter}: {body}");
+        assert_eq!(
+            body["items"][0]["lifecycle"], "deprecated",
+            "{filter}: {body}"
+        );
+    }
+    let (status, stay) = d
+        .get(&list(&[("$filter", "lifecycle eq 'published'")]))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{stay}");
+    assert_eq!(codes(&stay), ["STAY"], "{stay}");
+
+    let (status, counted) = d
+        .get(&counts(&[("$filter", "lifecycle eq 'deprecated'")]))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{counted}");
+    assert_eq!(counted["all"], 2, "{counted}");
+    assert_eq!(counted["published"], 1, "{counted}");
+    assert_eq!(counted["deprecated"], 1, "{counted}");
+
+    for filter in [
+        "lifecycle eq 'deprecated' or code eq 'none'",
+        "not (lifecycle eq 'published')",
+        "contains(lifecycle,'deprecated')",
+        "startswith(lifecycle,'dep')",
+        "endswith(lifecycle,'cated')",
+    ] {
+        for uri in [list(&[("$filter", filter)]), counts(&[("$filter", filter)])] {
+            let body = d.refused(&uri).await;
+            assert_eq!(problem_code(&body), "INVALID_FILTER", "{filter}: {body}");
+            assert!(
+                body.to_string().contains("under `or` or `not`"),
+                "{filter}: {body}"
+            );
+        }
+    }
 }

@@ -1,6 +1,8 @@
 //! Shared real REST and database fixture for reference execution.
 #![allow(dead_code)]
 #![allow(clippy::expect_used, clippy::unwrap_used)]
+#[path = "../policy_support/mod.rs"]
+pub mod policy_support;
 use axum::{Router, body::Body, http::Request};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -87,6 +89,9 @@ pub async fn state_with_clock(
     clock: Arc<dyn bss_pricing::infra::reference_work::Clock>,
 ) -> Arc<bss_pricing::api::rest::authoring::AuthoringState> {
     let hub = Arc::new(toolkit::ClientHub::default());
+    hub.register::<dyn bss_pricing_sdk::meter_semantics::UsageMeterSemanticsV1>(Arc::new(
+        policy_support::MeterProvider::default(),
+    ));
     hub.register::<bss_products_sdk::PricingReferenceRegistry>(Arc::new(
         bss_products_sdk::PricingReferenceRegistry(registry),
     ));
@@ -207,6 +212,9 @@ impl Fixture {
         registry: Arc<dyn bss_products_sdk::ReferenceRegistryV1>,
     ) -> Self {
         let hub = Arc::new(toolkit::ClientHub::default());
+        hub.register::<dyn bss_pricing_sdk::meter_semantics::UsageMeterSemanticsV1>(Arc::new(
+            policy_support::MeterProvider::default(),
+        ));
         hub.register::<bss_products_sdk::PricingReferenceRegistry>(Arc::new(
             bss_products_sdk::PricingReferenceRegistry(registry),
         ));
@@ -660,8 +668,8 @@ impl ReferenceRegistryV1 for Script {
             tax_category: None,
             invoice_line_template: None,
             billing_timing: None,
-            usage_type_ref: None,
-            unit: None,
+            usage_type_ref: Some("vm-hours".into()),
+            unit: Some("VM\u{b7}hour".into()),
             // Mode 4 is a fenced SKU: a pending type change refuses every new reference.
             type_change_pending: mode == 4,
             retire_pending: mode == 22,
@@ -934,7 +942,9 @@ impl Target {
     pub async fn input(&self, c: &Caller<'_>) -> Value {
         match self.kind {
             // `per_unit` is a model every charge kind allows (D-386, D-427).
-            Kind::Entry => json!({"sku_id":Uuid::new_v4(),"model":"per_unit"}),
+            Kind::Entry => {
+                json!({"usage_rating_policy":policy_support::input(),"sku_id":Uuid::new_v4(),"model":"per_unit"})
+            }
             Kind::Item => {
                 let tenant = c.ctx.subject_tenant_id();
                 let now = time::OffsetDateTime::now_utc();
@@ -950,6 +960,9 @@ impl Target {
                         charge_kind: "usage".into(),
                         period: None,
                         model: "per_unit".into(),
+                        usage_policy_id: None,
+                        usage_policy_version: None,
+                        usage_policy_digest: None,
                         dimension_key: None,
                         invoice_line_override: None,
                         reservation_id: Uuid::new_v4(),

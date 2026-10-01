@@ -137,7 +137,8 @@ async fn the_texts_name_what_the_doors_refuse() {
     }
     let patch = description(&api, "patch", "/bss-pricing/v1/plan-revisions/{id}");
     assert!(
-        patch.contains("same SKU, charge kind, period and model"),
+        patch.contains("same SKU, charge kind, period, model and policy digest")
+            && patch.contains("equal dimension key"),
         "{patch}"
     );
     assert!(patch.contains("book_id omitted or null leaves"), "{patch}");

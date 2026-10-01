@@ -16,6 +16,7 @@ use crate::{
     authz::{access_scope, actions, resource_types},
     domain::{
         concurrency::InternalRevision,
+        derived,
         error::DomainError,
         recognized::UsageTypeAnswer,
         sku::{NewSku, SkuPatch, apply_patch, validate_new},
@@ -110,9 +111,15 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .description(
             "Creates a draft SKU of the tenant. Its texts have explicit caps, in characters \
              (P-D-225): code 64, name 200, description 2000, gl_code, tax_category and unit 64, \
-             invoice_line_template 2000, usage_type_ref 512. Refusals: 400 VALIDATION, or 400 \
-             FIELD_TOO_LONG on a text over its cap; 404 for a category the tenant does not hold; \
-             409 SKU_CODE_TAKEN, SKU_NAME_TAKEN or CATEGORY_RETIRED.",
+             invoice_line_template 2000, usage_type_ref 512. A usage_type_ref of the form \
+             `products.derived/<code>@<n>` names one version of the tenant's derived usage type, \
+             read from this gear's store; the usage-type catalog is never asked for it (P-D-232). \
+             Refusals: 400 VALIDATION, or 400 FIELD_TOO_LONG on a text over its cap; 400 \
+             USAGE_TYPE_UNRESOLVED for a GTS ref the configured catalog does not know; 400 \
+             DERIVED_USAGE_TYPE_UNKNOWN for a derived ref the tenant does not hold, or one not in \
+             that form; 400 DERIVED_UNIT_MISMATCH for a unit other than that version's output \
+             unit; 404 for a category the tenant does not hold; 409 SKU_CODE_TAKEN, SKU_NAME_TAKEN \
+             or CATEGORY_RETIRED.",
         )
         .tag(TAG)
         .authenticated()
@@ -152,9 +159,12 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .summary("Edit a draft SKU")
         .description(
             "Edits a draft SKU under If-Match; a field the body leaves out is unchanged. The texts \
-             it carries have the caps of the create (P-D-225). Refusals include 400 VALIDATION, \
-             400 FIELD_TOO_LONG on a text over its cap, 404, and 409 NOT_A_DRAFT, \
-             ROW_LOCKED_PENDING, STALE_REVISION, SKU_NAME_TAKEN or CATEGORY_RETIRED.",
+             it carries have the caps of the create (P-D-225). A draft never published may move \
+             its derived usage type to another version (P-D-232). Refusals include 400 \
+             VALIDATION, 400 FIELD_TOO_LONG on a text over its cap, 400 USAGE_TYPE_UNRESOLVED, \
+             400 DERIVED_USAGE_TYPE_UNKNOWN and DERIVED_UNIT_MISMATCH as at the create, 404, and \
+             409 NOT_A_DRAFT, ROW_LOCKED_PENDING, STALE_REVISION, SKU_NAME_TAKEN or \
+             CATEGORY_RETIRED.",
         )
         .tag(TAG)
         .authenticated()
@@ -345,7 +355,9 @@ fn write_error(e: RepoError, category_id: Option<Uuid>) -> TxError {
             RepoRefusal::CategoryCodeTaken
             | RepoRefusal::CategoryDefaultTaken
             | RepoRefusal::ReferenceExists
-            | RepoRefusal::VersionOrder,
+            | RepoRefusal::VersionOrder
+            | RepoRefusal::DerivedCodeTaken
+            | RepoRefusal::DerivedVersionTaken,
         )
         | RepoError::Db(_)
         | RepoError::Driver { .. }
@@ -361,9 +373,23 @@ fn write_error(e: RepoError, category_id: Option<Uuid>) -> TxError {
 /// submit and the approve answer it 403 `USAGE_TYPE_FORBIDDEN`.
 async fn resolve_draft_ref(
     state: &ApiState,
+    enforcer: &PolicyEnforcer,
     ctx: &SecurityContext,
     reference: Option<&str>,
+    unit: Option<&str>,
 ) -> Result<(), CanonicalError> {
+    // P-D-232: a derived ref comes first, before the unconfigured catalog's early `Ok`: it is this
+    // gear's own data, judged from its store, and the catalog is never asked for it.
+    if let Some(reference) = reference.filter(|reference| derived::is_derived_ref(reference)) {
+        let pin = super::derived_usage_types::pin(state, enforcer, ctx, reference).await?;
+        let mut report = ValidationReport::new();
+        derived::judge_binding(&mut report, reference, unit, pin.as_ref());
+        return if report.is_empty() {
+            Ok(())
+        } else {
+            Err(DomainError::Validation(report).into())
+        };
+    }
     if state.usage_type_catalog_source == crate::gear::USAGE_TYPE_SOURCE_UNCONFIGURED {
         return Ok(());
     }
@@ -414,7 +440,14 @@ async fn create_sku(
     if !report.is_empty() {
         return Err(DomainError::Validation(report).into());
     }
-    resolve_draft_ref(&state, &ctx, new_tx.usage_type_ref.as_deref()).await?;
+    resolve_draft_ref(
+        &state,
+        &enforcer,
+        &ctx,
+        new_tx.usage_type_ref.as_deref(),
+        new_tx.unit.as_deref(),
+    )
+    .await?;
     let now = crate::infra::storage::stored_now();
     let created = state
         .db
@@ -536,8 +569,21 @@ async fn update_sku_draft(
     };
     editable(&current, expected, actor).map_err(tx_to_canonical)?;
     let proposed = apply_patch(&SkuContent::from(&current), &patch_tx);
-    if proposed.usage_type_ref != current.usage_type_ref {
-        resolve_draft_ref(&state, &ctx, proposed.usage_type_ref.as_deref()).await?;
+    // A derived ref is judged again when the unit it must match changes (P-D-232).
+    let derived_unit_moved = proposed
+        .usage_type_ref
+        .as_deref()
+        .is_some_and(derived::is_derived_ref)
+        && proposed.unit != current.unit;
+    if proposed.usage_type_ref != current.usage_type_ref || derived_unit_moved {
+        resolve_draft_ref(
+            &state,
+            &enforcer,
+            &ctx,
+            proposed.usage_type_ref.as_deref(),
+            proposed.unit.as_deref(),
+        )
+        .await?;
     }
     let now = crate::infra::storage::stored_now();
     let updated = state

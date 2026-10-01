@@ -17,3 +17,9 @@ toolkit-contract = { workspace = true }
 thiserror = { workspace = true }
 toolkit-security = { workspace = true }
 uuid = { workspace = true }
+time = { workspace = true }
+rust_decimal = { workspace = true }
+sha2 = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

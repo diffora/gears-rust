@@ -53,6 +53,9 @@ uuid = { workspace = true, features = ["v4"] }
 # FIPS-validated provider and the primitive the sibling pricing gear already
 # uses; `sha2`/`sha1`/`md5` are refused outright by architecture lint DE0708.
 aws-lc-rs = { workspace = true }
+# A derived usage type's declaration (P-D-231): the REST layer parses its decimal constants into the
+# SDK's `rust_decimal` values, the type `bss_products_sdk::derived` declares them in.
+rust_decimal = { workspace = true }
 
 # `normalized(name)` is pinned to NFKC then full casefold then whitespace
 # collapse, and is computed application-side precisely so both engines store

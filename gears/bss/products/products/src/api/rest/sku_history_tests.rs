@@ -599,3 +599,93 @@ async fn a_changes_note_reaches_its_submit_row_in_the_history() {
         "{entries:#?}"
     );
 }
+
+/// A pending dated lifecycle is the outcome of the act that stored it. A later rename, a vote
+/// that does not meet quorum, and a reject of that later unit record the lifecycle in force
+/// (P-D-249). Quorum 0 applies the rename at submit (`sku_governance`).
+#[tokio::test]
+async fn a_later_act_does_not_record_a_pending_lifecycle_it_did_not_set() {
+    let f = Fixture::new(0).await;
+    f.publish().await;
+    let date = time::OffsetDateTime::now_utc().date() + time::Duration::days(30);
+    let (status, b) = f
+        .post(
+            "/changes",
+            json!({"lifecycle":"deprecated","effective_from":date.to_string()}),
+        )
+        .await;
+    assert_eq!((status, &b["applied"]), (200, &json!(true)), "{b}");
+    let card = f.card().await;
+    assert_eq!(card["lifecycle"], "published", "{card}");
+    assert_eq!(card["lifecycle_next"]["lifecycle"], "deprecated", "{card}");
+
+    let (status, b) = f
+        .post(
+            "/changes",
+            json!({"name":"Renamed","effective_from":date.to_string()}),
+        )
+        .await;
+    assert_eq!((status, &b["applied"]), (200, &json!(true)), "{b}");
+    let card = f.card().await;
+    assert_eq!(card["name"], "Renamed", "{card}");
+    assert_eq!(card["lifecycle"], "published", "{card}");
+    assert_eq!(card["lifecycle_next"]["lifecycle"], "deprecated", "{card}");
+
+    f.policy(2).await;
+    let (status, u) = f
+        .post(
+            "/changes",
+            json!({"name":"Again","effective_from":date.to_string()}),
+        )
+        .await;
+    assert_eq!(status, 200, "{u}");
+    assert_eq!(u["applied"], false, "{u}");
+    let (status, vote) = f.vote(&u, "approve", 1).await;
+    assert_eq!(status, 200, "{vote}");
+    assert_eq!(vote["outcome"], "pending", "{vote}");
+    let generation = vote["unit"]["generation"].as_i64().unwrap();
+    let (status, rejected) = call(
+        &f.app,
+        &f.author,
+        Method::POST,
+        &format!(
+            "/approval-units/{}/reject",
+            u["unit"]["id"].as_str().unwrap()
+        ),
+        json!({"generation":generation,"note":"no"}),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{rejected}");
+    let card = f.card().await;
+    assert_eq!(card["lifecycle"], "published", "{card}");
+    assert_eq!(card["lifecycle_next"]["lifecycle"], "deprecated", "{card}");
+    assert_eq!(card["name"], "Renamed", "{card}");
+
+    let rows = moves(&f, f.id).await;
+    assert!(
+        rows.iter()
+            .any(|row| row == "approval.vote sku_change published>published"),
+        "{rows:#?}"
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row == "approval.rejected sku_change published>published"),
+        "{rows:#?}"
+    );
+    assert_eq!(
+        rows.iter()
+            .filter(|row| row.as_str() == "approval.applied sku_change published>published")
+            .count(),
+        1,
+        "{rows:#?}"
+    );
+    assert_eq!(
+        rows.iter()
+            .filter(|row| row.ends_with(">deprecated"))
+            .cloned()
+            .collect::<Vec<_>>(),
+        ["approval.applied sku_change published>deprecated"],
+        "{rows:#?}"
+    );
+}

@@ -17,7 +17,8 @@ use bss_pricing::infra::{
 };
 use bss_products_sdk::models::SkuType;
 use plan_support::{
-    Catalog, Fixture, book, entry, entry_support, holding, id_of, item, plan, request, scope, setup,
+    Catalog, Fixture, book, entry, entry_support, holding, id_of, item, plan, policy_entry,
+    request, scope, setup,
 };
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -82,14 +83,35 @@ async fn sale_date(f: &Fixture, revision: Uuid, from: Option<Date>) {
         .await;
     assert_eq!(s, 200, "{b}");
 }
-/// A draft whose `n` items each name a priced entry of its book.
+/// A draft whose `n` items each name a priced usage entry of its book. Each entry carries a
+/// rating policy, which a submit requires (D-502). The items share `vm-hours`, so submitting
+/// more than one is `METER_DUPLICATE`.
 async fn draft(f: &Fixture, catalog: &Catalog, code: &str, n: usize) -> (Uuid, Uuid, Vec<Uuid>) {
     let eur = book(f, code).await;
     let (created, rev) = plan(f, code, eur).await;
     let mut skus = Vec::new();
     for _ in 0..n {
         let sku = catalog.sku(SkuType::Usage);
-        let priced = entry(f, eur, sku, "usage", None).await;
+        let priced = policy_entry(f, eur, sku, "usage", None).await;
+        price_from(f, priced, 1, day(2020, time::Month::January, 1), None).await;
+        item(f, rev, sku, Some(priced), "paid").await;
+        skus.push(sku);
+    }
+    (id_of(&created["id"]), rev, skus)
+}
+/// A draft of `n` recurring items on one period, so a submit is not `METER_DUPLICATE`.
+async fn draft_recurring(
+    f: &Fixture,
+    catalog: &Catalog,
+    code: &str,
+    n: usize,
+) -> (Uuid, Uuid, Vec<Uuid>) {
+    let eur = book(f, code).await;
+    let (created, rev) = plan(f, code, eur).await;
+    let mut skus = Vec::new();
+    for _ in 0..n {
+        let sku = catalog.sku(SkuType::Recurring);
+        let priced = entry(f, eur, sku, "recurring", Some("month")).await;
         price_from(f, priced, 1, day(2020, time::Month::January, 1), None).await;
         item(f, rev, sku, Some(priced), "paid").await;
         skus.push(sku);
@@ -296,6 +318,9 @@ async fn keyed(f: &Fixture, book: Uuid, sku: Uuid, key: &str) -> Uuid {
             charge_kind: "usage".into(),
             period: None,
             model: "per_unit".into(),
+            usage_policy_id: None,
+            usage_policy_version: None,
+            usage_policy_digest: None,
             dimension_key: Some(key.into()),
             invoice_line_override: None,
             reservation_id: Uuid::new_v4(),
@@ -435,7 +460,7 @@ async fn carried_sku_ids_name_the_revision_in_effect() {
     );
     let extra = catalog.sku(SkuType::Usage);
     let eur = id_of(&get(&f, &format!("/plan-revisions/{rev2}")).await["book_id"]);
-    let priced = entry(&f, eur, extra, "usage", None).await;
+    let priced = policy_entry(&f, eur, extra, "usage", None).await;
     price_from(&f, priced, 1, day(2020, time::Month::January, 1), None).await;
     item(&f, rev2, extra, Some(priced), "paid").await;
     sale_date(&f, rev2, Some(days(-1))).await;
@@ -634,7 +659,7 @@ async fn the_revision_read_is_pinned_per_state_for_10_and_100_items() {
     for _ in 0..90 {
         let sku = catalog.sku(SkuType::Usage);
         let eur = id_of(&body["book_id"]);
-        let priced = entry(&f, eur, sku, "usage", None).await;
+        let priced = policy_entry(&f, eur, sku, "usage", None).await;
         price_from(&f, priced, 1, day(2020, time::Month::January, 1), None).await;
         item(&f, small, sku, Some(priced), "paid").await;
     }
@@ -649,13 +674,13 @@ async fn the_revision_read_is_pinned_per_state_for_10_and_100_items() {
         ("pub", "published", 7usize),
         ("old", "superseded", 7usize),
     ] {
-        let (plan_id, rev, _) = draft(&f, &catalog, &format!("{code}10"), 10).await;
+        let (plan_id, rev, _) = draft_recurring(&f, &catalog, &format!("{code}10"), 10).await;
         prepare(&f, rev, state).await;
         recorder.clear();
         let body = get(&f, &format!("/plan-revisions/{rev}")).await;
         assert_eq!(body["state"], state, "{code}: {body}");
         let small_sql = sql(&recorder);
-        let (_, rev, _) = draft(&f, &catalog, &format!("{code}100"), 100).await;
+        let (_, rev, _) = draft_recurring(&f, &catalog, &format!("{code}100"), 100).await;
         prepare(&f, rev, state).await;
         recorder.clear();
         let _ = get(&f, &format!("/plan-revisions/{rev}")).await;

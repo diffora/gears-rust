@@ -9,6 +9,7 @@ use bss_pricing::infra::storage::{
     entity::price,
     repo::{approval_repo::PricingApprovalStore, price_book_entry_repo, price_repo},
 };
+use entry_support::policy_support;
 use entry_support::{Script, app_for, request, state_on, user_of};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -60,7 +61,7 @@ async fn two() -> Two {
         &author,
         "POST",
         &format!("/price-books/{}/entries", book["id"].as_str().unwrap()),
-        json!({"sku_id":Uuid::new_v4(),"model":"per_unit"}),
+        json!({"usage_rating_policy":policy_support::input(),"sku_id":Uuid::new_v4(),"model":"per_unit"}),
         None,
         Some("entry"),
     )

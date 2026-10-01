@@ -25,6 +25,14 @@
 //! and an absent port, an error or a call past its bound the list's 503 —
 //! never an unfiltered page.
 //!
+//! # A picker's scope
+//!
+//! The pickers narrow the list to the SKUs one book prices or one plan revision
+//! names, or to the others (`priced_in`, `not_priced_in`, `not_in_revision`;
+//! **P-D-246**): [`SkuUsageV1::sku_ids_in`] answers the SKUs of one
+//! [`UsageScope`]. As with the sets, a refusal is the list's 403 and anything
+//! else that is not an answer its 503 — never an empty set.
+//!
 //! # No serde here
 //!
 //! As in [`crate::usage_types`]: the gear's REST DTOs own serde and map onto
@@ -100,6 +108,15 @@ pub struct SkuUsageSets {
     pub in_plan: Vec<Uuid>,
 }
 
+/// What [`SkuUsageV1::sku_ids_in`] reads the SKUs of (P-D-246).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum UsageScope {
+    /// The SKUs with an entry in this price book, in any reference state.
+    Book(Uuid),
+    /// The SKUs this plan revision's items name: plan content.
+    Revision(Uuid),
+}
+
 /// Pricing's usage of SKUs, which pricing registers on `ClientHub` as
 /// `dyn SkuUsageV1`.
 ///
@@ -146,4 +163,30 @@ pub trait SkuUsageV1: Send + Sync + 'static {
         ctx: &SecurityContext,
         tenant: Uuid,
     ) -> Result<SkuUsageSets, CanonicalError>;
+
+    /// The distinct SKU ids of `scope` in `tenant`, sorted (P-D-246): a
+    /// [`UsageScope::Book`]'s SKUs with an entry in the book, in any reference
+    /// state, under pricing `price_book_entry:read`; a [`UsageScope::Revision`]'s
+    /// SKUs its items name, under pricing `price_book_entry:read` AND
+    /// `plan:read`, because a revision's SKUs are plan content. One statement per
+    /// call, whatever the number of SKUs.
+    ///
+    /// A book or a revision the tenant does not hold — unknown, another
+    /// tenant's, or outside the caller's scope — answers the empty set, as one
+    /// that names no SKU does: the answer is no existence oracle. The tenant
+    /// argument narrows the read; it never grants access.
+    ///
+    /// # Errors
+    ///
+    /// [`sku_usage_denied`] (403) for a caller without a grant the scope takes;
+    /// [`sku_usage_unavailable`] (503) when the set cannot be read. **Neither is
+    /// an empty set.**
+    ///
+    /// The call may be aborted at any `.await` (see the trait): it reads only.
+    async fn sku_ids_in(
+        &self,
+        ctx: &SecurityContext,
+        tenant: Uuid,
+        scope: UsageScope,
+    ) -> Result<Vec<Uuid>, CanonicalError>;
 }

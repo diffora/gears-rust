@@ -1,6 +1,8 @@
-//! SKU registry SDK, the usage-type catalog port and the SKU usage port pricing fills.
+//! SKU registry SDK, the usage-type catalog port, the SKU usage port pricing fills, and the derived
+//! usage declaration with its one evaluator (P-D-230).
 #![forbid(unsafe_code)]
 pub mod api;
+pub mod derived;
 pub mod models;
 pub mod sku_usage;
 pub mod usage_types;

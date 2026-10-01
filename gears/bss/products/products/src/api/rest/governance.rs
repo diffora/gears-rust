@@ -1,15 +1,21 @@
 //! @cpt-dod:cpt-cf-bss-products-dod-usage-type-resolves:p1
 //! @cpt-dod:cpt-cf-bss-products-dod-terminal-audit-and-event:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-derived-usage-type-pin:p1
 //! Shared scoped transaction plumbing for approval and reference operations.
 use super::{ApiState, TxError, authz_error_to_canonical, contention_db_err, tx_to_canonical};
 use crate::{
     authz::{access_scope, actions, labels, resource_types},
-    domain::{error::DomainError, recognized::UsageTypeAnswer, validation::ValidationReport},
+    domain::{
+        derived,
+        error::DomainError,
+        recognized::{UsageRefAnswer, UsageTypeAnswer},
+        validation::ValidationReport,
+    },
     infra::{broker, events, storage::repo},
 };
 use authz_resolver_sdk::{PolicyEnforcer, pep::ResourceType};
 use bss_approval::{Store, Unit};
-use bss_products_sdk::models::{Sku, SkuContent};
+use bss_products_sdk::models::{LifecycleNext, Sku, SkuContent};
 use time::OffsetDateTime;
 use toolkit::api::canonical_prelude::CanonicalError;
 use toolkit_db::{
@@ -63,40 +69,48 @@ pub async fn find(
         .map_err(TxError::Repo)?
         .ok_or(TxError::Refused(DomainError::NotFound { what: "sku", id }))
 }
-/// The SKU's lifecycle now, in the caller's transaction: the observed half of an audit row's
-/// lifecycle move (P-D-213).
-pub async fn lifecycle(
-    tx: &impl DBRunner,
-    tenant: Uuid,
-    id: Uuid,
-) -> Result<bss_products_sdk::models::Lifecycle, TxError> {
-    find(tx, &AccessScope::for_tenant(tenant), tenant, id)
-        .await
-        .map(|s| s.lifecycle)
-}
-/// The lifecycle an apply's audit row records as its `to` (P-D-249): a dated change that has not
-/// arrived records its next lifecycle, and every other act records the lifecycle in force.
+/// The lifecycle an act's audit row records as its `to` (P-D-249). `before_next` is the SKU's
+/// `lifecycle_next` before the act. When this act changed it, record the next it stored, or the
+/// lifecycle in force when it cleared the next. Otherwise record the lifecycle in force, and
+/// ignore a next an earlier act left.
 pub async fn recorded_to(
     tx: &impl DBRunner,
     tenant: Uuid,
     id: Uuid,
+    before_next: Option<LifecycleNext>,
 ) -> Result<bss_products_sdk::models::Lifecycle, TxError> {
     find(tx, &AccessScope::for_tenant(tenant), tenant, id)
         .await
-        .map(|sku| recorded_lifecycle(&sku))
+        .map(|sku| recorded_lifecycle(before_next, &sku))
 }
-pub(super) fn recorded_lifecycle(sku: &Sku) -> bss_products_sdk::models::Lifecycle {
-    sku.lifecycle_next
-        .map_or(sku.lifecycle, |next| next.lifecycle)
+pub(super) fn recorded_lifecycle(
+    before_next: Option<LifecycleNext>,
+    sku: &Sku,
+) -> bss_products_sdk::models::Lifecycle {
+    if before_next == sku.lifecycle_next {
+        sku.lifecycle
+    } else {
+        sku.lifecycle_next
+            .map_or(sku.lifecycle, |next| next.lifecycle)
+    }
 }
 pub(super) async fn resolve(
     state: &ApiState,
+    enforcer: &PolicyEnforcer,
     ctx: &SecurityContext,
     content: &SkuContent,
-) -> Result<Option<UsageTypeAnswer>, CanonicalError> {
+) -> Result<Option<UsageRefAnswer>, CanonicalError> {
     let Some(reference) = content.usage_type_ref.as_deref() else {
         return Ok(None);
     };
+    // P-D-232: a derived ref comes first, from this gear's own store, and the catalog is never
+    // asked for it, configured or not.
+    if derived::is_derived_ref(reference) {
+        let pin = super::derived_usage_types::pin(state, enforcer, ctx, reference).await?;
+        return Ok(Some(
+            pin.map_or(UsageRefAnswer::DerivedUnknown, UsageRefAnswer::Derived),
+        ));
+    }
     let answer = state.usage_type_catalog.resolve(ctx, reference).await;
     match answer {
         UsageTypeAnswer::Unavailable => {
@@ -104,7 +118,9 @@ pub(super) async fn resolve(
         }
         // P-D-207: read as the caller; a denial is the caller's 403, not an outage.
         UsageTypeAnswer::Forbidden => Err(DomainError::UsageTypeForbidden(reference.into()).into()),
-        UsageTypeAnswer::Resolved(_) | UsageTypeAnswer::Unresolved => Ok(Some(answer)),
+        UsageTypeAnswer::Resolved(_) | UsageTypeAnswer::Unresolved => {
+            Ok(Some(UsageRefAnswer::Catalog(answer)))
+        }
     }
 }
 /// Maintenance never releases a pending unit's fence and compares the observed operation; a fence
@@ -318,3 +334,7 @@ pub(super) async fn settings_read(
         })
     })
 }
+
+#[cfg(test)]
+#[path = "derived_binding_tests.rs"]
+mod derived_binding_tests;

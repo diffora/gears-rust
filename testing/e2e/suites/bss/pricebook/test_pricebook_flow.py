@@ -78,7 +78,22 @@ def _usage_type_or_skip(api) -> None:
 VARIANTS = {
     "usage": {
         "sku": {"type": "usage", "usage_type_ref": USAGE_TYPE, "unit": "GB"},
-        "entry": {"model": "per_unit"},
+        # E1 must register this exact immutable meter declaration on the real binary.
+        "entry": {
+            "model": "per_unit",
+            "usage_rating_policy": {
+                "rating_window": {"kind": "billing_cycle"},
+                "aggregation_scope": "subscription_line",
+                "reset": "rating_window_start",
+                "quantity_semantics": {
+                    "meter": {"usage_type_id": USAGE_TYPE, "version": "v1"},
+                    "unit": "GB",
+                    "fold": "SUM",
+                    "accrual_policy_version": "integrated-v1",
+                },
+                "partial_window": "actual_quantity_full_thresholds",
+            },
+        },
         "price": {"price": {"rate": "0.10"}},
     },
     "recurring": {

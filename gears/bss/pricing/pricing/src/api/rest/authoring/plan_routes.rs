@@ -217,7 +217,8 @@ pub(super) fn routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .description(
             "Changes a draft revision's book or its sale date, by its author at the version the \
              author read (If-Match). A new book remaps each item to the new book's entry of the \
-             same SKU, charge kind, period and model (D-427), and an item with no such entry keeps \
+             same SKU, charge kind, period, model and policy digest with an equal dimension key \
+             (D-502), and an item with no such entry keeps \
              its own, so its checks show ITEM_BOOK_FOREIGN; book_id omitted or null leaves the \
              book unchanged. A named book needs the caller's price_book read on it (D-456). \
              Refusals: 400 \
