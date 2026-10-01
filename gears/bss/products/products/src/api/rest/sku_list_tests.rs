@@ -923,7 +923,7 @@ async fn the_fence_expiry_reads_in_the_same_statements_for_1_and_5_expired_fence
 
 // ------------------------------------------------------------------ P-D-212: usage filters
 
-use bss_products_sdk::sku_usage::{SkuUsage, SkuUsageSets, SkuUsageV1};
+use bss_products_sdk::sku_usage::{SkuUsage, SkuUsageSets, SkuUsageV1, UsageScope};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use toolkit::api::canonical_prelude::CanonicalError;
@@ -945,6 +945,10 @@ enum Answer {
 struct SetsPort {
     answer: Answer,
     sets: SkuUsageSets,
+    /// The SKUs each scope holds (P-D-246); a scope not set holds none.
+    scoped: Mutex<Vec<(UsageScope, Vec<Uuid>)>>,
+    /// Every scope `sku_ids_in` was asked, in call order.
+    asked: Mutex<Vec<UsageScope>>,
     calls: Mutex<Vec<&'static str>>,
     abandoned: AtomicUsize,
 }
@@ -967,12 +971,22 @@ impl SetsPort {
                 priced: sorted(priced),
                 in_plan: sorted(in_plan),
             },
+            scoped: Mutex::default(),
+            asked: Mutex::default(),
             calls: Mutex::default(),
             abandoned: AtomicUsize::default(),
         })
     }
     fn calls(&self) -> Vec<&'static str> {
         std::mem::take(&mut *self.calls.lock().unwrap())
+    }
+    /// Declare the SKUs `scope` holds.
+    fn scope(&self, scope: UsageScope, ids: &[Uuid]) {
+        self.scoped.lock().unwrap().push((scope, ids.to_vec()));
+    }
+    /// The scopes asked since the last call, in call order.
+    fn asked(&self) -> Vec<UsageScope> {
+        std::mem::take(&mut *self.asked.lock().unwrap())
     }
     async fn answer<T>(&self, ok: T) -> Result<T, CanonicalError> {
         match self.answer {
@@ -1017,7 +1031,29 @@ impl SkuUsageV1 for SetsPort {
         self.calls.lock().unwrap().push("usage_sets");
         self.answer(self.sets.clone()).await
     }
+    async fn sku_ids_in(
+        &self,
+        _ctx: &SecurityContext,
+        _tenant: Uuid,
+        scope: UsageScope,
+    ) -> Result<Vec<Uuid>, CanonicalError> {
+        self.calls.lock().unwrap().push("sku_ids_in");
+        self.asked.lock().unwrap().push(scope);
+        let ids = self
+            .scoped
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(held, _)| *held == scope)
+            .map(|(_, ids)| ids.clone())
+            .unwrap_or_default();
+        self.answer(ids).await
+    }
 }
+
+/// The picker scopes (P-D-246) and the multi-id read (ask 46).
+#[path = "sku_list_picker_tests.rs"]
+mod pickers;
 
 /// `priced` and `in_plan` keep or drop pricing's sets, alone, together and beside `q` and
 /// `$filter`; the counts narrow alike. A read asks `usage_sets` once when it filters by usage and

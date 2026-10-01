@@ -3,9 +3,11 @@
 //!
 //! The list takes `$filter` over [`SkuFilterField`], `$orderby` over [`SkuOrderField`] (tie-break
 //! `id`), `$top` (alias `limit`; default 50, clamped at 200) and `cursor` (alias `$skiptoken`),
-//! plus `q` and the usage filters `priced` and `in_plan` (P-D-212). Any other key is 400;
-//! `$select` and `$count` are refused. The cursor carries a hash of `$filter`, `q`, `priced` and
-//! `in_plan`, so a cursor replayed with other values is 400. Each item carries pricing's `usage`
+//! plus `q`, the usage filters `priced` and `in_plan` (P-D-212) and the picker keys `priced_in`,
+//! `not_priced_in` and `not_in_revision` (P-D-246; each picker key is one call of the port's
+//! `sku_ids_in`, bound as one value). Any other key is 400; `$select` and `$count` are refused.
+//! The cursor carries a hash of `$filter`, `q`, the usage filters and the picker keys, so a cursor
+//! replayed with other values is 400. Each item carries pricing's `usage`
 //! from one port call per page, as before (P-D-197); a usage filter adds one call of the port's
 //! `usage_sets`, and a filter it cannot answer fails the read (403 or 503), never widening it.
 //!
@@ -32,7 +34,7 @@ use axum::{
     extract::{Query, rejection::QueryRejection},
     http::StatusCode,
 };
-use bss_products_sdk::sku_usage::SkuUsageSets;
+use bss_products_sdk::sku_usage::{SkuUsageSets, UsageScope};
 use std::sync::Arc;
 use toolkit::api::{
     OpenApiRegistry,
@@ -173,7 +175,16 @@ pub(crate) fn register(router: Router, openapi: &dyn OpenApiRegistry) -> Router 
              names, or the others (P-D-212): 403 USAGE_FORBIDDEN when pricing refuses the \
              caller, 503 USAGE_UNAVAILABLE when it cannot answer. Any other key, `$select` and \
              `$count` are 400; a cursor replayed with another `$filter`, `q`, `priced` or \
-             `in_plan` is 400. Each item carries pricing's `usage`, or null (P-D-197).",
+             `in_plan` is 400. Each item carries pricing's `usage`, or null (P-D-197). The \
+             pickers (P-D-246): `priced_in` or `not_priced_in`, a price book id (at most one of \
+             the two), keeps the SKUs with an entry in that book, in any reference state, or the \
+             others; `not_in_revision`, a plan revision id, keeps the SKUs its items do not name. \
+             Each key is one call to pricing, under pricing price_book_entry read, and the \
+             revision's also under plan read: 403 USAGE_FORBIDDEN when pricing refuses the \
+             caller, 503 USAGE_UNAVAILABLE when it cannot answer. A book or a revision the tenant \
+             does not hold is an empty set. The cursor carries the picker keys too. The multi-id \
+             read is `$filter=id in (...)`, one page of at most `$top` 200, within the 8 KiB \
+             filter.",
         )
         .tag(TAG)
         .authenticated()
@@ -208,6 +219,24 @@ pub(crate) fn register(router: Router, openapi: &dyn OpenApiRegistry) -> Router 
             "true: SKUs a live plan names through an entry; false: the others",
             "boolean",
         )
+        .query_param_typed(
+            "priced_in",
+            false,
+            "A price book id: only the SKUs with an entry in it (P-D-246)",
+            "string",
+        )
+        .query_param_typed(
+            "not_priced_in",
+            false,
+            "A price book id: only the SKUs without an entry in it (P-D-246)",
+            "string",
+        )
+        .query_param_typed(
+            "not_in_revision",
+            false,
+            "A plan revision id: only the SKUs its items do not name (P-D-246)",
+            "string",
+        )
         .handler(list_skus)
         .with_odata_filter::<SkuFilterField>()
         .with_odata_orderby::<SkuOrderField>()
@@ -231,7 +260,10 @@ pub(crate) fn register(router: Router, openapi: &dyn OpenApiRegistry) -> Router 
              `$filter`. Top-level `lifecycle` comparisons (`eq`, `ne`, `in`, and those joined by \
              `and`) are dropped. A `lifecycle` term under `or` or `not`, or `contains`, \
              `startswith` or `endswith` on `lifecycle`, is 400. `$orderby`, `$top`/`limit`, \
-             `cursor`/`$skiptoken` and `$select` are 400.",
+             `cursor`/`$skiptoken` and `$select` are 400. The picker keys `priced_in`, `not_priced_in` (at most one of the \
+             two) and `not_in_revision` narrow the counts as they narrow the list (P-D-246): 403 \
+             USAGE_FORBIDDEN when pricing refuses the caller (a revision takes plan read beside \
+             price_book_entry read), 503 USAGE_UNAVAILABLE when it cannot answer.",
         )
         .tag(TAG)
         .authenticated()
@@ -253,6 +285,24 @@ pub(crate) fn register(router: Router, openapi: &dyn OpenApiRegistry) -> Router 
             false,
             "true: SKUs a live plan names through an entry; false: the others",
             "boolean",
+        )
+        .query_param_typed(
+            "priced_in",
+            false,
+            "A price book id: only the SKUs with an entry in it (P-D-246)",
+            "string",
+        )
+        .query_param_typed(
+            "not_priced_in",
+            false,
+            "A price book id: only the SKUs without an entry in it (P-D-246)",
+            "string",
+        )
+        .query_param_typed(
+            "not_in_revision",
+            false,
+            "A plan revision id: only the SKUs its items do not name (P-D-246)",
+            "string",
         )
         .handler(count_skus)
         .with_odata_filter::<SkuFilterField>()
@@ -300,6 +350,12 @@ pub(crate) struct ListParams {
     pub q: Option<String>,
     pub priced: Option<bool>,
     pub in_plan: Option<bool>,
+    /// `priced_in`: only the SKUs priced in this book (P-D-246).
+    pub priced_in: Option<Uuid>,
+    /// `not_priced_in`: only the SKUs not priced in this book (P-D-246).
+    pub not_priced_in: Option<Uuid>,
+    /// `not_in_revision`: only the SKUs this plan revision does not name (P-D-246).
+    pub not_in_revision: Option<Uuid>,
 }
 impl ListParams {
     /// Whether a usage filter asks pricing's sets.
@@ -308,6 +364,27 @@ impl ListParams {
     }
 }
 
+/// The plain keys the list takes: the pager's aliases, `q`, the usage filters (P-D-212) and the
+/// picker keys (P-D-246).
+const LIST_KEYS: &[&str] = &[
+    "limit",
+    "cursor",
+    "q",
+    "priced",
+    "in_plan",
+    "priced_in",
+    "not_priced_in",
+    "not_in_revision",
+];
+/// The plain keys the counts take: the list's narrowing without the pager's.
+const COUNT_KEYS: &[&str] = &[
+    "q",
+    "priced",
+    "in_plan",
+    "priced_in",
+    "not_priced_in",
+    "not_in_revision",
+];
 /// The `$` options the list takes, as the extractor binds them (`limit` and `cursor` are their
 /// aliases).
 const LIST_OPTIONS: &[&str] = &["$filter", "$orderby", "$top", "$skiptoken"];
@@ -383,11 +460,37 @@ pub(super) fn params(
         }
     };
     let (priced, in_plan) = (flag("priced"), flag("in_plan"));
+    let mut id = |name: &'static str| match value(name) {
+        None => None,
+        Some(raw) => raw.parse::<Uuid>().map_or_else(
+            |_| {
+                malformed.push((
+                    name,
+                    format!("`{name}` is one id, not `{raw}`"),
+                    "INVALID_QUERY_PARAMS",
+                ));
+                None
+            },
+            Some,
+        ),
+    };
+    let (priced_in, not_priced_in, not_in_revision) =
+        (id("priced_in"), id("not_priced_in"), id("not_in_revision"));
+    if priced_in.is_some() && not_priced_in.is_some() {
+        malformed.push((
+            "not_priced_in",
+            "at most one of `priced_in` and `not_priced_in`".to_owned(),
+            "INVALID_QUERY_PARAMS",
+        ));
+    }
     refused(&malformed)?;
     Ok(ListParams {
         q: value("q").filter(|q| !q.is_empty()),
         priced,
         in_plan,
+        priced_in,
+        not_priced_in,
+        not_in_revision,
     })
 }
 
@@ -408,14 +511,25 @@ fn checked_filter(filter: Option<&Expr>) -> Result<Option<sea_orm::Condition>, C
 }
 
 /// The cursor's filter hash over everything that narrows the list: the extractor's hash of
-/// `$filter`, `q`, `priced` and `in_plan`.
+/// `$filter`, `q`, `priced`, `in_plan` and each picker key given (P-D-246). A key not given is
+/// left out, so a list without picker keys hashes as it did before them.
 fn list_hash(odata: &ODataQuery, params: &ListParams) -> String {
-    cursor_hash(&serde_json::json!({
+    let mut narrowing = serde_json::json!({
         "filter": odata.filter_hash,
         "q": params.q,
         "priced": params.priced,
         "in_plan": params.in_plan,
-    }))
+    });
+    for (key, id) in [
+        ("priced_in", params.priced_in),
+        ("not_priced_in", params.not_priced_in),
+        ("not_in_revision", params.not_in_revision),
+    ] {
+        if let (Some(id), Some(fields)) = (id, narrowing.as_object_mut()) {
+            fields.insert(key.to_owned(), serde_json::Value::from(id.to_string()));
+        }
+    }
+    cursor_hash(&narrowing)
 }
 
 /// A cursor's filter hash over `narrowing`: the first 8 bytes of the SHA-256 of its canonical
@@ -432,8 +546,9 @@ pub(super) fn cursor_hash(narrowing: &serde_json::Value) -> String {
         })
 }
 
-/// The narrowing the repository applies before `$filter`: `q`, and each usage filter against
-/// pricing's sets (asked once, only when a usage filter is given).
+/// The narrowing the repository applies before `$filter`: `q`, each usage filter against
+/// pricing's sets (asked once, only when a usage filter is given), and each picker key against its
+/// scope's set (one `sku_ids_in` call per key given, P-D-246).
 async fn list_filter(
     state: &ApiState,
     ctx: &SecurityContext,
@@ -450,10 +565,31 @@ async fn list_filter(
             ids: ids.to_vec(),
         })
     };
+    let book = match (params.priced_in, params.not_priced_in) {
+        (Some(book), _) => Some((true, book)),
+        (None, Some(book)) => Some((false, book)),
+        (None, None) => None,
+    };
+    let book = match book {
+        Some((member, book)) => Some(SetFilter {
+            member,
+            ids: usage::scoped(state, ctx, UsageScope::Book(book)).await?,
+        }),
+        None => None,
+    };
+    let revision = match params.not_in_revision {
+        Some(revision) => Some(SetFilter {
+            member: false,
+            ids: usage::scoped(state, ctx, UsageScope::Revision(revision)).await?,
+        }),
+        None => None,
+    };
     Ok(SkuListFilter {
         text: params.q.clone(),
         priced: set(params.priced, &sets.priced),
         in_plan: set(params.in_plan, &sets.in_plan),
+        book,
+        revision,
     })
 }
 
@@ -468,7 +604,7 @@ async fn list_skus(
     let ctx = require_authenticated(extension_ctx)?;
     // Authorization first, then the query (a 403 before a 400).
     let scope = read_scope(&enforcer, &ctx).await?;
-    let params = params(query, &["limit", "cursor", "q", "priced", "in_plan"], None)?;
+    let params = params(query, LIST_KEYS, None)?;
     let OData(mut odata) = odata?;
     if odata.select.is_some() {
         refused(&[(
@@ -563,7 +699,7 @@ async fn count_skus(
 ) -> Result<Json<ProductsSkuCounts>, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let scope = read_scope(&enforcer, &ctx).await?;
-    let params = params(query, &["q", "priced", "in_plan"], Some(&["$filter"]))?;
+    let params = params(query, COUNT_KEYS, Some(&["$filter"]))?;
     let OData(odata) = odata?;
     // The whole filter is checked as the list would read it, then its lifecycle terms go.
     checked_filter(odata.filter.as_deref())?;

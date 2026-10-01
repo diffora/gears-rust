@@ -28,8 +28,9 @@ fn contexts(source: &str) -> Vec<&str> {
 fn every_storage_context_names_the_price_book_entry() {
     let found = contexts(include_str!("price_book_entry_repo.rs"));
     // Thirteen `driver_failure` and `map_unique` literals (one more with `find_many`), and the
-    // two contexts `priced_skus` and `in_plan_skus` pass to `distinct_skus`.
-    assert_eq!(found.len(), 15, "{found:?}");
+    // three contexts `priced_skus`, `skus_in_book` (P-D-246) and `in_plan_skus` pass to
+    // `distinct_skus`.
+    assert_eq!(found.len(), 16, "{found:?}");
     for context in found {
         assert!(context.contains("price book entr"), "{context}");
     }

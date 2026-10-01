@@ -39,12 +39,12 @@
 | P-D-204 | L | Authz label schemas are registered at boot | DECIDED 2026-09-27 · Carried from P-D-134 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27 |
 | P-D-205 | M | The approval policy is read with a content `ETag` and written under `If-Match` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | P-D-206 | M | A never-published draft is deleted by its author, never retired | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amends P-D-190 |
-| P-D-207 | H | Usage types are read as the caller: a denial is 403 `USAGE_TYPE_FORBIDDEN`, and products serves the picker | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 (owner option b); amends P-D-184, P-D-203 |
+| P-D-207 | H | Usage types are read as the caller: a denial is 403 `USAGE_TYPE_FORBIDDEN`, and products serves the picker | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 (owner option b); amends P-D-184, P-D-203; extended by P-D-247 |
 | P-D-208 | M | A retired SKU no longer keeps its category in use; retiring a retired category is `CATEGORY_RETIRED` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amends P-D-186 |
 | P-D-209 | L | No tenant settings door: the fence TTL is the deployment setting `fence_ttl_minutes` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amends P-D-189 |
-| P-D-210 | M | The SKU list pages on the toolkit's OData, with a literal case-insensitive `q` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
+| P-D-210 | M | The SKU list pages on the toolkit's OData, with a literal case-insensitive `q` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amended by P-D-246 |
 | P-D-211 | M | The SKU list's tab counts: `GET /skus/counts` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
-| P-D-212 | M | The SKU list filters on pricing's usage (`priced`, `in_plan`) through the port's sets; a filter pricing cannot answer fails the read | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amends P-D-197 |
+| P-D-212 | M | The SKU list filters on pricing's usage (`priced`, `in_plan`) through the port's sets; a filter pricing cannot answer fails the read | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amends P-D-197; amended by P-D-246 |
 | P-D-213 | M | A SKU's history: every audit row on a SKU carries the lifecycle move its act made, and `GET /skus/{id}/history` reads them | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amends P-D-189, P-D-200; amended by P-D-219 |
 | P-D-214 | L | SKU versions answer one shape each: the history an array, the version in force at `versions/as-of?date=` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | P-D-215 | M | Category reads: `GET /categories/{id}`, a `sku_count` on every read from one grouped count, and the list on the toolkit's OData | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
@@ -66,6 +66,8 @@
 | P-D-231 | H | Derived usage types are stored append-only and served by five doors | DECIDED 2026-10-01 · Owner, 2026-10-01 (O-1, O-2, O-3); derived usage types plan rev 3 (design decisions 4, 8, 9, run 2); implements P-D-229 and P-D-230 |
 | P-D-232 | H | A usage SKU pins a derived usage type at its first publish | DECIDED 2026-10-01 · Owner, 2026-10-01 (M1, O-2); derived usage types plan rev 3 (design decision 7, run 3); implements P-D-229's pin; amends P-D-184, P-D-207, P-D-231 |
 | P-D-233 | H | Products answers pricing's meter semantics for its derived usage types (E1b) | DECIDED 2026-10-01 · Derived usage types plan rev 3 (design decisions 5 and 6, run 4); implements P-D-229's pricing reference; amends P-D-229, P-D-230, P-D-231, P-D-232; pricing D-503 and D-510 amended |
+| P-D-246 | M | The SKU pickers narrow by one book or one plan revision (`priced_in`, `not_priced_in`, `not_in_revision`) through the port's scoped sets | DECIDED 2026-10-01 · Owner, 2026-10-01 (asks v4, 52 and 46); phase 9 plan rev 4 (run 9.8; review M5, M6, M8); amends P-D-210, P-D-212 |
+| P-D-247 | L | A usage-type picker page may be kept privately for a minute | DECIDED 2026-10-01 · Owner, 2026-10-01 (asks v4, 56); phase 9 plan rev 4 (run 9.8); extends P-D-207 |
 | P-D-248 | H | A retire under review keeps the SKU's lifecycle; `retire_pending` is the fence | DECIDED 2026-10-01 · Owner, 2026-10-01; phase 9 plan rev 4 run 9.8d; amends P-D-189, P-D-208, P-D-211, P-D-213 |
 | P-D-249 | H | A lifecycle change honours its date | DECIDED 2026-10-01 · Owner, 2026-10-01; phase 9 plan rev 4 run 9.8d; amends P-D-191 |
 | P-D-250 | M | The approval units answer the approvals inbox through this gear's own doors (twin of pricing D-490) | DECIDED 2026-10-01 · Owner, 2026-10-01 (option A, "yes, A, agreed", then "write the plan"; Run 2 started before 9.5d-2); approvals inbox plan rev 2 (Run 2; design 1 and 3; plan review H1, H3, H4, M1, M2, M5, L1); amends P-D-227 |
@@ -519,6 +521,8 @@ on the stand (vhp-core's PDP trusts only `am.system` and `rms.system`; plan revi
 Deploy note: SKU authors, submitters and approvers of usage SKUs need usage-collector read, granted with their
 role; without it submit and approve answer 403 `USAGE_TYPE_FORBIDDEN`.
 
+P-D-247 extends this entry: a picker page answers `Cache-Control: private, max-age=60`.
+
 **Source:** Owner, 2026-09-27 (option b); phase 6 plan rev 2 (validation D5, asks 6 and 13; plan review H2, L9);
 the `q` search, 2026-09-28 (the collector's plugin takes no `contains`).
 
@@ -600,6 +604,10 @@ Every products query parameter is declared with its type in the served contract 
 Breaking: the list's parameters and its envelope (`next` is `page_info.next_cursor`). The gears-rust e2e
 follows in this run; vhp-core's e2e in phase 6.6.
 
+P-D-246 amends this entry: the list and the counts also take the picker keys `priced_in`, `not_priced_in`
+and `not_in_revision`, and the cursor's hash covers each one given. The served text names `$filter=id in (...)`
+as the multi-id read, within `$top` 200 and the 8 KiB filter.
+
 **Source:** Owner, 2026-09-27; phase 6 plan rev 2 (owner decision 1; asks 1, 2 and 4; validation D4, D7; plan
 review H1, L1–L5, L10); phase 6 review (queries F1: null equality opt-in per field; F3: the ICU fold).
 
@@ -650,7 +658,12 @@ page's `usage` on the client, so the list and the counts take `priced=true|false
   is unchanged: its `usage` is `null` in those cases (P-D-197).
 - The cursor's hash covers both filters (P-D-210); the counts take them as the list does (P-D-211).
 
-**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 3; plan review M3).
+P-D-246 amends this entry: the port gains `sku_ids_in(ctx, tenant, UsageScope)`, and each picker key is ONE
+call of it per request, beside the one `usage_sets` call that `priced` and `in_plan` make. The calls run one
+after another, each after the query is found valid, before the transaction and under the same two-second
+bound. A picker's set binds as one value, through the same `SetFilter`.
+
+**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 3; plan review M3). Amended by P-D-246.
 
 #### P-D-213 [M] A SKU's history: every audit row on a SKU carries the lifecycle move its act made, and `GET /skus/{id}/history` reads them
 
@@ -1650,6 +1663,72 @@ plan. `infra/meter_semantics.rs` and `gear.rs` carry it; pricing's checks do not
 
 **Source:** The derived usage types implementation plan, rev 3: design decisions 5 and 6 and run 4. Implements P-D-229's
 pricing reference (its amendment) and the E1b half of pricing's E1 (D-503).
+
+#### P-D-246 [M] The SKU pickers narrow by one book or one plan revision
+
+**Status:** DECIDED 2026-10-01.
+
+The pricing-mfe pickers add SKUs to a book or to a plan revision (ask 52). They read every SKU and every entry and
+dropped the taken ones in the browser. `GET /bss-products/v1/skus` and `GET /skus/counts` now take plain keys in
+P-D-212's family. Amends P-D-210 and P-D-212.
+
+- **The keys.** `priced_in=<book_id>` keeps the SKUs with an entry in that book, in any reference state.
+  `not_priced_in=<book_id>` keeps the others. At most one of the two is given: both is 400 `INVALID_QUERY_PARAMS`.
+  `not_in_revision=<revision_id>` keeps the SKUs the revision's items do not name. A key's value is one id: a
+  malformed one, or a key given twice, is 400 `INVALID_QUERY_PARAMS`. Each refusal comes before pricing is asked.
+  The keys combine with each other, with `priced`, `in_plan`, `q` and `$filter`, and the counts narrow alike.
+- **The cursor.** Its hash covers each picker key given. A cursor replayed with another book, another key or
+  without its key is 400 `FILTER_MISMATCH`. A key not given stays out of the hash, so a list without picker keys
+  hashes as it did before them and its cursors continue across the deploy.
+- **The port.** `bss_products_sdk::sku_usage::SkuUsageV1` gains
+  `sku_ids_in(ctx, tenant, scope: UsageScope) -> Vec<Uuid>`, with `UsageScope::{Book(Uuid), Revision(Uuid)}`. The
+  answer is sorted and distinct.
+  - `Book` is the SKUs with an entry in that book, under pricing `price_book_entry:read`, read under the scope that
+    grant gives.
+  - `Revision` is the SKUs the revision's items name, under `price_book_entry:read` AND `plan:read`, because a
+    revision's SKUs are plan content. The revision is read under the plan scope, as `GET /plan-revisions/{id}`
+    reads it.
+  - Without the grant the port is 403 (`sku_usage_denied`); unreadable, 503 (`sku_usage_unavailable`). A failure
+    is never an empty set.
+  - A book or a revision the tenant does not hold answers the empty set, as one that names no SKU does: there is
+    no existence oracle. So `priced_in` of such a book keeps nothing, and `not_priced_in` and `not_in_revision`
+    keep every SKU.
+  - Pricing answers each scope in ONE statement whatever its size: the book's distinct entry SKUs, and the
+    revision's items joined to their revision.
+  - All three implementers implement it: pricing's `PricingSkuUsage`, the list's test `SetsPort`, and the SKU
+    reads' `UsagePort`, which panics, as its `usage_sets` does, because those reads take no key.
+- **The calls.** Each key is ONE `sku_ids_in` call per request, made after the query is found valid and before
+  the read's transaction. Each runs on a task of its own under `usage`'s two-second bound and is aborted with the
+  read. A refusal is 403 `USAGE_FORBIDDEN`. No port, an error, a broken call and a call past the bound are 503
+  `USAGE_UNAVAILABLE`: never an unfiltered page. The list still asks `usage` once for its page.
+- **One bind.** Products narrows through P-D-212's `SetFilter`. `member` is true for `priced_in` and false for
+  `not_priced_in` and `not_in_revision`. The set is one bound value whatever its size (a `uuid[]` on Postgres, a
+  `json_each` array on SQLite).
+- **The multi-id read (ask 46).** The list's served text names `$filter=id in (...)` as the way to read many SKUs
+  by id, with its bounds: one page of at most `$top` 200, inside the toolkit's 8 KiB filter (about 200 ids). A
+  100-id read makes the list's fixed two statements, the fence expiry and the read.
+- **The tests.** `sku_list_picker_tests.rs`: each key alone and together, beside `priced`, `q` and `$filter`,
+  with its calls and asked scopes, in the list and the counts; the cursor per key and the unchanged hash without
+  keys; every 400 before pricing is asked; 403 and 503 per key; the bound and the abort; a foreign scope's empty
+  set; one bind for 10 and 5000 ids; the 100-id pin. `tests/sku_usage_scopes.rs` (pricing): each scope's SKUs, in
+  any reference state; a foreign or unknown book or revision is the empty set; the revision takes `plan:read`;
+  one statement for 10 and 100 SKUs. `tests/postgres_entry_paging.rs` and `tests/postgres_sku_list.rs` hold the
+  scopes and the one bind on Postgres. `gear_tests.rs`: the served keys and texts.
+
+**Source:** Owner, 2026-10-01 (the pricing-mfe asks v4, 52 and 46); phase 9 plan rev 4 (run 9.8; review M5, M6,
+M8). Amends P-D-210 and P-D-212.
+
+#### P-D-247 [L] A usage-type picker page may be kept privately for a minute
+
+**Status:** DECIDED 2026-10-01.
+
+The SKU editor asks `GET /bss-products/v1/usage-types` each time it opens the picker (ask 56). A page now answers
+`Cache-Control: private, max-age=60`. The picker is read as the caller (P-D-207), so only the caller's own cache
+may keep the page, never a shared one. The catalog changes rarely, so a minute is safe. The header is declared on
+the 200 in the served spec. A refusal carries none. `usage_types_tests.rs` tests the header and its absence;
+`gear_tests.rs` tests the declaration.
+
+**Source:** Owner, 2026-10-01 (the pricing-mfe asks v4, 56); phase 9 plan rev 4 (run 9.8). Extends P-D-207.
 
 #### P-D-248 [H] A retire under review keeps the SKU's lifecycle
 

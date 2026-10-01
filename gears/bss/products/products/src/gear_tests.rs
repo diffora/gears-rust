@@ -762,3 +762,51 @@ async fn every_unit_says_whether_its_reader_may_approve_it() -> anyhow::Result<(
     assert!(reject.contains("separation of duties"), "{reject}");
     Ok(())
 }
+
+/// P-D-247 (ask 56): the picker declares its `Cache-Control` on its 200. Ask 46 and P-D-246
+/// (ask 52): the SKU list's text names `$filter=id in (…)` as the multi-id read with its bounds,
+/// and the list and the counts declare and name the picker keys `priced_in`, `not_priced_in` and
+/// `not_in_revision`.
+#[tokio::test]
+async fn the_picker_reads_say_how_they_cache_and_narrow() -> anyhow::Result<()> {
+    let api = served_spec().await?;
+    let header = &api["paths"]["/bss-products/v1/usage-types"]["get"]["responses"]["200"]["headers"]
+        ["Cache-Control"];
+    assert!(
+        header.is_object(),
+        "the 200 declares Cache-Control: {header}"
+    );
+    let said = header["description"].as_str().unwrap_or_default();
+    assert!(said.contains("private, max-age=60"), "{said}");
+    for path in ["/bss-products/v1/skus", "/bss-products/v1/skus/counts"] {
+        let op = &api["paths"][path]["get"];
+        let names: Vec<&str> = op["parameters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|p| p["in"] == "query")
+            .filter_map(|p| p["name"].as_str())
+            .collect();
+        for key in ["priced_in", "not_priced_in", "not_in_revision"] {
+            assert!(names.contains(&key), "{path} declares {key}: {names:?}");
+        }
+        let text = op["description"].as_str().unwrap_or_default();
+        for said in [
+            "priced_in",
+            "not_priced_in",
+            "not_in_revision",
+            "plan read",
+            "USAGE_FORBIDDEN",
+            "USAGE_UNAVAILABLE",
+        ] {
+            assert!(text.contains(said), "{path} says {said}: {text}");
+        }
+    }
+    let list = api["paths"]["/bss-products/v1/skus"]["get"]["description"]
+        .as_str()
+        .unwrap_or_default();
+    for said in ["$filter=id in (", "$top", "200", "8 KiB"] {
+        assert!(list.contains(said), "the list says {said}: {list}");
+    }
+    Ok(())
+}
