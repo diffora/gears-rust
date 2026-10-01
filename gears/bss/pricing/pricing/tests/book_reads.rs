@@ -2608,12 +2608,13 @@ async fn the_entries_list_refuses_a_date_it_cannot_read_and_any_other_key() {
             "{bad}: {b}"
         );
     }
+    // D-483: `limit`, `cursor`, `$top`, `$skiptoken` and `$filter` are the pager's keys now.
     for query in [
         "?asof=2026-01-05",
-        "?limit=5",
+        "?page=5",
         "?as_of=2026-01-05&as_of=2026-01-06",
         "?status=active",
-        "?$top=5",
+        "?top=5",
     ] {
         let (s, b, _) = get(&f, &format!("{path}{query}")).await;
         assert_eq!(s, 400, "{query}: {b}");

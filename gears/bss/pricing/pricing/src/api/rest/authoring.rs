@@ -5,6 +5,7 @@ mod books;
 mod caps;
 pub(crate) mod configuration;
 pub mod dto;
+mod entry_list;
 pub mod plan_items;
 mod plan_routes;
 pub(crate) mod plans;
@@ -24,8 +25,8 @@ use axum::{
 use caps::Capped;
 use dto::{
     PriceBookCreate, PriceBookDto, PriceBookExport, PriceBookPatch, PricingDimensionKeyPatch,
-    PricingDimensionRegistry, PricingDimensions, PricingPriceBookEntryList,
-    PricingPriceBookReadDto, PricingSettingsDto, PricingSettingsPut,
+    PricingDimensionRegistry, PricingDimensions, PricingPriceBookReadDto, PricingSettingsDto,
+    PricingSettingsPut,
 };
 use std::sync::Arc;
 use support::{authz_failure, etag, header, require_authenticated, response, transaction};
@@ -214,45 +215,7 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .standard_errors(openapi)
         .error_503(openapi)
         .register(router, openapi);
-    let router = OperationBuilder::get("/bss-pricing/v1/price-books/{id}/entries")
-        .operation_id("bss_pricing.list_entries")
-        .summary("List a book's entries")
-        .description(
-            "Lists the price book entries of one book of the tenant, ordered by SKU, charge kind \
-             and period, each with its usage (D-428): its prices by state (a rejected price is not \
-             counted; the approved ones also as scheduled, active and superseded on the day, \
-             D-440), the distinct plans whose draft, pending, scheduled or published revisions \
-             name it, and the distinct plans that name it only through superseded revisions; its \
-             current_price, the default chain's approved price in force on the day; and its \
-             next_price, the default chain's earliest price scheduled after the day, else its \
-             newest draft or pending price (the highest version_no), else null (D-472). Both \
-             prices are shown to a caller who also holds price_book read on the book and are null \
-             otherwise (D-434, D-440). The day is as_of, a YYYY-MM-DD date, else today (UTC): \
-             every price's status, the usage split and both prices are judged on that one day \
-             (D-473). A day before the book's valid_from, or on or after its valid_until, still \
-             answers with the prices in force on it, but a price outside the book's validity is \
-             not sellable: the book allows no sale on that day. Refusals, in order: 403 without \
-             price_book_entry read; 503 when the policy cannot judge the money; 400 QUERY_INVALID \
-             for any key but as_of, or as_of twice, then 400 DATE_INVALID for an as_of that is \
-             not a YYYY-MM-DD date; 404 for a book the tenant does not hold; then 403 \
-             PRICE_BOOK_READ_REQUIRED for an as_of other than today when the caller's \
-             price_book read does not admit the book: the usage split on another day dates \
-             every approved price, so it is money, and a caller without it reads today only.",
-        )
-        .tag("Pricing")
-        .authenticated()
-        .no_license_required()
-        .path_param("id", "Price book id")
-        .query_param(
-            "as_of",
-            false,
-            "The day the prices are judged on, YYYY-MM-DD; today (UTC) by default",
-        )
-        .handler(list_entries)
-        .json_response_with_schema::<PricingPriceBookEntryList>(openapi, StatusCode::OK, "Response")
-        .standard_errors(openapi)
-        .error_503(openapi)
-        .register(router, openapi);
+    let router = entry_list::register(router, openapi);
     let router = OperationBuilder::get("/bss-pricing/v1/price-books/{id}/export")
         .operation_id("bss_pricing.export_book")
         .summary("Export a price book")
@@ -1890,57 +1853,6 @@ async fn delete_book(
     })
     .await
 }
-async fn list_entries(
-    Extension(state): Extension<Arc<AuthoringState>>,
-    Extension(enforcer): Extension<PolicyEnforcer>,
-    ctx: Option<Extension<SecurityContext>>,
-    Path(id): Path<Uuid>,
-    uri: axum::http::Uri,
-) -> Result<Response, CanonicalError> {
-    let ctx = require_authenticated(ctx)?;
-    let scope = authz::access_scope(
-        &enforcer,
-        &ctx,
-        &resource_types::PRICE_BOOK_ENTRY,
-        actions::READ,
-        None,
-        None,
-    )
-    .await
-    .map_err(authz_failure)?;
-    // D-440: the money is shown as D-434 shows it — price_book read, judged a second time.
-    let books = money_scope(&enforcer, &ctx).await?;
-    // D-473: the one day the whole answer is judged on, refused after the money's policy and
-    // before the book (D-440's order).
-    let day = entries_day(&uri)?;
-    let dated = day != time::OffsetDateTime::now_utc().date();
-    transaction(&state.db.db(), move |tx| {
-        let (scope, books, ctx) = (scope.clone(), books.clone(), ctx.clone());
-        Box::pin(async move {
-            let tenant = ctx.subject_tenant_id();
-            let entries = books::entries(tx, &scope, tenant, id).await?;
-            // D-428, D-440, D-472: every entry's usage, price in force and next price in a fixed
-            // number of reads.
-            let shown = price_book_entries::shows_money(tx, books.as_ref(), tenant, id).await?;
-            // D-473 (amended): the usage split on another day moves with the start and the end of
-            // every approved price, so it is money: without the grant on the book, a day other
-            // than today is refused before any price or usage is read.
-            if dated && !shown {
-                return Err(support::forbidden_because(
-                    "PRICE_BOOK_READ_REQUIRED",
-                    "a book's entries on a day other than today are money: reading them takes \
-                     price_book read on the book",
-                )
-                .into());
-            }
-            let body = PricingPriceBookEntryList {
-                items: price_book_entries::read(tx, tenant, entries, shown, day).await?,
-            };
-            Ok(response(StatusCode::OK, &body, None)?)
-        })
-    })
-    .await
-}
 async fn export_book(
     Extension(state): Extension<Arc<AuthoringState>>,
     Extension(enforcer): Extension<PolicyEnforcer>,
@@ -2249,17 +2161,6 @@ async fn money_scope(
         Err(authz::AuthzError::Denied(_)) => Ok(None),
         Err(unavailable) => Err(authz_failure(unavailable)),
     }
-}
-
-/// The day of `GET /price-books/{id}/entries` (D-473): `as_of`, a `YYYY-MM-DD` date, else today
-/// (UTC). Any other key, or `as_of` twice, is 400 `QUERY_INVALID`; an `as_of` that is not such a
-/// date, an empty one included, is 400 `DATE_INVALID`.
-fn entries_day(uri: &axum::http::Uri) -> Result<time::Date, CanonicalError> {
-    let axum::extract::Query(query) =
-        axum::extract::Query::<dto::PricingEntryListQuery>::try_from_uri(uri)
-            .map_err(|_| support::invalid("query", "QUERY_INVALID"))?;
-    Ok(support::date(query.as_of, "as_of")?
-        .unwrap_or_else(|| time::OffsetDateTime::now_utc().date()))
 }
 
 /// The `status` of `GET /price-book-entries/{id}/prices` (D-440): absent, or one display status

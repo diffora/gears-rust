@@ -180,13 +180,6 @@ impl PricingPriceBookEntryReadDto {
 pub struct PricingEntryPriceList {
     pub items: Vec<PricingPriceDto>,
 }
-/// The query of `GET /price-books/{id}/entries` (D-473): an optional `as_of`, the day its prices
-/// are judged on.
-#[derive(Default, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct PricingEntryListQuery {
-    pub as_of: Option<String>,
-}
 /// The query of `GET /price-book-entries/{id}/prices`: an optional `status`, one display status
 /// or several comma-separated.
 #[derive(Default, serde::Deserialize)]
@@ -409,9 +402,13 @@ fn nullable_date<'de, D: serde::Deserializer<'de>>(
 ) -> Result<Option<Option<String>>, D::Error> {
     <Option<String> as serde::Deserialize>::deserialize(d).map(Some)
 }
+/// One page of a book's entries (D-483), ordered `(sku_id, charge_kind, model, id)`.
 #[toolkit_macros::api_dto(response)]
 pub struct PricingPriceBookEntryList {
     pub items: Vec<PricingPriceBookEntryReadDto>,
+    /// `limit` is the page size (500 by default and at most); `next_cursor` continues the page and
+    /// carries the list's `$filter` and day.
+    pub page_info: toolkit_odata::PageInfo,
 }
 #[toolkit_macros::api_dto(response)]
 pub struct PricingExportEntry {

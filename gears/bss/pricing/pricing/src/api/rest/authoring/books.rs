@@ -255,6 +255,28 @@ pub async fn page(
         page_info: page.page_info,
     })
 }
+/// One page of book `id`'s entries under the caller's entry `scope` (D-483): the query's `$filter`
+/// and cursor, ordered `(sku_id, charge_kind, model, id)`, 500 by default and at most 500. ONE
+/// statement; the door has found the book.
+/// # Errors
+/// 400 for a filter value or a cursor the pager refuses; storage failures.
+pub async fn entries_page(
+    tx: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    id: Uuid,
+    query: &toolkit_odata::ODataQuery,
+) -> Result<toolkit_odata::Page<crate::infra::storage::entity::price_book_entry::Model>, DoorError>
+{
+    price_book_entry_repo::page_of_book(tx, scope, tenant, id, query)
+        .await
+        .map_err(|e| match e {
+            price_book_entry_repo::EntryListError::Query(e) => DoorError::Api(e.into()),
+            price_book_entry_repo::EntryListError::Repo(e) => DoorError::Repo(e),
+        })
+}
+/// Every entry of book `id` (404 for a book the tenant does not hold), in the export's order
+/// `(sku_id, charge_kind, period or "", id)`: the export reads the whole book.
 pub async fn entries(
     tx: &impl DBRunner,
     scope: &AccessScope,

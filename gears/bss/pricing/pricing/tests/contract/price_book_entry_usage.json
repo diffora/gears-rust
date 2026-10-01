@@ -302,7 +302,12 @@
               "plans_superseded_only": 0
             }
           }
-        ]
+        ],
+        "page_info": {
+          "next_cursor": null,
+          "prev_cursor": null,
+          "limit": 500
+        }
       }
     },
     {
