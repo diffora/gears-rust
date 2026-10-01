@@ -35,7 +35,7 @@ use crate::{
         plan_revisions, reference_registry, reference_work,
         storage::{
             RepoError,
-            entity::{plan as plan_entity, plan_item, plan_revision, price_book_entry},
+            entity::{plan as plan_entity, plan_item, plan_revision, price, price_book_entry},
             repo::{
                 approval_repo, book_repo, dimension_repo, plan_item_repo, plan_repo,
                 plan_revision_repo, price_book_entry_repo, price_repo, reference_op_repo,
@@ -1123,11 +1123,12 @@ pub(super) async fn delete_revision(
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
-/// `GET /plan-revisions/{id}/checks`: every check on the sale date (D-408). The stored state is
-/// read in one transaction; then every item SKU is read fresh through `sku_for_write`, never from a
-/// cache, so a SKU deprecated since the last read turns its check red at once. A SKU Products no
-/// longer knows (404) is unavailable in the checks; any other definite refusal is answered as
-/// Products gave it; a registry that cannot answer is 503 `REGISTRY_UNAVAILABLE`.
+/// `GET /plan-revisions/{id}/checks`: every check on the sale date (D-408, D-482). The stored
+/// state is read on a connection, not under a serializable transaction; then every item SKU is
+/// read fresh in one `skus_for_write`, never from a cache, so a SKU deprecated since the last
+/// read turns its check red at once. A SKU Products no longer knows (404) is unavailable in the
+/// checks; any other definite refusal is answered as Products gave it; a registry that cannot
+/// answer is 503 `REGISTRY_UNAVAILABLE`.
 /// # Errors
 /// 404 for a revision the tenant does not hold; the registry's refusal or unavailability.
 pub(super) async fn checks(
@@ -1138,27 +1139,76 @@ pub(super) async fn checks(
 ) -> Result<Response, CanonicalError> {
     let tenant = ctx.subject_tenant_id();
     let today = today();
-    let mut context = support::transaction(&state.db.db(), move |tx| {
-        let scope = scope.clone();
-        Box::pin(async move { stored_context(tx, &scope, tenant, id, today).await })
-    })
-    .await?;
+    let conn = state.db.conn().map_err(DoorError::from)?;
+    let mut context = stored_context(&conn, &scope, tenant, id, today).await?;
     // @cpt-begin:cpt-cf-bss-pricing-flow-plans:p1:inst-plans-flow-3
     context.skus = fresh_skus(&state.hub, &ctx, context.items.iter().map(|i| i.sku_id)).await?;
-    let rows = plan::checks(&context, today);
-    let ready = plan::ready(&rows);
+    let body = checks_dto(&context, today);
     // @cpt-end:cpt-cf-bss-pricing-flow-plans:p1:inst-plans-flow-3
-    let body = PricingPlanChecksDto {
+    support::response(StatusCode::OK, &body, None)
+}
+/// `GET /plan-revisions/checks`: the checks of 1 to 50 revisions, each byte-identical to the
+/// single read (D-482). One `stored_contexts` and, when any revision is held, one
+/// `skus_for_write` over the union of their SKUs. A revision the tenant does not hold, or one
+/// outside the caller's plan-read scope, is `missing`. An answer that is all `missing` makes no
+/// Products call.
+/// # Errors
+/// Products' definite refusal as it gave it; 503 `REGISTRY_UNAVAILABLE`.
+pub(super) async fn checks_batch(
+    state: &AuthoringState,
+    scope: AccessScope,
+    ctx: SecurityContext,
+    ids: Vec<Uuid>,
+) -> Result<Response, CanonicalError> {
+    let tenant = ctx.subject_tenant_id();
+    let today = today();
+    let conn = state.db.conn().map_err(DoorError::from)?;
+    let mut contexts = stored_contexts(&conn, &scope, tenant, &ids, today).await?;
+    if !contexts.is_empty() {
+        let named: Vec<Uuid> = contexts
+            .values()
+            .flat_map(|context| context.items.iter().map(|item| item.sku_id))
+            .collect();
+        let found = fresh_skus(&state.hub, &ctx, named).await?;
+        for context in contexts.values_mut() {
+            let wanted: BTreeSet<Uuid> = context.items.iter().map(|item| item.sku_id).collect();
+            context.skus = found
+                .iter()
+                .filter(|sku| wanted.contains(&sku.id))
+                .cloned()
+                .collect();
+        }
+    }
+    let mut items = Vec::new();
+    let mut missing = Vec::new();
+    for id in ids {
+        match contexts.remove(&id) {
+            Some(context) => items.push(dto::PricingRevisionChecksDto {
+                revision_id: id,
+                checks: checks_dto(&context, today),
+            }),
+            None => missing.push(id),
+        }
+    }
+    support::response(
+        StatusCode::OK,
+        &dto::PricingRevisionChecksBatchDto { items, missing },
+        None,
+    )
+}
+fn checks_dto(context: &PlanContext, today: time::Date) -> PricingPlanChecksDto {
+    let rows = plan::checks(context, today);
+    let ready = plan::ready(&rows);
+    PricingPlanChecksDto {
         checks: rows.into_iter().map(Into::into).collect(),
         ready,
         sale_date: plan::sale_date(&context.revision, today).to_string(),
         quorum_required: context.quorum,
-    };
-    support::response(StatusCode::OK, &body, None)
+    }
 }
-/// Every SKU named, read fresh through `sku_for_write` and never from a cache (D-408): the checks
-/// door, submit and apply all read the item SKUs this way. A SKU Products no longer knows (404)
-/// is left out, so the checks show it unavailable.
+/// Every SKU named, read fresh through one `skus_for_write` and never from a cache (D-408): the
+/// checks door, submit and apply all read the item SKUs this way. A SKU Products no longer knows
+/// (404) is left out, so the checks show it unavailable.
 /// # Errors
 /// Any other definite refusal as Products gave it; a registry that cannot answer is 503
 /// `REGISTRY_UNAVAILABLE`.
@@ -1169,20 +1219,22 @@ pub async fn fresh_skus(
 ) -> Result<Vec<Sku>, CanonicalError> {
     let registry =
         reference_registry::resolve(hub).map_err(|e| support::registry_unavailable(&e))?;
-    let wanted: BTreeSet<Uuid> = skus.into_iter().collect();
-    let mut found = Vec::with_capacity(wanted.len());
+    let wanted: Vec<Uuid> = skus
+        .into_iter()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
     // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-1
-    for sku in wanted {
-        match registry
-            .sku_for_write(ctx, ctx.subject_tenant_id(), sku)
-            .await
-        {
-            Ok(read) => found.push(read),
-            Err(error) if error.status_code() == 404 => {}
-            Err(error) if reference_work::definite_refusal(&error) => return Err(error),
-            Err(error) => return Err(support::registry_unavailable(&error)),
-        }
-    }
+    let found = registry
+        .skus_for_write(ctx, ctx.subject_tenant_id(), &wanted)
+        .await
+        .map_err(|error| {
+            if reference_work::definite_refusal(&error) {
+                error
+            } else {
+                support::registry_unavailable(&error)
+            }
+        })?;
     // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-1
     Ok(found)
 }
@@ -1203,88 +1255,261 @@ pub async fn stored_context(
     id: Uuid,
     today: time::Date,
 ) -> Result<PlanContext, DoorError> {
-    let children = AccessScope::for_tenant(tenant);
-    let r = find_revision(tx, scope, tenant, id).await?;
-    let p = plan_repo::find(tx, &children, tenant, r.plan_id)
+    stored_contexts(tx, scope, tenant, &[id], today)
         .await?
-        .ok_or_else(|| corrupt(format!("revision {id} has no plan")))?;
-    let rows = plan_item_repo::for_revision(tx, &children, tenant, r.id).await?;
-    let mut items = Vec::with_capacity(rows.len());
-    let mut entries: Vec<plan::Entry> = Vec::new();
-    let mut book_ids = BTreeSet::from([r.book_id]);
-    for row in &rows {
-        items.push(item_of(row)?);
-        let Some(entry_id) = row.price_book_entry_id else {
-            continue;
-        };
-        if entries.iter().any(|e| e.id == entry_id) {
-            continue;
-        }
-        if let Some(e) = price_book_entry_repo::find(tx, &children, tenant, entry_id).await? {
-            book_ids.insert(e.book_id);
-            entries.push(entry_of(tx, &children, tenant, e).await?);
-        }
+        .remove(&id)
+        .ok_or_else(|| support::missing_what("plan_revision").into())
+}
+/// The checks' stored context for every revision among `ids` the caller's scope admits, each
+/// built from the same reads as [`stored_context`] (D-482). Eleven statements whatever the number
+/// of revisions and entries, once any revision is held: the revisions, their plans, their items,
+/// the entries, the prices, the books, the dimensions, the plans' revisions, the in-effect items,
+/// the policy and the settings. An id the tenant does not hold, or the scope does not admit, is
+/// absent. The caller's scope is used only to admit the revisions; the rest is the tenant's, as
+/// the single read's is.
+///
+/// # Errors
+/// Storage failures, including a corrupt row.
+pub async fn stored_contexts(
+    tx: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    ids: &[Uuid],
+    today: time::Date,
+) -> Result<BTreeMap<Uuid, PlanContext>, DoorError> {
+    let revisions = plan_revision_repo::find_many(tx, scope, tenant, ids).await?;
+    if revisions.is_empty() {
+        return Ok(BTreeMap::new());
     }
-    let mut books = Vec::with_capacity(book_ids.len());
-    for book_id in book_ids {
-        if let Some(b) = book_repo::find(tx, &children, tenant, book_id).await? {
-            books.push(plan::PlanBook {
-                id: b.id,
-                book: Book {
-                    name: b.name,
-                    currency: b.currency,
-                    valid_from: b.valid_from,
-                    valid_until: b.valid_until,
-                },
-            });
-        }
+    let children = AccessScope::for_tenant(tenant);
+    let plan_ids: Vec<Uuid> = revisions.iter().map(|r| r.plan_id).collect();
+    let plans: BTreeMap<Uuid, plan_entity::Model> =
+        plan_repo::find_many(tx, &children, tenant, &plan_ids)
+            .await?
+            .into_iter()
+            .map(|p| (p.id, p))
+            .collect();
+    let revision_ids: Vec<Uuid> = revisions.iter().map(|r| r.id).collect();
+    let mut items_of: BTreeMap<Uuid, Vec<plan_item::Model>> = BTreeMap::new();
+    for row in plan_item_repo::for_revisions(tx, &children, tenant, &revision_ids).await? {
+        items_of.entry(row.revision_id).or_default().push(row);
     }
+    let entry_ids = named_entries(&items_of);
+    let entries_by_id: BTreeMap<Uuid, price_book_entry::Model> =
+        price_book_entry_repo::find_many(tx, &children, tenant, &entry_ids)
+            .await?
+            .into_iter()
+            .map(|e| (e.id, e))
+            .collect();
+    let prices_by_entry =
+        price_repo::by_entry(price_repo::for_entries(tx, &children, tenant, &entry_ids).await?);
+    let book_ids = named_books(&revisions, &entries_by_id);
+    let books_by_id: BTreeMap<Uuid, plan::PlanBook> =
+        book_repo::find_many(tx, &children, tenant, &book_ids)
+            .await?
+            .into_iter()
+            .map(|b| {
+                (
+                    b.id,
+                    plan::PlanBook {
+                        id: b.id,
+                        book: Book {
+                            name: b.name,
+                            currency: b.currency,
+                            valid_from: b.valid_from,
+                            valid_until: b.valid_until,
+                        },
+                    },
+                )
+            })
+            .collect();
     let mut dimension_values = Vec::new();
     for d in dimension_repo::list(tx, &children, tenant).await? {
         let values: Vec<String> = serde_json::from_value(d.values)
             .map_err(|_| corrupt(format!("dimension {} values", d.key)))?;
         dimension_values.push((d.key, values));
     }
-    let revisions = plan_revisions::effective_revisions(
-        &plan_revision_repo::for_plan(tx, &children, tenant, p.id).await?,
-        today,
-    )?;
-    let state = revisions
-        .iter()
-        .find(|x| x.id == r.id)
-        .map(|x| x.state)
-        .ok_or_else(|| corrupt(format!("revision {} is not among its plan's", r.id)))?;
-    let published_sku_ids =
-        plan_revisions::in_effect_skus(tx, &children, tenant, &revisions).await?;
+    let mut siblings_of: BTreeMap<Uuid, Vec<plan_revision::Model>> = BTreeMap::new();
+    for row in plan_revision_repo::for_plans(tx, &children, tenant, &plan_ids).await? {
+        siblings_of.entry(row.plan_id).or_default().push(row);
+    }
+    let effective = effective_plans(&siblings_of, today)?;
+    let effective_of = effective.by_plan;
+    let in_effect_ids = effective.in_effect_ids;
+    let published_skus =
+        plan_item_repo::skus_of_revisions(tx, &children, tenant, &in_effect_ids).await?;
     let quorum = approval_repo::read_policy(tx, &children, tenant)
         .await?
         .quorum_for(plan::KIND_PLAN_REVISION);
     let settings = configuration::settings(tx, &children, tenant).await?;
+    let defaults = plan::Defaults {
+        gl: settings.default_gl,
+        rounding: settings.default_rounding,
+        tax_category: settings.default_tax_category,
+    };
+    let loaded = Loaded {
+        plans: &plans,
+        items_of: &items_of,
+        entries_by_id: &entries_by_id,
+        prices_by_entry: &prices_by_entry,
+        books_by_id: &books_by_id,
+        effective_of: &effective_of,
+        published_skus: &published_skus,
+        dimension_values: &dimension_values,
+        quorum,
+        defaults: &defaults,
+    };
+    let mut out = BTreeMap::new();
+    for revision in revisions {
+        let id = revision.id;
+        out.insert(id, assemble(&revision, &loaded)?);
+    }
+    Ok(out)
+}
+struct Loaded<'a> {
+    plans: &'a BTreeMap<Uuid, plan_entity::Model>,
+    items_of: &'a BTreeMap<Uuid, Vec<plan_item::Model>>,
+    entries_by_id: &'a BTreeMap<Uuid, price_book_entry::Model>,
+    prices_by_entry: &'a BTreeMap<Uuid, Vec<price::Model>>,
+    books_by_id: &'a BTreeMap<Uuid, plan::PlanBook>,
+    effective_of: &'a BTreeMap<Uuid, Vec<plan::EffectiveRevision>>,
+    published_skus: &'a BTreeMap<Uuid, Vec<Uuid>>,
+    dimension_values: &'a [(String, Vec<String>)],
+    quorum: u32,
+    defaults: &'a plan::Defaults,
+}
+fn assemble(
+    revision: &plan_revision::Model,
+    loaded: &Loaded<'_>,
+) -> Result<PlanContext, DoorError> {
+    let plan_row = loaded
+        .plans
+        .get(&revision.plan_id)
+        .ok_or_else(|| corrupt(format!("revision {} has no plan", revision.id)))?;
+    let effective = loaded
+        .effective_of
+        .get(&revision.plan_id)
+        .ok_or_else(|| corrupt(format!("revision {} is not among its plan's", revision.id)))?;
+    let state = effective
+        .iter()
+        .find(|x| x.id == revision.id)
+        .map(|x| x.state)
+        .ok_or_else(|| corrupt(format!("revision {} is not among its plan's", revision.id)))?;
+    let published_sku_ids = plan::in_effect(effective)
+        .and_then(|published| loaded.published_skus.get(&published.id).cloned())
+        .unwrap_or_default();
+    let rows = rows_of(revision, loaded)?;
     Ok(PlanContext {
         plan: plan::Plan {
-            id: p.id,
-            code: p.code,
-            name: p.name,
+            id: plan_row.id,
+            code: plan_row.code.clone(),
+            name: plan_row.name.clone(),
         },
         revision: plan::Revision {
-            id: r.id,
-            rev_no: r.rev_no,
-            book_id: r.book_id,
+            id: revision.id,
+            rev_no: revision.rev_no,
+            book_id: revision.book_id,
             state,
-            available_from: r.available_from,
+            available_from: revision.available_from,
         },
-        items,
+        items: rows.items,
         skus: Vec::new(),
+        entries: rows.entries,
+        books: rows.books,
+        dimension_values: loaded.dimension_values.to_vec(),
+        published_sku_ids,
+        quorum: loaded.quorum,
+        defaults: loaded.defaults.clone(),
+    })
+}
+fn named_entries(items_of: &BTreeMap<Uuid, Vec<plan_item::Model>>) -> Vec<Uuid> {
+    let mut entry_ids = BTreeSet::new();
+    for rows in items_of.values() {
+        for row in rows {
+            if let Some(id) = row.price_book_entry_id {
+                entry_ids.insert(id);
+            }
+        }
+    }
+    entry_ids.into_iter().collect()
+}
+fn named_books(
+    revisions: &[plan_revision::Model],
+    entries: &BTreeMap<Uuid, price_book_entry::Model>,
+) -> Vec<Uuid> {
+    let mut book_ids = BTreeSet::new();
+    for revision in revisions {
+        book_ids.insert(revision.book_id);
+    }
+    for entry in entries.values() {
+        book_ids.insert(entry.book_id);
+    }
+    book_ids.into_iter().collect()
+}
+struct EffectivePlans {
+    by_plan: BTreeMap<Uuid, Vec<plan::EffectiveRevision>>,
+    in_effect_ids: Vec<Uuid>,
+}
+fn effective_plans(
+    siblings: &BTreeMap<Uuid, Vec<plan_revision::Model>>,
+    today: time::Date,
+) -> Result<EffectivePlans, DoorError> {
+    let mut by_plan = BTreeMap::new();
+    let mut in_effect_ids = Vec::new();
+    for (plan_id, rows) in siblings {
+        let effective = plan_revisions::effective_revisions(rows, today)?;
+        if let Some(published) = plan::in_effect(&effective) {
+            in_effect_ids.push(published.id);
+        }
+        by_plan.insert(*plan_id, effective);
+    }
+    Ok(EffectivePlans {
+        by_plan,
+        in_effect_ids,
+    })
+}
+struct RevisionRows {
+    items: Vec<plan::Item>,
+    entries: Vec<plan::Entry>,
+    books: Vec<plan::PlanBook>,
+}
+fn rows_of(
+    revision: &plan_revision::Model,
+    loaded: &Loaded<'_>,
+) -> Result<RevisionRows, DoorError> {
+    let rows = match loaded.items_of.get(&revision.id) {
+        Some(rows) => rows.as_slice(),
+        None => &[],
+    };
+    let mut items = Vec::with_capacity(rows.len());
+    let mut entries = Vec::new();
+    let mut seen_entries = BTreeSet::new();
+    let mut revision_books = BTreeSet::from([revision.book_id]);
+    for row in rows {
+        items.push(item_of(row)?);
+        let Some(entry_id) = row.price_book_entry_id else {
+            continue;
+        };
+        if !seen_entries.insert(entry_id) {
+            continue;
+        }
+        if let Some(entry) = loaded.entries_by_id.get(&entry_id) {
+            revision_books.insert(entry.book_id);
+            let prices = match loaded.prices_by_entry.get(&entry_id) {
+                Some(prices) => prices.as_slice(),
+                None => &[],
+            };
+            entries.push(entry_of(entry, prices)?);
+        }
+    }
+    let books = revision_books
+        .into_iter()
+        .filter_map(|id| loaded.books_by_id.get(&id).cloned())
+        .collect();
+    Ok(RevisionRows {
+        items,
         entries,
         books,
-        dimension_values,
-        published_sku_ids,
-        quorum,
-        defaults: plan::Defaults {
-            gl: settings.default_gl,
-            rounding: settings.default_rounding,
-            tax_category: settings.default_tax_category,
-        },
     })
 }
 fn item_of(m: &plan_item::Model) -> Result<plan::Item, DoorError> {
@@ -1302,14 +1527,11 @@ fn item_of(m: &plan_item::Model) -> Result<plan::Item, DoorError> {
         },
     })
 }
-async fn entry_of(
-    tx: &impl DBRunner,
-    scope: &AccessScope,
-    tenant: Uuid,
-    e: price_book_entry::Model,
+fn entry_of(
+    e: &price_book_entry::Model,
+    stored: &[price::Model],
 ) -> Result<plan::Entry, DoorError> {
     let bad = |what: &str| corrupt(format!("entry {} {what}", e.id));
-    let stored = price_repo::for_entry(tx, scope, tenant, e.id).await?;
     let pending = stored
         .iter()
         .filter(|p| p.state == PriceState::Pending.as_str())
@@ -1320,7 +1542,7 @@ async fn entry_of(
             })
         })
         .collect();
-    let model = price_book_entry_repo::model_of(&e)?;
+    let model = price_book_entry_repo::model_of(e)?;
     let prices = stored
         .iter()
         .map(|m| price_repo::to_domain(m, model))

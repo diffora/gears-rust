@@ -1777,3 +1777,21 @@ async fn postgres_a_write_answers_the_instants_its_reads_return() {
         "the plan submit, the price submit and the approve each read the clock once"
     );
 }
+
+/// D-482 on Postgres: one read of many revisions' items matches reading each revision, and a long
+/// id list does not drop the revision that is there.
+#[tokio::test]
+#[ignore = "needs the Postgres harness"]
+async fn revisions_items_are_one_read_on_postgres() {
+    let s = seed().await;
+    let conn = s.provider.conn().unwrap();
+    let one = plan_item_repo::for_revision(&conn, &s.scope, s.tenant, s.revision.id)
+        .await
+        .unwrap();
+    let mut asked = vec![s.revision.id];
+    asked.extend((0..1000).map(|_| Uuid::new_v4()));
+    let wide = plan_item_repo::for_revisions(&conn, &s.scope, s.tenant, &asked)
+        .await
+        .unwrap();
+    assert_eq!(wide, one);
+}

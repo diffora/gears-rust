@@ -1506,7 +1506,7 @@ async fn exactly_the_writes_that_declare_an_etag_answer_one() {
         unmeasured.is_empty(),
         "every write op is measured: {unmeasured:?}"
     );
-    assert_eq!(measured.len(), 30, "the 30 write ops of the 54");
+    assert_eq!(measured.len(), 30, "the 30 write ops of the 55");
 }
 
 // ------------------------------------------------------------------ phase 4 review F1: what was refused
