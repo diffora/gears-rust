@@ -213,6 +213,54 @@ pub async fn skus_of_revisions(
     }
     Ok(grouped)
 }
+/// One item SKU, a row of [`skus_of_revision`].
+#[derive(Debug, sea_orm::FromQueryResult)]
+struct SkuRow {
+    sku_id: Uuid,
+}
+/// The distinct SKUs the items of `revision` name, sorted, when the caller's plan read (`plans`)
+/// reaches the revision: a picker's revision set (P-D-246), in ONE statement — the items joined to
+/// their revision, the revision under `plans` as `GET /plan-revisions/{id}` reads it. A revision
+/// the tenant does not hold, or one outside `plans`, is the empty set.
+/// # Errors
+/// Returns typed database failures.
+pub async fn skus_of_revision(
+    runner: &impl DBRunner,
+    plans: &AccessScope,
+    tenant: Uuid,
+    revision: Uuid,
+) -> Result<Vec<Uuid>, RepoError> {
+    use sea_orm::{JoinType, QueryOrder, QuerySelect};
+    let on_revision: sea_orm::RelationDef = e::Entity::belongs_to(plan_revision::Entity)
+        .from(e::Column::RevisionId)
+        .to(plan_revision::Column::Id)
+        .into();
+    Ok(e::Entity::find()
+        .secure()
+        .scope_with(&AccessScope::for_tenant(tenant))
+        .and_scope_for::<plan_revision::Entity>(plans)
+        .filter(
+            Condition::all()
+                .add(e::Column::TenantId.eq(tenant))
+                .add(e::Column::RevisionId.eq(revision))
+                .add(
+                    Expr::col((plan_revision::Entity, plan_revision::Column::TenantId)).eq(tenant),
+                ),
+        )
+        .project_all(runner, |q| {
+            q.select_only()
+                .join(JoinType::InnerJoin, on_revision)
+                .column(e::Column::SkuId)
+                .distinct()
+                .order_by(e::Column::SkuId, Order::Asc)
+                .into_model::<SkuRow>()
+        })
+        .await
+        .map_err(|e| driver_failure("list the SKUs of a revision's items".into(), e))?
+        .into_iter()
+        .map(|r| r.sku_id)
+        .collect())
+}
 /// Whether any plan item names an entry (`ENTRY_IN_USE`, D-408).
 /// # Errors
 /// Returns typed database failures.

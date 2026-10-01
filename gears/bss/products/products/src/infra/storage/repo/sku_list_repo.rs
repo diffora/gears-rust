@@ -171,6 +171,10 @@ pub struct SkuListFilter {
     pub priced: Option<SetFilter>,
     /// `in_plan`: in or out of pricing's in-plan set (P-D-212).
     pub in_plan: Option<SetFilter>,
+    /// `priced_in` (in) or `not_priced_in` (out): pricing's set of one book's SKUs (P-D-246).
+    pub book: Option<SetFilter>,
+    /// `not_in_revision` (out): pricing's set of one revision's SKUs (P-D-246).
+    pub revision: Option<SetFilter>,
 }
 /// Keep the SKUs in `ids` (`member`), or the SKUs outside it.
 #[derive(Debug, Clone)]
@@ -276,7 +280,15 @@ pub fn list_condition(tenant: Uuid, filter: &SkuListFilter, backend: DbBackend) 
     if let Some(text) = filter.text.as_deref() {
         c = c.add(text_condition(text, backend));
     }
-    for set in [&filter.priced, &filter.in_plan].into_iter().flatten() {
+    for set in [
+        &filter.priced,
+        &filter.in_plan,
+        &filter.book,
+        &filter.revision,
+    ]
+    .into_iter()
+    .flatten()
+    {
         c = c.add(set_condition(backend, set));
     }
     c

@@ -540,6 +540,25 @@ pub async fn priced_skus(
     )
     .await
 }
+/// The SKUs with an entry in `book`, in any reference state, under `scope`: a picker's book set
+/// (P-D-246), in ONE statement. A book the tenant does not hold has no entry: the empty set.
+/// # Errors
+/// Returns typed database failures.
+pub async fn skus_in_book(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    book: Uuid,
+) -> Result<Vec<Uuid>, RepoError> {
+    distinct_skus(
+        runner,
+        scope,
+        tenant,
+        Condition::all().add(e::Column::BookId.eq(book)),
+        "list the SKUs of a book's price book entries",
+    )
+    .await
+}
 /// The SKUs whose entries (under `scope`) a plan item of a draft, pending, scheduled or published
 /// revision names: the SKUs whose usage counts a plan (D-428), in ONE statement (P-D-212). The
 /// items and revisions are read tenant-scoped, as the usage count reads them.

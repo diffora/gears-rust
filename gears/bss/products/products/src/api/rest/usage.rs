@@ -11,10 +11,11 @@
 //! The list's `priced` and `in_plan` filters are the exception (P-D-212): they ask the port's
 //! `usage_sets` once per request, bounded the same way, and a filter the port cannot answer is
 //! never an unfiltered page — a refusal is 403 `USAGE_FORBIDDEN`, an absent port, an error or a
-//! call past the bound 503 `USAGE_UNAVAILABLE`.
+//! call past the bound 503 `USAGE_UNAVAILABLE`. The picker keys (`priced_in`, `not_priced_in`,
+//! `not_in_revision`; P-D-246) ask the port's `sku_ids_in` once per key under the same rules.
 use super::{ApiState, dto::SkuUsageDto};
 use crate::domain::error::DomainError;
-use bss_products_sdk::sku_usage::{SkuUsage, SkuUsageSets, SkuUsageV1};
+use bss_products_sdk::sku_usage::{SkuUsage, SkuUsageSets, SkuUsageV1, UsageScope};
 use std::{collections::BTreeMap, time::Duration};
 use tokio_util::task::AbortOnDropHandle;
 use toolkit::api::canonical_prelude::CanonicalError;
@@ -104,19 +105,43 @@ pub async fn sets(state: &ApiState, ctx: &SecurityContext) -> Result<SkuUsageSet
     }));
     sets_of(tokio::time::timeout(PORT_BOUND, call).await)
 }
+/// The SKUs of one picker scope (P-D-246), from one call of the port's `sku_ids_in`, on a task of
+/// its own, bounded and aborted on drop like [`sets`].
+/// # Errors
+/// As [`sets`]: 403 `USAGE_FORBIDDEN` when the port refuses the caller (a book without pricing
+/// `price_book_entry:read`, a revision without it or without `plan:read`); 503
+/// `USAGE_UNAVAILABLE` when no port is registered, when it fails or breaks, and when it does not
+/// answer within [`PORT_BOUND`].
+pub async fn scoped(
+    state: &ApiState,
+    ctx: &SecurityContext,
+    scope: UsageScope,
+) -> Result<Vec<Uuid>, CanonicalError> {
+    let Ok(port) = state.hub.get::<dyn SkuUsageV1>() else {
+        return Err(unavailable(
+            "no SKU usage port is registered; pricing is not mounted",
+        ));
+    };
+    let (caller, tenant) = (ctx.clone(), ctx.subject_tenant_id());
+    let call = AbortOnDropHandle::new(tokio::spawn(async move {
+        port.sku_ids_in(&caller, tenant, scope).await
+    }));
+    sets_of(tokio::time::timeout(PORT_BOUND, call).await)
+}
 /// A usage filter's 503.
 fn unavailable(detail: &str) -> CanonicalError {
     DomainError::UsageUnavailable(detail.into()).into()
 }
-/// The sets, or why a filter on them cannot be answered: never an empty or a missing set.
-fn sets_of(
+/// The sets (or one scope's set), or why a filter on them cannot be answered: never an empty or a
+/// missing set.
+fn sets_of<T>(
     answer: Result<
-        Result<Result<SkuUsageSets, CanonicalError>, tokio::task::JoinError>,
+        Result<Result<T, CanonicalError>, tokio::task::JoinError>,
         tokio::time::error::Elapsed,
     >,
-) -> Result<SkuUsageSets, CanonicalError> {
+) -> Result<T, CanonicalError> {
     match answer {
-        Ok(Ok(Ok(sets))) => Ok(sets),
+        Ok(Ok(Ok(answered))) => Ok(answered),
         Ok(Ok(Err(error))) => Err(refused_or_failed(&error)),
         Ok(Err(error)) => Err(broken(&error)),
         Err(_) => Err(late()),
@@ -125,27 +150,27 @@ fn sets_of(
 /// A refusal is the caller's 403; anything else pricing answered is its 503.
 fn refused_or_failed(error: &CanonicalError) -> CanonicalError {
     if error.status_code() == 403 {
-        tracing::debug!(%error, "bss-products: pricing refused the SKU usage sets");
+        tracing::debug!(%error, "bss-products: pricing refused a SKU usage filter");
         DomainError::Forbidden {
             code: "USAGE_FORBIDDEN",
             detail: "pricing refused this caller the SKU usage".into(),
         }
         .into()
     } else {
-        tracing::warn!(%error, "bss-products: pricing could not answer the SKU usage sets");
+        tracing::warn!(%error, "bss-products: pricing could not answer a SKU usage filter");
         unavailable("pricing could not answer the SKU usage")
     }
 }
 /// The call broke (a panic) or was cancelled.
 fn broken(error: &tokio::task::JoinError) -> CanonicalError {
-    tracing::warn!(%error, "bss-products: the SKU usage sets call did not finish");
+    tracing::warn!(%error, "bss-products: a SKU usage filter's call did not finish");
     unavailable("the SKU usage call did not finish")
 }
 /// The call outlived [`PORT_BOUND`]; dropping its handle aborts it.
 fn late() -> CanonicalError {
     tracing::warn!(
         bound = ?PORT_BOUND,
-        "bss-products: the SKU usage sets did not answer in time; the filter is refused"
+        "bss-products: a SKU usage filter did not answer in time; the filter is refused"
     );
     unavailable("pricing did not answer the SKU usage in time")
 }
