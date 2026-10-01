@@ -38,7 +38,7 @@ OPENAPI_SERVER_FEATURE_ARGS ?= $(E2E_SERVER_FEATURE_ARGS)
 # `shear`, which drives -Zunpretty=expanded). This default serves local runs;
 # CI overrides it via `make shear RUST_NIGHTLY=...` so the toolchain it installs
 # and caches cannot drift from the one that actually compiles.
-RUST_NIGHTLY ?= nightly-2026-04-16
+RUST_NIGHTLY ?= nightly-2026-08-21
 
 # cargo-shear version installed by `make setup`. Pinned because an unused-dep
 # verdict that disagrees with CI is worse than no local check at all.
