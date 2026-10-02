@@ -398,6 +398,21 @@ fn versioned_decode_refuses_lossy_or_ambiguous_wire_values() {
     ] {
         assert!(wire::decode_acceptance(&bad).is_err(), "{bad}");
     }
+    let good = wire::decode_acceptance(raw).unwrap();
+    let again = wire::decode_acceptance(&wire::encode_acceptance(&good).unwrap()).unwrap();
+    assert_eq!(again, good);
+}
+
+proptest::proptest! {
+    #[test]
+    fn decoders_do_not_panic(raw in "\\PC{0,80}") {
+        match bss_pricing::infra::commercial_terms::wire::decode_acceptance(&raw) {
+            Ok(_) | Err(_) => {}
+        }
+        match bss_pricing::infra::commercial_terms::wire::decode_hold(&raw) {
+            Ok(_) | Err(_) => {}
+        }
+    }
 }
 #[tokio::test]
 async fn hold_and_command_rereads_preserve_winners_and_refuse_changed_intent() {
@@ -487,11 +502,15 @@ async fn acceptance_retry_does_not_refresh_the_deadline() {
     assert_eq!(replay.hold_until, first.hold_until);
     let mut changed = f.query.clone();
     changed.quantity = "2".parse().unwrap();
-    assert!(
-        f.sellability
-            .check(&f.ctx, changed, f.meta.clone())
-            .await
-            .is_err()
+    let changed = f
+        .sellability
+        .check(&f.ctx, changed, f.meta.clone())
+        .await
+        .unwrap_err();
+    assert_eq!(
+        bss_pricing::infra::commercial_terms::errors::commercial_reason(&changed).as_deref(),
+        Some("IdempotencyConflict"),
+        "{changed:?}"
     );
 }
 mod acceptance_transaction;

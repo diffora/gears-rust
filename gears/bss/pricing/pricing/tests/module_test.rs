@@ -527,7 +527,16 @@ async fn startup_validates_versioned_hold_policy_before_registering_providers() 
         let result =
             rest_support::Harness::with_config(serde_json::json!({"seller_hold_policy":policy}))
                 .await;
-        assert!(result.is_err(), "{policy}");
+        let Err(error) = result else {
+            panic!("a bad hold policy must not register providers");
+        };
+        let text = format!("{error:#}");
+        assert!(
+            text.contains("seller_hold_policy")
+                || text.contains("nonzero")
+                || text.contains("invalid config"),
+            "the refusal names the policy and registers nothing: {text}"
+        );
     }
     rest_support::Harness::with_config(
         serde_json::json!({"seller_hold_policy":{"version":2,"duration_seconds":3600}}),
@@ -535,7 +544,10 @@ async fn startup_validates_versioned_hold_policy_before_registering_providers() 
     .await
     .unwrap();
     let default = bss_pricing::config::BssPricingConfig::default().seller_hold_policy;
-    assert_eq!((default.version, default.duration_seconds), (1, 86400));
+    assert_eq!(
+        (default.version.get(), default.duration_seconds.get()),
+        (1, 86_400)
+    );
 }
 
 #[test]

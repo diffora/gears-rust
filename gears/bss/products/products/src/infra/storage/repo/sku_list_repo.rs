@@ -196,7 +196,7 @@ pub struct SetFilter {
 // `infra/storage/repo_impl/retention.rs` (`make_interval`, `julianday`), and settings-service
 // `infra/storage/search_repo.rs` (`LIKE … ESCAPE`, the JSON null checks). A toolkit-db helper
 // would be a change to a foreign crate, proposed upstream on its own (owner, O3/O4).
-fn membership(backend: DbBackend, ids: &[Uuid]) -> Condition {
+pub(super) fn membership(backend: DbBackend, ids: &[Uuid]) -> Condition {
     let expr = if backend == DbBackend::Postgres {
         let array = format!(
             "{{{}}}",
@@ -305,16 +305,17 @@ pub enum SkuListError {
 
 /// A lifecycle term the `CASE` does not serve. The list and the counts both answer 400 with this
 /// text (P-D-249).
-pub(crate) const LIFECYCLE_FILTER_REFUSED: &str = "the counts drop `lifecycle` only from top-level `and` terms; a `lifecycle` term \
-     under `or` or `not` is not counted";
+pub(crate) const LIFECYCLE_FILTER_REFUSED: &str = "a `lifecycle` comparison must be `eq`, `ne` or `in`, joined only by top-level \
+     `and`; a `lifecycle` term under `or` or `not`, or `contains`, `startswith` or `endswith` on \
+     `lifecycle`, is refused";
 
 fn is_lifecycle(expr: &toolkit_odata::ast::Expr) -> bool {
-    matches!(expr, toolkit_odata::ast::Expr::Identifier(name) if name == "lifecycle")
+    matches!(expr, toolkit_odata::ast::Expr::Identifier(name) if name == SkuListField::Lifecycle.name())
 }
 fn names_lifecycle(expr: &toolkit_odata::ast::Expr) -> bool {
     use toolkit_odata::ast::Expr;
     match expr {
-        Expr::Identifier(name) => name == "lifecycle",
+        Expr::Identifier(name) => name == SkuListField::Lifecycle.name(),
         Expr::Value(_) => false,
         Expr::And(a, b) | Expr::Or(a, b) | Expr::Compare(a, _, b) => {
             names_lifecycle(a) || names_lifecycle(b)
@@ -357,12 +358,10 @@ pub(crate) fn take_lifecycle(
         }
         Expr::Compare(left, op, right) if is_lifecycle(&left) => {
             let token = lifecycle_token(&right)?;
-            let effective = super::sku_repo::effective_lifecycle_expr(
-                crate::infra::storage::stored_now().date(),
-            );
+            let today = crate::infra::storage::stored_now().date();
             let cond = match op {
-                CompareOperator::Eq => Condition::all().add(effective.eq(token)),
-                CompareOperator::Ne => Condition::all().add(effective.ne(token)),
+                CompareOperator::Eq => super::sku_repo::effective_lifecycle_in(today, &[token]),
+                CompareOperator::Ne => super::sku_repo::effective_lifecycle_ne(today, &token),
                 _ => {
                     return Err("lifecycle compares with eq, ne or in".to_owned());
                 }
@@ -374,10 +373,13 @@ pub(crate) fn take_lifecycle(
             for value in values {
                 tokens.push(lifecycle_token(&value)?);
             }
-            let effective = super::sku_repo::effective_lifecycle_expr(
-                crate::infra::storage::stored_now().date(),
-            );
-            Ok((None, Condition::all().add(effective.is_in(tokens))))
+            Ok((
+                None,
+                super::sku_repo::effective_lifecycle_in(
+                    crate::infra::storage::stored_now().date(),
+                    &tokens,
+                ),
+            ))
         }
         other => {
             if names_lifecycle(&other) {

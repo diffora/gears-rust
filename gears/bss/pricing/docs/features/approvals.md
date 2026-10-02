@@ -159,7 +159,7 @@ Requirement: `cpt-cf-bss-pricing-fr-approval-units`; PRD AC #10.
 
 - [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-quorum-policy`
 
-Policy resolves kind override then tenant default, failing safe to one if absent. A unit snapshots quorum; zero records an approved unit and terminal audit/event without decision rows (spec §6). An override is removed with DELETE /approval-policy/{kind} under If-Match, and the kind follows the default again; the default itself is never deleted (D-435).
+Policy resolves kind override then tenant default, failing safe to one if absent. A unit snapshots quorum; zero records an approved unit and terminal audit/event without decision rows (spec §6). An override is removed with DELETE /approval-policy/{kind} under If-Match, and the kind follows the default again; the default itself is never deleted (D-435). GET /approval-policy/{kind}/effective answers that quorum after the caller's grant, and reads the policy rows in the tenant scope, so a resource constraint is not applied to kind (D-481).
 
 Requirement: `cpt-cf-bss-pricing-fr-approval-units`; PRD AC #10.
 

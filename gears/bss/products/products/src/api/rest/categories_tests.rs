@@ -315,6 +315,69 @@ async fn only_a_sku_that_is_not_retired_keeps_a_category_in_use() {
             assert_eq!(problem_code(&b), "CATEGORY_IN_USE", "{lifecycle}");
         }
     }
+    let c = body_json(
+        post(
+            &app,
+            tenant,
+            "/bss-products/v1/categories",
+            json!({"code":"c-fence","name":"C fence"}),
+        )
+        .await,
+    )
+    .await;
+    let id: Uuid = serde_json::from_value(c["id"].clone()).unwrap();
+    let held = seed_rest_sku(&db.conn().unwrap(), &scope, tenant, id, "Rf").await;
+    let raw = Database::connect(&dsn).await.unwrap();
+    raw.execute_unprepared(&format!(
+        "UPDATE products_sku SET lifecycle = 'published', retire_pending = 1, fenced_at = '2026-01-01T00:00:00Z' WHERE {}",
+        id_matches("id", held.id)
+    ))
+    .await
+    .unwrap();
+    raw.close().await.unwrap();
+    let r = post(
+        &app,
+        tenant,
+        &format!("/bss-products/v1/categories/{id}/retire"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::CONFLICT);
+    assert_eq!(problem_code(&body_json(r).await), "CATEGORY_IN_USE");
+
+    let c = body_json(
+        post(
+            &app,
+            tenant,
+            "/bss-products/v1/categories",
+            json!({"code":"c-due","name":"C due"}),
+        )
+        .await,
+    )
+    .await;
+    let id: Uuid = serde_json::from_value(c["id"].clone()).unwrap();
+    let held = seed_rest_sku(&db.conn().unwrap(), &scope, tenant, id, "Rd").await;
+    let raw = Database::connect(&dsn).await.unwrap();
+    raw.execute_unprepared(&format!(
+        "UPDATE products_sku SET lifecycle = 'retired', lifecycle_next = 'published', lifecycle_next_from = '2020-01-01' WHERE {}",
+        id_matches("id", held.id)
+    ))
+    .await
+    .unwrap();
+    raw.close().await.unwrap();
+    let r = post(
+        &app,
+        tenant,
+        &format!("/bss-products/v1/categories/{id}/retire"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(
+        r.status(),
+        StatusCode::CONFLICT,
+        "a due published next still holds the category"
+    );
+    assert_eq!(problem_code(&body_json(r).await), "CATEGORY_IN_USE");
 }
 
 // ------------------------------------------------------------------ P-D-215: category reads

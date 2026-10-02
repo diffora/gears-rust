@@ -38,13 +38,23 @@ impl Gear for BssApprovalsGear {
         // present. An invalid object still fails the boot.
         let cfg = match ctx.config::<ApprovalsConfig>() {
             Ok(cfg) => cfg,
-            Err(ConfigError::GearNotFound { .. } | ConfigError::MissingConfigSection { .. }) => {
+            Err(ConfigError::GearNotFound { .. }) => {
+                tracing::info!(
+                    "bss-approvals: the gear is not in the config, so it does not serve"
+                );
+                return Ok(());
+            }
+            Err(ConfigError::MissingConfigSection { .. }) => {
+                tracing::warn!(
+                    "bss-approvals: the config names the gear and has no `sources` list, so it does not serve"
+                );
                 return Ok(());
             }
             Err(error) => return Err(error).context("bss-approvals: invalid config"),
         };
+        let sources = crate::config::checked_sources(cfg.sources)?;
         self.runtime.store(Some(Arc::new(ApiState {
-            sources: cfg.sources,
+            sources,
             hub: ctx.client_hub(),
         })));
         Ok(())

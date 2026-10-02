@@ -81,17 +81,15 @@ VARIANTS = {
         # E1 must register this exact immutable meter declaration on the real binary.
         "entry": {
             "model": "per_unit",
+            # D-513: fold, reset and partial_window are omitted. The server fills them.
             "usage_rating_policy": {
                 "rating_window": {"kind": "billing_cycle"},
                 "aggregation_scope": "subscription_line",
-                "reset": "rating_window_start",
                 "quantity_semantics": {
                     "meter": {"usage_type_id": USAGE_TYPE, "version": "v1"},
                     "unit": "GB",
-                    "fold": "SUM",
                     "accrual_policy_version": "integrated-v1",
                 },
-                "partial_window": "actual_quantity_full_thresholds",
             },
         },
         "price": {"price": {"rate": "0.10"}},
@@ -161,6 +159,11 @@ def test_a_priced_sku_publishes_its_price_and_blocks_retirement(api, variant):
     assert entry["sku_id"] == sku
     assert entry["charge_kind"] == variant
     assert entry["reference_state"] == "confirmed", entry
+    if variant == "usage":
+        content = entry["usage_rating_policy"]["content"]
+        assert content["quantity_semantics"]["fold"] == "SUM", content
+        assert content["reset"] == "rating_window_start", content
+        assert content["partial_window"] == "actual_quantity_full_thresholds", content
     replay = api.post(f"{PRICING}/price-books/{book}/entries", json=body, headers=key)
     assert replay.status_code == 201, replay.text
     assert replay.json() == entry, "the same Idempotency-Key replays the receipt"
@@ -1639,3 +1642,109 @@ def test_the_products_units_count_page_newest_first_and_say_who_may_approve(api,
             f"{PRODUCTS}/approval-policy/sku_retire", headers={"If-Match": r.headers["etag"]}
         )
         assert r.status_code in (200, 404), r.text
+
+
+@pytest.mark.timeout(120)
+def test_a_draft_item_may_wait_for_its_entry(api):
+    """D-512 on the real binary.
+
+    A draft accepts a SKU with no entry. The checks name it ITEM_ENTRY_MISSING and submit
+    refuses. A PATCH sets the entry; with an approved price the checks are green and submit
+    is accepted.
+    """
+    run = uuid.uuid4().hex[:8]
+    _products_quorum_zero(api)
+    r = api.post(
+        f"{PRODUCTS}/skus",
+        json={
+            "code": f"E2E-WAIT-{run}".upper(),
+            "name": f"E2E wait {run}",
+            "type": "recurring",
+        },
+    )
+    assert r.status_code == 201, r.text
+    sku = r.json()["id"]
+    r = api.post(f"{PRODUCTS}/skus/{sku}/submit", json={})
+    assert r.status_code == 200, r.text
+    assert r.json()["applied"] is True, r.text
+
+    r = api.post(
+        f"{PRICING}/price-books",
+        json={"code": f"eur-wait-{run}", "name": f"EUR wait {run}", "currency": "EUR"},
+        headers=_key(),
+    )
+    assert r.status_code == 201, r.text
+    book = r.json()["id"]
+    r = api.get(f"{PRICING}/approval-policy")
+    assert r.status_code == 200, r.text
+    r = api.put(
+        f"{PRICING}/approval-policy",
+        json={"quorum": 0},
+        headers={"If-Match": r.headers["etag"]},
+    )
+    assert r.status_code == 200, r.text
+
+    r = api.post(
+        f"{PRICING}/plans",
+        json={"code": f"WAIT-{run}".upper(), "name": f"Wait {run}", "book_id": book},
+        headers=_key(),
+    )
+    assert r.status_code == 201, r.text
+    rev = r.json()["revisions"][0]["id"]
+    r = api.post(
+        f"{PRICING}/plan-revisions/{rev}/items",
+        json={"sku_id": sku},
+        headers=_key(),
+    )
+    assert r.status_code == 201, r.text
+    item = r.json()
+    assert item["price_book_entry_id"] is None, item
+    assert item["reference_state"] == "confirmed", item
+    etag = r.headers["etag"]
+    read = _revision(api, rev)
+    assert read["items"][0]["price_book_entry_id"] is None, read
+    checks = _checks(api, rev)
+    missing = _check(checks, "ITEM_ENTRY_MISSING")
+    assert missing["ok"] is False, checks
+    assert missing["label"] == "Every item points at a price", missing
+    r = api.post(f"{PRICING}/plan-revisions/{rev}/submit", json={}, headers=_key())
+    assert r.status_code == 400, r.text
+    assert "REVISION_CHECKS_RED" in r.text, r.text
+    assert "ITEM_ENTRY_MISSING" in r.text, r.text
+
+    r = api.post(
+        f"{PRICING}/price-books/{book}/entries",
+        json={"sku_id": sku, "period": "month", "model": "flat"},
+        headers=_key(),
+    )
+    assert r.status_code == 201, r.text
+    entry = r.json()["id"]
+    start = datetime.date.today().isoformat()
+    r = api.post(
+        f"{PRICING}/price-book-entries/{entry}/prices",
+        json={
+            "price": {"amount": "30.00"},
+            "eligibility": "all",
+            "effective_from": start,
+        },
+        headers=_key(),
+    )
+    assert r.status_code == 201, r.text
+    r = api.post(f"{PRICING}/price-books/{book}/publish-changes", json={}, headers=_key())
+    assert r.status_code == 201, r.text
+    assert r.json()["applied"] is True, r.text
+
+    r = api.patch(
+        f"{PRICING}/plan-items/{item['id']}",
+        json={"price_book_entry_id": entry},
+        headers={"If-Match": etag},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["price_book_entry_id"] == entry, r.text
+    checks = _checks(api, rev)
+    assert _check(checks, "ITEM_ENTRY_MISSING")["ok"] is True, checks
+    assert _check(checks, "ITEM_UNCOVERED")["ok"] is True, checks
+    assert checks["ready"] is True, checks
+    r = api.post(f"{PRICING}/plan-revisions/{rev}/submit", json={}, headers=_key())
+    assert r.status_code == 201, r.text
+    assert "REVISION_CHECKS_RED" not in r.text, r.text

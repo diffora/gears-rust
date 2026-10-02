@@ -74,4 +74,13 @@ async fn a_missing_block_does_not_serve_and_a_present_block_does() {
     let invalid = BssApprovalsGear::default();
     let context = ctx(Some(json!({ "config": { "sources": 1 } })));
     assert!(Gear::init(&invalid, &context).await.is_err());
+
+    let duplicate = BssApprovalsGear::default();
+    let context = ctx(Some(
+        json!({ "config": { "sources": ["pricing", "pricing"] } }),
+    ));
+    assert!(Gear::init(&duplicate, &context).await.is_err());
+    let blank = BssApprovalsGear::default();
+    let context = ctx(Some(json!({ "config": { "sources": [" "] } })));
+    assert!(Gear::init(&blank, &context).await.is_err());
 }

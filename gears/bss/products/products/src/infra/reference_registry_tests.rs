@@ -165,6 +165,7 @@ async fn the_default_and_the_override_agree_for_1_10_and_100_ids() {
     let (db, _, tenant, dsn) = test_db().await;
     let scope = author_scope(tenant).await;
     let mut ids = Vec::new();
+    let foreign_tenant;
     {
         let conn = db.conn().unwrap();
         for i in 0..100 {
@@ -193,6 +194,33 @@ async fn the_default_and_the_override_agree_for_1_10_and_100_ids() {
             .unwrap();
             ids.push(sku.id);
         }
+        let other = uuid::Uuid::new_v4();
+        foreign_tenant = other;
+        let other_scope = author_scope(other).await;
+        let foreign = repo::insert_sku(
+            &conn,
+            &other_scope,
+            other,
+            NewSku {
+                code: "foreign".into(),
+                name: "Foreign".into(),
+                r#type: SkuType::Usage,
+                category_id: None,
+                description: String::new(),
+                sellable: true,
+                gl_code: None,
+                tax_category: None,
+                invoice_line_template: None,
+                billing_timing: None,
+                usage_type_ref: None,
+                unit: None,
+            },
+            Uuid::nil(),
+            time::OffsetDateTime::UNIX_EPOCH,
+        )
+        .await
+        .unwrap();
+        ids.push(foreign.id);
     }
     let (_, state) = rest_app_on_db(
         tenant,
@@ -227,6 +255,23 @@ async fn the_default_and_the_override_agree_for_1_10_and_100_ids() {
             "{n}"
         );
     }
+    let foreign = ids[100];
+    let (left_out, also) = agree(&held, &[ids[0], foreign]).await;
+    assert_eq!(left_out, also);
+    assert_eq!(
+        left_out.iter().map(|sku| sku.id).collect::<Vec<_>>(),
+        vec![ids[0]]
+    );
+    let mismatch = held
+        .registry
+        .skus_for_write(&held.ctx, foreign_tenant, &ids[..1])
+        .await
+        .unwrap_err();
+    assert_eq!(mismatch.status_code(), 403);
+    let body =
+        serde_json::to_string(&toolkit_canonical_errors::Problem::from_error(&mismatch).unwrap())
+            .unwrap();
+    assert!(body.contains("REFERENCE_OWNER_MISMATCH"), "{body}");
 }
 
 /// An id outside the caller's products-read scope is left out by both, as a 404 would be.

@@ -69,12 +69,17 @@ pub struct PricingPriceBookEntryDto {
     #[serde(with = "time::serde::rfc3339")]
     pub updated_at: time::OffsetDateTime,
 }
-impl TryFrom<entity::price_book_entry::Model> for PricingPriceBookEntryDto {
-    type Error = RepoError;
-    fn try_from(m: entity::price_book_entry::Model) -> Result<Self, RepoError> {
+impl PricingPriceBookEntryDto {
+    /// The entry and its policy, together. A non-usage entry passes `None`.
+    /// # Errors
+    /// A stored token outside its closed set is a corrupt row (D-439).
+    pub fn from_stored(
+        m: entity::price_book_entry::Model,
+        usage_rating_policy: Option<crate::infra::usage_policy_wire::UsageRatingPolicy>,
+    ) -> Result<Self, RepoError> {
         let id = m.id;
         Ok(Self {
-            usage_rating_policy: None,
+            usage_rating_policy,
             id,
             tenant_id: m.tenant_id,
             book_id: m.book_id,
@@ -102,6 +107,12 @@ impl TryFrom<entity::price_book_entry::Model> for PricingPriceBookEntryDto {
         })
     }
 }
+impl TryFrom<entity::price_book_entry::Model> for PricingPriceBookEntryDto {
+    type Error = RepoError;
+    fn try_from(m: entity::price_book_entry::Model) -> Result<Self, RepoError> {
+        Self::from_stored(m, None)
+    }
+}
 impl PricingPriceBookEntryDto {
     /// Materialize immutable policy content along with an entry.
     /// # Errors
@@ -117,9 +128,7 @@ impl PricingPriceBookEntryDto {
         )
         .await?
         .remove(&m.id);
-        let mut dto = Self::try_from(m)?;
-        dto.usage_rating_policy = policy;
-        Ok(dto)
+        Self::from_stored(m, policy)
     }
 }
 /// An entry's prices by state; a rejected price is not counted (D-428). The approved ones are
@@ -187,9 +196,10 @@ impl PricingPriceBookEntryReadDto {
         usage: crate::infra::usage::EntryUsage,
         current_price: Option<PricingPriceDto>,
         next_price: Option<PricingPriceDto>,
+        policy: Option<crate::infra::usage_policy_wire::UsageRatingPolicy>,
     ) -> Result<Self, RepoError> {
         Ok(Self {
-            entry: m.try_into()?,
+            entry: PricingPriceBookEntryDto::from_stored(m, policy)?,
             usage: usage.into(),
             current_price,
             next_price,
@@ -530,7 +540,9 @@ pub struct PricingSettingsDto {
 #[serde(deny_unknown_fields)]
 pub struct PricingPriceBookEntryCreate {
     /// Required for usage entries; immutable after creation. Identity is server assigned.
-    pub usage_rating_policy: Option<crate::infra::usage_policy_wire::UsageRatingPolicyInput>,
+    /// `quantity_semantics.fold`, `reset` and `partial_window` may be absent or null; the server
+    /// fills `SUM`, `rating_window_start` and `actual_quantity_full_thresholds` (D-513).
+    pub usage_rating_policy: Option<crate::infra::usage_policy_wire::UsageRatingPolicyRequest>,
     pub sku_id: Uuid,
     /// Required and fixed for the entry's life (D-427): `flat`, `per_unit`, `graduated`,
     /// `volume` or `package`, one the SKU's charge kind allows.
@@ -554,16 +566,19 @@ pub struct PricingPriceBookEntryPatch {
 }
 
 /// `POST /plan-revisions/{id}/items`: one item, one op with its own key (D-407). A plan item is a
-/// SKU and its entry in the plan's book (D-467): the entry is required, and `treatment`,
-/// `included_qty` and `qty_min` are refused (400 `BODY_UNEXPECTED`).
+/// SKU and, once the author has chosen it, its entry in the plan's book (D-467, D-512). The entry
+/// may be absent: the draft holds the SKU and a later PATCH sets the entry. Submit still needs an
+/// entry for every item. `treatment`, `included_qty` and `qty_min` are refused (400
+/// `BODY_UNEXPECTED`).
 #[toolkit_macros::api_dto(request)]
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PricingPlanItemCreate {
     pub sku_id: Uuid,
-    /// The entry of the plan's book that prices the SKU; a missing or null one is 400
-    /// `ITEM_ENTRY_MISSING`.
-    pub price_book_entry_id: Uuid,
+    /// The entry of the plan's book that prices the SKU. Absent or null adds an entry-less item
+    /// (D-512). A given entry is still judged: another book, another SKU, or an unknown entry.
+    #[serde(default)]
+    pub price_book_entry_id: Option<Uuid>,
 }
 #[toolkit_macros::api_dto(response)]
 pub struct PricingPlanItemDto {
@@ -571,7 +586,8 @@ pub struct PricingPlanItemDto {
     pub tenant_id: Uuid,
     pub revision_id: Uuid,
     pub sku_id: Uuid,
-    /// The entry that prices the item; null only for a legacy item stored without one (D-467).
+    /// The entry that prices the item. Null while a draft item waits for its entry (D-512), and
+    /// for a legacy item stored without one (D-467).
     pub price_book_entry_id: Option<Uuid>,
     /// None until a reserve answers: a copied item attaches after its write (D-413).
     pub reservation_id: Option<Uuid>,
@@ -873,7 +889,7 @@ impl PricingPlanDto {
             last_activity_at: summary.last_activity_at,
             selling: crate::infra::plan_summary::selling(&summary, today),
             change: PricingPlanChange::stored(
-                crate::infra::plan_summary::change(&summary, today),
+                crate::infra::plan_summary::change(&summary, today).as_str(),
                 &format_args!("plan {}", m.id),
             )?,
             revisions: revisions
@@ -1191,8 +1207,9 @@ pub struct PricingPlanRevisionPatch {
     pub available_from: Option<Option<String>>,
 }
 /// `PATCH /plan-items/{id}`, draft only: never a SKU change (the SKU is the item's reference).
-/// It changes the item's entry (D-467): `treatment`, `included_qty` and `qty_min` are refused
-/// (400 `BODY_UNEXPECTED`), and a null entry is 400 `ITEM_ENTRY_MISSING`.
+/// It sets the item's entry (D-467, D-512), including on an item that has none. `treatment`,
+/// `included_qty` and `qty_min` are refused (400 `BODY_UNEXPECTED`). A null entry is 400
+/// `ITEM_ENTRY_MISSING`: a PATCH never clears an entry.
 #[toolkit_macros::api_dto(request)]
 #[derive(Clone)]
 #[serde(deny_unknown_fields)]
@@ -1428,6 +1445,10 @@ impl From<bss_approval::Decision> for PricingDecisionDto {
 }
 /// An approval unit with its snapshot, decisions and, on the card, the live impact; and whether
 /// its reader may approve it (D-471).
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the wire carries three independent caller flags (D-497)"
+)]
 #[toolkit_macros::api_dto(response)]
 pub struct PricingApprovalUnitDto {
     pub id: Uuid,
@@ -1457,10 +1478,16 @@ pub struct PricingApprovalUnitDto {
     /// (`bss_approval::approve_eligibility`, D-459) over the unit's stored items and its decisions,
     /// with the caller as the voter. It is false for a decided unit, for its submitter and every
     /// author of its items (separation of duties) and for a caller who already voted in its current
-    /// generation. It means Approve only: a reject judges no separation of duties, so the submitter
-    /// and an item's author may reject a unit whose flag is false. The grant is not judged here:
-    /// without `approval_unit` approve the vote door still answers 403.
+    /// generation. It means Approve only: a reject judges no separation of duties. It also
+    /// requires the caller's `approval_unit:approve` grant on this unit (D-497). Without that
+    /// grant the vote door is 403.
     pub caller_can_approve: bool,
+    /// Whether the caller may reject this unit now (D-497): the approve grant, the unit pending,
+    /// and no vote by the caller in this generation.
+    pub caller_can_reject: bool,
+    /// Whether the caller may withdraw this unit now (D-497): the caller submitted it, the unit
+    /// is pending, and the caller holds the submit grant the withdraw door asks.
+    pub caller_can_withdraw: bool,
 }
 impl PricingApprovalUnitDto {
     /// The unit as `reader` reads it: its decisions of every generation, and whether `reader` may
@@ -1474,11 +1501,17 @@ impl PricingApprovalUnitDto {
         authors: &[Uuid],
         decisions: Vec<bss_approval::Decision>,
         reader: Uuid,
+        approve_scope: &toolkit_db::secure::AccessScope,
+        submit_scope: &toolkit_db::secure::AccessScope,
     ) -> Result<Self, RepoError> {
-        let caller_can_approve =
+        let grant_approve = crate::authz::scope_holds(approve_scope, u.tenant_id, u.id);
+        let grant_submit = crate::authz::scope_holds(submit_scope, u.tenant_id, u.id);
+        let engine =
             bss_approval::approve_eligibility(&u, authors.iter().copied(), &decisions, reader)
                 .refusal
                 .is_none();
+        let pending = u.state == bss_approval::UnitState::Pending;
+        let voted = bss_approval::already_voted(&u, &decisions, reader);
         Ok(Self {
             id: u.id,
             kind: PricingApprovalKind::stored(&u.kind, &format_args!("approval unit {}", u.id))?,
@@ -1496,7 +1529,9 @@ impl PricingApprovalUnitDto {
             snapshot: u.snapshot,
             decisions: decisions.into_iter().map(Into::into).collect(),
             impact: None,
-            caller_can_approve,
+            caller_can_approve: engine && grant_approve,
+            caller_can_reject: grant_approve && pending && !voted,
+            caller_can_withdraw: grant_submit && pending && u.submitted_by == reader,
         })
     }
 }

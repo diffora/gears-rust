@@ -51,6 +51,8 @@ pub struct PreparedList {
     pub hash: String,
     /// Per-source keys from the cursor. An absent source starts at `None`.
     pub keys: BTreeMap<String, Option<SortKey>>,
+    /// Sources the cursor recorded as down. A continuation does not ask them.
+    pub unavailable: Vec<String>,
 }
 
 /// Checks the list query and builds the call.
@@ -65,15 +67,19 @@ pub fn prepare_list(params: &ListParams) -> Result<PreparedList, CanonicalError>
     let narrowing = narrowing_of(params);
     let hash = cursor::narrowing_hash(&narrowing);
     let limit = page_limit(params.limit)?;
-    let (order, keys) = match params.cursor.as_deref() {
+    let (order, keys, unavailable) = match params.cursor.as_deref() {
         Some(token) => {
             let decoded = cursor::decode(token)?;
             if decoded.narrowing_hash != hash {
                 return Err(ODataError::FilterMismatch.into());
             }
-            (decoded.order, decoded.keys)
+            (decoded.order, decoded.keys, decoded.unavailable)
         }
-        None => (parse_order(params.orderby.as_deref())?, BTreeMap::new()),
+        None => (
+            parse_order(params.orderby.as_deref())?,
+            BTreeMap::new(),
+            Vec::new(),
+        ),
     };
     Ok(PreparedList {
         narrowing,
@@ -82,6 +88,7 @@ pub fn prepare_list(params: &ListParams) -> Result<PreparedList, CanonicalError>
         impact: params.impact.unwrap_or(true),
         hash,
         keys,
+        unavailable,
     })
 }
 

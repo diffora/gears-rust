@@ -554,35 +554,44 @@ async fn list_filter(
     ctx: &SecurityContext,
     params: &ListParams,
 ) -> Result<SkuListFilter, CanonicalError> {
-    let sets = if params.filters_usage() {
-        usage::sets(state, ctx).await?
-    } else {
-        SkuUsageSets::default()
+    let book_key = match (params.priced_in, params.not_priced_in) {
+        (Some(book), _) => Some((true, book)),
+        (None, Some(book)) => Some((false, book)),
+        (None, None) => None,
     };
+    let revision_key = params.not_in_revision;
+    let (sets, book, revision) = tokio::try_join!(
+        async {
+            if params.filters_usage() {
+                usage::sets(state, ctx).await
+            } else {
+                Ok(SkuUsageSets::default())
+            }
+        },
+        async {
+            match book_key {
+                Some((member, book)) => Ok(Some(SetFilter {
+                    member,
+                    ids: usage::scoped(state, ctx, UsageScope::Book(book)).await?,
+                })),
+                None => Ok(None),
+            }
+        },
+        async {
+            match revision_key {
+                Some(revision) => Ok(Some(SetFilter {
+                    member: false,
+                    ids: usage::scoped(state, ctx, UsageScope::Revision(revision)).await?,
+                })),
+                None => Ok(None),
+            }
+        },
+    )?;
     let set = |member: Option<bool>, ids: &[Uuid]| {
         member.map(|member| SetFilter {
             member,
             ids: ids.to_vec(),
         })
-    };
-    let book = match (params.priced_in, params.not_priced_in) {
-        (Some(book), _) => Some((true, book)),
-        (None, Some(book)) => Some((false, book)),
-        (None, None) => None,
-    };
-    let book = match book {
-        Some((member, book)) => Some(SetFilter {
-            member,
-            ids: usage::scoped(state, ctx, UsageScope::Book(book)).await?,
-        }),
-        None => None,
-    };
-    let revision = match params.not_in_revision {
-        Some(revision) => Some(SetFilter {
-            member: false,
-            ids: usage::scoped(state, ctx, UsageScope::Revision(revision)).await?,
-        }),
-        None => None,
     };
     Ok(SkuListFilter {
         text: params.q.clone(),

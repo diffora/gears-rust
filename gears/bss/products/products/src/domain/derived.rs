@@ -334,26 +334,46 @@ pub fn wrap_candidate(current: Option<&str>, proposed: Option<&str>) -> bool {
     }
 }
 
+/// A usage ref and the unit stored beside it.
+#[derive(Clone, Copy)]
+pub struct RefUnit<'a> {
+    pub usage_type_ref: Option<&'a str>,
+    pub unit: Option<&'a str>,
+}
+
 /// The one move P-D-251 allows: `stored` is the proposed version, the SKU's unit does not change,
 /// and [`wraps`] holds. A missing version is not a wrap.
 #[must_use]
 pub fn wrap_exception(
-    current_ref: Option<&str>,
-    proposed_ref: Option<&str>,
-    current_unit: Option<&str>,
-    proposed_unit: Option<&str>,
+    current: RefUnit<'_>,
+    proposed: RefUnit<'_>,
     stored: Option<&DerivedUsageDeclaration>,
 ) -> bool {
-    if !wrap_candidate(current_ref, proposed_ref) {
+    if !wrap_candidate(current.usage_type_ref, proposed.usage_type_ref) {
         return false;
     }
-    let (Some(current), Some(unit)) = (current_ref, named_unit(current_unit)) else {
+    let (Some(current_ref), Some(unit)) = (current.usage_type_ref, named_unit(current.unit)) else {
         return false;
     };
-    if named_unit(proposed_unit) != Some(unit) {
+    if named_unit(proposed.unit) != Some(unit) {
         return false;
     }
-    stored.is_some_and(|declaration| wraps(current, declaration, unit))
+    stored.is_some_and(|declaration| wraps(current_ref, declaration, unit))
+}
+
+/// Whether the pin refuses this change. The two call sites share this, so the wrap and the pin
+/// stay one check.
+#[must_use]
+pub fn pin_check(
+    current: RefUnit<'_>,
+    proposed: RefUnit<'_>,
+    stored: Option<&DerivedUsageDeclaration>,
+) -> bool {
+    pin_refuses(
+        current.usage_type_ref,
+        proposed.usage_type_ref,
+        wrap_exception(current, proposed, stored),
+    )
 }
 
 /// The pin refuses this change, unless it is the wrap [`wrap_exception`] allows.

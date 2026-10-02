@@ -131,8 +131,12 @@ async fn check_sku_rules(
     if !price_book_entry::period_valid(sku.r#type, input.period.as_deref()) {
         return Err(support::invalid("period", "ENTRY_PERIOD_INVALID"));
     }
+    let policy = input
+        .usage_rating_policy
+        .as_ref()
+        .map(crate::infra::usage_policy_wire::UsageRatingPolicyInput::from);
     if let Ok(kind) = price_book_entry::charge_kind_for(sku.r#type) {
-        match (&input.usage_rating_policy, kind) {
+        match (&policy, kind) {
             (None, price_book_entry::ChargeKind::Usage) => {
                 return Err(support::invalid(
                     "usage_rating_policy",
@@ -157,7 +161,7 @@ async fn check_sku_rules(
         Ok(kind) if !price_book_entry::model_allowed(kind, model) => {
             Err(support::invalid("model", "MODEL_KIND_CHARGEKIND_MISMATCH"))
         }
-        _ => match &input.usage_rating_policy {
+        _ => match &policy {
             Some(policy) => crate::infra::meter_semantics::resolve(&state.hub, ctx, policy, &sku)
                 .await
                 .map(Some),
@@ -564,14 +568,13 @@ pub(super) async fn read(
                 usage.remove(&id).unwrap_or_default(),
                 headlines.remove(&id).unwrap_or_default(),
             );
-            let mut dto = super::dto::PricingPriceBookEntryReadDto::of(
+            Ok(super::dto::PricingPriceBookEntryReadDto::of(
                 m,
                 counted,
                 prices.current,
                 prices.next,
-            )?;
-            dto.entry.usage_rating_policy = policies.remove(&id);
-            Ok(dto)
+                policies.remove(&id),
+            )?)
         })
         .collect()
 }
@@ -684,8 +687,7 @@ pub(super) async fn for_sku(
         let entry_usage: super::dto::PricingEntryUsage =
             usage.remove(&id).unwrap_or_default().into();
         let (status, changing) = standing(&entry_usage.prices);
-        let mut entry = PricingPriceBookEntryDto::try_from(e)?;
-        entry.usage_rating_policy = policies.remove(&id);
+        let entry = PricingPriceBookEntryDto::from_stored(e, policies.remove(&id))?;
         items.push(super::dto::PricingSkuEntryDto {
             entry,
             book_code: book.code.clone(),
@@ -727,6 +729,49 @@ impl FilterField for SkuEntryOrderField {
     }
 }
 
+/// A sort key after the query has been parsed. `Id` is the tie-break the door appends.
+#[derive(Clone, Copy)]
+enum SkuEntrySort {
+    BookName,
+    Status,
+    Id,
+}
+impl SkuEntrySort {
+    fn name(self) -> &'static str {
+        match self {
+            Self::BookName => "book_name",
+            Self::Status => "status",
+            Self::Id => "id",
+        }
+    }
+    fn parse(name: &str) -> Option<Self> {
+        match name {
+            "book_name" => Some(Self::BookName),
+            "status" => Some(Self::Status),
+            "id" => Some(Self::Id),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone)]
+struct EntryOrder {
+    keys: Vec<(SkuEntrySort, SortDir)>,
+}
+impl EntryOrder {
+    fn signed_tokens(&self) -> String {
+        ODataOrderBy(
+            self.keys
+                .iter()
+                .map(|(field, dir)| OrderKey {
+                    field: field.name().to_owned(),
+                    dir: *dir,
+                })
+                .collect(),
+        )
+        .to_signed_tokens()
+    }
+}
+
 /// A parsed `GET /price-book-entries` (D-486). Every refusal is already judged.
 #[derive(Clone)]
 pub(super) struct SkuEntriesQuery {
@@ -737,15 +782,12 @@ pub(super) struct SkuEntriesQuery {
     statuses: Option<Vec<crate::api::rest::closed_sets::PricingSkuEntryStatus>>,
     changing: Option<bool>,
     limit: u64,
-    order: ODataOrderBy,
+    order: EntryOrder,
     cursor: Option<CursorV1>,
     hash: String,
 }
 
 const PAGE_DEFAULT: u64 = 500;
-const PLAIN_KEYS: &[&str] = &[
-    "sku_id", "book_id", "currency", "q", "status", "changing", "limit", "cursor",
-];
 
 /// The query of `GET /price-book-entries` (D-486), judged before any read. `$orderby` beside a
 /// cursor is 400 `ORDER_WITH_CURSOR` before the cursor is decoded. A `$filter`, `$select`,
@@ -756,25 +798,15 @@ const PLAIN_KEYS: &[&str] = &[
 pub(super) fn sku_entries_query(uri: &Uri) -> Result<SkuEntriesQuery, CanonicalError> {
     let Query(pairs) = Query::<Vec<(String, String)>>::try_from_uri(uri)
         .map_err(|_| support::invalid("query", "QUERY_INVALID"))?;
-    let mut seen: Vec<&str> = Vec::new();
-    for (key, _) in &pairs {
-        let key = key.as_str();
-        if key != "$orderby" && !PLAIN_KEYS.contains(&key) {
-            return Err(support::invalid_because(
-                key,
-                "QUERY_INVALID",
-                &format!("`{key}` is not a parameter of this read"),
-            ));
-        }
-        if seen.contains(&key) {
-            return Err(support::invalid_because(
-                key,
-                "QUERY_INVALID",
-                &format!("`{key}` is given more than once"),
-            ));
-        }
-        seen.push(key);
-    }
+    let seen = support::plain_keys(
+        &pairs,
+        &[
+            "sku_id", "book_id", "currency", "q", "status", "changing", "limit", "cursor",
+            "$orderby",
+        ],
+        |_| false,
+        |key| format!("`{key}` is not a parameter of this read"),
+    )?;
     if seen.contains(&"cursor") && seen.contains(&"$orderby") {
         return Err(toolkit_odata::Error::OrderWithCursor.into());
     }
@@ -791,9 +823,11 @@ pub(super) fn sku_entries_query(uri: &Uri) -> Result<SkuEntriesQuery, CanonicalE
         .map_err(|_| support::invalid_because("sku_id", "QUERY_INVALID", "`sku_id` is a SKU id"))?;
     let book_ids = value("book_id").map(book_ids).transpose()?;
     let currency = value("currency").map(currency_key).transpose()?;
-    let q = value("q")
-        .filter(|text| !text.is_empty())
-        .map(str::to_owned);
+    let q = value("q").filter(|text| !text.is_empty());
+    if let Some(q) = q {
+        super::caps::search(q)?;
+    }
+    let q = q.map(str::to_owned);
     let statuses = value("status").map(status_keys).transpose()?;
     let changing = value("changing").map(changing_key).transpose()?;
     let limit = value("limit")
@@ -928,16 +962,18 @@ fn clamp_limit(limit: Option<u64>) -> u64 {
     limit.min(PAGE_DEFAULT)
 }
 
-fn requested_order(raw: Option<&str>) -> Result<ODataOrderBy, CanonicalError> {
+fn requested_order(raw: Option<&str>) -> Result<EntryOrder, CanonicalError> {
     let Some(raw) = raw.filter(|text| !text.trim().is_empty()) else {
-        return Ok(order_of("book_name", SortDir::Asc));
+        return Ok(order_of(SkuEntrySort::BookName, SortDir::Asc));
     };
     let parsed = toolkit::api::odata::parse_orderby(raw).map_err(CanonicalError::from)?;
     match parsed.0.as_slice() {
-        [] => Ok(order_of("book_name", SortDir::Asc)),
-        [key] if SkuEntryOrderField::from_name(&key.field).is_some() => {
-            Ok(order_of(&key.field, key.dir))
-        }
+        [] => Ok(order_of(SkuEntrySort::BookName, SortDir::Asc)),
+        [key] => match SkuEntryOrderField::from_name(&key.field) {
+            Some(SkuEntryOrderField::BookName) => Ok(order_of(SkuEntrySort::BookName, key.dir)),
+            Some(SkuEntryOrderField::Status) => Ok(order_of(SkuEntrySort::Status, key.dir)),
+            None => Err(toolkit_odata::Error::InvalidOrderByField(key.field.clone()).into()),
+        },
         keys => Err(toolkit_odata::Error::InvalidOrderByField(
             keys.iter()
                 .find(|key| SkuEntryOrderField::from_name(&key.field).is_none())
@@ -950,31 +986,32 @@ fn requested_order(raw: Option<&str>) -> Result<ODataOrderBy, CanonicalError> {
     }
 }
 
-fn order_of(field: &str, dir: SortDir) -> ODataOrderBy {
-    ODataOrderBy(vec![
-        OrderKey {
-            field: field.to_owned(),
-            dir,
-        },
-        OrderKey {
-            field: "id".to_owned(),
-            dir,
-        },
-    ])
+fn order_of(field: SkuEntrySort, dir: SortDir) -> EntryOrder {
+    EntryOrder {
+        keys: vec![(field, dir), (SkuEntrySort::Id, dir)],
+    }
 }
 
-fn cursor_order(cursor: &CursorV1) -> Result<ODataOrderBy, CanonicalError> {
+fn cursor_order(cursor: &CursorV1) -> Result<EntryOrder, CanonicalError> {
     let order = ODataOrderBy::from_signed_tokens(&cursor.s)
         .map_err(|_| CanonicalError::from(toolkit_odata::Error::InvalidCursor))?;
+    let keys: Option<Vec<_>> = order
+        .0
+        .iter()
+        .map(|key| SkuEntrySort::parse(&key.field).map(|field| (field, key.dir)))
+        .collect();
+    let Some(keys) = keys else {
+        return Err(toolkit_odata::Error::InvalidCursor.into());
+    };
     let fields_ok = matches!(
-        order.0.as_slice(),
-        [primary, id]
-            if SkuEntryOrderField::from_name(&primary.field).is_some()
-                && id.field == "id"
-                && cursor.k.len() == 2
-    );
+        keys.as_slice(),
+        [
+            (SkuEntrySort::BookName | SkuEntrySort::Status, _),
+            (SkuEntrySort::Id, _)
+        ]
+    ) && cursor.k.len() == 2;
     if fields_ok {
-        Ok(order)
+        Ok(EntryOrder { keys })
     } else {
         Err(toolkit_odata::Error::InvalidCursor.into())
     }
@@ -999,7 +1036,7 @@ fn narrowing_hash(
         listed.dedup();
         listed
     });
-    let digest = crate::api::rest::preconditions::request_digest(&serde_json::json!({
+    support::page_hash(&serde_json::json!({
         "book_id": book_id,
         "changing": changing,
         "currency": currency,
@@ -1007,16 +1044,6 @@ fn narrowing_hash(
         "sku_id": sku,
         "status": status,
     }))
-    .map_err(CanonicalError::from)?;
-    Ok(digest
-        .iter()
-        .take(8)
-        .fold(String::with_capacity(16), |mut hex, byte| {
-            const DIGITS: &[u8; 16] = b"0123456789abcdef";
-            hex.push(char::from(DIGITS[usize::from(byte >> 4)]));
-            hex.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
-            hex
-        }))
 }
 
 fn standing(
@@ -1129,11 +1156,15 @@ fn fold(text: &str) -> String {
 fn cmp_entries(
     left: &super::dto::PricingSkuEntryDto,
     right: &super::dto::PricingSkuEntryDto,
-    order: &ODataOrderBy,
+    order: &EntryOrder,
 ) -> Ordering {
-    for key in &order.0 {
-        let cmp = encode_key(left, &key.field).cmp(&encode_key(right, &key.field));
-        let cmp = match key.dir {
+    for (field, dir) in &order.keys {
+        let cmp = match field {
+            SkuEntrySort::BookName => left.book_name.cmp(&right.book_name),
+            SkuEntrySort::Status => left.status.as_str().cmp(right.status.as_str()),
+            SkuEntrySort::Id => left.entry.id.cmp(&right.entry.id),
+        };
+        let cmp = match dir {
             SortDir::Asc => cmp,
             SortDir::Desc => cmp.reverse(),
         };
@@ -1147,16 +1178,16 @@ fn cmp_entries(
 fn position(
     item: &super::dto::PricingSkuEntryDto,
     cursor: &CursorV1,
-    order: &ODataOrderBy,
+    order: &EntryOrder,
 ) -> Ordering {
-    for (index, key) in order.0.iter().enumerate() {
-        let mine = encode_key(item, &key.field);
+    for (index, (field, dir)) in order.keys.iter().enumerate() {
+        let mine = encode_key(item, *field);
         let theirs = cursor.k.get(index).map_or("", String::as_str);
         let cmp = mine.as_str().cmp(theirs);
         if cmp == Ordering::Equal {
             continue;
         }
-        return match key.dir {
+        return match dir {
             SortDir::Asc => cmp,
             SortDir::Desc => cmp.reverse(),
         };
@@ -1164,28 +1195,28 @@ fn position(
     Ordering::Equal
 }
 
-fn encode_key(item: &super::dto::PricingSkuEntryDto, field: &str) -> String {
+fn encode_key(item: &super::dto::PricingSkuEntryDto, field: SkuEntrySort) -> String {
     match field {
-        "book_name" => item.book_name.clone(),
-        "status" => item.status.as_str().to_owned(),
-        _ => item.entry.id.to_string(),
+        SkuEntrySort::BookName => item.book_name.clone(),
+        SkuEntrySort::Status => item.status.as_str().to_owned(),
+        SkuEntrySort::Id => item.entry.id.to_string(),
     }
 }
 
 fn cursor_token(
     item: &super::dto::PricingSkuEntryDto,
-    order: &ODataOrderBy,
+    order: &EntryOrder,
     hash: &str,
     direction: &str,
 ) -> Result<String, CanonicalError> {
     CursorV1 {
         k: order
-            .0
+            .keys
             .iter()
-            .map(|key| encode_key(item, &key.field))
+            .map(|(field, _)| encode_key(item, *field))
             .collect(),
-        o: order.0.first().map_or(SortDir::Asc, |key| key.dir),
-        s: order.to_signed_tokens(),
+        o: order.keys.first().map_or(SortDir::Asc, |(_, dir)| *dir),
+        s: order.signed_tokens(),
         f: Some(hash.to_owned()),
         d: direction.to_owned(),
     }

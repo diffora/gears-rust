@@ -61,7 +61,10 @@ async fn review_migration_18_preserves_every_original_clause() {
     let prior = BssPricingGear::default()
         .migrations()
         .into_iter()
-        .filter(|m| !m.name().starts_with("m20260930_"))
+        .filter(|m| {
+            let name = m.name();
+            !(name.contains("000018") || name.contains("000019") || name.contains("000020"))
+        })
         .collect();
     run_migrations_for_testing(&db.db(), prior).await.unwrap();
     let raw = Database::connect(&dsn).await.unwrap();

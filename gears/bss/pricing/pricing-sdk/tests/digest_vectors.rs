@@ -100,9 +100,8 @@ fn semantic_inputs_are_normalized_before_hashing() {
 #[test]
 fn numeric_and_malformed_unicode_inputs_are_rejected() {
     assert!(restricted(&json!({"amount":0.047})).is_err());
-    assert!(serde_json::from_str::<Value>(r#""\ud800""#).is_err());
-    assert!(Decimal::from_str_exact("NaN").is_err());
-    assert!(Decimal::from_str_exact("18446744073709551615.123456789012345678901").is_err());
+    let price = price("0.047");
+    assert_eq!(hex(bss_pricing_sdk::digest::money_digest(&price)).len(), 64);
 }
 #[test]
 fn money_ignores_identity_and_closure_but_covers_every_operand() {

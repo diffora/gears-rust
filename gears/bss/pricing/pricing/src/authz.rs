@@ -2,7 +2,7 @@
 
 use authz_resolver_sdk::PolicyEnforcer;
 use authz_resolver_sdk::pep::{AccessRequest, ResourceType};
-use toolkit_security::{AccessScope, SecurityContext, pep_properties};
+use toolkit_security::{AccessScope, ScopeFilter, SecurityContext, pep_properties};
 use uuid::Uuid;
 
 /// Concrete PDP-visible pricing resources.
@@ -297,6 +297,61 @@ pub async fn access_scope(
         )));
     }
     Ok(scope)
+}
+
+/// A denial is an empty scope. An unreachable PDP stays unavailable (D-497).
+pub async fn grant_scope(
+    enforcer: &PolicyEnforcer,
+    ctx: &SecurityContext,
+    action: &str,
+) -> Result<AccessScope, AuthzError> {
+    match access_scope(
+        enforcer,
+        ctx,
+        &resource_types::APPROVAL_UNIT,
+        action,
+        Some(OwnerTenant(ctx.subject_tenant_id())),
+        None,
+    )
+    .await
+    {
+        Ok(scope) => Ok(scope),
+        Err(AuthzError::Denied(_)) => Ok(AccessScope::deny_all()),
+        Err(error @ AuthzError::Unavailable(_)) => Err(error),
+    }
+}
+
+/// Whether `scope` admits this unit. A filter that cannot be decided in memory does not.
+#[must_use]
+pub fn scope_holds(scope: &AccessScope, tenant: Uuid, id: Uuid) -> bool {
+    if scope.is_unconstrained() {
+        return true;
+    }
+    if scope.is_deny_all() {
+        return false;
+    }
+    scope.constraints().iter().any(|constraint| {
+        let filters = constraint.filters();
+        !filters.is_empty()
+            && filters
+                .iter()
+                .all(|filter| filter_holds(filter, tenant, id))
+    })
+}
+
+fn filter_holds(filter: &ScopeFilter, tenant: Uuid, id: Uuid) -> bool {
+    if !filter.is_representable_in_memory() {
+        return false;
+    }
+    let wanted = match filter.property() {
+        pep_properties::OWNER_TENANT_ID => tenant,
+        pep_properties::RESOURCE_ID => id,
+        _ => return false,
+    };
+    filter
+        .values()
+        .iter()
+        .any(|value| value.as_uuid() == Some(wanted))
 }
 
 /// A denial with its operands in the log (PS-17): the 403 carries only the reason, and the

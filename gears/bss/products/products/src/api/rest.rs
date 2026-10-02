@@ -169,6 +169,8 @@ pub(crate) enum TxError {
     },
     /// A list query the toolkit's pager refused (a value, an order field, a cursor): a 400.
     OData(toolkit_odata::Error),
+    /// A derived usage type disappeared between the door's check and its write.
+    DerivedTypeMissing,
 }
 impl From<toolkit_db::DbError> for TxError {
     fn from(e: toolkit_db::DbError) -> Self {
@@ -202,7 +204,8 @@ pub(crate) fn contention_db_err(e: &TxError) -> Option<&sea_orm::DbErr> {
         | TxError::Refused(_)
         | TxError::GenerationMismatch { .. }
         | TxError::FencedReferences { .. }
-        | TxError::OData(_) => None,
+        | TxError::OData(_)
+        | TxError::DerivedTypeMissing => None,
     }
 }
 /// Convert only after the retry loop has finished. Contention the retries could not clear is
@@ -256,6 +259,10 @@ fn tx_to_canonical_coded(e: TxError, unit: bool) -> CanonicalError {
             context: "approval".into(),
             source,
         }),
+        TxError::DerivedTypeMissing => CanonicalError::internal(
+            "bss-products: a derived usage type disappeared and its door did not map the miss",
+        )
+        .create(),
     }
 }
 /// Category assignment and retirement must not write-skew on `PostgreSQL`.

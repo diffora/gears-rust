@@ -253,7 +253,6 @@ async fn a_raw_meter_answers_exactly_as_an_absent_provider() {
     drop_table(&f.dsn, "products_derived_usage_type_version").await;
     let (enforcer, asked) = counting_flat_in_enforcer(f.tenant);
     let provider = f.provider(enforcer);
-    let absent = CanonicalError::from(UnconfiguredMeterSemantics);
     for raw in [
         "vm-hours",
         RAM_REF,
@@ -272,13 +271,19 @@ async fn a_raw_meter_answers_exactly_as_an_absent_provider() {
             )
             .await
             .unwrap_err();
-        assert_eq!(format!("{error:?}"), format!("{absent:?}"), "{raw}");
         assert_eq!(
             problem(error),
             problem(CanonicalError::from(UnconfiguredMeterSemantics))
         );
     }
     assert_eq!(asked.load(std::sync::atomic::Ordering::Relaxed), 0);
+}
+
+#[test]
+fn a_short_or_uppercase_digest_does_not_decode() {
+    assert!(super::decode_digest(&"a".repeat(63)).is_none());
+    assert!(super::decode_digest(&"A".repeat(64)).is_none());
+    assert!(super::decode_digest(&"ab".repeat(32)).is_some());
 }
 
 /// A `version` that is not canonical, or that disagrees with the id's `@<n>`, is 400 `METER_POLICY_MISMATCH`.

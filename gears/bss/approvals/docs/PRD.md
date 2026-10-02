@@ -90,9 +90,11 @@ The inbox runs in the same process as the gears it reads. It has no database of 
 
 The inbox MUST serve one paged list, one count and one card of approval units, and MUST forward approve, reject and withdraw to the gear that holds the unit.
 
-The list orders by `submitted_at` as an instant and then by the unit id, in the same direction, newest first when the caller omits the order. A continuation uses the cursor's order. A gear the caller may not read is omitted and named forbidden. A gear that does not answer fails the read and is named unavailable. The count includes only the readable sources.
+The configured source names are non-blank and unique. A duplicate or a blank name fails the boot. A source's counts name only the closed kind set: a kind that is absent is zero, and a kind field outside the set does not decode.
 
-The card asks every configured source. One hit wins. Two hits are an error naming both. A vote is that gear's own answer: status, headers and body, unchanged.
+The list orders by `submitted_at` as an instant and then by the unit id, in the same direction, newest first when the caller omits the order. A continuation uses the cursor's order. A gear the caller may not read is omitted and named forbidden. A gear that does not answer is omitted and named unavailable; the list and the counts still answer the gears that did, and fail only when every gear is down or every gear forbids the caller (AP-D-5). A continuation does not resume a gear the cursor recorded as down. The count includes only the readable sources.
+
+The card asks every configured source. One hit wins. Two hits are an error naming both. A vote is that gear's own answer: status, headers and body, unchanged. The caller sends `Idempotency-Key` on approve, reject and withdraw; the inbox never mints one (AP-D-6).
 
 ## 6. Non-Functional Requirements
 
@@ -115,7 +117,7 @@ The approver opens one unit and votes. The inbox finds the single source that ho
 ## 9. Acceptance Criteria
 
 - A walk of a mixed set of units, in either order, returns every unit once.
-- A forbidden source is named and contributes nothing. A source that does not answer fails the read.
+- A forbidden source is named and contributes nothing. A source that does not answer is named unavailable and contributes nothing; the read fails only when every source is down.
 - The card distinguishes one holder, two holders, a refusal, an unavailable source and a miss.
 - A vote forwarded through the inbox is byte-for-byte the owning door's answer.
 - The gear starts without a database, and it does not serve when its configuration object is absent.

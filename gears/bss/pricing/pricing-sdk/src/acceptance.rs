@@ -6,7 +6,10 @@ use uuid::Uuid;
 
 /// Independently authorized tenant axes supplied by Orders.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(clippy::struct_field_names)] // Contract names distinguish all three tenant axes.
+#[allow(
+    clippy::struct_field_names,
+    reason = "contract names distinguish the three tenant axes"
+)]
 pub struct TenantAxes {
     /// Catalog owner.
     pub seller_tenant_id: Uuid,
@@ -240,7 +243,28 @@ impl From<CommercialReason> for toolkit_canonical_errors::CanonicalError {
             R::ReceiptNotFound => CommercialResource::not_found(reason.as_str())
                 .with_resource("acceptance")
                 .create(),
-            _ => CommercialResource::invalid_argument()
+            R::UnsupportedTerms
+            | R::UnsupportedModel
+            | R::UnsupportedWindow
+            | R::UnsupportedScope
+            | R::MissingBillingTerms
+            | R::MissingRatingPolicy
+            | R::MeterPolicyMismatch
+            | R::UnalignedBillingAnchor
+            | R::BillingCycleMismatch
+            | R::InvalidQuantity
+            | R::InvalidTermCount
+            | R::IncompleteSelection
+            | R::BindingEntryMismatch
+            | R::CurrencyMismatch
+            | R::MarketMismatch
+            | R::DimensionMismatch
+            | R::IncompleteCommercialInputs
+            | R::BillingTermsDigestMismatch
+            | R::MoneyDigestMismatch
+            | R::TemplateDigestMismatch
+            | R::InvalidMoney
+            | R::InvalidTiers => CommercialResource::invalid_argument()
                 .with_field_violation("commercial_terms", reason.code(), reason.as_str())
                 .create(),
         }
@@ -261,7 +285,11 @@ pub struct UnsupportedCommercialValue {
 impl From<UnsupportedCommercialValue> for toolkit_canonical_errors::CanonicalError {
     fn from(value: UnsupportedCommercialValue) -> Self {
         CommercialResource::invalid_argument()
-            .with_field_violation(value.field, value.to_string(), value.reason.as_str())
+            .with_field_violation(
+                value.field,
+                format!("unsupported {}: {}", value.field, value.value),
+                value.reason.as_str(),
+            )
             .create()
     }
 }
@@ -415,7 +443,7 @@ pub fn sellability_v1_ir() -> toolkit_contract::ir::contract::ContractIr {
         ],
     )
 }
-fn commercial_ir(
+pub(crate) fn commercial_ir(
     name: &str,
     methods: &[(&str, &str, &str, bool)],
 ) -> toolkit_contract::ir::contract::ContractIr {

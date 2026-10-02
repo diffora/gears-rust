@@ -13,7 +13,6 @@ enum Cell {
     Miss,
     Deny,
     Down,
-    Gone,
 }
 
 enum Expect {
@@ -34,7 +33,7 @@ fn answer(name: &'static str, cell: Cell) -> (String, SourceGet) {
         Cell::Hold => SourceGet::Found(Box::new(held(name))),
         Cell::Miss => SourceGet::Absent,
         Cell::Deny => SourceGet::Forbidden,
-        Cell::Down | Cell::Gone => SourceGet::Unavailable,
+        Cell::Down => SourceGet::Unavailable,
     };
     (name.to_owned(), value)
 }
@@ -65,7 +64,7 @@ fn matches(resolved: Resolved, expect: &Expect) -> bool {
 
 #[test]
 fn every_owner_resolution_row() {
-    use Cell::{Deny, Down, Gone, Hold, Miss};
+    use Cell::{Deny, Down, Hold, Miss};
     use Expect::{Ambiguous, Forbidden, Missing, Unavailable, Unit};
     let rows = [
         (Hold, Miss, Unit("pricing")),
@@ -73,10 +72,8 @@ fn every_owner_resolution_row() {
         (Hold, Hold, Ambiguous(&["pricing", "products"])),
         (Hold, Deny, Unit("pricing")),
         (Hold, Down, Unit("pricing")),
-        (Hold, Gone, Unit("pricing")),
         (Deny, Hold, Unit("products")),
         (Down, Hold, Unit("products")),
-        (Gone, Hold, Unit("products")),
         (Miss, Miss, Missing),
         (Deny, Miss, Forbidden),
         (Miss, Deny, Forbidden),
@@ -85,14 +82,7 @@ fn every_owner_resolution_row() {
         (Miss, Down, Unavailable(&["products"])),
         (Down, Deny, Unavailable(&["pricing"])),
         (Deny, Down, Unavailable(&["products"])),
-        (Gone, Miss, Unavailable(&["pricing"])),
-        (Miss, Gone, Unavailable(&["products"])),
-        (Gone, Deny, Unavailable(&["pricing"])),
-        (Deny, Gone, Unavailable(&["products"])),
         (Down, Down, Unavailable(&["pricing", "products"])),
-        (Gone, Gone, Unavailable(&["pricing", "products"])),
-        (Down, Gone, Unavailable(&["pricing", "products"])),
-        (Gone, Down, Unavailable(&["pricing", "products"])),
     ];
     for (index, (left, right, expect)) in rows.into_iter().enumerate() {
         let resolved = owner::resolve(vec![answer("pricing", left), answer("products", right)]);

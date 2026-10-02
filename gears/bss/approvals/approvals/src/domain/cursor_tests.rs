@@ -44,25 +44,33 @@ fn sample() -> DecodedCursor {
         order: Order::Asc,
         narrowing_hash: cursor::narrowing_hash(&SourceNarrowing::default()),
         keys,
+        unavailable: Vec::new(),
     }
 }
 
 #[test]
 fn the_cursor_round_trips() {
     let cursor = sample();
-    let token = cursor::encode(cursor.order, &cursor.narrowing_hash, &cursor.keys).unwrap();
+    let token = cursor::encode(
+        cursor.order,
+        &cursor.narrowing_hash,
+        &cursor.keys,
+        &cursor.unavailable,
+    )
+    .unwrap();
     let decoded = cursor::decode(&token).unwrap();
     assert_eq!(decoded.order, cursor.order);
     assert_eq!(decoded.narrowing_hash, cursor.narrowing_hash);
     assert_eq!(decoded.keys, cursor.keys);
+    assert_eq!(decoded.unavailable, cursor.unavailable);
 }
 
 #[test]
 fn a_different_version_is_rejected() {
-    let token = cursor::encode(Order::Desc, "hash", &BTreeMap::new()).unwrap();
+    let token = cursor::encode(Order::Desc, "hash", &BTreeMap::new(), &[]).unwrap();
     let mut raw: serde_json::Value =
         serde_json::from_slice(&URL_SAFE_NO_PAD.decode(&token).unwrap()).unwrap();
-    raw["v"] = serde_json::json!(2);
+    raw["v"] = serde_json::json!(1);
     let tampered = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&raw).unwrap());
     let err = cursor::decode(&tampered).unwrap_err();
     assert_eq!(err.status_code(), 400);
@@ -99,7 +107,7 @@ fn orderby_with_a_cursor_is_order_with_cursor_before_the_token_is_read() {
 #[test]
 fn a_changed_narrowing_is_filter_mismatch() {
     let hash = cursor::narrowing_hash(&SourceNarrowing::default());
-    let token = cursor::encode(Order::Asc, &hash, &BTreeMap::new()).unwrap();
+    let token = cursor::encode(Order::Asc, &hash, &BTreeMap::new(), &[]).unwrap();
     let err = query::prepare_list(&ListParams {
         state: Some("pending".to_owned()),
         cursor: Some(token),
@@ -138,7 +146,7 @@ fn a_cursor_keeps_its_order_and_starts_a_new_source_at_null() {
     keys.insert("pricing".to_owned(), Some(sample_key()));
     keys.insert("gone".to_owned(), Some(sample_key()));
     let hash = cursor::narrowing_hash(&SourceNarrowing::default());
-    let token = cursor::encode(Order::Asc, &hash, &keys).unwrap();
+    let token = cursor::encode(Order::Asc, &hash, &keys, &[]).unwrap();
     let prepared = query::prepare_list(&ListParams {
         cursor: Some(token),
         ..ListParams::default()
@@ -148,4 +156,57 @@ fn a_cursor_keeps_its_order_and_starts_a_new_source_at_null() {
     assert!(!prepared.keys.contains_key("products"));
     assert!(prepared.keys["pricing"].is_some());
     assert!(prepared.keys["gone"].is_some());
+}
+
+#[test]
+fn a_zero_limit_is_invalid_limit() {
+    let err = query::prepare_list(&ListParams {
+        limit: Some(0),
+        ..ListParams::default()
+    })
+    .unwrap_err();
+    assert_eq!(err.status_code(), 400);
+    assert_eq!(reasons(&err), vec!["INVALID_LIMIT".to_owned()]);
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(64))]
+
+    #[test]
+    fn a_cursor_round_trips(
+        desc in proptest::bool::ANY,
+        secs in -1_000_000_i64..1_000_000,
+        products_key in proptest::bool::ANY,
+        down in proptest::collection::vec("[a-z]{1,6}", 0..3usize),
+    ) {
+        let order = if desc { Order::Desc } else { Order::Asc };
+        let at = time::OffsetDateTime::from_unix_timestamp(secs).unwrap();
+        let mut keys = BTreeMap::new();
+        keys.insert(
+            "pricing".to_owned(),
+            Some(SortKey {
+                submitted_at: at,
+                id: Uuid::from_u128(u128::from(secs.unsigned_abs())),
+            }),
+        );
+        keys.insert(
+            "products".to_owned(),
+            products_key.then_some(SortKey {
+                submitted_at: at,
+                id: Uuid::nil(),
+            }),
+        );
+        let token = cursor::encode(order, "hash", &keys, &down).unwrap();
+        let decoded = cursor::decode(&token).unwrap();
+        proptest::prop_assert_eq!(decoded.order, order);
+        proptest::prop_assert_eq!(decoded.narrowing_hash, "hash");
+        proptest::prop_assert_eq!(decoded.keys, keys);
+        proptest::prop_assert_eq!(decoded.unavailable, down);
+    }
+
+    #[test]
+    fn decode_of_arbitrary_bytes_does_not_panic(raw in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..48)) {
+        let token = URL_SAFE_NO_PAD.encode(&raw);
+        assert!(matches!(cursor::decode(&token), Ok(_) | Err(_)));
+    }
 }

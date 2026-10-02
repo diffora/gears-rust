@@ -833,7 +833,7 @@ fn canonical_bytes_spell_every_operator_mode_fold_and_hold() {
     ));
     decl.inputs[0].granule_fold = GranuleFold::TimeWeighted;
     decl.inputs[0].max_hold_seconds = Some(3600);
-    decl.inputs[1].unit = "a\"b\\c\n".to_owned();
+    decl.inputs[1].unit = "a\"b\\c\u{08}\t\n\u{0c}\r\u{01}".to_owned();
     decl.output_round = RoundMode::Up;
     decl.output_scale = 3;
     let expected = concat!(
@@ -847,7 +847,7 @@ fn canonical_bytes_spell_every_operator_mode_fold_and_hold() {
         r#""inputs":["#,
         r#"{"granule_fold":"time_weighted","max_hold_seconds":3600,"name":"left","unit":"unit","#,
         r#""usage_type_ref":"gts.cf.core.uc.usage_record.v1~cf.test.usage.left.v1"},"#,
-        r#"{"granule_fold":"sum","max_hold_seconds":null,"name":"right","unit":"a\"b\\c\n","#,
+        r#"{"granule_fold":"sum","max_hold_seconds":null,"name":"right","unit":"a\"b\\c\b\t\n\f\r\u0001","#,
         r#""usage_type_ref":"gts.cf.core.uc.usage_record.v1~cf.test.usage.right.v1"}"#,
         r#"],"output_round":"up","output_scale":3,"output_unit":"unit"}}"#,
     );
@@ -870,8 +870,28 @@ fn a_meter_id_round_trips() {
         assert_eq!(id.code(), code);
         assert_eq!(id.version(), version);
         assert_eq!(id.format(), text);
+        assert_eq!(id.to_string(), text);
+        assert_eq!(text.parse::<MeterId>().unwrap().format(), text);
         assert_eq!(id.meter_ref(), (text.to_owned(), version.to_string()));
-        assert_eq!(MeterId::new(code, version), Ok(id));
+        assert_eq!(MeterId::new(code, version).unwrap().format(), text);
+    }
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(32))]
+
+    #[test]
+    fn a_meter_id_round_trips_and_parse_does_not_panic(
+        code in "[a-z0-9][a-z0-9._-]{0,12}",
+        version in 1u32..10_000,
+        junk in "\\PC{0,24}",
+    ) {
+        let id = MeterId::new(&code, version).unwrap();
+        let text = id.format();
+        let parsed = text.parse::<MeterId>().unwrap();
+        proptest::prop_assert_eq!(parsed.to_string(), text);
+        assert!(matches!(junk.parse::<MeterId>(), Ok(_) | Err(_)));
+        assert!(matches!(MeterId::parse(&junk), Ok(_) | Err(_)));
     }
 }
 

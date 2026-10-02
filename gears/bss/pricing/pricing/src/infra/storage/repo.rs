@@ -66,6 +66,47 @@ pub fn latest_instant(text: Option<&str>) -> Result<Option<time::OffsetDateTime>
     })
     .transpose()
 }
+/// `lower(expr)`, folded through [`book_repo::PG_FOLD_COLLATION`] on Postgres and through the
+/// database's own `lower()` on `SQLite`.
+///
+/// Raw SQL, on purpose: sea-query has no `COLLATE` on an expression, and the fold must name the
+/// ICU collation, or a `C`-locale database folds ASCII only. The folded text stays a bound value.
+pub(super) fn folded(
+    backend: sea_orm::DbBackend,
+    expr: sea_orm::sea_query::Expr,
+) -> sea_orm::sea_query::Expr {
+    use sea_orm::sea_query::Expr;
+    if backend == sea_orm::DbBackend::Postgres {
+        Expr::cust_with_expr(
+            format!(r#"lower($1 COLLATE "{}")"#, book_repo::PG_FOLD_COLLATION),
+            expr,
+        )
+    } else {
+        Expr::expr(sea_orm::sea_query::Func::lower(expr))
+    }
+}
+
+/// `lower(column) LIKE lower(pattern) ESCAPE '\'` over any of `columns`. The caller's text is
+/// matched literally (`%`, `_` and `\` escaped). Both sides fold the same way.
+pub(super) fn text_like_any(
+    text: &str,
+    backend: sea_orm::DbBackend,
+    columns: impl IntoIterator<Item = sea_orm::sea_query::Expr>,
+) -> sea_orm::Condition {
+    use sea_orm::sea_query::{BinOper, Expr, ExprTrait};
+    use toolkit_db::odata::sea_orm_filter::escape_like;
+    let pattern = format!("%{}%", escape_like(text));
+    columns
+        .into_iter()
+        .fold(sea_orm::Condition::any(), |any, column| {
+            let lowered = folded(backend, Expr::val(pattern.clone())).binary(
+                BinOper::Escape,
+                Expr::Constant(sea_orm::Value::Char(Some('\\'))),
+            );
+            any.add(folded(backend, column).binary(BinOper::Like, lowered))
+        })
+}
+
 /// Preserve the driver's variant for serializable retries.
 #[must_use]
 pub fn driver_failure(context: String, error: ScopeError) -> RepoError {

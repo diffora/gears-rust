@@ -37,13 +37,15 @@ impl From<DomainError> for CanonicalError {
 
 impl From<crate::domain::RuleError> for CanonicalError {
     fn from(error: crate::domain::RuleError) -> Self {
-        error.reason.map_or_else(
-            || {
-                PricingResource::invalid_argument()
-                    .with_field_violation("commercial_terms", error.code, error.code)
-                    .create()
-            },
-            Into::into,
-        )
+        match error.reason {
+            Some(reason) => reason.into(),
+            None => PricingResource::invalid_argument()
+                .with_field_violation(
+                    crate::domain::price::field_of(error.code),
+                    error.code,
+                    error.code,
+                )
+                .create(),
+        }
     }
 }

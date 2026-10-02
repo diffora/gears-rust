@@ -122,10 +122,7 @@ impl PriceBookEntryContext {
     ) -> Option<RuleError> {
         if candidate.min_fee.is_some()
             && self.policy.as_ref().is_some_and(|p| {
-                matches!(
-                    p.content.rating_window,
-                    crate::infra::usage_policy_wire::RatingWindow::CalendarHour { .. }
-                )
+                crate::domain::usage_policy::refuses_minimum_fee(&(&p.content).into())
             })
         {
             return Some(RuleError::new("UNSUPPORTED_TERMS"));

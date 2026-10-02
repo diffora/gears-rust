@@ -305,7 +305,7 @@ async fn request_bodies_keep_strings_so_the_doors_keep_their_codes() {
 
 /// D-467: a plan item is a SKU and its entry. No plan item schema, request or response, and no
 /// resolved item carries `treatment`, `included_qty` or `qty_min`; the treatment's closed set is
-/// gone from the spec, and the create requires its entry.
+/// gone from the spec. The create requires `sku_id`; `price_book_entry_id` may be absent (D-512).
 #[tokio::test]
 async fn no_plan_item_schema_carries_treatment_or_the_quantities() {
     let api = served().await;
@@ -330,10 +330,9 @@ async fn no_plan_item_schema_carries_treatment_or_the_quantities() {
     let required = component(&api, "PricingPlanItemCreate")["required"]
         .as_array()
         .unwrap();
-    for field in ["sku_id", "price_book_entry_id"] {
-        assert!(
-            required.contains(&Value::from(field)),
-            "{field}: {required:?}"
-        );
-    }
+    assert!(required.contains(&Value::from("sku_id")), "{required:?}");
+    assert!(
+        !required.contains(&Value::from("price_book_entry_id")),
+        "the entry may be absent: {required:?}"
+    );
 }

@@ -8,12 +8,12 @@ use std::collections::BTreeMap;
 
 use bss_approvals_sdk::{InboxUnit, Order, SortKey};
 
-/// One source's answer for the page being merged.
-pub struct SourceAnswer<'a> {
+/// One source's answer for the page being merged. The merge takes the units it selects.
+pub struct SourceAnswer {
     /// The configured source name.
-    pub source: &'a str,
+    pub source: String,
     /// Units the source returned, already past its key.
-    pub units: &'a [InboxUnit],
+    pub units: Vec<InboxUnit>,
     /// The source has a further unit after `units`.
     pub has_more: bool,
 }
@@ -37,30 +37,27 @@ pub fn merge(
     order: Order,
     limit: u32,
     incoming: &BTreeMap<String, Option<SortKey>>,
-    pages: &[SourceAnswer<'_>],
+    mut pages: Vec<SourceAnswer>,
 ) -> MergedPage {
     let limit = usize::try_from(limit).unwrap_or(usize::MAX);
-    let mut index = vec![0_usize; pages.len()];
     let mut taken: Vec<Option<SortKey>> = vec![None; pages.len()];
     let mut units = Vec::new();
 
     while units.len() < limit {
-        let Some(pick) = next_unit(order, pages, &index) else {
+        let Some((pick, unit)) = take_next(order, &mut pages) else {
             break;
         };
-        let unit = &pages[pick].units[index[pick]];
-        taken[pick] = Some(SortKey::of(unit));
-        units.push(unit.clone());
-        index[pick] = index[pick].saturating_add(1);
+        taken[pick] = Some(SortKey::of(&unit));
+        units.push(unit);
     }
 
     let mut keys = BTreeMap::new();
     let mut has_more = false;
     for (slot, page) in pages.iter().enumerate() {
-        let previous = incoming.get(page.source).copied().flatten();
+        let previous = incoming.get(&page.source).copied().flatten();
         let next_key = taken[slot].or(previous);
-        keys.insert(page.source.to_owned(), next_key);
-        if page.has_more || index[slot] < page.units.len() {
+        keys.insert(page.source.clone(), next_key);
+        if page.has_more || !page.units.is_empty() {
             has_more = true;
         }
     }
@@ -72,16 +69,29 @@ pub fn merge(
     }
 }
 
+/// Moves out the unit that sorts first. The check and the take are the same `drain`, so a later
+/// edit cannot index a unit this function did not just see.
+fn take_next(order: Order, pages: &mut [SourceAnswer]) -> Option<(usize, InboxUnit)> {
+    let pick = next_slot(order, pages)?;
+    let unit = pages[pick].units.drain(..1).next()?;
+    Some((pick, unit))
+}
+
 /// The source whose next unit sorts first, if any source still has one.
-fn next_unit(order: Order, pages: &[SourceAnswer<'_>], index: &[usize]) -> Option<usize> {
+fn next_slot(order: Order, pages: &[SourceAnswer]) -> Option<usize> {
     let mut best: Option<usize> = None;
     for (slot, page) in pages.iter().enumerate() {
-        let Some(unit) = page.units.get(index[slot]) else {
+        let Some(unit) = page.units.first() else {
             continue;
         };
         let replace = match best {
             None => true,
-            Some(current) => comes_first(unit, &pages[current].units[index[current]], order),
+            Some(current) => {
+                let Some(current_unit) = pages[current].units.first() else {
+                    continue;
+                };
+                comes_first(unit, current_unit, order)
+            }
         };
         if replace {
             best = Some(slot);

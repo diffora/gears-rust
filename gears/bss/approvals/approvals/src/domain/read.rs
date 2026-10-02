@@ -1,5 +1,6 @@
 //! Asks every configured source and merges what the caller can read.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use bss_approvals_sdk::{
@@ -25,6 +26,8 @@ pub enum SourceHealth {
     Ok,
     /// The source refused the caller. Its units are not in the answer.
     Forbidden,
+    /// The source did not answer, or the cursor already recorded it as down.
+    Unavailable,
 }
 
 /// One source in a list or counts answer.
@@ -32,7 +35,7 @@ pub enum SourceHealth {
 pub struct SourceRow {
     /// The configured name.
     pub name: String,
-    /// `ok` or `forbidden`.
+    /// `ok`, `forbidden` or `unavailable`.
     pub status: SourceHealth,
 }
 
@@ -59,58 +62,101 @@ pub struct Counted {
 /// Reads one merged page.
 ///
 /// # Errors
-/// A source is down or unregistered, every source forbids the caller, or a source refuses the
-/// narrowing. The cursor errors are the caller's, from [`PreparedList`].
+/// Every source is down or unregistered, every source forbids the caller, or a source refuses
+/// the narrowing. A down source beside a source that answered is named `unavailable` and omitted.
+/// The cursor errors are the caller's, from [`PreparedList`].
 pub async fn list_page(
     hub: &ClientHub,
     names: &[String],
     ctx: &SecurityContext,
     prepared: &PreparedList,
 ) -> Result<Listed, CanonicalError> {
+    let frozen: std::collections::BTreeSet<&str> =
+        prepared.unavailable.iter().map(String::as_str).collect();
+    let asked: Vec<&String> = names
+        .iter()
+        .filter(|name| !frozen.contains(name.as_str()))
+        .collect();
+    let pending = asked.iter().map(|name| {
+        let after = prepared.keys.get(name.as_str()).copied().flatten();
+        ask_page(hub, name, ctx, prepared, after)
+    });
+    let answered = futures::future::join_all(pending).await;
+    let mut by_name: HashMap<&str, Result<Ask, CanonicalError>> = HashMap::new();
+    for (name, result) in asked.into_iter().zip(answered) {
+        by_name.insert(name.as_str(), result);
+    }
     let mut pages = Vec::new();
     let mut sources = Vec::new();
     let mut down = Vec::new();
+    let mut hard: Option<CanonicalError> = None;
     for name in names {
-        let after = prepared.keys.get(name).copied().flatten();
-        match ask_page(hub, name, ctx, prepared, after).await? {
-            Ask::Ready(page) => {
+        if frozen.contains(name.as_str()) {
+            sources.push(SourceRow {
+                name: name.clone(),
+                status: SourceHealth::Unavailable,
+            });
+            down.push(name.clone());
+            continue;
+        }
+        match by_name
+            .remove(name.as_str())
+            .unwrap_or(Ok(Ask::Unavailable))
+        {
+            Ok(Ask::Ready(page)) => {
                 sources.push(SourceRow {
                     name: name.clone(),
                     status: SourceHealth::Ok,
                 });
                 pages.push((name.clone(), page));
             }
-            Ask::Forbidden => sources.push(SourceRow {
+            Ok(Ask::Forbidden) => sources.push(SourceRow {
                 name: name.clone(),
                 status: SourceHealth::Forbidden,
             }),
-            Ask::Unavailable => down.push(name.clone()),
+            Ok(Ask::Unavailable) => {
+                sources.push(SourceRow {
+                    name: name.clone(),
+                    status: SourceHealth::Unavailable,
+                });
+                down.push(name.clone());
+            }
+            Err(err) => {
+                if hard.is_none() {
+                    hard = Some(err);
+                }
+            }
         }
     }
-    if !down.is_empty() {
+    if let Some(err) = hard {
+        return Err(err);
+    }
+    if !down.is_empty() && pages.is_empty() && !any_forbidden(&sources) {
         return Err(error::source_unavailable(&down));
     }
-    if pages.is_empty()
-        && sources
-            .iter()
-            .any(|row| row.status == SourceHealth::Forbidden)
-    {
+    if pages.is_empty() && all_forbidden(&sources) {
         return Err(error::forbidden());
     }
-    let views: Vec<SourceAnswer<'_>> = pages
-        .iter()
+    let views: Vec<SourceAnswer> = pages
+        .into_iter()
         .map(|(name, page)| SourceAnswer {
             source: name,
-            units: &page.units,
+            units: page.units,
             has_more: page.has_more,
         })
         .collect();
-    let merged = merge::merge(prepared.order, prepared.limit, &prepared.keys, &views);
+    let merged = merge::merge(prepared.order, prepared.limit, &prepared.keys, views);
+    let unavailable: Vec<String> = sources
+        .iter()
+        .filter(|row| row.status == SourceHealth::Unavailable)
+        .map(|row| row.name.clone())
+        .collect();
     let next_cursor = if merged.has_more {
         Some(cursor::encode(
             prepared.order,
             &prepared.hash,
             &merged.keys,
+            &unavailable,
         )?)
     } else {
         None
@@ -125,37 +171,57 @@ pub async fn list_page(
 /// Sums the counts of the readable sources.
 ///
 /// # Errors
-/// A source is down or unregistered, every source forbids the caller, or a source refuses the
-/// narrowing.
+/// Every source is down or unregistered, every source forbids the caller, or a source refuses
+/// the narrowing. A down source beside a source that answered is named `unavailable` and left
+/// out of the sum.
 pub async fn count_all(
     hub: &ClientHub,
     names: &[String],
     ctx: &SecurityContext,
     narrowing: &SourceNarrowing,
 ) -> Result<Counted, CanonicalError> {
+    let pending = names
+        .iter()
+        .map(|name| ask_counts(hub, name, ctx, narrowing));
+    let answered = futures::future::join_all(pending).await;
     let mut counts = SourceCounts::default();
     let mut sources = Vec::new();
     let mut down = Vec::new();
-    for name in names {
-        match ask_counts(hub, name, ctx, narrowing).await? {
-            AskCount::Ready(page) => {
+    let mut hard: Option<CanonicalError> = None;
+    for (name, result) in names.iter().zip(answered) {
+        match result {
+            Ok(AskCount::Ready(page)) => {
                 counts.add(&page);
                 sources.push(SourceRow {
                     name: name.clone(),
                     status: SourceHealth::Ok,
                 });
             }
-            AskCount::Forbidden => sources.push(SourceRow {
+            Ok(AskCount::Forbidden) => sources.push(SourceRow {
                 name: name.clone(),
                 status: SourceHealth::Forbidden,
             }),
-            AskCount::Unavailable => down.push(name.clone()),
+            Ok(AskCount::Unavailable) => {
+                sources.push(SourceRow {
+                    name: name.clone(),
+                    status: SourceHealth::Unavailable,
+                });
+                down.push(name.clone());
+            }
+            Err(err) => {
+                if hard.is_none() {
+                    hard = Some(err);
+                }
+            }
         }
     }
-    if !down.is_empty() {
+    if let Some(err) = hard {
+        return Err(err);
+    }
+    if !down.is_empty() && counts.total == 0 && !any_forbidden(&sources) && !any_ok(&sources) {
         return Err(error::source_unavailable(&down));
     }
-    if counts_unreadable(&sources) {
+    if all_forbidden(&sources) {
         return Err(error::forbidden());
     }
     Ok(Counted { counts, sources })
@@ -196,11 +262,29 @@ pub async fn vote_unit(
     source.vote(ctx, id, action, request).await
 }
 
-fn counts_unreadable(sources: &[SourceRow]) -> bool {
+fn all_forbidden(sources: &[SourceRow]) -> bool {
     !sources.is_empty()
         && sources
             .iter()
             .all(|row| row.status == SourceHealth::Forbidden)
+}
+
+fn any_forbidden(sources: &[SourceRow]) -> bool {
+    sources
+        .iter()
+        .any(|row| row.status == SourceHealth::Forbidden)
+}
+
+fn any_ok(sources: &[SourceRow]) -> bool {
+    sources.iter().any(|row| row.status == SourceHealth::Ok)
+}
+
+fn is_forbidden(err: &CanonicalError) -> bool {
+    matches!(err, CanonicalError::PermissionDenied { .. })
+}
+
+fn is_unavailable(err: &CanonicalError) -> bool {
+    matches!(err, CanonicalError::ServiceUnavailable { .. })
 }
 
 async fn resolve_owner(
@@ -213,20 +297,29 @@ async fn resolve_owner(
     let mut answers = Vec::with_capacity(names.len());
     for name in names {
         let answer = match lookup(hub, name) {
-            None => SourceGet::Unavailable,
-            Some(source) => classify_get(source.get(ctx, id, impact).await),
+            None => {
+                tracing::warn!(source = %name, "bss-approvals: source is not registered");
+                SourceGet::Unavailable
+            }
+            Some(source) => classify_get(name, source.get(ctx, id, impact).await),
         };
         answers.push((name.clone(), answer));
     }
     Ok(owner::resolve(answers))
 }
 
-fn classify_get(result: Result<Option<InboxUnit>, CanonicalError>) -> SourceGet {
+fn classify_get(name: &str, result: Result<Option<InboxUnit>, CanonicalError>) -> SourceGet {
     match result {
         Ok(Some(unit)) => SourceGet::Found(Box::new(unit)),
         Ok(None) => SourceGet::Absent,
-        Err(err) if err.status_code() == 403 => SourceGet::Forbidden,
-        Err(err) if err.status_code() == 503 => SourceGet::Unavailable,
+        Err(err) if is_forbidden(&err) => {
+            tracing::warn!(source = %name, error = %err, "bss-approvals: source forbidden");
+            SourceGet::Forbidden
+        }
+        Err(err) if is_unavailable(&err) => {
+            tracing::warn!(source = %name, error = %err, "bss-approvals: source unavailable");
+            SourceGet::Unavailable
+        }
         Err(err) => SourceGet::Failed(Box::new(err)),
     }
 }
@@ -237,6 +330,10 @@ enum Ask {
     Unavailable,
 }
 
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "each source answer is logged on the arm that classifies it"
+)]
 async fn ask_page(
     hub: &ClientHub,
     name: &str,
@@ -245,6 +342,7 @@ async fn ask_page(
     after: Option<SortKey>,
 ) -> Result<Ask, CanonicalError> {
     let Some(source) = lookup(hub, name) else {
+        tracing::warn!(source = %name, "bss-approvals: source is not registered");
         return Ok(Ask::Unavailable);
     };
     let query = SourcePageQuery {
@@ -256,8 +354,14 @@ async fn ask_page(
     };
     match source.page(ctx, &query).await {
         Ok(page) => Ok(Ask::Ready(page)),
-        Err(err) if err.status_code() == 403 => Ok(Ask::Forbidden),
-        Err(err) if err.status_code() == 503 => Ok(Ask::Unavailable),
+        Err(err) if is_forbidden(&err) => {
+            tracing::warn!(source = %name, error = %err, "bss-approvals: source forbidden");
+            Ok(Ask::Forbidden)
+        }
+        Err(err) if is_unavailable(&err) => {
+            tracing::warn!(source = %name, error = %err, "bss-approvals: source unavailable");
+            Ok(Ask::Unavailable)
+        }
         Err(err) => Err(err),
     }
 }
@@ -268,6 +372,10 @@ enum AskCount {
     Unavailable,
 }
 
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "each source answer is logged on the arm that classifies it"
+)]
 async fn ask_counts(
     hub: &ClientHub,
     name: &str,
@@ -275,12 +383,19 @@ async fn ask_counts(
     narrowing: &SourceNarrowing,
 ) -> Result<AskCount, CanonicalError> {
     let Some(source) = lookup(hub, name) else {
+        tracing::warn!(source = %name, "bss-approvals: source is not registered");
         return Ok(AskCount::Unavailable);
     };
     match source.counts(ctx, narrowing).await {
         Ok(counts) => Ok(AskCount::Ready(counts)),
-        Err(err) if err.status_code() == 403 => Ok(AskCount::Forbidden),
-        Err(err) if err.status_code() == 503 => Ok(AskCount::Unavailable),
+        Err(err) if is_forbidden(&err) => {
+            tracing::warn!(source = %name, error = %err, "bss-approvals: source forbidden");
+            Ok(AskCount::Forbidden)
+        }
+        Err(err) if is_unavailable(&err) => {
+            tracing::warn!(source = %name, error = %err, "bss-approvals: source unavailable");
+            Ok(AskCount::Unavailable)
+        }
         Err(err) => Err(err),
     }
 }

@@ -13,6 +13,10 @@ pub const NOTE_MAX_CHARS: usize = 2000;
 pub const LABEL_MAX_CHARS: usize = 64;
 /// An invoice line template: an entry's override and the settings' template of a SKU type.
 pub const TEMPLATE_MAX_CHARS: usize = 2000;
+/// A meter reference and an accrual policy version in a usage rating policy: the cap Products puts on a
+/// SKU's `usage_type_ref` (512), which a policy's meter must equal. A derived meter's accrual version is
+/// `derived-v1:` plus 64 hex digits (75 characters), and a raw GTS id can pass 64.
+pub const METER_REF_MAX_CHARS: usize = 512;
 
 // The gear's note cap is the one the approval engine judges a vote's note by.
 const _: () = assert!(NOTE_MAX_CHARS == bss_approval::NOTE_MAX_CHARS);

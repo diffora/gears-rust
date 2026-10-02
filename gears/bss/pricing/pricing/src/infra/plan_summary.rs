@@ -102,18 +102,39 @@ pub fn selling(summary: &Summary, today: Date) -> bool {
 
 /// `change` from the stored summary and the request's day: the work state, else `scheduled` while
 /// that revision's date is still ahead, else `none`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlanChange {
+    None,
+    Draft,
+    Pending,
+    Scheduled,
+}
+impl PlanChange {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Draft => "draft",
+            Self::Pending => "pending",
+            Self::Scheduled => "scheduled",
+        }
+    }
+}
 #[must_use]
-pub fn change(summary: &Summary, today: Date) -> &'static str {
+pub fn change(summary: &Summary, today: Date) -> PlanChange {
     match summary.work_state.as_deref() {
-        Some("draft") => "draft",
-        Some("pending") => "pending",
-        _ if summary.scheduled_from.is_some_and(|from| from > today) => "scheduled",
-        _ => "none",
+        Some("draft") => PlanChange::Draft,
+        Some("pending") => PlanChange::Pending,
+        _ if summary.scheduled_from.is_some_and(|from| from > today) => PlanChange::Scheduled,
+        _ => PlanChange::None,
     }
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "fixture dates and summaries are well formed"
+)]
 mod tests {
     use super::*;
 
@@ -144,7 +165,7 @@ mod tests {
         assert!(summary.work_revision_id.is_none());
         assert!(summary.published_revision_id.is_none());
         assert!(!selling(&summary, day(1)));
-        assert_eq!(change(&summary, day(1)), "none");
+        assert_eq!(change(&summary, day(1)), PlanChange::None);
     }
 
     #[test]
@@ -158,7 +179,7 @@ mod tests {
         assert_eq!(summary.current_book_id, Some(draft.book_id));
         assert_eq!(summary.last_activity_at, at(3));
         assert!(selling(&summary, day(1)));
-        assert_eq!(change(&summary, day(1)), "draft");
+        assert_eq!(change(&summary, day(1)), PlanChange::Draft);
     }
 
     #[test]
@@ -168,9 +189,9 @@ mod tests {
         assert_eq!(summary.scheduled_from, Some(day(15)));
         assert_eq!(summary.current_book_id, Some(Uuid::from_u128(0xB003)));
         assert!(!selling(&summary, day(14)));
-        assert_eq!(change(&summary, day(14)), "scheduled");
+        assert_eq!(change(&summary, day(14)), PlanChange::Scheduled);
         assert!(selling(&summary, day(15)));
-        assert_eq!(change(&summary, day(15)), "none");
+        assert_eq!(change(&summary, day(15)), PlanChange::None);
     }
 
     #[test]

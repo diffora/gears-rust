@@ -56,7 +56,7 @@ pub struct LifecycleNextDto {
 }
 /// Wire representation of the registry Sku.
 #[toolkit_macros::api_dto(response)]
-#[allow(
+#[expect(
     clippy::struct_excessive_bools,
     reason = "sellable, type_change_pending and retire_pending are three independent flags (P-D-248)"
 )]
@@ -492,6 +492,10 @@ pub struct ProductsSkuSubmitRequest {
     #[serde(default)]
     pub note: Option<String>,
 }
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the wire carries three independent caller flags (P-D-255)"
+)]
 #[toolkit_macros::api_dto(response)]
 pub struct UnitDto {
     pub id: Uuid,
@@ -526,7 +530,16 @@ pub struct UnitDto {
     /// separation of duties, so the submitter and the SKU's creator may reject a unit whose flag
     /// is false. The grant is not judged here: without products approve the vote door still
     /// answers 403.
+    /// Whether the caller may approve this unit now (P-D-228, P-D-255): the engine's approve
+    /// rule and the caller's `approval_unit:approve` grant on this unit. Approve only. Without
+    /// the grant the vote door is still 403.
     pub caller_can_approve: bool,
+    /// Whether the caller may reject this unit now (P-D-255): the approve grant, the unit
+    /// pending, and no vote by the caller in this generation. That is what the engine allows.
+    pub caller_can_reject: bool,
+    /// Whether the caller may withdraw this unit now (P-D-255): the caller submitted it, the
+    /// unit is pending, and the caller holds the submit grant the withdraw door asks.
+    pub caller_can_withdraw: bool,
 }
 /// `GET /approval-units/counts` (P-D-227): the units the list's narrowing keeps, by state and by
 /// kind, every state and kind named (0 when none), and their total.
@@ -574,9 +587,10 @@ pub struct UnitList {
     pub items: Vec<UnitDto>,
     pub page_info: toolkit_odata::PageInfo,
 }
-/// `GET /approval-units` (P-D-224, P-D-227): the narrowing, the page and the order. A key the list
-/// does not know is ignored, as before.
+/// `GET /approval-units` (P-D-224, P-D-227, P-D-254): the narrowing, the page and the order. A key
+/// the list does not know is 400, as the counts refuse one.
 #[toolkit_macros::api_dto(request)]
+#[serde(deny_unknown_fields)]
 pub struct UnitListQuery {
     pub state: Option<String>,
     pub kind: Option<String>,
@@ -599,6 +613,7 @@ pub struct UnitCountsQuery {
     pub ref_id: Option<Uuid>,
 }
 #[toolkit_macros::api_dto(request)]
+#[serde(deny_unknown_fields)]
 pub struct VoteRequest {
     pub generation: i32,
     pub note: Option<String>,
@@ -642,11 +657,17 @@ impl UnitDto {
         authors: &[Uuid],
         decisions: Vec<bss_approval::Decision>,
         reader: Uuid,
+        approve_scope: &toolkit_db::secure::AccessScope,
+        submit_scope: &toolkit_db::secure::AccessScope,
     ) -> Result<Self, RepoError> {
-        let caller_can_approve =
+        let grant_approve = super::governance::scope_holds(approve_scope, u.tenant_id, u.id);
+        let grant_submit = super::governance::scope_holds(submit_scope, u.tenant_id, u.id);
+        let engine =
             bss_approval::approve_eligibility(&u, authors.iter().copied(), &decisions, reader)
                 .refusal
                 .is_none();
+        let pending = u.state == bss_approval::UnitState::Pending;
+        let voted = bss_approval::already_voted(&u, &decisions, reader);
         Ok(Self {
             id: u.id,
             kind: ProductsApprovalKind::stored(&u.kind, &format_args!("approval unit {}", u.id))?,
@@ -664,7 +685,9 @@ impl UnitDto {
             snapshot: u.snapshot,
             decisions: decisions.into_iter().map(Into::into).collect(),
             impact_live: None,
-            caller_can_approve,
+            caller_can_approve: engine && grant_approve,
+            caller_can_reject: grant_approve && pending && !voted,
+            caller_can_withdraw: grant_submit && pending && u.submitted_by == reader,
         })
     }
 }
@@ -1035,10 +1058,10 @@ impl ProductsDerivedExpr {
         }
         let decimal = |text: &Option<String>, field: &str| {
             let text = text.as_deref().unwrap_or_default();
-            text.parse::<rust_decimal::Decimal>().map_err(|_| {
+            text.parse::<rust_decimal::Decimal>().map_err(|err| {
                 declaration_invalid(
                     "invalid_decimal",
-                    format!("{path}.{field}: `{text}` is not a decimal"),
+                    format!("{path}.{field}: `{text}` is not a decimal: {err}"),
                 )
             })
         };
@@ -1124,7 +1147,15 @@ impl From<&bss_products_sdk::derived::Expr> for ProductsDerivedExpr {
         use bss_products_sdk::derived::Expr;
         let node = |op: &str| Self {
             op: op.to_owned(),
-            ..Self::default()
+            name: None,
+            value: None,
+            left: None,
+            right: None,
+            arg: None,
+            args: None,
+            divisor: None,
+            scale: None,
+            mode: None,
         };
         let boxed = |e: &Expr| Some(Box::new(Self::from(e)));
         let decimal = |d: &rust_decimal::Decimal| Some(d.normalize().to_string());
@@ -1137,27 +1168,33 @@ impl From<&bss_products_sdk::derived::Expr> for ProductsDerivedExpr {
                 value: decimal(value),
                 ..node("const")
             },
-            Expr::Add(l, r) | Expr::Sub(l, r) | Expr::Mul(l, r) => Self {
+            Expr::Add(l, r) => Self {
                 left: boxed(l),
                 right: boxed(r),
-                ..node(match e {
-                    Expr::Add(..) => "add",
-                    Expr::Sub(..) => "sub",
-                    _ => "mul",
-                })
+                ..node("add")
+            },
+            Expr::Sub(l, r) => Self {
+                left: boxed(l),
+                right: boxed(r),
+                ..node("sub")
+            },
+            Expr::Mul(l, r) => Self {
+                left: boxed(l),
+                right: boxed(r),
+                ..node("mul")
             },
             Expr::DivConst(arg, divisor) => Self {
                 arg: boxed(arg),
                 divisor: decimal(divisor),
                 ..node("div_const")
             },
-            Expr::Max(args) | Expr::Min(args) => Self {
+            Expr::Max(args) => Self {
                 args: Some(args.iter().map(Self::from).collect()),
-                ..node(if matches!(e, Expr::Max(_)) {
-                    "max"
-                } else {
-                    "min"
-                })
+                ..node("max")
+            },
+            Expr::Min(args) => Self {
+                args: Some(args.iter().map(Self::from).collect()),
+                ..node("min")
             },
             Expr::Ceil(arg) => Self {
                 arg: boxed(arg),

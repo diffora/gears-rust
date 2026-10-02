@@ -14,21 +14,31 @@ use sea_orm::{ColumnTrait, Condition, DbErr, EntityTrait, Set, sea_query::OnConf
 use toolkit_db::secure::{AccessScope, DBRunner, ScopeError, SecureEntityExt, SecureInsertExt};
 use uuid::Uuid;
 
-fn corrupt() -> RepoError {
-    RepoError::CorruptRow("usage rating policy integrity".into())
+fn corrupt(detail: impl Into<String>) -> RepoError {
+    RepoError::CorruptRow(detail.into())
 }
 /// Verify the persisted content against its immutable digest before returning it.
 /// # Errors
 /// Invalid stored shape, reference or digest is an integrity failure.
 pub fn decode(row: e::Model) -> Result<UsageRatingPolicy, RepoError> {
-    let content: UsageRatingPolicyInput =
-        serde_json::from_value(row.content).map_err(|_| corrupt())?;
+    let content: UsageRatingPolicyInput = serde_json::from_value(row.content).map_err(|error| {
+        corrupt(format!(
+            "policy {} version {} content: {error}",
+            row.policy_id, row.version
+        ))
+    })?;
     let typed = (&content).into();
-    validate_policy_shape(&typed).map_err(|_| corrupt())?;
-    if row.version <= 0
-        || entry_policy_key(Some(&typed)).map(digest_text).as_deref() != Some(&row.digest)
-    {
-        return Err(corrupt());
+    validate_policy_shape(&typed).map_err(|error| {
+        corrupt(format!(
+            "policy {} version {} shape {}: {}",
+            row.policy_id, row.version, error.code, error
+        ))
+    })?;
+    if row.version <= 0 || digest_text(entry_policy_key(&typed)) != row.digest {
+        return Err(corrupt(format!(
+            "policy {} version {} digest {}",
+            row.policy_id, row.version, row.digest
+        )));
     }
     Ok(UsageRatingPolicy {
         policy_id: row.policy_id,
@@ -49,16 +59,16 @@ pub async fn intern(
     now: time::OffsetDateTime,
 ) -> Result<UsageRatingPolicy, RepoError> {
     let typed = content.into();
-    validate_policy_shape(&typed).map_err(|_| corrupt())?;
-    let digest = entry_policy_key(Some(&typed))
-        .map(digest_text)
-        .ok_or_else(corrupt)?;
+    validate_policy_shape(&typed)
+        .map_err(|error| corrupt(format!("policy shape {}: {error}", error.code)))?;
+    let digest = digest_text(entry_policy_key(&typed));
     let model = e::ActiveModel {
         tenant_id: Set(tenant),
         policy_id: Set(Uuid::now_v7()),
         version: Set(1),
         digest: Set(digest.clone()),
-        content: Set(serde_json::to_value(content).map_err(|_| corrupt())?),
+        content: Set(serde_json::to_value(content)
+            .map_err(|error| corrupt(format!("policy content: {error}")))?),
         created_at: Set(now),
         created_by: Set(actor),
     };
@@ -83,15 +93,18 @@ pub async fn intern(
         .filter(
             Condition::all()
                 .add(e::Column::TenantId.eq(tenant))
-                .add(e::Column::Digest.eq(digest)),
+                .add(e::Column::Digest.eq(digest.clone())),
         )
         .one(tx)
         .await
         .map_err(|e| driver_failure("policy dedup read".into(), e))?
-        .ok_or_else(corrupt)?;
+        .ok_or_else(|| corrupt(format!("policy digest {digest} was not stored")))?;
     let policy = decode(row)?;
     if &policy.content != content {
-        return Err(corrupt());
+        return Err(corrupt(format!(
+            "policy {} version {} digest collision",
+            policy.policy_id, policy.version
+        )));
     }
     Ok(policy)
 }
@@ -127,7 +140,10 @@ pub async fn for_entries(
     let mut result = std::collections::BTreeMap::new();
     for entry in entries {
         if entry.tenant_id != tenant {
-            return Err(corrupt());
+            return Err(corrupt(format!(
+                "entry {} tenant {} is not {tenant}",
+                entry.id, entry.tenant_id
+            )));
         }
         match (
             entry.usage_policy_id,
@@ -136,13 +152,26 @@ pub async fn for_entries(
         ) {
             (None, None, None) => {}
             (Some(id), Some(version), Some(digest)) => {
-                let policy = policies.get(&(id, version)).ok_or_else(corrupt)?;
+                let policy = policies.get(&(id, version)).ok_or_else(|| {
+                    corrupt(format!(
+                        "entry {} policy {id} version {version} is absent",
+                        entry.id
+                    ))
+                })?;
                 if &policy.digest != digest {
-                    return Err(corrupt());
+                    return Err(corrupt(format!(
+                        "entry {} policy {id} version {version} digest {digest}",
+                        entry.id
+                    )));
                 }
                 result.insert(entry.id, policy.clone());
             }
-            _ => return Err(corrupt()),
+            _ => {
+                return Err(corrupt(format!(
+                    "entry {} policy reference is partial",
+                    entry.id
+                )));
+            }
         }
     }
     Ok(result)

@@ -593,7 +593,12 @@ where
             // Published from the parser's own table, unless the field names the
             // operators its door actually serves.
             let ops: Vec<String> = match field.published_ops() {
-                Some(ops) => ops.iter().map(ToString::to_string).collect(),
+                Some(ops) => ops
+                    .iter()
+                    .copied()
+                    .filter(|op| kind.allows(*op))
+                    .map(|op| op.to_string())
+                    .collect(),
                 None => [
                     FilterOp::Eq,
                     FilterOp::Ne,

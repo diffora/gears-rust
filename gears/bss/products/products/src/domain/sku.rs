@@ -6,7 +6,7 @@ use crate::domain::derived;
 use crate::domain::error::DomainError;
 use crate::domain::recognized::{UsageRefAnswer, UsageTypeAnswer};
 use crate::domain::validation::ValidationReport;
-use bss_products_sdk::models::{BillingTiming, Lifecycle, SkuContent, SkuType};
+use bss_products_sdk::models::{BillingTiming, Lifecycle, LifecycleNext, SkuContent, SkuType};
 use uuid::Uuid;
 
 /// Input for a new draft SKU.
@@ -288,19 +288,21 @@ pub fn validate_type_change(references: u32) -> Result<(), DomainError> {
 }
 
 /// The lifecycle a head stores, and a dated change that may already be due (P-D-249).
+///
+/// `next` is absent, or it carries both the lifecycle and the date. A stored pair that sets only
+/// one of them is a corrupt row, refused before this value is built.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LifecycleHead {
     pub lifecycle: Lifecycle,
-    pub next: Option<Lifecycle>,
-    pub next_from: Option<time::Date>,
+    pub next: Option<LifecycleNext>,
 }
 
-/// The lifecycle in force on `today`: `next` when `next_from` has arrived, otherwise the stored
+/// The lifecycle in force on `today`: `next` when its date has arrived, otherwise the stored
 /// lifecycle. Reads use this; they do not wait for a write to fold the row (P-D-249).
 #[must_use]
 pub fn effective_lifecycle(head: LifecycleHead, today: time::Date) -> Lifecycle {
-    match (head.next, head.next_from) {
-        (Some(next), Some(from)) if from <= today => next,
+    match head.next {
+        Some(next) if next.from <= today => next.lifecycle,
         _ => head.lifecycle,
     }
 }

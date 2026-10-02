@@ -71,7 +71,9 @@ Holding multiple permissions never bypasses separation of duties.
 - Source: spec §2 decisions 4–8, 13–17, §2.2, §5–§8, §10, §12–§13; the phase 2 plan supplies delivery boundaries and D-399/D-400.
 
 D-503 refuses CalendarHour with any `min_fee` at price create, submit and apply
-(`UNSUPPORTED_TERMS`), and when publishing a revision selecting such approved money. A successor,
+(`UNSUPPORTED_TERMS`), and when publishing a revision selecting such approved money. The same
+predicate refuses a resource-scoped floor at those gates and at sale validation (D-504, amended
+2026-10-02). A successor,
 temporary pair and return keep their entry and therefore the same policy, window, scope and reset.
 Policy changes require a different entry and an explicitly selected revision. The existing dated
 SKU chain guard uses immutable Products history captured before the transaction.
