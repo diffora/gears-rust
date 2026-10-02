@@ -71,8 +71,9 @@
 | P-D-247 | L | A usage-type picker page may be kept privately for a minute | DECIDED 2026-10-01 · Owner, 2026-10-01 (asks v4, 56); phase 9 plan rev 4 (run 9.8); extends P-D-207 |
 | P-D-248 | H | A retire under review keeps the SKU's lifecycle; `retire_pending` is the fence | DECIDED 2026-10-01 · Owner, 2026-10-01; phase 9 plan rev 4 run 9.8d; amends P-D-189, P-D-208, P-D-211, P-D-213 |
 | P-D-249 | H | A lifecycle change honours its date | DECIDED 2026-10-01 · Owner, 2026-10-01; phase 9 plan rev 4 run 9.8d; amends P-D-191 |
-| P-D-250 | M | The approval units answer the approvals inbox through this gear's own doors (twin of pricing D-490) | DECIDED 2026-10-01 · Owner, 2026-10-01 (option A, "yes, A, agreed", then "write the plan"; Run 2 started before 9.5d-2); approvals inbox plan rev 2 (Run 2; design 1 and 3; plan review H1, H3, H4, M1, M2, M5, L1); amends P-D-227 |
+| P-D-250 | M | The approval units answer the approvals inbox through this gear's own doors (twin of pricing D-490) | DECIDED 2026-10-01 · Owner, 2026-10-01 (option A, "yes, A, agreed", then "write the plan"; Run 2 started before 9.5d-2); approvals inbox plan rev 2 (Run 2; design 1 and 3; plan review H1, H3, H4, M1, M2, M5, L1); amends P-D-227; amended by P-D-252 |
 | P-D-251 | H | A derived usage type may wrap one raw meter, and a usage SKU may move onto that wrapper | DECIDED 2026-10-02 · Owner, 2026-10-02 ("let's convert the ones we have into derived form"); amends P-D-230, P-D-232 |
+| P-D-252 | M | The inbox source judges `state` before a foreign empty page | DECIDED 2026-10-02 · phase 9 review; amends P-D-250 |
 
 ## Entries
 
@@ -1892,3 +1893,11 @@ of that meter.
   submit and apply, because versions are append-only (P-D-231).
 
 **Source:** Owner, 2026-10-02 ("let's convert the ones we have into derived form"). Amends P-D-230 and P-D-232.
+
+#### P-D-252 [M] The inbox source judges `state` before a foreign empty page
+
+**Status:** DECIDED 2026-10-02.
+
+A kind products does not record, and any `book_id`, stay an empty page and zero counts (P-D-250). The source judges `state` with the list door's rule first. An unknown state is 400 on `state` for the page and the counts, including when the kind is foreign or a book is set. A known state, or no state, then takes the foreign empty set.
+
+**Source:** Phase 9 review (products lens a). Amends P-D-250. Twin of pricing D-496.

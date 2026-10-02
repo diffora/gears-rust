@@ -176,6 +176,7 @@ impl ApprovalSourceV1 for ProductsApprovalSource {
         ctx: &SecurityContext,
         q: &SourcePageQuery,
     ) -> Result<SourcePage, CanonicalError> {
+        super::narrowing(q.narrowing.state.as_deref(), None, None)?;
         if foreign(&q.narrowing) {
             return Ok(SourcePage {
                 units: Vec::new(),
@@ -227,6 +228,7 @@ impl ApprovalSourceV1 for ProductsApprovalSource {
         ctx: &SecurityContext,
         n: &SourceNarrowing,
     ) -> Result<SourceCounts, CanonicalError> {
+        super::narrowing(n.state.as_deref(), None, None)?;
         if foreign(n) {
             return Ok(SourceCounts::default());
         }

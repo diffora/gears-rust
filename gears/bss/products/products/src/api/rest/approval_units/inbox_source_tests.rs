@@ -503,6 +503,34 @@ async fn a_foreign_kind_and_a_book_are_empty_not_the_doors_answer() {
 }
 
 #[tokio::test]
+async fn a_foreign_narrowing_still_refuses_an_unknown_state() {
+    let c = census(1).await;
+    let book = Uuid::new_v4().to_string();
+    for query in [
+        vec![("kind", "bogus"), ("state", "nope")],
+        vec![("book_id", book.as_str()), ("state", "nope")],
+    ] {
+        let n = narrowing(&query);
+        let page = c
+            .source
+            .page(
+                &c.author,
+                &SourcePageQuery {
+                    narrowing: n.clone(),
+                    order: Order::Desc,
+                    limit: 50,
+                    after: None,
+                    impact: false,
+                },
+            )
+            .await;
+        assert!(page.is_err(), "{query:?}: {page:?}");
+        let counts = c.source.counts(&c.author, &n).await;
+        assert!(counts.is_err(), "{query:?}: {counts:?}");
+    }
+}
+
+#[tokio::test]
 async fn the_counts_are_the_counts_doors() {
     let c = census(1).await;
     let (sku, _) = c.unit("A").await;

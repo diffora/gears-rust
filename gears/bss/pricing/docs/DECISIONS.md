@@ -117,7 +117,8 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-484 | M | A plan stores time-stable list facts; selling and change are derived from the day | DECIDED 2026-10-02 · Owner, 2026-10-01 (#31, form B); phase 9 plan rev 4 (run 9.8b; review N1, N2); amends D-453 |
 | D-485 | M | The plans list pages on the stored summary and counts the derived axes | DECIDED 2026-10-02 · Owner, 2026-10-01 (#31, form B); phase 9 plan rev 4 (run 9.8b; review N1, N7); amends D-434, D-460, D-453 |
 | D-486 | M | A SKU's entries narrow, order and page in memory | DECIDED 2026-10-01 · Owner, 2026-10-01 (#25, form A); phase 9 plan rev 4 (run 9.8c; N5); amends D-434 |
-| D-490 | M | Pricing's approval units answer the approvals inbox through pricing's own doors | DECIDED 2026-10-01 · Owner, 2026-10-01 (option A, "yes, A, agreed", then "write the plan"; Run 2 started before 9.5d-2); approvals inbox plan rev 2 (Run 2; design 1 and 3; plan review H1, H3, H4, M1, M5, L1); amends D-470 |
+| D-490 | M | Pricing's approval units answer the approvals inbox through pricing's own doors | DECIDED 2026-10-01 · Owner, 2026-10-01 (option A, "yes, A, agreed", then "write the plan"; Run 2 started before 9.5d-2); approvals inbox plan rev 2 (Run 2; design 1 and 3; plan review H1, H3, H4, M1, M5, L1); amends D-470; amended by D-496 |
+| D-496 | M | The inbox source judges `state` before a foreign empty page | DECIDED 2026-10-02 · phase 9 review; amends D-490 |
 | D-501 | H | Authorized SDK reads share the frozen preview snapshot and canonical JSON digests | DECIDED 2026-09-30 · Pricing Seam Contracts Task 1 |
 | D-502 | H | Immutable usage policies belong to entries and their semantic key | DECIDED 2026-10-01 · Pricing Seam Contracts Task 2; amends D-386, D-401, D-427 |
 | D-503 | H | Exact meter evidence gates usage publication and stays out of historical reads | DECIDED 2026-10-01 · Pricing Seam Contracts Task 3; amended 2026-10-01 by the owner (E1a raw and E1b derived meters; products P-D-229 and rating T-D-39 on branch `bss/pricebook-meters`); amended 2026-10-01 by products P-D-233 (E1b provided by Products, E1a still external) |
@@ -1368,6 +1369,16 @@ The approvals inbox (`bss-approvals`, AP-D-1 to AP-D-4) serves ONE paged list, O
 - **The tests.** `tests/approvals_inbox_source.rs` holds the census: the same request through the door (the router `module.rs` serves) and through the source answers equal status, code and body bytes. It covers the list in both orders after any key, under six narrowings, with and without the impact; the list's and the counts' refusals (an unknown state, a `ref_id` and a `book_id` that differ, the grant), rendered at the door's path through the same error layer; the counts under six narrowings; the card, its miss and its grant; every vote refusal (an unreadable body, a missing key, `GENERATION_MISMATCH`, `NOTE_REQUIRED`, `NOTE_TOO_LONG`, `BODY_UNEXPECTED`, `SOD_VIOLATION`, `NOT_SUBMITTER`, the grant, 404, `DUPLICATE_VOTE`, `IDEMPOTENCY_CONFLICT`, `UNIT_ALREADY_DECIDED`); and `UNIT_STALE` with its `generation`. A source vote and a door vote with one key replay once, in both orders. The QueryRecorder pins the page at three statements on pricing's tables for 10 and for 100 units, every one in the list's transaction, and the counts at one statement outside any transaction. The authz census (`tests/rest_authz.rs`) counts the source's one read judgement: `require_authenticated(` and `authz::access_scope(` each appear once more than before, in the helper the page and the counts share; the card and the votes add none, since they call the doors. The facade over both real gears in one process is products' `approval_units/inbox_e2e_tests.rs`, and its walk on Postgres is products' `tests/postgres_approvals_inbox.rs` (P-D-250).
 
 **Source:** Owner, 2026-10-01 (asked how to merge the two approval-unit methods into one, then "yes, A, agreed" for the read-and-route facade, then "write the plan"; Run 2 started before 9.5d-2 on the owner's word). Approvals inbox plan rev 2 (Run 2; design 1 and 3; plan review H1, H3, H4, M1, M5, L1). Amends D-470: its order is the inbox's merge key.
+
+**Amended by D-496 (2026-10-02).** A kind pricing does not record is an empty page only after `state` has been accepted. An unknown state is the list door's 400 `UNIT_STATE_INVALID`.
+
+#### D-496 [M] The inbox source judges `state` before a foreign empty page
+
+**Status:** DECIDED 2026-10-02.
+
+A kind pricing does not record stays an empty page and zero counts (D-490). The source judges `state` with `approvals::state_filter` first. An unknown state is 400 `UNIT_STATE_INVALID` for the page and the counts, including when the kind is one pricing does not record. A known state, or no state, then takes the foreign empty set.
+
+**Source:** Phase 9 review (products lens a; the pricing source). Amends D-490. Twin of products P-D-252.
 
 #### D-501 [H] Authorized SDK reads share the frozen preview snapshot and canonical JSON digests
 

@@ -486,7 +486,7 @@ inbox's `subject_live`; and the vote door through the approval-unit router under
 platform's error layer, so the grant, the replay endpoint and the answer's bytes are the door's. A `sku_change` or
 `sku_retire` unit's impact is pricing's `SkuUsage` of its SKU, from ONE `SkuUsageV1::usage` call per page, null when
 the port refuses, cannot answer or is absent; never `usage_sets`. A kind products does not record, and any `book_id`,
-are an empty page and zero counts.
+are an empty page and zero counts, after `state` has been accepted (P-D-252). An unknown state is the list door's 400.
 
 ### 3.6 Interactions & Sequences
 

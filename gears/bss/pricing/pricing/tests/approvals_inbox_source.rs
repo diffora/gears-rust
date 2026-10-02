@@ -422,6 +422,7 @@ async fn the_list_and_counts_refusals_are_the_doors() {
     let (a, b) = (Uuid::new_v4().to_string(), Uuid::new_v4().to_string());
     for (query, sees) in [
         (vec![("state", "bogus")], 400),
+        (vec![("kind", "sku_publish"), ("state", "bogus")], 400),
         (vec![("ref_id", a.as_str()), ("book_id", b.as_str())], 400),
     ] {
         for door_path in [UNITS.to_owned(), format!("{UNITS}/counts")] {

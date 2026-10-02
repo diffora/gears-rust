@@ -165,6 +165,7 @@ impl ApprovalSourceV1 for PricingApprovalSource {
         ctx: &SecurityContext,
         q: &SourcePageQuery,
     ) -> Result<SourcePage, CanonicalError> {
+        approvals::state_filter(q.narrowing.state.as_deref())?;
         if foreign_kind(&q.narrowing) {
             return Ok(SourcePage {
                 units: Vec::new(),
@@ -221,6 +222,7 @@ impl ApprovalSourceV1 for PricingApprovalSource {
         ctx: &SecurityContext,
         n: &SourceNarrowing,
     ) -> Result<SourceCounts, CanonicalError> {
+        approvals::state_filter(n.state.as_deref())?;
         if foreign_kind(n) {
             return Ok(SourceCounts::default());
         }
