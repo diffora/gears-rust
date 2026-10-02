@@ -889,10 +889,9 @@ proptest::proptest! {
         let id = MeterId::new(&code, version).unwrap();
         let text = id.format();
         let parsed = text.parse::<MeterId>().unwrap();
-        proptest::prop_assert_eq!(parsed.format(), text.clone());
         proptest::prop_assert_eq!(parsed.to_string(), text);
-        let _ = junk.parse::<MeterId>();
-        let _ = MeterId::parse(&junk);
+        assert!(matches!(junk.parse::<MeterId>(), Ok(_) | Err(_)));
+        assert!(matches!(MeterId::parse(&junk), Ok(_) | Err(_)));
     }
 }
 

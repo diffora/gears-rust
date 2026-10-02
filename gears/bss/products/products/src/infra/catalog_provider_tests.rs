@@ -11,6 +11,10 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 #[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one fixture covers the published page and the fenced and dated heads"
+)]
 async fn both_transports_serve_the_same_published_catalog_and_pages() {
     let (db, scope, tenant, _dsn) = test_db().await;
     let conn = db.conn().unwrap();

@@ -207,6 +207,6 @@ proptest::proptest! {
     #[test]
     fn decode_of_arbitrary_bytes_does_not_panic(raw in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..48)) {
         let token = URL_SAFE_NO_PAD.encode(&raw);
-        let _ = cursor::decode(&token);
+        assert!(matches!(cursor::decode(&token), Ok(_) | Err(_)));
     }
 }

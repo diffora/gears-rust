@@ -133,7 +133,7 @@ impl AuthoringState {
     }
 }
 /// The enforcer and the canonical error layer the served gear and the in-process vote share.
-#[must_use]
+#[must_use = "the layered router is what the gear and the inbox serve"]
 pub fn with_caller_layers(router: Router, enforcer: PolicyEnforcer) -> Router {
     router
         .layer(Extension(enforcer))
