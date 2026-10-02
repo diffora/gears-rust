@@ -55,6 +55,19 @@ async fn a_retiring_row_keeps_its_prior_lifecycle_and_the_checks_hold() {
          'deprecated','a','2026-09-01','2026-09-01')",
     )
     .await;
+    exec(
+        &db,
+        "INSERT INTO products_sku_version (sku_id,tenant_id,published_version,effective_from,content,created_at) \
+         VALUES ('live','t',1,'2026-09-01','{\"name\":\"Live\"}','2026-09-01')",
+    )
+    .await;
+    exec(
+        &db,
+        "INSERT INTO products_sku_reference (id,tenant_id,sku_id,owner_gear,ref_kind,ref_id,state,\
+         reserved_by,reserved_at,forced) VALUES ('r','t','live','pricing','price_book_entry','ref',\
+         'reserved','a','2026-09-01',0)",
+    )
+    .await;
     super::Migration.up(&manager).await.unwrap();
 
     assert_eq!(
@@ -75,6 +88,46 @@ async fn a_retiring_row_keeps_its_prior_lifecycle_and_the_checks_hold() {
         .as_deref(),
         Some("deprecated 0")
     );
+    assert_eq!(
+        cell(
+            &db,
+            "SELECT content AS v FROM products_sku_version WHERE sku_id = 'live'"
+        )
+        .await
+        .as_deref(),
+        Some("{\"name\":\"Live\"}")
+    );
+    assert_eq!(
+        cell(
+            &db,
+            "SELECT state AS v FROM products_sku_reference WHERE id = 'r'"
+        )
+        .await
+        .as_deref(),
+        Some("reserved")
+    );
+    let names = db
+        .query_all_raw(Statement::from_string(
+            DbBackend::Sqlite,
+            "SELECT name AS v FROM sqlite_master WHERE type IN ('index','trigger') \
+             AND tbl_name IN ('products_sku_version','products_sku_reference')"
+                .to_owned(),
+        ))
+        .await
+        .unwrap();
+    let kept: Vec<String> = names
+        .into_iter()
+        .filter_map(|row| row.try_get("", "v").ok())
+        .collect();
+    for name in [
+        "ix_products_sku_version_as_of",
+        "products_sku_version_no_update",
+        "products_sku_version_no_delete",
+        "uq_products_sku_reference_live",
+        "ix_products_sku_reference_live",
+    ] {
+        assert!(kept.iter().any(|kept| kept == name), "{name} in {kept:?}");
+    }
     let columns = db
         .query_all_raw(Statement::from_string(
             DbBackend::Sqlite,
@@ -97,12 +150,12 @@ async fn a_retiring_row_keeps_its_prior_lifecycle_and_the_checks_hold() {
         "UPDATE products_sku SET lifecycle_next = 'retired', lifecycle_next_from = '2026-11-01' WHERE id = 'live'",
         "UPDATE products_sku SET lifecycle_next = 'deprecated' WHERE id = 'live'",
     ] {
-        assert!(
-            db.execute_raw(Statement::from_string(DbBackend::Sqlite, sql.to_owned()))
-                .await
-                .is_err(),
-            "{sql} must fail a CHECK"
-        );
+        let err = db
+            .execute_raw(Statement::from_string(DbBackend::Sqlite, sql.to_owned()))
+            .await
+            .expect_err("the CHECK refuses the write");
+        let text = err.to_string();
+        assert!(text.contains("CHECK constraint failed"), "{sql}: {text}");
     }
     exec(
         &db,

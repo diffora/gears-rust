@@ -392,16 +392,16 @@ async fn refuse_moved_pin(
         proposed_ref,
     )
     .await?;
-    if derived::pin_refuses(
-        current_ref,
-        proposed_ref,
-        derived::wrap_exception(
-            current_ref,
-            proposed_ref,
-            current.unit.as_deref(),
-            proposed.unit.as_deref(),
-            stored.as_ref(),
-        ),
+    if derived::pin_check(
+        derived::RefUnit {
+            usage_type_ref: current_ref,
+            unit: current.unit.as_deref(),
+        },
+        derived::RefUnit {
+            usage_type_ref: proposed_ref,
+            unit: proposed.unit.as_deref(),
+        },
+        stored.as_ref(),
     ) {
         return Err(derived::pin_immutable().into());
     }

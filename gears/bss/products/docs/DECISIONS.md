@@ -1497,6 +1497,8 @@ and what the doors answer. Migration `m20261001_000012_derived_usage_type`, the 
     into a usage policy: `meter_ref`, `canonical_unit` (the output unit) and `accrual_policy_version`
     (`derived-v1:<digest>`). An `n` that is not a canonical decimal names no version: 404.
 
+  **Amended 2026-10-02 (fix run F2 part b).** A path `code` that is not the meter-id code, or an `n` that is not a canonical version, is that same 404. The 404 detail is the fixed sentence `derived usage type` and does not repeat the path. A type with no stored version is a corrupt row on the version-create door, as it is on the list. An invalid decimal's detail includes the parse error.
+
   Each write takes an optional `Idempotency-Key` (P-D-198), looked up before the body is judged or the catalog asked, and
   claimed and answered in the write's transaction. 503 is declared on every door; the served text names every code.
 - **The grants (O-3).** The writes ask `author` on the new PDP resource `derived_usage_type`
@@ -1782,6 +1784,8 @@ A `sku_change` whose `effective_from` is after today stores `lifecycle_next` and
 **Amendment (2026-10-01, run 9.8d-fix).** An act's history records a next lifecycle only when that act changed `lifecycle_next`: the next it stored, or the lifecycle in force when it cleared the next. An act that leaves a pending next untouched records the lifecycle in force. The list `$filter` on `lifecycle` is `eq`, `ne` or `in`, and those joined by `and`, compared through the `CASE`. A `lifecycle` term under `or` or `not`, or `contains`, `startswith` or `endswith` on `lifecycle`, is 400 `INVALID_FILTER` on the list and on the counts. The stored column is not compared.
 
 **Amended 2026-10-02.** The 400 detail names those accepted shapes and the refused shapes. It does not say the term is not counted.
+
+**Amended 2026-10-02 (fix run F2 part b).** A stored `lifecycle_next` pair that sets only one of the two columns is a corrupt row. A filter compares the lifecycle in force as an OR of the due next and the stored lifecycle, so the comparison can use an index. The counts projection keeps the `CASE`, because Postgres treats two copies of that expression as different `GROUP BY` terms.
 
 **Source:** Owner, 2026-10-01. Phase 9 plan rev 4, run 9.8d. Amends P-D-191.
 

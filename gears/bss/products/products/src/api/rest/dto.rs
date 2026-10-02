@@ -56,7 +56,7 @@ pub struct LifecycleNextDto {
 }
 /// Wire representation of the registry Sku.
 #[toolkit_macros::api_dto(response)]
-#[allow(
+#[expect(
     clippy::struct_excessive_bools,
     reason = "sellable, type_change_pending and retire_pending are three independent flags (P-D-248)"
 )]
@@ -1058,10 +1058,10 @@ impl ProductsDerivedExpr {
         }
         let decimal = |text: &Option<String>, field: &str| {
             let text = text.as_deref().unwrap_or_default();
-            text.parse::<rust_decimal::Decimal>().map_err(|_| {
+            text.parse::<rust_decimal::Decimal>().map_err(|err| {
                 declaration_invalid(
                     "invalid_decimal",
-                    format!("{path}.{field}: `{text}` is not a decimal"),
+                    format!("{path}.{field}: `{text}` is not a decimal: {err}"),
                 )
             })
         };
@@ -1147,7 +1147,15 @@ impl From<&bss_products_sdk::derived::Expr> for ProductsDerivedExpr {
         use bss_products_sdk::derived::Expr;
         let node = |op: &str| Self {
             op: op.to_owned(),
-            ..Self::default()
+            name: None,
+            value: None,
+            left: None,
+            right: None,
+            arg: None,
+            args: None,
+            divisor: None,
+            scale: None,
+            mode: None,
         };
         let boxed = |e: &Expr| Some(Box::new(Self::from(e)));
         let decimal = |d: &rust_decimal::Decimal| Some(d.normalize().to_string());
@@ -1160,27 +1168,33 @@ impl From<&bss_products_sdk::derived::Expr> for ProductsDerivedExpr {
                 value: decimal(value),
                 ..node("const")
             },
-            Expr::Add(l, r) | Expr::Sub(l, r) | Expr::Mul(l, r) => Self {
+            Expr::Add(l, r) => Self {
                 left: boxed(l),
                 right: boxed(r),
-                ..node(match e {
-                    Expr::Add(..) => "add",
-                    Expr::Sub(..) => "sub",
-                    _ => "mul",
-                })
+                ..node("add")
+            },
+            Expr::Sub(l, r) => Self {
+                left: boxed(l),
+                right: boxed(r),
+                ..node("sub")
+            },
+            Expr::Mul(l, r) => Self {
+                left: boxed(l),
+                right: boxed(r),
+                ..node("mul")
             },
             Expr::DivConst(arg, divisor) => Self {
                 arg: boxed(arg),
                 divisor: decimal(divisor),
                 ..node("div_const")
             },
-            Expr::Max(args) | Expr::Min(args) => Self {
+            Expr::Max(args) => Self {
                 args: Some(args.iter().map(Self::from).collect()),
-                ..node(if matches!(e, Expr::Max(_)) {
-                    "max"
-                } else {
-                    "min"
-                })
+                ..node("max")
+            },
+            Expr::Min(args) => Self {
+                args: Some(args.iter().map(Self::from).collect()),
+                ..node("min")
             },
             Expr::Ceil(arg) => Self {
                 arg: boxed(arg),

@@ -256,16 +256,16 @@ impl SkuChange {
                 }
                 _ => None,
             };
-            if derived::pin_refuses(
-                current_ref,
-                proposed_ref,
-                derived::wrap_exception(
-                    current_ref,
-                    proposed_ref,
-                    s.unit.as_deref(),
-                    proposed.content.unit.as_deref(),
-                    stored.as_ref(),
-                ),
+            if derived::pin_check(
+                derived::RefUnit {
+                    usage_type_ref: current_ref,
+                    unit: s.unit.as_deref(),
+                },
+                derived::RefUnit {
+                    usage_type_ref: proposed_ref,
+                    unit: proposed.content.unit.as_deref(),
+                },
+                stored.as_ref(),
             ) {
                 return Err(invalid(
                     derived::PIN_IMMUTABLE,

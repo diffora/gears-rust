@@ -715,9 +715,17 @@ async fn every_vote_refusal_is_the_vote_doors_byte_for_byte() {
             "7",
             false,
             403,
-            "",
+            "NOT_SUBMITTER",
         ),
-        (&one, approve, gen1.into(), "8", true, 403, ""),
+        (
+            &one,
+            approve,
+            gen1.into(),
+            "8",
+            true,
+            403,
+            "PERMISSION_DENIED",
+        ),
     ];
     for (who, action, body, n, denied, status, code) in cases {
         let (door, source) = if denied {

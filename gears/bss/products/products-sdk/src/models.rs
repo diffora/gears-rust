@@ -120,7 +120,7 @@ pub struct Category {
 /// tuples, which no door sends.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[allow(
+#[expect(
     clippy::struct_excessive_bools,
     reason = "sellable, type_change_pending and retire_pending are three independent flags (P-D-248)"
 )]
@@ -239,7 +239,7 @@ mod iso_date {
 
     const FORMAT: &str = "[year]-[month]-[day]";
 
-    #[allow(
+    #[expect(
         clippy::trivially_copy_pass_by_ref,
         reason = "serde with requires a borrowed field serializer"
     )]

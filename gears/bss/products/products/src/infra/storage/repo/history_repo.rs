@@ -13,7 +13,7 @@ use crate::infra::storage::{
 use bss_products_sdk::models::Lifecycle;
 use sea_orm::sea_query::Query;
 use sea_orm::{ColumnTrait, Condition, DbErr, EntityTrait};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use time::OffsetDateTime;
 use toolkit_db::odata::sea_orm_filter::{
     FieldToColumn, LimitCfg, ODataFieldMapping, PaginateOdataTryError, paginate_odata_try,
@@ -123,7 +123,13 @@ struct MoveRow {
     to: Option<String>,
     unit_id: Option<Uuid>,
 }
-#[allow(
+
+fn remember(seen: &mut HashSet<Uuid>, context: &mut Vec<MoveRow>, row: MoveRow) {
+    if seen.insert(row.audit_id) {
+        context.push(row);
+    }
+}
+#[expect(
     clippy::unnecessary_wraps,
     reason = "the pager maps a row through a Result, and this step does not fail"
 )]
@@ -146,11 +152,27 @@ fn both(token: Option<&str>) -> (Option<String>, Option<String>) {
     let owned = token.map(str::to_owned);
     (owned.clone(), owned)
 }
+const LEGACY_RETIRING: &str = "retiring";
+const RETIRED: &str = "retired";
+const ACTION_SUBMIT: &str = "approval.submit";
+const ACTION_VOTE: &str = "approval.vote";
+const ACTION_REFRESHED: &str = "approval.refreshed";
+const ACTION_APPLIED: &str = "approval.applied";
+const ACTION_APPROVED: &str = "approval.approved";
+const ACTION_REJECTED: &str = "approval.rejected";
+const ACTION_WITHDRAWN: &str = "approval.withdrawn";
+const ACTION_UNFENCE: &str = "sku.unfence";
+const ACTION_FENCE_EXPIRED: &str = "sku.fence_expired";
+
+fn is_retiring(token: Option<&str>) -> bool {
+    token == Some(LEGACY_RETIRING)
+}
+
 fn non_retiring<'a>(from: Option<&'a str>, to: Option<&'a str>) -> Option<&'a str> {
     [from, to]
         .into_iter()
         .flatten()
-        .find(|token| *token != "retiring")
+        .find(|token| *token != LEGACY_RETIRING)
 }
 /// The lifecycle a retire submit really left, when its stored `from` is already `retiring`:
 /// the earlier row that entered `retiring`, or nothing when that row is not in hand.
@@ -159,8 +181,8 @@ fn entered_from(context: &[MoveRow], before: Uuid) -> Option<String> {
         .iter()
         .filter(|row| {
             row.audit_id < before
-                && row.to.as_deref() == Some("retiring")
-                && row.from.as_deref() != Some("retiring")
+                && is_retiring(row.to.as_deref())
+                && !is_retiring(row.from.as_deref())
         })
         .max_by_key(|row| row.audit_id)
         .and_then(|row| row.from.clone())
@@ -168,11 +190,11 @@ fn entered_from(context: &[MoveRow], before: Uuid) -> Option<String> {
 fn submit_lifecycle(context: &[MoveRow], unit: Uuid) -> Option<String> {
     let submit = context
         .iter()
-        .filter(|row| row.unit_id == Some(unit) && row.action == "approval.submit")
+        .filter(|row| row.unit_id == Some(unit) && row.action == ACTION_SUBMIT)
         .min_by_key(|row| row.audit_id)?;
     match submit.from.as_deref() {
-        Some("retiring") => entered_from(context, submit.audit_id),
-        other if submit.to.as_deref() == Some("retiring") => other.map(str::to_owned),
+        Some(LEGACY_RETIRING) => entered_from(context, submit.audit_id),
+        other if is_retiring(submit.to.as_deref()) => other.map(str::to_owned),
         other => non_retiring(other, submit.to.as_deref()).map(str::to_owned),
     }
 }
@@ -181,38 +203,36 @@ fn submit_lifecycle(context: &[MoveRow], unit: Uuid) -> Option<String> {
 fn map_legacy(row: &Staged, context: &[MoveRow]) -> (Option<String>, Option<String>) {
     let from = row.from_raw.as_deref();
     let to = row.to_raw.as_deref();
-    if from != Some("retiring") && to != Some("retiring") {
+    if !is_retiring(from) && !is_retiring(to) {
         return (row.from_raw.clone(), row.to_raw.clone());
     }
     let resolved = row.unit_id.and_then(|id| submit_lifecycle(context, id));
     match row.action.as_str() {
-        "approval.submit" if to == Some("retiring") && from != Some("retiring") => both(from),
-        "approval.submit" => match resolved.or_else(|| entered_from(context, row.audit_id)) {
+        ACTION_SUBMIT if is_retiring(to) && !is_retiring(from) => both(from),
+        ACTION_SUBMIT => match resolved.or_else(|| entered_from(context, row.audit_id)) {
             Some(lifecycle) => both(Some(lifecycle.as_str())),
             None => (None, None),
         },
-        "approval.vote" | "approval.refreshed" => match resolved {
+        ACTION_VOTE | ACTION_REFRESHED => match resolved {
             Some(lifecycle) => both(Some(lifecycle.as_str())),
             None => (None, None),
         },
-        "approval.applied" | "approval.approved"
-            if from == Some("retiring") && to == Some("retired") =>
-        {
+        ACTION_APPLIED | ACTION_APPROVED if is_retiring(from) && to == Some(RETIRED) => {
             match resolved {
-                Some(lifecycle) => (Some(lifecycle), Some("retired".to_owned())),
-                None => (None, Some("retired".to_owned())),
+                Some(lifecycle) => (Some(lifecycle), Some(RETIRED.to_owned())),
+                None => (None, Some(RETIRED.to_owned())),
             }
         }
-        "approval.rejected" | "approval.withdrawn" | "sku.unfence" | "sku.fence_expired" => {
+        ACTION_REJECTED | ACTION_WITHDRAWN | ACTION_UNFENCE | ACTION_FENCE_EXPIRED => {
             match non_retiring(from, to).map(str::to_owned).or(resolved) {
                 Some(lifecycle) => both(Some(lifecycle.as_str())),
                 None => (None, None),
             }
         }
-        _ if to == Some("retiring") && from != Some("retiring") => both(from),
-        _ if from == Some("retiring") && to == Some("retired") => match resolved {
-            Some(lifecycle) => (Some(lifecycle), Some("retired".to_owned())),
-            None => (None, Some("retired".to_owned())),
+        _ if is_retiring(to) && !is_retiring(from) => both(from),
+        _ if is_retiring(from) && to == Some(RETIRED) => match resolved {
+            Some(lifecycle) => (Some(lifecycle), Some(RETIRED.to_owned())),
+            None => (None, Some(RETIRED.to_owned())),
         },
         _ => match non_retiring(from, to).map(str::to_owned).or(resolved) {
             Some(lifecycle) => both(Some(lifecycle.as_str())),
@@ -264,8 +284,8 @@ fn history_condition(tenant: Uuid, sku: Uuid) -> Condition {
 fn retiring_moves(tenant: Uuid, sku: Uuid) -> Condition {
     history_condition(tenant, sku).add(
         Condition::any()
-            .add(audit_log::Column::FromLifecycle.eq("retiring"))
-            .add(audit_log::Column::ToLifecycle.eq("retiring")),
+            .add(audit_log::Column::FromLifecycle.eq(LEGACY_RETIRING))
+            .add(audit_log::Column::ToLifecycle.eq(LEGACY_RETIRING)),
     )
 }
 
@@ -337,9 +357,12 @@ pub async fn page_sku_history(
             unit_id: row.unit_id,
         })
         .collect();
-    let kinds: HashMap<Uuid, String> = if units.is_empty() {
-        HashMap::new()
-    } else {
+    let mut seen: HashSet<Uuid> = context.iter().map(|row| row.audit_id).collect();
+    let legacy = page
+        .items
+        .iter()
+        .any(|row| is_retiring(row.from_raw.as_deref()) || is_retiring(row.to_raw.as_deref()));
+    if legacy && !units.is_empty() {
         let unit_rows = audit_log::Entity::find()
             .secure()
             .scope_with(&scope)
@@ -353,20 +376,24 @@ pub async fn page_sku_history(
             .await
             .map_err(|e| SkuListError::Repo(driver_failure("read history unit rows".into(), e)))?;
         for row in unit_rows {
-            if context.iter().any(|seen| seen.audit_id == row.audit_id) {
-                continue;
-            }
-            let unit_id = (row.subject_kind == "approval_unit")
-                .then_some(row.subject_id)
-                .flatten();
-            context.push(MoveRow {
-                audit_id: row.audit_id,
-                action: row.action,
-                from: row.from_lifecycle,
-                to: row.to_lifecycle,
-                unit_id,
-            });
+            remember(
+                &mut seen,
+                &mut context,
+                MoveRow {
+                    audit_id: row.audit_id,
+                    action: row.action,
+                    from: row.from_lifecycle,
+                    to: row.to_lifecycle,
+                    unit_id: (row.subject_kind == "approval_unit")
+                        .then_some(row.subject_id)
+                        .flatten(),
+                },
+            );
         }
+    }
+    let kinds: HashMap<Uuid, String> = if units.is_empty() {
+        HashMap::new()
+    } else {
         approval_unit::Entity::find()
             .secure()
             .scope_with(&scope)
@@ -393,9 +420,7 @@ pub async fn page_sku_history(
             })
             .collect::<Result<_, _>>()?
     };
-    if page.items.iter().any(|row| {
-        row.from_raw.as_deref() == Some("retiring") || row.to_raw.as_deref() == Some("retiring")
-    }) {
+    if legacy {
         let retiring = audit_log::Entity::find()
             .secure()
             .scope_with(&scope)
@@ -404,19 +429,19 @@ pub async fn page_sku_history(
             .await
             .map_err(|e| SkuListError::Repo(driver_failure("read retiring history".into(), e)))?;
         for row in retiring {
-            if context.iter().any(|seen| seen.audit_id == row.audit_id) {
-                continue;
-            }
-            let unit_id = (row.subject_kind == "approval_unit")
-                .then_some(row.subject_id)
-                .flatten();
-            context.push(MoveRow {
-                audit_id: row.audit_id,
-                action: row.action,
-                from: row.from_lifecycle,
-                to: row.to_lifecycle,
-                unit_id,
-            });
+            remember(
+                &mut seen,
+                &mut context,
+                MoveRow {
+                    audit_id: row.audit_id,
+                    action: row.action,
+                    from: row.from_lifecycle,
+                    to: row.to_lifecycle,
+                    unit_id: (row.subject_kind == "approval_unit")
+                        .then_some(row.subject_id)
+                        .flatten(),
+                },
+            );
         }
     }
     let items = page

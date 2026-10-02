@@ -332,23 +332,36 @@ fn wraps_is_the_identity_of_that_one_raw_meter_in_the_sku_unit() {
     assert!(!wraps("usage:storage ", &decl, "GB"), "not whole-string");
     assert!(!wraps(&format!("{raw}x"), &decl, "GB"));
     let wrapped = Some("products.derived/wrap@1");
-    assert!(wrap_exception(
+    let moved = |current_ref, proposed_ref, current_unit, proposed_unit, stored| {
+        wrap_exception(
+            RefUnit {
+                usage_type_ref: current_ref,
+                unit: current_unit,
+            },
+            RefUnit {
+                usage_type_ref: proposed_ref,
+                unit: proposed_unit,
+            },
+            stored,
+        )
+    };
+    assert!(moved(
         Some(raw),
         wrapped,
         Some("GB"),
         Some("GB"),
-        Some(&decl),
+        Some(&decl)
     ));
     assert!(
-        !wrap_exception(Some(raw), wrapped, Some("GB"), Some("MB"), Some(&decl)),
+        !moved(Some(raw), wrapped, Some("GB"), Some("MB"), Some(&decl)),
         "the change moves the unit"
     );
     assert!(
-        !wrap_exception(Some(raw), wrapped, Some("GB"), Some("GB"), None),
+        !moved(Some(raw), wrapped, Some("GB"), Some("GB"), None),
         "a missing version is not a wrap"
     );
     assert!(
-        !wrap_exception(wrapped, Some(raw), Some("GB"), Some("GB"), Some(&decl)),
+        !moved(wrapped, Some(raw), Some("GB"), Some("GB"), Some(&decl)),
         "derived to raw"
     );
     assert!(pin_refuses(wrapped, Some(raw), false));

@@ -4,7 +4,7 @@ use toolkit_db_macros::Scopable;
 
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Scopable)]
 #[sea_orm(table_name = "products_sku")]
-#[allow(
+#[expect(
     clippy::struct_excessive_bools,
     reason = "sellable, type_change_pending and retire_pending are three independent flags (P-D-248)"
 )]

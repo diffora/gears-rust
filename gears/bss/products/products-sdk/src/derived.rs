@@ -834,6 +834,20 @@ pub struct MeterId {
     version: u32,
 }
 
+impl std::fmt::Display for MeterId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{DERIVED_METER_PREFIX}{}@{}", self.code, self.version)
+    }
+}
+
+impl std::str::FromStr for MeterId {
+    type Err = MeterIdError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse(value)
+    }
+}
+
 impl MeterId {
     /// A meter id from its parts.
     ///
@@ -907,7 +921,7 @@ impl MeterId {
     /// `products.derived/<code>@<n>`.
     #[must_use]
     pub fn format(&self) -> String {
-        format!("{DERIVED_METER_PREFIX}{}@{}", self.code, self.version)
+        self.to_string()
     }
 
     /// The pricing meter reference: `(usage_type_id, version)`, which is

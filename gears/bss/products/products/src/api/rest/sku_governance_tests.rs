@@ -2856,7 +2856,7 @@ async fn bound_registry_serves_a_principal_without_a_subject_type() {
     );
 }
 #[tokio::test]
-async fn bound_registry_retire_pending_matches_rest_refusal() {
+async fn bound_registry_type_change_fence_matches_rest_refusal() {
     use bss_products_sdk::{ReferenceKind, ReferenceRegistryV1};
     let f = Fixture::new(0).await;
     f.publish().await;
@@ -2868,7 +2868,7 @@ async fn bound_registry_retire_pending_matches_rest_refusal() {
         &scope,
         f.tenant,
         f.id,
-        repo::Fence::Retire,
+        repo::Fence::TypeChange,
         uuid::Uuid::new_v4(),
         time::OffsetDateTime::now_utc(),
     )

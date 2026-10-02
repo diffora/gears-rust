@@ -21,7 +21,13 @@ fn reservations_require_an_unfenced_live_sku() {
         "SKU_FENCED"
     );
     assert_eq!(
-        reservation_allowed(Lifecycle::Published, true)
+        reservation_allowed(Lifecycle::Draft, false)
+            .unwrap_err()
+            .code(),
+        "SKU_FENCED"
+    );
+    assert_eq!(
+        reservation_allowed(Lifecycle::Retired, false)
             .unwrap_err()
             .code(),
         "SKU_FENCED"

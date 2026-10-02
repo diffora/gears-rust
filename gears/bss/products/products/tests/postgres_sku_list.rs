@@ -428,7 +428,10 @@ async fn a_picker_scope_filters_through_one_uuid_array_on_postgres() {
         .await
         .unwrap();
         assert_eq!(
-            page.items.into_iter().map(|sku| sku.code).collect::<Vec<_>>(),
+            page.items
+                .into_iter()
+                .map(|sku| sku.code)
+                .collect::<Vec<_>>(),
             ["A"],
             "priced_in and not_in_revision: {extra}"
         );
@@ -445,7 +448,10 @@ async fn a_picker_scope_filters_through_one_uuid_array_on_postgres() {
         .await
         .unwrap();
         assert_eq!(
-            page.items.into_iter().map(|sku| sku.code).collect::<Vec<_>>(),
+            page.items
+                .into_iter()
+                .map(|sku| sku.code)
+                .collect::<Vec<_>>(),
             ["D"],
             "not_priced_in and not_in_revision: {extra}"
         );
@@ -476,7 +482,10 @@ async fn a_picker_scope_filters_through_one_uuid_array_on_postgres() {
             assert!(sql.contains("AS uuid[]"), "{sql}");
         }
         if extra == 5000 {
-            assert_eq!(list_sql, first_list, "the statement does not grow with the set");
+            assert_eq!(
+                list_sql, first_list,
+                "the statement does not grow with the set"
+            );
         } else {
             first_list = list_sql;
         }
@@ -530,7 +539,11 @@ async fn skus_for_write_binds_one_uuid_array_on_postgres() {
         let sql = uuid_array_sql(&recorder);
         assert_eq!(sql.len(), 1, "{extra}: {sql:?}");
         assert_eq!(sql[0].matches("uuid[]").count(), 1, "{}", sql[0]);
-        assert!(sql[0].contains("CAST($") && sql[0].contains("AS uuid[]"), "{}", sql[0]);
+        assert!(
+            sql[0].contains("CAST($") && sql[0].contains("AS uuid[]"),
+            "{}",
+            sql[0]
+        );
         if extra == 5000 {
             assert_eq!(sql, first, "the statement does not grow with the set");
         } else {

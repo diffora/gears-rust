@@ -268,13 +268,7 @@ pub(crate) fn corrupt_row(err: &RepoError) -> CanonicalError {
 
 /// A derived-row failure. `CorruptRow` stays 500 with a fixed detail; every other repository failure keeps the
 /// shared mapping.
-pub(crate) fn read_failure(err: &RepoError) -> CanonicalError {
-    stored_row_error(err)
-}
-
-/// A derived-row failure. `CorruptRow` stays 500 with a fixed detail; every other repository failure keeps the
-/// shared mapping.
-fn stored_row_error(err: &RepoError) -> CanonicalError {
+pub(crate) fn stored_row_error(err: &RepoError) -> CanonicalError {
     if matches!(err, RepoError::CorruptRow(_)) {
         corrupt_row(err)
     } else {
@@ -300,15 +294,20 @@ pub(crate) async fn read_scope(
         })
 }
 
-/// The 404 of a code the tenant does not hold, or of a version its type does not.
-fn not_found(code: &str, version: Option<&str>) -> CanonicalError {
-    let what = version.map_or_else(
-        || format!("derived usage type {code}"),
-        |n| format!("derived usage type {code} version {n}"),
-    );
-    DerivedUsageTypeResource::not_found(what)
-        .with_resource(code.to_owned())
+/// The 404 of a code the tenant does not hold, or of a path that is not a meter id. The detail is
+/// fixed, so a path is never copied into the body (P-D-231).
+fn not_found() -> CanonicalError {
+    DerivedUsageTypeResource::not_found("derived usage type")
+        .with_resource("derived usage type")
         .create()
+}
+
+/// A path code the meter id accepts. Anything else is the same 404 as a missing type.
+fn path_code(code: &str) -> Result<(), CanonicalError> {
+    if MeterId::new(code, 1).is_err() {
+        return Err(not_found());
+    }
+    Ok(())
 }
 
 /// The meter id of a stored version; a stored code the id cannot carry is a corrupt row.
@@ -322,18 +321,24 @@ fn meter(t: &DerivedUsageType, version: u32) -> Result<ProductsDerivedMeterRef, 
     })
 }
 
+fn declaration_of(
+    t: &DerivedUsageType,
+    v: &DerivedUsageTypeVersion,
+) -> Result<ProductsDerivedDeclaration, RepoError> {
+    serde::Deserialize::deserialize(&v.declaration_json).map_err(|e| {
+        RepoError::CorruptRow(format!(
+            "derived usage type {} version {} declaration: {e}",
+            t.id, v.version
+        ))
+    })
+}
+
 /// A stored version as the doors answer it; its digest is the stored one.
 fn version_dto(
     t: &DerivedUsageType,
     v: &DerivedUsageTypeVersion,
 ) -> Result<ProductsDerivedUsageTypeVersion, RepoError> {
-    let declaration: ProductsDerivedDeclaration =
-        serde_json::from_value(v.declaration_json.clone()).map_err(|e| {
-            RepoError::CorruptRow(format!(
-                "derived usage type {} version {} declaration: {e}",
-                t.id, v.version
-            ))
-        })?;
+    let declaration = declaration_of(t, v)?;
     let canonical_unit = declaration.output_unit.clone();
     Ok(ProductsDerivedUsageTypeVersion {
         id: t.id,
@@ -501,6 +506,7 @@ async fn create_derived_usage_type_version(
     let tenant_id = ctx.subject_tenant_id();
     let actor = ctx.subject_id();
     let scope_tx = author_scope(&enforcer, &ctx).await?;
+    path_code(&code)?;
     let payload = json_body(body)?;
     let claim = replay::input(
         &state,
@@ -519,11 +525,10 @@ async fn create_derived_usage_type_version(
         .map_err(|e| stored_row_error(&e))?
         .is_none()
     {
-        return Err(not_found(&code, None));
+        return Err(not_found());
     }
     let (declaration_json, digest) = judged(&state, &ctx, &body.declaration).await?;
     let now = crate::infra::storage::stored_now();
-    let missing = code.clone();
     state
         .db
         .db()
@@ -541,16 +546,18 @@ async fn create_derived_usage_type_version(
                     let t = store::find_type(tx, &scope, tenant_id, &code)
                         .await
                         .map_err(TxError::Repo)?
-                        .ok_or(TxError::Refused(DomainError::NotFound {
-                            what: "derived_usage_type",
-                            id: Uuid::nil(),
-                        }))?;
+                        .ok_or(TxError::DerivedTypeMissing)?;
                     let latest = store::latest_versions(tx, &scope, tenant_id, &[t.id])
                         .await
                         .map_err(TxError::Repo)?
                         .get(&t.id)
                         .copied()
-                        .unwrap_or_default();
+                        .ok_or_else(|| {
+                            TxError::Repo(RepoError::CorruptRow(format!(
+                                "derived usage type {} has no version",
+                                t.id
+                            )))
+                        })?;
                     let version = latest.checked_add(1).ok_or_else(|| {
                         TxError::Repo(RepoError::CorruptRow(format!(
                             "derived usage type {} has no version after {latest}",
@@ -587,10 +594,7 @@ async fn create_derived_usage_type_version(
         .await
         .map_err(|e| match e {
             // The type went between the check and the write: the same 404, by its code.
-            TxError::Refused(DomainError::NotFound {
-                what: "derived_usage_type",
-                ..
-            }) => not_found(&missing, None),
+            TxError::DerivedTypeMissing => not_found(),
             other => tx_to_canonical(other),
         })
 }
@@ -680,12 +684,13 @@ async fn get_derived_usage_type(
 ) -> Result<Json<ProductsDerivedUsageType>, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let scope = read_scope(&enforcer, &ctx).await?.tenant_only();
+    path_code(&code)?;
     let tenant = ctx.subject_tenant_id();
     let conn = state.db.conn().map_err(|e| tx_to_canonical(e.into()))?;
     let t = store::find_type(&conn, &scope, tenant, &code)
         .await
         .map_err(|e| stored_row_error(&e))?
-        .ok_or_else(|| not_found(&code, None))?;
+        .ok_or_else(not_found)?;
     let versions = store::list_versions(&conn, &scope, tenant, t.id)
         .await
         .map_err(|e| stored_row_error(&e))?
@@ -721,19 +726,20 @@ async fn get_derived_usage_type_version(
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let scope = read_scope(&enforcer, &ctx).await?.tenant_only();
+    path_code(&code)?;
     let Ok(version) = MeterId::parse_version(&n) else {
-        return Err(not_found(&code, Some(&n)));
+        return Err(not_found());
     };
     let tenant = ctx.subject_tenant_id();
     let conn = state.db.conn().map_err(|e| tx_to_canonical(e.into()))?;
     let t = store::find_type(&conn, &scope, tenant, &code)
         .await
         .map_err(|e| stored_row_error(&e))?
-        .ok_or_else(|| not_found(&code, None))?;
+        .ok_or_else(not_found)?;
     let v = store::find_version(&conn, &scope, tenant, t.id, version)
         .await
         .map_err(|e| stored_row_error(&e))?
-        .ok_or_else(|| not_found(&code, Some(&n)))?;
+        .ok_or_else(not_found)?;
     let body = version_dto(&t, &v).map_err(|e| stored_row_error(&e))?;
     Ok(Json(body).into_response())
 }
@@ -756,7 +762,7 @@ pub(crate) async fn stored_version(
     let Some(v) = store::find_version(conn, scope, tenant, t.id, meter.version()).await? else {
         return Ok(None);
     };
-    let declaration = version_dto(&t, &v)?.declaration;
+    let declaration = declaration_of(&t, &v)?;
     Ok(Some((v, declaration)))
 }
 
@@ -806,7 +812,7 @@ pub(super) async fn wrap_declaration(
     let conn = state.db.conn().map_err(|e| tx_to_canonical(e.into()))?;
     stored_declaration(&conn, &scope, ctx.subject_tenant_id(), reference)
         .await
-        .map_err(|e| read_failure(&e))
+        .map_err(|e| stored_row_error(&e))
 }
 
 /// A usage SKU's derived `reference` as the tenant's store holds it (P-D-232): the version its meter

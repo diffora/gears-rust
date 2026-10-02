@@ -8,6 +8,7 @@ use crate::{
 use bss_products_sdk::models::{Lifecycle, SkuType};
 use std::sync::Arc;
 use time::OffsetDateTime;
+use uuid::Uuid;
 
 #[tokio::test]
 async fn both_transports_serve_the_same_published_catalog_and_pages() {
@@ -72,6 +73,97 @@ async fn both_transports_serve_the_same_published_catalog_and_pages() {
         .unwrap();
         ids.push(s.id);
     }
+    let fenced = repo::insert_sku(
+        &conn,
+        &scope,
+        tenant,
+        NewSku {
+            code: "G".into(),
+            name: "fenced unit".into(),
+            r#type: SkuType::Usage,
+            category_id: Some(cat.id),
+            description: String::new(),
+            sellable: true,
+            gl_code: None,
+            tax_category: Some("cloud".into()),
+            invoice_line_template: None,
+            billing_timing: None,
+            usage_type_ref: Some("storage.bytes".into()),
+            unit: Some("GiB".into()),
+        },
+        tenant,
+        now,
+    )
+    .await
+    .unwrap();
+    repo::set_lifecycle(
+        &conn,
+        &scope,
+        tenant,
+        fenced.id,
+        &[Lifecycle::Draft],
+        Lifecycle::Published,
+        now,
+    )
+    .await
+    .unwrap();
+    repo::fence_sku(
+        &conn,
+        &scope,
+        tenant,
+        fenced.id,
+        repo::Fence::Retire,
+        Uuid::new_v4(),
+        now,
+    )
+    .await
+    .unwrap();
+    let dated = repo::insert_sku(
+        &conn,
+        &scope,
+        tenant,
+        NewSku {
+            code: "H".into(),
+            name: "dated unit".into(),
+            r#type: SkuType::Usage,
+            category_id: Some(cat.id),
+            description: String::new(),
+            sellable: true,
+            gl_code: None,
+            tax_category: Some("cloud".into()),
+            invoice_line_template: None,
+            billing_timing: None,
+            usage_type_ref: Some("storage.bytes".into()),
+            unit: Some("GiB".into()),
+        },
+        tenant,
+        now,
+    )
+    .await
+    .unwrap();
+    repo::set_lifecycle(
+        &conn,
+        &scope,
+        tenant,
+        dated.id,
+        &[Lifecycle::Draft],
+        Lifecycle::Published,
+        now,
+    )
+    .await
+    .unwrap();
+    repo::set_lifecycle_next(
+        &conn,
+        &scope,
+        tenant,
+        dated.id,
+        &[Lifecycle::Published],
+        Lifecycle::Deprecated,
+        now.date().previous_day().unwrap(),
+        now,
+    )
+    .await
+    .unwrap();
     let ctx = authed_ctx(tenant);
     let provider = BrowseCatalogProvider::new(db.db(), Arc::new(flat_in_enforcer(tenant)));
     let page = provider
@@ -99,6 +191,17 @@ async fn both_transports_serve_the_same_published_catalog_and_pages() {
     assert_eq!(all.len(), 3);
     assert!(all[1].deprecated);
     assert_eq!(all[1].status, "deprecated");
+    let extra = provider
+        .get_skus(&ctx, &[fenced.id, dated.id])
+        .await
+        .unwrap();
+    assert_eq!(extra.len(), 2);
+    assert_eq!(extra[0].sku_id, fenced.id);
+    assert_eq!(extra[0].status, "published");
+    assert!(!extra[0].deprecated);
+    assert_eq!(extra[1].sku_id, dated.id);
+    assert_eq!(extra[1].status, "deprecated");
+    assert!(extra[1].deprecated);
     assert_eq!(
         provider.list_tax_categories(&ctx).await.unwrap(),
         vec![CatalogTaxCategory {

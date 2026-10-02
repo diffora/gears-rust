@@ -241,10 +241,10 @@ pub async fn retire_category_if_unused(
         .from(sku::Entity)
         .and_where(sku::Column::TenantId.eq(tenant_id))
         .and_where(sku::Column::CategoryId.eq(id))
-        .and_where(
-            super::sku_repo::effective_lifecycle_expr(crate::infra::storage::stored_now().date())
-                .is_in(CATEGORY_HOLDING_LIFECYCLES),
-        )
+        .and_where(Expr::from(super::sku_repo::effective_lifecycle_in(
+            crate::infra::storage::stored_now().date(),
+            &CATEGORY_HOLDING_LIFECYCLES,
+        )))
         .to_owned();
     let r = category::Entity::update_many()
         .secure()
@@ -450,10 +450,10 @@ pub async fn count_live_skus_by_category(
     let mut c = Condition::all()
         .add(sku::Column::TenantId.eq(tenant))
         .add(sku::Column::CategoryId.is_not_null())
-        .add(
-            super::sku_repo::effective_lifecycle_expr(crate::infra::storage::stored_now().date())
-                .is_in(CATEGORY_HOLDING_LIFECYCLES),
-        );
+        .add(super::sku_repo::effective_lifecycle_in(
+            crate::infra::storage::stored_now().date(),
+            &CATEGORY_HOLDING_LIFECYCLES,
+        ));
     if let Some(id) = category {
         c = c.add(sku::Column::CategoryId.eq(id));
     }
