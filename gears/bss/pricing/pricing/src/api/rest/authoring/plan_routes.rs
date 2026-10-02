@@ -3,7 +3,7 @@ use super::{
     AuthoringState,
     caps::Capped,
     dto, plan_items, plans,
-    support::{authz_failure, etag, header, require_authenticated, response, transaction},
+    support::{authz_failure, etag, header, invalid, require_authenticated, transaction},
 };
 use crate::{
     api::rest::{correlation, preconditions},
@@ -14,7 +14,7 @@ use axum::{
     Extension, Router,
     body::Bytes,
     extract::Path,
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode, Uri},
     response::Response,
 };
 use std::sync::Arc;
@@ -57,35 +57,7 @@ pub(super) fn routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .standard_errors(openapi)
         .error_503(openapi)
         .register(router, openapi);
-    let router = OperationBuilder::get("/bss-pricing/v1/plans")
-        .operation_id("bss_pricing.list_plans")
-        .summary("List the plans")
-        .description(
-            "Lists the tenant's plans by code, each with the headers of its revisions as they \
-             read today (a scheduled revision whose date has come reads published, D-447), each \
-             header with its author and when it was submitted and approved (D-461). Each plan names \
-             its current revision (the draft or pending one, else the scheduled one, else the \
-             published one in effect) with its item count, item SKUs and author, and the \
-             published revision in effect (D-460). With sku_id, only the plans that have a draft, \
-             pending, scheduled or published revision whose items name the SKU through a price \
-             book entry (D-434; an included item without an entry does not count), in the same \
-             shape: so a plan's current sku_ids, which name every item, may differ from what the \
-             filter keeps. Four statements whatever the number of plans. Refusals: 400 \
-             QUERY_INVALID for a malformed sku_id or any other key.",
-        )
-        .tag("Pricing")
-        .authenticated()
-        .no_license_required()
-        .query_param(
-            "sku_id",
-            false,
-            "Only the plans selling this SKU through an entry",
-        )
-        .handler(list_plans)
-        .json_response_with_schema::<dto::PricingPlanList>(openapi, StatusCode::OK, "Response")
-        .standard_errors(openapi)
-        .error_503(openapi)
-        .register(router, openapi);
+    let router = super::plan_list::register(router, openapi);
     let router = OperationBuilder::get("/bss-pricing/v1/plans/{id}")
         .operation_id("bss_pricing.get_plan")
         .summary("Read a plan")
@@ -302,35 +274,6 @@ async fn create_plan(
                 input,
             )
             .await
-        })
-    })
-    .await
-}
-async fn list_plans(
-    Extension(state): Extension<Arc<AuthoringState>>,
-    Extension(enforcer): Extension<PolicyEnforcer>,
-    ctx: Option<Extension<SecurityContext>>,
-    uri: axum::http::Uri,
-) -> Result<Response, CanonicalError> {
-    let ctx = require_authenticated(ctx)?;
-    let scope = authz::access_scope(
-        &enforcer,
-        &ctx,
-        &resource_types::PLAN,
-        actions::READ,
-        None,
-        None,
-    )
-    .await
-    .map_err(authz_failure)?;
-    let axum::extract::Query(query) =
-        axum::extract::Query::<dto::PricingPlanQuery>::try_from_uri(&uri)
-            .map_err(|_| super::support::invalid("query", "QUERY_INVALID"))?;
-    transaction(&state.db.db(), move |tx| {
-        let (scope, ctx) = (scope.clone(), ctx.clone());
-        Box::pin(async move {
-            let body = plans::list(tx, &scope, ctx.subject_tenant_id(), query.sku_id).await?;
-            Ok(response(StatusCode::OK, &body, None)?)
         })
     })
     .await
@@ -693,6 +636,37 @@ pub(super) fn item_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Rout
         .standard_errors(openapi)
         .error_503(openapi)
         .register(router, openapi);
+    let router = OperationBuilder::get("/bss-pricing/v1/plan-revisions/checks")
+        .operation_id("bss_pricing.get_plan_revision_checks_batch")
+        .summary("Check many plan revisions")
+        .description(
+            "Returns the checks of 1 to 50 revisions, each byte-identical to GET \
+             /plan-revisions/{id}/checks, and missing: the ids the tenant does not hold or the \
+             caller's plan-read scope does not admit (that door's 404). One stored read and one \
+             Products call over the union of SKUs. An answer that is all missing makes no \
+             Products call. The plans list gains no ready flag (D-460). Refusals: 400 \
+             QUERY_INVALID for an empty list, more than 50 ids, a repeated id, a repeated \
+             revision_ids key, a malformed id, or any other key; Products' own refusal; 503 \
+             REGISTRY_UNAVAILABLE.",
+        )
+        .tag("Pricing")
+        .authenticated()
+        .no_license_required()
+        .query_param(
+            "revision_ids",
+            false,
+            "1 to 50 distinct plan revision ids, comma-separated. Required: an empty or missing \
+             list is 400 QUERY_INVALID.",
+        )
+        .handler(get_checks_batch)
+        .json_response_with_schema::<dto::PricingRevisionChecksBatchDto>(
+            openapi,
+            StatusCode::OK,
+            "Response",
+        )
+        .standard_errors(openapi)
+        .error_503(openapi)
+        .register(router, openapi);
     OperationBuilder::get("/bss-pricing/v1/plan-revisions/{id}/checks")
         .operation_id("bss_pricing.get_plan_revision_checks")
         .summary("Check a plan revision")
@@ -835,4 +809,63 @@ async fn get_checks(
     .await
     .map_err(authz_failure)?;
     plans::checks(&state, scope, ctx, id).await
+}
+/// At most this many revisions in one batch checks read (D-482).
+const CHECKS_LIMIT: usize = 50;
+/// `revision_ids`: 1 to [`CHECKS_LIMIT`] distinct ids, the key once. Any other key, a repeated
+/// key, a repeated id, an empty list or a malformed id is 400 `QUERY_INVALID`.
+fn revision_ids(uri: &Uri) -> Result<Vec<Uuid>, CanonicalError> {
+    let pairs = axum::extract::Query::<Vec<(String, String)>>::try_from_uri(uri)
+        .map_err(|_| invalid("query", "QUERY_INVALID"))?
+        .0;
+    let mut seen_key = false;
+    let mut raw = None;
+    for (key, value) in &pairs {
+        if key != "revision_ids" {
+            return Err(invalid(key, "QUERY_INVALID"));
+        }
+        if seen_key {
+            return Err(invalid("revision_ids", "QUERY_INVALID"));
+        }
+        seen_key = true;
+        raw = Some(value.as_str());
+    }
+    let Some(raw) = raw.filter(|value| !value.is_empty()) else {
+        return Err(invalid("revision_ids", "QUERY_INVALID"));
+    };
+    let mut ids = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for token in raw.split(',') {
+        let id = token
+            .parse::<Uuid>()
+            .map_err(|_| invalid("revision_ids", "QUERY_INVALID"))?;
+        if !seen.insert(id) {
+            return Err(invalid("revision_ids", "QUERY_INVALID"));
+        }
+        ids.push(id);
+    }
+    if ids.is_empty() || ids.len() > CHECKS_LIMIT {
+        return Err(invalid("revision_ids", "QUERY_INVALID"));
+    }
+    Ok(ids)
+}
+async fn get_checks_batch(
+    Extension(state): Extension<Arc<AuthoringState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    ctx: Option<Extension<SecurityContext>>,
+    uri: Uri,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(ctx)?;
+    let scope = authz::access_scope(
+        &enforcer,
+        &ctx,
+        &resource_types::PLAN,
+        actions::READ,
+        None,
+        None,
+    )
+    .await
+    .map_err(authz_failure)?;
+    let ids = revision_ids(&uri)?;
+    plans::checks_batch(&state, scope, ctx, ids).await
 }

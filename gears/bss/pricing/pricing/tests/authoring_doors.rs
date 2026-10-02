@@ -407,6 +407,7 @@ async fn every_route_denies_authorization_before_preconditions_or_disclosure() {
         ("PUT", "/approval-policy".into()),
         ("POST", "/plans".into()),
         ("GET", "/plans".into()),
+        ("GET", "/plans/counts".into()),
         ("GET", format!("/plans/{id}")),
         ("PATCH", format!("/plans/{id}")),
         ("POST", format!("/plans/{id}/revisions")),
@@ -416,6 +417,7 @@ async fn every_route_denies_authorization_before_preconditions_or_disclosure() {
         ("POST", format!("/plan-revisions/{id}/items")),
         ("PATCH", format!("/plan-items/{id}")),
         ("DELETE", format!("/plan-items/{id}")),
+        ("GET", "/plan-revisions/checks".into()),
         ("GET", format!("/plan-revisions/{id}/checks")),
         ("POST", format!("/plan-revisions/{id}/submit")),
         ("POST", format!("/plans/{id}/clone")),
@@ -743,6 +745,7 @@ async fn authorization_labels_actions_and_cross_tenant_reads_are_pinned() {
         ("PUT", "/approval-policy".into(), "config", "settings"),
         ("POST", "/plans".into(), "plan", "author"),
         ("GET", "/plans".into(), "plan", "read"),
+        ("GET", "/plans/counts".into(), "plan", "read"),
         ("GET", format!("/plans/{id}"), "plan", "read"),
         ("PATCH", format!("/plans/{id}"), "plan", "author"),
         ("POST", format!("/plans/{id}/revisions"), "plan", "author"),
@@ -757,6 +760,7 @@ async fn authorization_labels_actions_and_cross_tenant_reads_are_pinned() {
         ),
         ("PATCH", format!("/plan-items/{id}"), "plan", "author"),
         ("DELETE", format!("/plan-items/{id}"), "plan", "author"),
+        ("GET", "/plan-revisions/checks".into(), "plan", "read"),
         (
             "GET",
             format!("/plan-revisions/{id}/checks"),
@@ -830,7 +834,8 @@ async fn authorization_labels_actions_and_cross_tenant_reads_are_pinned() {
             )
         })
         .collect();
-    assert_eq!(table.len(), 54);
+    // 56: run 9.7's batch checks read (D-482) and run 9.8b's plans counts (D-485), one each.
+    assert_eq!(table.len(), 56);
     assert_eq!(rows.len(), table.len(), "one row per route");
     assert_eq!(
         rows, f.registered,

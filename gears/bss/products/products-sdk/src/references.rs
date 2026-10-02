@@ -25,12 +25,14 @@ pub fn is_pricing_system_actor(ctx: &SecurityContext) -> bool {
 pub struct PricingReferenceRegistry(pub Arc<dyn ReferenceRegistryV1>);
 /// Same reservation rules and error codes as the Products REST reference door.
 /// Missing or foreign-owner batch entries fail the batch; order follows the input.
+/// [`ReferenceRegistryV1::skus_for_write`] is the exception (P-D-245): an id the tenant does not
+/// hold, or the caller's scope does not admit, is left out, and the caller is judged once.
 ///
 /// Every method first checks the caller: `tenant` must be the caller's own tenant, and a system
 /// subject other than pricing's (`bss-pricing.system`, [`PRICING_SYSTEM_ACTOR`]) is refused, both
 /// 403 `REFERENCE_OWNER_MISMATCH`. Pricing's system actor is trusted in-process; any other caller
-/// is judged by the PDP on the SKU (`reference` for the four reference methods, `read` for the two
-/// SKU reads), 403 when it denies and 503 when it cannot answer (products P-D-222). A storage
+/// is judged by the PDP on the SKU (`reference` for the four reference methods, `read` for the SKU
+/// reads), 403 when it denies and 503 when it cannot answer (products P-D-222). A storage
 /// failure is a 500.
 #[async_trait]
 pub trait ReferenceRegistryV1: Send + Sync {
@@ -94,6 +96,37 @@ pub trait ReferenceRegistryV1: Send + Sync {
         tenant: Uuid,
         sku_id: Uuid,
     ) -> Result<Sku, CanonicalError>;
+    /// The SKU heads of the distinct ids the caller may read, in `sku_ids` order. An id the tenant
+    /// does not hold, or the caller's scope does not admit, is left out (the per-id 404). The caller
+    /// is judged once (P-D-222): 403 / 503 fail the whole call.
+    ///
+    /// The default reads [`sku_for_write`](Self::sku_for_write) per distinct id, skips a 404 and
+    /// propagates every other error. Products' registry overrides it with one statement
+    /// (P-D-245).
+    ///
+    /// # Errors
+    /// 403 when the caller is refused, 503 when the policy cannot answer, 500 for a storage
+    /// failure. A missing id is left out, not an error.
+    async fn skus_for_write(
+        &self,
+        ctx: &SecurityContext,
+        tenant: Uuid,
+        sku_ids: &[Uuid],
+    ) -> Result<Vec<Sku>, CanonicalError> {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut found = Vec::new();
+        for id in sku_ids {
+            if !seen.insert(*id) {
+                continue;
+            }
+            match self.sku_for_write(ctx, tenant, *id).await {
+                Ok(sku) => found.push(sku),
+                Err(error) if error.status_code() == 404 => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(found)
+    }
     /// The SKU's version in force on `date`: of the versions effective on or before it, the
     /// latest date's highest `published_version`. `Ok(None)` when none is in force yet, for a SKU
     /// never published or a date before its first version.

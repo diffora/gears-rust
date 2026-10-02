@@ -194,26 +194,44 @@ impl Observations {
             local_entries: entries.clone(),
             ..Self::default()
         };
-        let ids = entries
+        let wanted: Vec<Uuid> = entries
             .iter()
             .map(|e| e.sku_id)
             .chain(extra_skus)
-            .collect::<std::collections::BTreeSet<_>>();
-        for id in ids {
-            let read = match reference_registry::resolve(hub) {
-                Ok(registry) => registry
-                    .sku_for_write(ctx, ctx.subject_tenant_id(), id)
-                    .await
-                    .map_err(|e| {
-                        if crate::infra::reference_work::definite_refusal(&e) {
-                            e
-                        } else {
-                            support::registry_unavailable(&e)
-                        }
-                    }),
-                Err(e) => Err(support::registry_unavailable(&e)),
-            };
-            result.skus.insert(id, read);
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let read = match reference_registry::resolve(hub) {
+            Ok(registry) => registry
+                .skus_for_write(ctx, ctx.subject_tenant_id(), &wanted)
+                .await
+                .map_err(|e| {
+                    if crate::infra::reference_work::definite_refusal(&e) {
+                        e
+                    } else {
+                        support::registry_unavailable(&e)
+                    }
+                }),
+            Err(e) => Err(support::registry_unavailable(&e)),
+        };
+        match read {
+            Ok(found) => {
+                let by_id: BTreeMap<_, _> = found.into_iter().map(|sku| (sku.id, sku)).collect();
+                for id in wanted {
+                    result.skus.insert(
+                        id,
+                        match by_id.get(&id).cloned() {
+                            Some(sku) => Ok(sku),
+                            None => Err(support::missing_what("sku")),
+                        },
+                    );
+                }
+            }
+            Err(error) => {
+                for id in wanted {
+                    result.skus.insert(id, Err(error.clone()));
+                }
+            }
         }
         for entry in entries.into_iter().filter(|e| e.charge_kind == "usage") {
             if let std::collections::btree_map::Entry::Vacant(slot) =

@@ -243,6 +243,14 @@ async fn the_current_revision_and_the_one_in_effect_over_every_state_mix() {
             created_by: f.ctx.subject_id(),
             created_at: OffsetDateTime::now_utc(),
             updated_at: OffsetDateTime::now_utc(),
+            work_revision_id: None,
+            work_state: None,
+            scheduled_revision_id: None,
+            scheduled_from: None,
+            published_revision_id: None,
+            current_book_id: None,
+            current_currency: None,
+            last_activity_at: OffsetDateTime::now_utc(),
         },
     )
     .await
@@ -437,9 +445,9 @@ async fn seeded_plans(f: &Fixture, catalog: &Catalog, eur: Uuid, from: usize, n:
 }
 
 // Probed in run 9.1: a per-plan read of the items or the units is red here.
-/// D-460, D-461 (amending D-434 and D-453): `GET /plans` makes four statements whatever the
-/// number of plans: the plans, their revisions, the current revisions' items and the units the
-/// revisions name. The same statements for 10 and for 100 plans.
+/// D-485 (amending D-434, D-460 and D-453): `GET /plans` makes five statements whatever the
+/// number of plans: the page, the revisions, the current and in-effect items, the units and the
+/// current revisions' books. The same statements for 10 and for 100 plans.
 #[tokio::test]
 async fn the_plan_list_reads_in_four_statements_for_10_and_100_plans() {
     let (db, recorder, tenant, dsn) = entry_support::recorded_db().await;
@@ -453,7 +461,7 @@ async fn the_plan_list_reads_in_four_statements_for_10_and_100_plans() {
     for (i, sql) in hundred.iter().enumerate() {
         eprintln!("plan list statement {i}: {sql}");
     }
-    assert_eq!(ten.len(), 4, "{ten:#?}");
+    assert_eq!(ten.len(), 5, "{ten:#?}");
     assert_eq!(ten, hundred, "the same statements, whatever the size");
     let listed = get(&f, "/plans").await;
     for p in listed["items"].as_array().unwrap() {
@@ -811,7 +819,8 @@ async fn every_write_answer_carries_the_new_fields() {
     assert_eq!(
         created["current"],
         json!({"revision_id":rev1,"rev_no":1,"state":"draft","item_count":0,"sku_ids":[],
-               "created_by":f.ctx.subject_id()}),
+               "created_by":f.ctx.subject_id(),
+               "book":{"code":"pro","name":"pro","currency":"EUR"}}),
         "the create answers its empty draft: {created}"
     );
     assert_eq!(created["in_effect"], json!(null));

@@ -136,6 +136,16 @@ closed_set!(
     }
 );
 closed_set!(
+    /// How a plan's list row is changing (D-485): a draft or pending revision, a scheduled one
+    /// still waiting for its date, or none.
+    PricingPlanChange {
+        None => "none",
+        Draft => "draft",
+        Pending => "pending",
+        Scheduled => "scheduled",
+    }
+);
+closed_set!(
     /// The state of a revision that resolves, as it reads today (D-447): a published or
     /// superseded one on every date (D-419), a scheduled one from its sale date on (D-454). No
     /// other resolves.

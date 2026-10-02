@@ -3,9 +3,9 @@
 use crate::api::rest::closed_sets::{
     PricingApprovalKind, PricingBillingTiming, PricingChargeKind, PricingDecisionKind,
     PricingEligibility, PricingEntryReferenceState, PricingItemReferenceState, PricingModel,
-    PricingPeriod, PricingPriceState, PricingPriceStatus, PricingReferenceOpKind,
-    PricingReferenceOpRefKind, PricingReferenceOpState, PricingRevisionState,
-    PricingSkuEntryStatus, PricingUnitState, PricingVoteOutcome,
+    PricingPeriod, PricingPlanChange, PricingPriceState, PricingPriceStatus,
+    PricingReferenceOpKind, PricingReferenceOpRefKind, PricingReferenceOpState,
+    PricingRevisionState, PricingSkuEntryStatus, PricingUnitState, PricingVoteOutcome,
 };
 use crate::domain::plan::{self, EffectiveRevision};
 use crate::infra::plan_revisions::{effective_revisions, stored_revisions};
@@ -616,12 +616,6 @@ pub struct PricingPlanItemReadDto {
     /// reads `published`, and the one it replaces `superseded`, before the switch is persisted.
     pub state: PricingRevisionState,
 }
-/// The query of `GET /plans`: an optional `sku_id` (D-434).
-#[derive(Default, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct PricingPlanQuery {
-    pub sku_id: Option<Uuid>,
-}
 /// `POST /plans`: a plan and its draft rev 1 on `book_id`.
 #[toolkit_macros::api_dto(request)]
 #[derive(Clone)]
@@ -749,6 +743,16 @@ pub struct PricingPlanCurrent {
     pub sku_ids: Vec<Uuid>,
     /// Its author, who edits it while it is a draft (D-404); not the plan's.
     pub created_by: Uuid,
+    /// The book it prices on (D-485): that book's code, name and currency.
+    pub book: PricingPlanBook,
+}
+/// The book a plan's current revision prices on (D-485).
+#[toolkit_macros::api_dto(response)]
+#[derive(Debug, Clone)]
+pub struct PricingPlanBook {
+    pub code: String,
+    pub name: String,
+    pub currency: String,
 }
 /// The revision a plan sells today (D-460): its published revision in effect (D-447).
 #[toolkit_macros::api_dto(response)]
@@ -767,6 +771,8 @@ pub struct PricingPlanInEffect {
 pub struct PlanReading {
     pub skus: BTreeMap<Uuid, Vec<Uuid>>,
     pub units: BTreeMap<Uuid, UnitInstants>,
+    /// The current revisions' books, by book id (D-485).
+    pub books: BTreeMap<Uuid, PricingPlanBook>,
 }
 /// A plan with the headers of its revisions in revision order.
 #[toolkit_macros::api_dto(response)]
@@ -785,6 +791,14 @@ pub struct PricingPlanDto {
     pub created_at: time::OffsetDateTime,
     #[serde(with = "time::serde::rfc3339")]
     pub updated_at: time::OffsetDateTime,
+    /// The latest `updated_at` of the plan and its revisions (D-484). A page ordered by it carries
+    /// the same instant. Not the If-Match clock (`updated_at`).
+    #[serde(with = "time::serde::rfc3339")]
+    pub last_activity_at: time::OffsetDateTime,
+    /// Whether the plan sells on the request's day (D-484). Never null.
+    pub selling: bool,
+    /// The change on that day: `draft`, `pending`, `scheduled` or `none` (D-484).
+    pub change: PricingPlanChange,
     pub revisions: Vec<PricingPlanRevisionHeader>,
     /// The revision being changed or waiting, else the one in effect (D-460); null without
     /// revisions.
@@ -806,8 +820,28 @@ impl PricingPlanDto {
     ) -> Result<Self, RepoError> {
         let stored = stored_revisions(revisions)?;
         let effective = plan::effective(&stored, today);
-        let current = plan::current(&effective).and_then(|chosen| {
-            let row = revisions.iter().find(|r| r.id == chosen.id)?;
+        let facts: Vec<crate::infra::plan_summary::RevisionFact> = revisions
+            .iter()
+            .map(|r| crate::infra::plan_summary::RevisionFact {
+                id: r.id,
+                state: r.state.clone(),
+                available_from: r.available_from,
+                updated_at: r.updated_at,
+                book_id: r.book_id,
+                currency: None,
+            })
+            .collect();
+        let summary = crate::infra::plan_summary::summarize(m.updated_at, &facts)?;
+        let current = if let Some(chosen) = plan::current(&effective) {
+            let row = revisions
+                .iter()
+                .find(|r| r.id == chosen.id)
+                .ok_or_else(|| {
+                    RepoError::CorruptRow(format!("plan {} current revision {}", m.id, chosen.id))
+                })?;
+            let book = reading.books.get(&row.book_id).cloned().ok_or_else(|| {
+                RepoError::CorruptRow(format!("plan {} current book {}", m.id, row.book_id))
+            })?;
             let sku_ids = reading.skus.get(&chosen.id).cloned().unwrap_or_default();
             Some(PricingPlanCurrent {
                 revision_id: chosen.id,
@@ -816,8 +850,11 @@ impl PricingPlanDto {
                 item_count: u32::try_from(sku_ids.len()).unwrap_or(u32::MAX),
                 sku_ids,
                 created_by: row.created_by,
+                book,
             })
-        });
+        } else {
+            None
+        };
         let in_effect = plan::in_effect(&effective).map(|r| PricingPlanInEffect {
             revision_id: r.id,
             rev_no: r.rev_no,
@@ -833,6 +870,12 @@ impl PricingPlanDto {
             created_by: m.created_by,
             created_at: m.created_at,
             updated_at: m.updated_at,
+            last_activity_at: summary.last_activity_at,
+            selling: crate::infra::plan_summary::selling(&summary, today),
+            change: PricingPlanChange::stored(
+                crate::infra::plan_summary::change(&summary, today),
+                &format_args!("plan {}", m.id),
+            )?,
             revisions: revisions
                 .iter()
                 .zip(&effective)
@@ -874,6 +917,33 @@ pub fn named_units(revisions: &[entity::plan_revision::Model]) -> Vec<Uuid> {
 #[toolkit_macros::api_dto(response)]
 pub struct PricingPlanList {
     pub items: Vec<PricingPlanDto>,
+    /// The toolkit pager's page (D-485). `limit` is the page size, 500 by default and at most 500.
+    pub page_info: toolkit_odata::PageInfo,
+}
+/// `GET /plans/counts` (D-485): every plan the list's narrowing keeps, by the derived axes.
+#[toolkit_macros::api_dto(response)]
+pub struct PricingPlanCounts {
+    pub by_selling: PricingPlanSellingCounts,
+    pub by_change: PricingPlanChangeCounts,
+    pub total: u64,
+}
+/// `selling` is never null, so the two buckets add up to `total`.
+#[toolkit_macros::api_dto(response)]
+#[derive(Default)]
+pub struct PricingPlanSellingCounts {
+    #[serde(rename = "true")]
+    pub r#true: u64,
+    #[serde(rename = "false")]
+    pub r#false: u64,
+}
+/// Every change the list can name, 0 when none.
+#[toolkit_macros::api_dto(response)]
+#[derive(Default)]
+pub struct PricingPlanChangeCounts {
+    pub none: u64,
+    pub draft: u64,
+    pub pending: u64,
+    pub scheduled: u64,
 }
 /// A pending revision's vote progress (D-462), counts only: its unit, the approve votes the quorum
 /// counts (the current generation's, not stale: the approval library's `counted_approvals`, the
@@ -1227,6 +1297,20 @@ pub struct PricingPlanChecksDto {
     /// The `plan_revision` quorum a submit of this revision needs (D-481): the tenant's effective
     /// policy, the number the APPROVAL info row already shows. The revision itself has no quorum.
     pub quorum_required: u32,
+}
+/// `GET /plan-revisions/checks` (D-482): one revision's checks, the single read's answer.
+#[toolkit_macros::api_dto(response)]
+pub struct PricingRevisionChecksDto {
+    pub revision_id: Uuid,
+    /// Byte-identical to `GET /plan-revisions/{id}/checks` for this revision.
+    pub checks: PricingPlanChecksDto,
+}
+/// `GET /plan-revisions/checks` (D-482): the checks of the revisions the caller may read, and
+/// the ids the tenant does not hold or the plan-read scope does not admit.
+#[toolkit_macros::api_dto(response)]
+pub struct PricingRevisionChecksBatchDto {
+    pub items: Vec<PricingRevisionChecksDto>,
+    pub missing: Vec<Uuid>,
 }
 #[toolkit_macros::api_dto(response)]
 pub struct PricingReferenceOpDto {

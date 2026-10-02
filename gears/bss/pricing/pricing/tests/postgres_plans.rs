@@ -181,6 +181,14 @@ fn plan(tenant: Uuid, code: &str) -> plan_e::Model {
         created_by: Uuid::new_v4(),
         created_at: now(),
         updated_at: now(),
+        work_revision_id: None,
+        work_state: None,
+        scheduled_revision_id: None,
+        scheduled_from: None,
+        published_revision_id: None,
+        current_book_id: None,
+        current_currency: None,
+        last_activity_at: now(),
     }
 }
 fn revision(p: &plan_e::Model, b: &price_book::Model, rev_no: i32) -> plan_revision::Model {
@@ -253,7 +261,14 @@ async fn postgres_pricing_plan_keys_and_projection() {
         plan_repo::find(&conn, &s.scope, s.tenant, s.plan.id)
             .await
             .unwrap(),
-        Some(s.plan.clone())
+        // D-484: the seeded draft's insert refreshed the stored summary.
+        Some(plan_e::Model {
+            work_revision_id: Some(s.revision.id),
+            work_state: Some("draft".into()),
+            current_book_id: Some(s.book.id),
+            current_currency: Some(s.book.currency.clone()),
+            ..s.plan.clone()
+        })
     );
     conflict(
         plan_repo::insert(&conn, &s.scope, plan(s.tenant, "pro")).await,
@@ -1776,4 +1791,22 @@ async fn postgres_a_write_answers_the_instants_its_reads_return() {
         3,
         "the plan submit, the price submit and the approve each read the clock once"
     );
+}
+
+/// D-482 on Postgres: one read of many revisions' items matches reading each revision, and a long
+/// id list does not drop the revision that is there.
+#[tokio::test]
+#[ignore = "needs the Postgres harness"]
+async fn revisions_items_are_one_read_on_postgres() {
+    let s = seed().await;
+    let conn = s.provider.conn().unwrap();
+    let one = plan_item_repo::for_revision(&conn, &s.scope, s.tenant, s.revision.id)
+        .await
+        .unwrap();
+    let mut asked = vec![s.revision.id];
+    asked.extend((0..1000).map(|_| Uuid::new_v4()));
+    let wide = plan_item_repo::for_revisions(&conn, &s.scope, s.tenant, &asked)
+        .await
+        .unwrap();
+    assert_eq!(wide, one);
 }

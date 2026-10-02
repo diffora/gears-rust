@@ -11,6 +11,7 @@ pub mod idempotency_repo;
 pub mod plan_item_repo;
 pub mod plan_repo;
 pub mod plan_revision_repo;
+pub mod plan_summary;
 pub mod price_book_entry_repo;
 pub mod price_repo;
 pub mod reference_op_repo;

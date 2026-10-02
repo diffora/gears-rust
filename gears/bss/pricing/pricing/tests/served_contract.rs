@@ -15,6 +15,7 @@ pub mod rest_support;
 /// The ops that read Products hard: a Products that cannot answer is their 503
 /// `REGISTRY_UNAVAILABLE` (the census of run 9.2, plan rev 2 M1).
 const HARD_READS: &[(&str, &str)] = &[
+    ("get", "/bss-pricing/v1/plan-revisions/checks"),
     ("get", "/bss-pricing/v1/plan-revisions/{id}/checks"),
     ("post", "/bss-pricing/v1/plan-revisions/{id}/items"),
     ("post", "/bss-pricing/v1/plan-revisions/{id}/submit"),
@@ -73,7 +74,7 @@ async fn an_op_that_is_not_served_has_no_text_to_read() {
 async fn every_op_declares_its_503() {
     let api = served().await;
     let all = ops(&api);
-    assert_eq!(all.len(), 54, "the route census holds 54 ops");
+    assert_eq!(all.len(), 56, "the route census holds 56 ops");
     let missing: Vec<_> = all
         .iter()
         .filter(|(_, _, op)| {

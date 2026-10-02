@@ -224,6 +224,7 @@ impl Harness {
             ("PUT", "/bss-pricing/v1/approval-policy"),
             ("POST", "/bss-pricing/v1/plans"),
             ("GET", "/bss-pricing/v1/plans"),
+            ("GET", "/bss-pricing/v1/plans/counts"),
             ("GET", "/bss-pricing/v1/plans/{id}"),
             ("PATCH", "/bss-pricing/v1/plans/{id}"),
             ("POST", "/bss-pricing/v1/plans/{id}/revisions"),
@@ -233,6 +234,7 @@ impl Harness {
             ("POST", "/bss-pricing/v1/plan-revisions/{id}/items"),
             ("PATCH", "/bss-pricing/v1/plan-items/{id}"),
             ("DELETE", "/bss-pricing/v1/plan-items/{id}"),
+            ("GET", "/bss-pricing/v1/plan-revisions/checks"),
             ("GET", "/bss-pricing/v1/plan-revisions/{id}/checks"),
             ("POST", "/bss-pricing/v1/plan-revisions/{id}/submit"),
             ("POST", "/bss-pricing/v1/plans/{id}/clone"),
@@ -295,6 +297,7 @@ impl Harness {
 // Run 3.3 plans: method | path | resource:action | If-Match | Idempotency-Key
 // POST /plans plan:author (then price_book:read, D-456) false true
 // GET /plans plan:read false false
+// GET /plans/counts plan:read false false (D-485)
 // GET /plans/{id} plan:read false false
 // PATCH /plans/{id} plan:author true false
 // POST /plans/{id}/revisions plan:author false true
@@ -306,6 +309,7 @@ impl Harness {
 // POST /plan-revisions/{id}/items plan:author false true
 // PATCH /plan-items/{id} plan:author true false
 // DELETE /plan-items/{id} plan:author false false
+// GET /plan-revisions/checks plan:read false false
 // GET /plan-revisions/{id}/checks plan:read false false
 
 // Run 3.4 plan approvals: method | path | resource:action | If-Match | Idempotency-Key
