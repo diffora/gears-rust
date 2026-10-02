@@ -173,11 +173,13 @@ async fn check_sku_rules(
                     .and_then(|request| request.quantity_semantics.as_ref())
                 {
                     crate::domain::usage_policy::legacy_quantity_matches(
-                        &legacy.meter.usage_type_id,
-                        &legacy.meter.version,
-                        &legacy.unit,
-                        &legacy.accrual_policy_version,
-                        legacy.fold.into(),
+                        &crate::domain::usage_policy::LegacyQuantity {
+                            meter_id: &legacy.meter.usage_type_id,
+                            meter_version: &legacy.meter.version,
+                            unit: &legacy.unit,
+                            accrual: &legacy.accrual_policy_version,
+                            fold: legacy.fold.into(),
+                        },
                         sku.usage_type_ref.as_deref().unwrap_or(""),
                         sku.unit.as_deref().unwrap_or(""),
                         &((&evidence).into()),

@@ -1335,7 +1335,7 @@ fn complete_meter_evidence_must_match_every_immutable_field_and_sku_unit() {
             "{field}"
         );
     }
-    let mut accrual = evidence.clone();
+    let mut accrual = evidence;
     accrual.accrual_policy_version = "raw-v1".into();
     assert!(
         validate_meter_policy(&policy.content, "vm-hours", "VM\u{b7}hour", &accrual).is_ok(),

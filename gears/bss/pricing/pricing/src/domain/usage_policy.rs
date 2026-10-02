@@ -8,6 +8,10 @@ use bss_pricing_sdk::{
 /// Validate shape only. The five rating rules have no free text; the meter is the SKU's.
 /// # Errors
 /// The rules-only content has no shape refusal. The meter gate is [`validate_meter_policy`].
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "callers share this Result with the meter gate"
+)]
 pub fn validate_policy_shape(_policy: &UsageRatingPolicyInput) -> Result<(), RuleError> {
     Ok(())
 }
@@ -19,8 +23,7 @@ pub fn validate_policy_shape(_policy: &UsageRatingPolicyInput) -> Result<(), Rul
 #[must_use]
 pub fn meter_ref(usage_type_ref: &str) -> bss_pricing_sdk::terms::MeterRef {
     let version = bss_products_sdk::derived::MeterId::parse(usage_type_ref)
-        .map(|id| id.version().to_string())
-        .unwrap_or_else(|_| "v1".to_owned());
+        .map_or_else(|_| "v1".to_owned(), |id| id.version().to_string());
     bss_pricing_sdk::terms::MeterRef {
         usage_type_id: usage_type_ref.to_owned(),
         version,
@@ -62,30 +65,40 @@ pub fn validate_meter_policy(
     Ok(())
 }
 
+/// A deploy-3 `quantity_semantics` copy, checked against the SKU and the provider, then dropped.
+pub struct LegacyQuantity<'a> {
+    /// Meter id the client sent.
+    pub meter_id: &'a str,
+    /// Meter version the client sent.
+    pub meter_version: &'a str,
+    /// Unit the client sent.
+    pub unit: &'a str,
+    /// Accrual version the client sent.
+    pub accrual: &'a str,
+    /// Fold the client sent.
+    pub fold: bss_pricing_sdk::terms::Fold,
+}
+
 /// A deploy-3 `quantity_semantics` object, verified against the SKU and the provider, then dropped.
 /// # Errors
 /// `METER_POLICY_MISMATCH` when the copy does not equal the SKU and the provider's answer.
 pub fn legacy_quantity_matches(
-    meter_id: &str,
-    meter_version: &str,
-    unit: &str,
-    accrual: &str,
-    fold: bss_pricing_sdk::terms::Fold,
+    legacy: &LegacyQuantity<'_>,
     sku_ref: &str,
     sku_unit: &str,
     semantics: &bss_pricing_sdk::meter_semantics::MeterSemantics,
 ) -> Result<(), RuleError> {
     let asked = meter_ref(sku_ref);
-    if meter_id.trim().is_empty()
-        || meter_version.trim().is_empty()
-        || unit.trim().is_empty()
-        || accrual.trim().is_empty()
-        || meter_id != asked.usage_type_id
-        || meter_version != asked.version
-        || unit != sku_unit
-        || unit != semantics.canonical_unit
-        || fold != semantics.fold
-        || accrual != semantics.accrual_policy_version
+    if legacy.meter_id.trim().is_empty()
+        || legacy.meter_version.trim().is_empty()
+        || legacy.unit.trim().is_empty()
+        || legacy.accrual.trim().is_empty()
+        || legacy.meter_id != asked.usage_type_id
+        || legacy.meter_version != asked.version
+        || legacy.unit != sku_unit
+        || legacy.unit != semantics.canonical_unit
+        || legacy.fold != semantics.fold
+        || legacy.accrual != semantics.accrual_policy_version
     {
         return Err(RuleError::new("METER_POLICY_MISMATCH"));
     }

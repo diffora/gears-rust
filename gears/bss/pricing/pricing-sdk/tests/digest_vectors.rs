@@ -484,6 +484,10 @@ fn commercial_digests_cover_intent_and_sort_sets_without_reordering_tiers() {
 #[test]
 fn rules_only_policy_digest_covers_the_five_rating_rules() {
     use bss_pricing_sdk::digest::{policy_digest, selected_bindings_digest};
+    const OLD_POLICY: &str = "c9dc411f7758532dcb616eeeb4389fc9b6fb10169fd52e60c9df1a599a707c7b";
+    const NEW_POLICY: &str = "2bf1fcebb5742b520e2162b6ab65bcad5d04dc8c1100055d77757eaa87a60abc";
+    const OLD_BINDINGS: &str = "b4be41c8abdd4ba9a808b3a1ab54ce85bec603982d81e19347ccc3cb6aba3e86";
+    const NEW_BINDINGS: &str = "268fe0a1b05d7eaa4092bd5a4415d2669d028c865db702d73b761595e5d74457";
     // A second policy that differed only in a former quantity_semantics field
     // (meter, unit, accrual) cannot be built: those fields are not on the type.
     let rules = terms::UsageRatingPolicyInput {
@@ -514,8 +518,6 @@ fn rules_only_policy_digest_covers_the_five_rating_rules() {
     assert!(!canonical.contains("quantity_semantics"));
     assert!(!canonical.contains("accrual_policy_version"));
     assert!(!canonical.contains("usage_type_id"));
-    const OLD_POLICY: &str = "c9dc411f7758532dcb616eeeb4389fc9b6fb10169fd52e60c9df1a599a707c7b";
-    const NEW_POLICY: &str = "2bf1fcebb5742b520e2162b6ab65bcad5d04dc8c1100055d77757eaa87a60abc";
     assert_eq!(hex(policy_digest(&rules)), NEW_POLICY);
     assert_ne!(NEW_POLICY, OLD_POLICY);
 
@@ -532,9 +534,8 @@ fn rules_only_policy_digest_covers_the_five_rating_rules() {
             binding: Some(binding.clone()),
         }],
     };
-    const OLD_BINDINGS: &str = "b4be41c8abdd4ba9a808b3a1ab54ce85bec603982d81e19347ccc3cb6aba3e86";
-    const NEW_BINDINGS: &str = "268fe0a1b05d7eaa4092bd5a4415d2669d028c865db702d73b761595e5d74457";
-    let new_bindings = hex(selected_bindings_digest(&resolved, &[selection.clone()]).unwrap());
+    let new_bindings =
+        hex(selected_bindings_digest(&resolved, std::slice::from_ref(&selection)).unwrap());
     assert_eq!(new_bindings, NEW_BINDINGS);
     assert_ne!(
         new_bindings, OLD_BINDINGS,

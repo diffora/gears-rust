@@ -1472,7 +1472,7 @@ async fn entry_written(
     };
     if op.kind == OpKind::Create.as_str() {
         let refusal = match (input.schema_version, &input.usage_rating_policy, kind) {
-            (Some(1 | 2 | 3), Some(policy), crate::domain::price_book_entry::ChargeKind::Usage) => {
+            (Some(1..=3), Some(policy), crate::domain::price_book_entry::ChargeKind::Usage) => {
                 match &input.meter_evidence {
                     Some(evidence) => crate::infra::meter_semantics::validate(
                         &policy.as_ref().into(),
@@ -1489,11 +1489,11 @@ async fn entry_written(
                     None => Some("METER_EVIDENCE_MISSING"),
                 }
             }
-            (Some(1 | 2 | 3), None, crate::domain::price_book_entry::ChargeKind::Usage) => {
+            (Some(1..=3), None, crate::domain::price_book_entry::ChargeKind::Usage) => {
                 Some("MISSING_RATING_POLICY")
             }
-            (Some(1 | 2 | 3), Some(_), _) => Some("UNEXPECTED_RATING_POLICY"),
-            (None | Some(1 | 2 | 3), None, _) => None,
+            (Some(1..=3), Some(_), _) => Some("UNEXPECTED_RATING_POLICY"),
+            (None | Some(1..=3), None, _) => None,
             _ => return Err(corrupt()),
         };
         if let Some(code) = refusal {
