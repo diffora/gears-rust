@@ -185,12 +185,13 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
              optional note; a missing generation is 400 GENERATION_REQUIRED and any other key is \
              400 BODY_UNEXPECTED (P-D-253). The note is at most 2000 \
              characters (the approval engine's cap). The apply judges the SKU as it is then: a \
-             change that would move a derived pin is refused, except a raw meter moving onto the \
-             identity wrapper of that meter in the same unit (P-D-251); every other pin move, or \
-             a unit other than the pinned version's output unit, is refused (P-D-232). Refusals \
-             include 400 NOTE_TOO_LONG on \
+             published usage SKU keeps its usage type and its unit (P-D-258), except a raw meter \
+             moving onto the identity wrapper of that meter in the same unit (P-D-251). Every \
+             other move of the ref or the unit, or a type change away from usage, is 409 \
+             METERING_IMMUTABLE, on usage_type_ref when the ref moves and on unit when only the \
+             unit moves. Refusals include 400 NOTE_TOO_LONG on \
              a longer note, 400 GENERATION_MISMATCH, 400 UNIT_STALE after a refresh, 403 \
-             SOD_VIOLATION, 409 DUPLICATE_VOTE, and the apply's 409 DERIVED_PIN_IMMUTABLE, \
+             SOD_VIOLATION, 409 DUPLICATE_VOTE, and the apply's 409 METERING_IMMUTABLE, \
              DERIVED_UNIT_MISMATCH or DERIVED_USAGE_TYPE_UNKNOWN.",
         )
         .tag("Approval units")

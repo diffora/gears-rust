@@ -27,7 +27,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use bss_approval::{Engine, SubmitRequest};
-use bss_products_sdk::models::{Lifecycle, Sku, SkuContent};
+use bss_products_sdk::models::{Lifecycle, Sku, SkuContent, SkuType};
 use serde_json::Value;
 use std::sync::Arc;
 use time::OffsetDateTime;
@@ -96,14 +96,14 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .description(
             "Submits a change of a published SKU for approval, effective from `effective_from`. \
              The texts it carries have the caps of the create (P-D-225), and the note at most \
-             2000 characters. A usage SKU keeps the derived usage type it was first published on \
-             (P-D-232), except a raw meter moving onto the identity wrapper of that meter, in the \
-             same unit (P-D-251). Every other move (another version, to a raw ref, from a derived \
-             ref, a unit change with the move, or a dropped ref, a type change included) is \
-             refused before any catalog is asked. \
+             2000 characters. A published usage SKU keeps its usage type and its unit (P-D-258), \
+             except a raw meter moving onto the identity wrapper of that meter, in the same unit \
+             (P-D-251). A change that sets either to another value, clears either, or changes the \
+             type away from usage is refused before any catalog is asked. The code is 400 \
+             METERING_IMMUTABLE, on usage_type_ref when the ref moves and on unit when only the \
+             unit moves. \
              Refusals include 400 FIELD_TOO_LONG on a text over its cap, 400 NOTE_TOO_LONG on \
-             the note, 400 DERIVED_PIN_IMMUTABLE, and 400 DERIVED_UNIT_MISMATCH for a unit other \
-             than the pinned version's output unit.",
+             the note, and 400 METERING_IMMUTABLE.",
         )
         .tag("SKU governance")
         .authenticated()
@@ -369,8 +369,9 @@ async fn run(
     .await
 }
 
-/// P-D-232, amended by P-D-251. A change that moves a derived pin is refused before any catalog is
-/// asked, except a raw meter moving onto the identity wrapper of that meter, in the same unit.
+/// P-D-258, the one exception P-D-251. A change that moves a published usage SKU's metering is
+/// refused before any catalog is asked, except a raw meter moving onto the identity wrapper of
+/// that meter, in the same unit.
 async fn refuse_moved_pin(
     enforcer: &PolicyEnforcer,
     state: &ApiState,
@@ -392,18 +393,22 @@ async fn refuse_moved_pin(
         proposed_ref,
     )
     .await?;
-    if derived::pin_check(
-        derived::RefUnit {
+    // The head's unit is the served unit: a derived SKU's is its version's output unit, so a
+    // client that sends that unit again is not a change (P-D-259). The row stores none.
+    if let Some(field) = derived::metering_moves(
+        derived::Metering {
+            usage: current.r#type == SkuType::Usage,
             usage_type_ref: current_ref,
             unit: current.unit.as_deref(),
         },
-        derived::RefUnit {
+        derived::Metering {
+            usage: proposed.r#type == SkuType::Usage,
             usage_type_ref: proposed_ref,
             unit: proposed.unit.as_deref(),
         },
         stored.as_ref(),
     ) {
-        return Err(derived::pin_immutable().into());
+        return Err(derived::metering_immutable(field).into());
     }
     Ok(())
 }
@@ -434,8 +439,8 @@ async fn execute(
     .await
     .map_err(tx_to_canonical)?;
     let proposed = apply_patch(&SkuContent::from(&current), &patch);
-    // P-D-232, P-D-251: refuse a pin move before any catalog is asked. `validate_change` judges it
-    // again in the transaction and at apply.
+    // P-D-258, P-D-251: refuse a metering move before any catalog is asked. `validate_change`
+    // judges it again in the transaction and at apply.
     refuse_moved_pin(enforcer, &state, &ctx, kind, &current, &proposed).await?;
     let usage = if matches!(kind, SubmitKind::Retire) {
         None

@@ -23,5 +23,12 @@ pub struct Model {
     pub created_at: TimeDateTimeWithTimeZone,
 }
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {}
+pub enum Relation {
+    #[sea_orm(
+        belongs_to = "super::derived_usage_type::Entity",
+        from = "Column::TypeId",
+        to = "super::derived_usage_type::Column::Id"
+    )]
+    Type,
+}
 impl ActiveModelBehavior for ActiveModel {}

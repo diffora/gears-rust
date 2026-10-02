@@ -22,6 +22,10 @@ const MIGRATION: &str = "m20260925_000007_sku_category_optional";
 /// 000011 rebuilds the same family again (P-D-248). This proof is about 000007 alone, so the
 /// later rebuild stays out of both passes.
 const LATER_REBUILD: &str = "m20261001_000011_sku_lifecycle_honesty";
+/// 000013's triggers sit on `products_sku`. 000007 rebuilds that table, so a pass that
+/// applied 000013 first would drop the triggers and look like a second structural change.
+/// This proof is about 000007 alone, so those triggers stay out of both passes.
+const DERIVED_UNIT: &str = "m20261002_000013_derived_sku_unit";
 const GUARD: &str = "m0000_products_refuse_a_legacy_or_stale_schema";
 /// The parent first, then its two children.
 const FAMILY: [&str; 3] = [
@@ -68,7 +72,9 @@ impl Lite {
         let chain = BssProductsGear::default()
             .migrations()
             .into_iter()
-            .filter(|m| Some(m.name()) != without && m.name() != LATER_REBUILD)
+            .filter(|m| {
+                Some(m.name()) != without && m.name() != LATER_REBUILD && m.name() != DERIVED_UNIT
+            })
             .collect();
         run_migrations_for_testing(&db, chain).await
     }

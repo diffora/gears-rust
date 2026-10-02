@@ -54,6 +54,7 @@ mod m20260928_000009_unit_submit_note;
 mod m20260928_000010_clear_retired_defaults;
 mod m20261001_000011_sku_lifecycle_honesty;
 mod m20261001_000012_derived_usage_type;
+mod m20261002_000013_derived_sku_unit;
 pub struct Migrator;
 
 #[async_trait::async_trait]
@@ -74,6 +75,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260928_000010_clear_retired_defaults::Migration),
             Box::new(m20261001_000011_sku_lifecycle_honesty::Migration),
             Box::new(m20261001_000012_derived_usage_type::Migration),
+            Box::new(m20261002_000013_derived_sku_unit::Migration),
         ]
     }
 }

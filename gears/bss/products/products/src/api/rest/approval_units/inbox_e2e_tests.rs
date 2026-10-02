@@ -128,49 +128,50 @@ async fn fresh_pricing_db() -> (toolkit_db::DBProvider<toolkit_db::DbError>, Tes
     (toolkit_db::DBProvider::new(db), dsn)
 }
 
-/// A usage SKU published at once (quorum 0); every later products unit then waits for one
-/// approve. The SKU's id.
+/// A legacy raw usage SKU, published through the repository: the doors no longer accept a raw ref,
+/// and the pricing fixture's meter provider answers `storage` (P-D-259). The SKU's id.
 async fn published_sku(products: &Census) -> Uuid {
-    let (status, c, _) = send(
-        &products.door,
-        &products.author,
-        "POST",
-        "/bss-products/v1/categories",
-        &json!({"code":"c","name":"C"}).to_string(),
-        None,
+    use crate::domain::sku::NewSku;
+    use bss_products_sdk::models::{Lifecycle, SkuType};
+    let (db, scope) = repo_connection(&products.dsn, products.tenant).await;
+    let conn = db.conn().unwrap();
+    let now = time::OffsetDateTime::now_utc();
+    let sku = crate::infra::storage::repo::insert_sku(
+        &conn,
+        &scope,
+        products.tenant,
+        NewSku {
+            code: "SKU".into(),
+            name: "SKU".into(),
+            r#type: SkuType::Usage,
+            category_id: None,
+            description: String::new(),
+            sellable: true,
+            gl_code: None,
+            tax_category: None,
+            invoice_line_template: None,
+            billing_timing: None,
+            usage_type_ref: Some("storage".into()),
+            unit: Some("GB".into()),
+        },
+        products.author.subject_id(),
+        now,
     )
-    .await;
-    assert_eq!(status, 201, "{c}");
-    let c: Value = serde_json::from_str(&c).unwrap();
-    let sku = json!({"code":"SKU","name":"SKU","type":"usage","category_id":c["id"],
-        "usage_type_ref":"storage","unit":"GB"});
-    let (status, s, _) = send(
-        &products.door,
-        &products.author,
-        "POST",
-        "/bss-products/v1/skus",
-        &sku.to_string(),
-        None,
+    .await
+    .unwrap();
+    crate::infra::storage::repo::set_lifecycle(
+        &conn,
+        &scope,
+        products.tenant,
+        sku.id,
+        &[Lifecycle::Draft],
+        Lifecycle::Published,
+        now,
     )
-    .await;
-    assert_eq!(status, 201, "{s}");
-    let sku: Uuid = serde_json::from_str::<Value>(&s).unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .parse()
-        .unwrap();
-    let (status, b, _) = send(
-        &products.door,
-        &products.author,
-        "POST",
-        &format!("/bss-products/v1/skus/{sku}/submit"),
-        "{}",
-        None,
-    )
-    .await;
-    assert_eq!(status, 200, "{b}");
+    .await
+    .unwrap();
     products.policy(1).await;
-    sku
+    sku.id
 }
 
 /// One request to pricing's served door as `who`: the status and the JSON body.
@@ -920,8 +921,8 @@ async fn the_facade_adds_no_statement_beyond_its_sources() {
     assert_eq!(status, 200, "{page}");
     assert_eq!(
         page["items"].as_array().unwrap().len(),
-        5,
-        "four stored and the fixture's published SKU's unit"
+        4,
+        "the four stored units; the legacy raw SKU has no publish unit"
     );
     let facade = (
         statements(&pricing_recorder, "pricing_"),

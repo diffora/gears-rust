@@ -1,6 +1,7 @@
 //! SKU heads, conditional locks and local reference fences.
 //! @cpt-dod:cpt-cf-bss-products-dod-unit-store:p1
 use super::{HeadWrite, category_repo::require_active_category, driver_failure, map_unique};
+use crate::domain::derived;
 use crate::domain::sku::{LifecycleHead, NewSku, effective_lifecycle};
 use crate::infra::storage::{
     RepoError,
@@ -180,6 +181,62 @@ pub(crate) fn sku_of(m: sku::Model) -> Result<Sku, RepoError> {
         updated_at: m.updated_at,
     })
 }
+
+/// Serve each SKU's unit (P-D-259). A derived usage SKU takes its version's `output_unit`, from
+/// one read of those versions. A raw usage SKU keeps the unit stored on the row. A non-usage SKU
+/// serves null.
+///
+/// # Errors
+/// Scoped storage failures of the version read.
+pub(crate) async fn fill_served_units(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    skus: &mut [Sku],
+) -> Result<(), RepoError> {
+    let mut meters = Vec::new();
+    for sku in skus.iter() {
+        if sku.r#type != SkuType::Usage {
+            continue;
+        }
+        if let Some(reference) = sku
+            .usage_type_ref
+            .as_ref()
+            .filter(|reference| derived::is_derived_ref(reference))
+        {
+            meters.push(reference.clone());
+        }
+    }
+    meters.sort();
+    meters.dedup();
+    // PROBE-9-13-6: one read of the distinct versions, for a page of 10 and of 100.
+    let mut units = std::collections::HashMap::new();
+    for meter in &meters {
+        units.extend(
+            super::derived_usage_type_repo::output_units(
+                runner,
+                &scope.tenant_only(),
+                tenant_id,
+                std::slice::from_ref(meter),
+            )
+            .await?,
+        );
+    }
+    for sku in skus.iter_mut() {
+        if sku.r#type != SkuType::Usage {
+            sku.unit = None;
+            continue;
+        }
+        if let Some(reference) = sku
+            .usage_type_ref
+            .as_deref()
+            .filter(|reference| derived::is_derived_ref(reference))
+        {
+            sku.unit = units.get(reference).cloned();
+        }
+    }
+    Ok(())
+}
 /// A SKU without a category (P-D-196) has none to resolve; a given one must be the tenant's and
 /// active.
 async fn require_category(
@@ -206,6 +263,7 @@ pub async fn insert_sku(
     now: OffsetDateTime,
 ) -> Result<Sku, RepoError> {
     require_category(runner, scope, tenant_id, new.category_id).await?;
+    let unit = derived::persisted_unit(new.usage_type_ref.as_deref(), new.unit);
     let model = sku::ActiveModel {
         id: Set(Uuid::new_v4()),
         tenant_id: Set(tenant_id),
@@ -225,7 +283,7 @@ pub async fn insert_sku(
         invoice_line_template: Set(new.invoice_line_template),
         billing_timing: Set(new.billing_timing.map(|v| v.as_str().to_owned())),
         usage_type_ref: Set(new.usage_type_ref),
-        unit: Set(new.unit),
+        unit: Set(unit),
         type_change_pending: Set(false),
         retire_pending: Set(false),
         lifecycle_next: Set(None),
@@ -243,7 +301,10 @@ pub async fn insert_sku(
         .exec_with_returning(runner)
         .await
         .map_err(|e| map_unique("insert SKU".into(), e))?;
-    sku_of(row)
+    let sku = sku_of(row)?;
+    let mut rows = vec![sku];
+    fill_served_units(runner, scope, tenant_id, &mut rows).await?;
+    Ok(rows.remove(0))
 }
 /// Find the tenant's visible SKU.
 /// # Errors
@@ -254,7 +315,7 @@ pub async fn find_sku(
     tenant_id: Uuid,
     id: Uuid,
 ) -> Result<Option<Sku>, RepoError> {
-    sku::Entity::find()
+    let mut found = sku::Entity::find()
         .secure()
         .scope_with(scope)
         .filter(key(tenant_id, id))
@@ -262,7 +323,12 @@ pub async fn find_sku(
         .await
         .map_err(|e| driver_failure("find SKU".into(), e))?
         .map(sku_of)
-        .transpose()
+        .transpose()?;
+    if let Some(sku) = found.as_mut() {
+        let rows = std::slice::from_mut(sku);
+        fill_served_units(runner, scope, tenant_id, rows).await?;
+    }
+    Ok(found)
 }
 /// The tenant's SKUs among `ids`, in ONE statement whatever their number (P-D-245). An id the
 /// tenant does not hold, or the scope does not admit, has no row. The caller orders them.
@@ -279,7 +345,7 @@ pub async fn find_skus(
     if ids.is_empty() {
         return Ok(Vec::new());
     }
-    sku::Entity::find()
+    let mut found = sku::Entity::find()
         .secure()
         .scope_with(scope)
         .filter(
@@ -292,7 +358,9 @@ pub async fn find_skus(
         .map_err(|e| driver_failure("find SKUs".into(), e))?
         .into_iter()
         .map(sku_of)
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    fill_served_units(runner, scope, tenant_id, &mut found).await?;
+    Ok(found)
 }
 /// The browse catalog's filters and its exclusive code cursor; one extra row signals another
 /// page. The operator's SKU list pages through [`super::page_skus`] (P-D-210).
@@ -323,7 +391,7 @@ pub async fn list_skus(
     if let Some(v) = &q.after_code {
         c = c.add(sku::Column::Code.gt(v));
     }
-    sku::Entity::find()
+    let mut found = sku::Entity::find()
         .secure()
         .scope_with(scope)
         .filter(c)
@@ -334,7 +402,9 @@ pub async fn list_skus(
         .map_err(|e| driver_failure("list SKUs".into(), e))?
         .into_iter()
         .map(sku_of)
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    fill_served_units(runner, scope, tenant_id, &mut found).await?;
+    Ok(found)
 }
 #[derive(Debug, sea_orm::FromQueryResult)]
 struct TaxCategoryRow {
@@ -405,7 +475,13 @@ fn content_update(
             sku::Column::UsageTypeRef,
             Expr::value(c.usage_type_ref.clone()),
         )
-        .col_expr(sku::Column::Unit, Expr::value(c.unit.clone()))
+        .col_expr(
+            sku::Column::Unit,
+            Expr::value(derived::persisted_unit(
+                c.usage_type_ref.as_deref(),
+                c.unit.clone(),
+            )),
+        )
         .col_expr(
             sku::Column::Revision,
             Expr::col(sku::Column::Revision).add(1_i64),

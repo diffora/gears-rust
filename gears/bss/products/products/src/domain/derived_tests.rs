@@ -282,7 +282,7 @@ fn a_derived_ref_binds_to_its_version_and_its_output_unit() {
     );
     assert_eq!(USAGE_TYPE_UNKNOWN, "DERIVED_USAGE_TYPE_UNKNOWN");
     assert_eq!(UNIT_MISMATCH, "DERIVED_UNIT_MISMATCH");
-    assert_eq!(PIN_IMMUTABLE, "DERIVED_PIN_IMMUTABLE");
+    assert_eq!(METERING_IMMUTABLE, "METERING_IMMUTABLE");
 }
 
 fn identity_of(reference: &str, input_unit: &str, output_unit: &str) -> DerivedUsageDeclaration {
@@ -366,6 +366,65 @@ fn wraps_is_the_identity_of_that_one_raw_meter_in_the_sku_unit() {
     );
     assert!(pin_refuses(wrapped, Some(raw), false));
     assert!(!pin_refuses(Some(raw), wrapped, true));
+}
+
+/// P-D-258: a published usage SKU's ref move, unit move, and a type change away from usage.
+/// The ref wins when both move. A non-usage SKU and the identity wrap do not move.
+#[test]
+fn a_published_usage_sku_keeps_its_ref_and_its_unit() {
+    let raw = Some("usage:storage");
+    let other = Some("usage:other");
+    let wrapped = Some("products.derived/wrap@1");
+    let decl = identity_of("usage:storage", "GB", "GB");
+    let usage = |reference, unit| Metering {
+        usage: true,
+        usage_type_ref: reference,
+        unit,
+    };
+    let recurring = |reference, unit| Metering {
+        usage: false,
+        usage_type_ref: reference,
+        unit,
+    };
+    assert_eq!(
+        metering_moves(usage(raw, Some("GB")), usage(other, Some("GB")), None),
+        Some("usage_type_ref")
+    );
+    assert_eq!(
+        metering_moves(usage(raw, Some("GB")), usage(raw, Some("MB")), None),
+        Some("unit")
+    );
+    assert_eq!(
+        metering_moves(usage(raw, Some("GB")), usage(other, Some("MB")), None),
+        Some("usage_type_ref"),
+        "the ref is named when both move"
+    );
+    assert_eq!(
+        metering_moves(
+            usage(Some(AT_1), Some(CLOUDLET_UNIT)),
+            recurring(None, None),
+            None
+        ),
+        Some("usage_type_ref")
+    );
+    assert_eq!(
+        metering_moves(usage(raw, Some("GB")), usage(raw, Some("GB")), None),
+        None
+    );
+    assert_eq!(
+        metering_moves(recurring(None, None), recurring(None, Some("GB")), None),
+        None,
+        "a non-usage SKU has no metering"
+    );
+    assert_eq!(
+        metering_moves(
+            usage(raw, Some("GB")),
+            usage(wrapped, Some("GB")),
+            Some(&decl)
+        ),
+        None,
+        "the identity wrap is the one move allowed"
+    );
 }
 
 /// P-D-232's pin: refused when the current or the proposed ref is derived and the two differ.
