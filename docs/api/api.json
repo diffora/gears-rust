@@ -11972,12 +11972,15 @@
       },
       "PricingPlanItemCreate": {
         "additionalProperties": false,
-        "description": "`POST /plan-revisions/{id}/items`: one item, one op with its own key (D-407). A plan item is a\nSKU and its entry in the plan's book (D-467): the entry is required, and `treatment`,\n`included_qty` and `qty_min` are refused (400 `BODY_UNEXPECTED`).",
+        "description": "`POST /plan-revisions/{id}/items`: one item, one op with its own key (D-407). A plan item is a\nSKU and, once the author has chosen it, its entry in the plan's book (D-467, D-512). The entry\nmay be absent: the draft holds the SKU and a later PATCH sets the entry. Submit still needs an\nentry for every item. `treatment`, `included_qty` and `qty_min` are refused (400\n`BODY_UNEXPECTED`).",
         "properties": {
           "price_book_entry_id": {
-            "description": "The entry of the plan's book that prices the SKU; a missing or null one is 400\n`ITEM_ENTRY_MISSING`.",
+            "description": "The entry of the plan's book that prices the SKU. Absent or null adds an entry-less item\n(D-512). A given entry is still judged: another book, another SKU, or an unknown entry.",
             "format": "uuid",
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "sku_id": {
             "format": "uuid",
@@ -11985,8 +11988,7 @@
           }
         },
         "required": [
-          "sku_id",
-          "price_book_entry_id"
+          "sku_id"
         ],
         "type": "object"
       },
@@ -12005,7 +12007,7 @@
             "type": "string"
           },
           "price_book_entry_id": {
-            "description": "The entry that prices the item; null only for a legacy item stored without one (D-467).",
+            "description": "The entry that prices the item. Null while a draft item waits for its entry (D-512), and\nfor a legacy item stored without one (D-467).",
             "format": "uuid",
             "type": [
               "string",
@@ -12059,7 +12061,7 @@
       },
       "PricingPlanItemPatch": {
         "additionalProperties": false,
-        "description": "`PATCH /plan-items/{id}`, draft only: never a SKU change (the SKU is the item's reference).\nIt changes the item's entry (D-467): `treatment`, `included_qty` and `qty_min` are refused\n(400 `BODY_UNEXPECTED`), and a null entry is 400 `ITEM_ENTRY_MISSING`.",
+        "description": "`PATCH /plan-items/{id}`, draft only: never a SKU change (the SKU is the item's reference).\nIt sets the item's entry (D-467, D-512), including on an item that has none. `treatment`,\n`included_qty` and `qty_min` are refused (400 `BODY_UNEXPECTED`). A null entry is 400\n`ITEM_ENTRY_MISSING`: a PATCH never clears an entry.",
         "properties": {
           "price_book_entry_id": {
             "format": "uuid",
@@ -38127,7 +38129,7 @@
         ]
       },
       "patch": {
-        "description": "Changes a draft item's entry, never its SKU, at the version the caller read (If-Match): a plan item is a SKU and its entry (D-467). Refusals: 400 BODY_UNEXPECTED for treatment, included_qty or qty_min, ITEM_ENTRY_MISSING for a null entry or an item left without one, ITEM_BOOK_FOREIGN for an entry of another book, ITEM_ENTRY_SKU_MISMATCH for an entry of another SKU; 403 NOT_DRAFT_AUTHOR; 404 for an unknown item, or an unknown entry (ENTRY_NOT_FOUND); 409 REVISION_NOT_DRAFT or STALE_REVISION.",
+        "description": "Sets a draft item's entry, never its SKU, at the version the caller read (If-Match), including on an item that has none (D-512). A plan item is a SKU and its entry (D-467). A null entry is refused: a PATCH never clears an entry. Refusals: 400 BODY_UNEXPECTED for treatment, included_qty or qty_min, ITEM_ENTRY_MISSING for a null entry or an item left without one, ITEM_BOOK_FOREIGN for an entry of another book, ITEM_ENTRY_SKU_MISMATCH for an entry of another SKU; 403 NOT_DRAFT_AUTHOR; 404 for an unknown item, or an unknown entry (ENTRY_NOT_FOUND); 409 REVISION_NOT_DRAFT or STALE_REVISION.",
         "operationId": "bss_pricing.patch_plan_item",
         "parameters": [
           {
@@ -38770,7 +38772,7 @@
     },
     "/bss-pricing/v1/plan-revisions/{id}/checks": {
       "get": {
-        "description": "Returns every check of the revision on its sale date (coverage, SKUs, references, book), whether it may be submitted, and quorum_required, the plan_revision quorum a submit will need (D-481), from fresh SKU reads. Refusals: 404 for a revision the tenant does not hold; Products' own refusal; 503 REGISTRY_UNAVAILABLE.",
+        "description": "Returns every check of the revision on its sale date (coverage, SKUs, references, book), whether it may be submitted, and quorum_required, the plan_revision quorum a submit will need (D-481), from fresh SKU reads. An item with no entry keeps the row ITEM_ENTRY_MISSING (\"Every item points at a price\") red (D-512); submit, the scheduled apply and publish refuse the revision while any row is red. Refusals: 404 for a revision the tenant does not hold; Products' own refusal; 503 REGISTRY_UNAVAILABLE.",
         "operationId": "bss_pricing.get_plan_revision_checks",
         "parameters": [
           {
@@ -38888,7 +38890,7 @@
     },
     "/bss-pricing/v1/plan-revisions/{id}/items": {
       "post": {
-        "description": "Adds an item to a draft revision: a SKU and its entry in the plan's book, the entry required (D-467), reserving the SKU reference in Products; the Idempotency-Key replays the receipt. A deprecated SKU is added only when the plan's published revision in effect carries it (D-465). Refusals: 400 BODY_UNEXPECTED for treatment, included_qty or qty_min, ITEM_ENTRY_MISSING for a missing or null entry, ITEM_BOOK_FOREIGN for an entry of another book, ITEM_ENTRY_SKU_MISMATCH for an entry of another SKU, ITEM_SKU_DEPRECATED, ITEM_BUNDLE_SKU or REVISION_ITEMS_TOO_MANY; 403 NOT_DRAFT_AUTHOR for a draft of another author; 404 for an unknown revision, or an unknown entry (ENTRY_NOT_FOUND); 409 REVISION_NOT_DRAFT, ITEM_SKU_TAKEN, IDEMPOTENCY_CONFLICT or IDEMPOTENCY_KEY_IN_FLIGHT, and SKU_FENCED, SKU_RETIRING or SKU_DRAFT from the item's create op (Products' reserve refusal or its SKU re-read); Products' own refusal of the SKU read, as Products gave it; 503 REGISTRY_UNAVAILABLE.",
+        "description": "Adds an item to a draft revision: a SKU, and its entry in the plan's book when the author has chosen one (D-512). An absent or null price_book_entry_id adds the SKU with no entry. The checks stay red (ITEM_ENTRY_MISSING, \"Every item points at a price\") until a PATCH sets the entry, and submit, the scheduled apply and publish refuse that revision as for any red check. The call reserves the SKU reference in Products; the Idempotency-Key replays the receipt. A deprecated SKU is added only when the plan's published revision in effect carries it (D-465). A given entry is judged as before. Refusals: 400 BODY_UNEXPECTED for treatment, included_qty or qty_min, ITEM_BOOK_FOREIGN for an entry of another book, ITEM_ENTRY_SKU_MISMATCH for an entry of another SKU, ITEM_SKU_DEPRECATED, ITEM_BUNDLE_SKU or REVISION_ITEMS_TOO_MANY; 403 NOT_DRAFT_AUTHOR for a draft of another author; 404 for an unknown revision, or an unknown entry (ENTRY_NOT_FOUND); 409 REVISION_NOT_DRAFT, ITEM_SKU_TAKEN, IDEMPOTENCY_CONFLICT or IDEMPOTENCY_KEY_IN_FLIGHT, and SKU_FENCED, SKU_RETIRING or SKU_DRAFT from the item's create op (Products' reserve refusal or its SKU re-read); Products' own refusal of the SKU read, as Products gave it; 503 REGISTRY_UNAVAILABLE.",
         "operationId": "bss_pricing.create_plan_item",
         "parameters": [
           {
