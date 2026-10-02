@@ -119,6 +119,7 @@ pub async fn entry_of(
             usage_policy_id: None,
             usage_policy_version: None,
             usage_policy_digest: None,
+            usage_sku_version: None,
             dimension_key: key.map(str::to_owned),
             invoice_line_override: line.map(str::to_owned),
             reservation_id: Uuid::new_v4(),
@@ -309,16 +310,8 @@ pub fn vm_hour_policy() -> bss_pricing_sdk::terms::UsageRatingPolicy {
         rating_window: RatingWindow::BillingCycle,
         aggregation_scope: AggregationScope::SubscriptionLine,
         reset: Reset::RatingWindowStart,
-        quantity_semantics: QuantitySemantics {
-            meter: MeterRef {
-                usage_type_id: "vm-hours".into(),
-                version: "v1".into(),
-            },
-            unit: "VM\u{b7}hour".into(),
-            fold: Fold::Sum,
-            accrual_policy_version: "integrated-v1".into(),
-        },
         partial_window: PartialWindow::ActualQuantityFullThresholds,
+        fold: Fold::Sum,
     };
     UsageRatingPolicy {
         policy_id: Uuid::from_u128(1),
@@ -354,6 +347,10 @@ pub fn vm_binding() -> bss_pricing_sdk::read::AcceptedBinding {
         sku_code: "VM-2CPU-4GB".into(),
         sku_name: "VM 2 vCPU / 4 GB".into(),
         unit: Some("VM\u{b7}hour".into()),
+        meter: Some(MeterRef {
+            usage_type_id: "vm-hours".into(),
+            version: "v1".into(),
+        }),
         price,
         kind: ChargeKind::Usage,
         recurring_period: None,

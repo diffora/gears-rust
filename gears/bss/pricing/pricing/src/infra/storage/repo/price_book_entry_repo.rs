@@ -51,6 +51,7 @@ pub async fn insert(
         usage_policy_id: Set(m.usage_policy_id),
         usage_policy_version: Set(m.usage_policy_version),
         usage_policy_digest: Set(m.usage_policy_digest),
+        usage_sku_version: Set(m.usage_sku_version),
         dimension_key: Set(m.dimension_key),
         invoice_line_override: Set(m.invoice_line_override),
         reservation_id: Set(m.reservation_id),

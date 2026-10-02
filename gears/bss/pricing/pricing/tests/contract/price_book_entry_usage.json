@@ -8,11 +8,12 @@
       "request": "GET /bss-pricing/v1/price-book-entries/<entry:pro>",
       "status": 200,
       "body": {
+        "usage_rating_policy": null,
+        "usage_sku_version": null,
         "id": "<entry:pro>",
         "tenant_id": "<tenant>",
         "book_id": "<book:eur>",
         "sku_id": "<sku:pro>",
-        "usage_rating_policy": null,
         "charge_kind": "recurring",
         "period": "month",
         "model": "flat",
@@ -40,11 +41,12 @@
       "request": "GET /bss-pricing/v1/price-book-entries/<entry:egress>",
       "status": 200,
       "body": {
+        "usage_rating_policy": null,
+        "usage_sku_version": null,
         "id": "<entry:egress>",
         "tenant_id": "<tenant>",
         "book_id": "<book:eur>",
         "sku_id": "<sku:egress>",
-        "usage_rating_policy": null,
         "charge_kind": "usage",
         "period": null,
         "model": "per_unit",
@@ -72,11 +74,12 @@
       "request": "GET /bss-pricing/v1/price-book-entries/<entry:archive>",
       "status": 200,
       "body": {
+        "usage_rating_policy": null,
+        "usage_sku_version": null,
         "id": "<entry:archive>",
         "tenant_id": "<tenant>",
         "book_id": "<book:eur>",
         "sku_id": "<sku:archive>",
-        "usage_rating_policy": null,
         "charge_kind": "usage",
         "period": null,
         "model": "per_unit",
@@ -106,11 +109,12 @@
       "body": {
         "items": [
           {
+            "usage_rating_policy": null,
+            "usage_sku_version": null,
             "id": "<entry:pro>",
             "tenant_id": "<tenant>",
             "book_id": "<book:eur>",
             "sku_id": "<sku:pro>",
-            "usage_rating_policy": null,
             "charge_kind": "recurring",
             "period": "month",
             "model": "flat",
@@ -132,11 +136,12 @@
             }
           },
           {
+            "usage_rating_policy": null,
+            "usage_sku_version": null,
             "id": "<entry:storage>",
             "tenant_id": "<tenant>",
             "book_id": "<book:eur>",
             "sku_id": "<sku:storage>",
-            "usage_rating_policy": null,
             "charge_kind": "usage",
             "period": null,
             "model": "per_unit",
@@ -158,11 +163,12 @@
             }
           },
           {
+            "usage_rating_policy": null,
+            "usage_sku_version": null,
             "id": "<entry:egress>",
             "tenant_id": "<tenant>",
             "book_id": "<book:eur>",
             "sku_id": "<sku:egress>",
-            "usage_rating_policy": null,
             "charge_kind": "usage",
             "period": null,
             "model": "per_unit",
@@ -184,11 +190,12 @@
             }
           },
           {
+            "usage_rating_policy": null,
+            "usage_sku_version": null,
             "id": "<entry:requests>",
             "tenant_id": "<tenant>",
             "book_id": "<book:eur>",
             "sku_id": "<sku:requests>",
-            "usage_rating_policy": null,
             "charge_kind": "usage",
             "period": null,
             "model": "graduated",
@@ -210,11 +217,12 @@
             }
           },
           {
+            "usage_rating_policy": null,
+            "usage_sku_version": null,
             "id": "<entry:archive>",
             "tenant_id": "<tenant>",
             "book_id": "<book:eur>",
             "sku_id": "<sku:archive>",
-            "usage_rating_policy": null,
             "charge_kind": "usage",
             "period": null,
             "model": "per_unit",
@@ -236,11 +244,12 @@
             }
           },
           {
+            "usage_rating_policy": null,
+            "usage_sku_version": null,
             "id": "<entry:requests-volume>",
             "tenant_id": "<tenant>",
             "book_id": "<book:eur>",
             "sku_id": "<sku:requests-volume>",
-            "usage_rating_policy": null,
             "charge_kind": "usage",
             "period": null,
             "model": "volume",
@@ -262,11 +271,12 @@
             }
           },
           {
+            "usage_rating_policy": null,
+            "usage_sku_version": null,
             "id": "<entry:requests-package>",
             "tenant_id": "<tenant>",
             "book_id": "<book:eur>",
             "sku_id": "<sku:requests-package>",
-            "usage_rating_policy": null,
             "charge_kind": "usage",
             "period": null,
             "model": "package",
@@ -288,11 +298,12 @@
             }
           },
           {
+            "usage_rating_policy": null,
+            "usage_sku_version": null,
             "id": "<entry:promo>",
             "tenant_id": "<tenant>",
             "book_id": "<book:eur>",
             "sku_id": "<sku:promo>",
-            "usage_rating_policy": null,
             "charge_kind": "recurring",
             "period": "month",
             "model": "flat",

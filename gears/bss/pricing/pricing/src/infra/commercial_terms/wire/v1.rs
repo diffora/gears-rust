@@ -459,6 +459,10 @@ pub(super) struct AcceptedBinding {
     #[serde(deserialize_with = "scalars::required_option")]
     pub unit: Option<String>,
 
+    /// Dated SKU usage type. Absent on a receipt written before D-514, and omitted when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meter: Option<MeterRef>,
+
     pub price: ImmutablePrice,
 
     pub kind: ChargeKind,
@@ -485,6 +489,7 @@ impl From<r::AcceptedBinding> for AcceptedBinding {
             sku_code: v.sku_code,
             sku_name: v.sku_name,
             unit: v.unit,
+            meter: v.meter.map(Into::into),
             price: v.price.into(),
             kind: v.kind.into(),
             recurring_period: v.recurring_period.map(Into::into),
@@ -506,6 +511,7 @@ impl From<AcceptedBinding> for r::AcceptedBinding {
             sku_code: v.sku_code,
             sku_name: v.sku_name,
             unit: v.unit,
+            meter: v.meter.map(Into::into),
             price: v.price.into(),
             kind: v.kind.into(),
             recurring_period: v.recurring_period.map(Into::into),
@@ -723,38 +729,6 @@ impl From<MeterRef> for t::MeterRef {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct QuantitySemantics {
-    pub meter: MeterRef,
-
-    pub unit: String,
-
-    pub fold: Fold,
-
-    pub accrual_policy_version: String,
-}
-impl From<t::QuantitySemantics> for QuantitySemantics {
-    fn from(v: t::QuantitySemantics) -> Self {
-        Self {
-            meter: v.meter.into(),
-            unit: v.unit,
-            fold: v.fold.into(),
-            accrual_policy_version: v.accrual_policy_version,
-        }
-    }
-}
-impl From<QuantitySemantics> for t::QuantitySemantics {
-    fn from(v: QuantitySemantics) -> Self {
-        Self {
-            meter: v.meter.into(),
-            unit: v.unit,
-            fold: v.fold.into(),
-            accrual_policy_version: v.accrual_policy_version,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(super) struct UsageRatingPolicyInput {
     pub rating_window: RatingWindow,
 
@@ -762,9 +736,9 @@ pub(super) struct UsageRatingPolicyInput {
 
     pub reset: Reset,
 
-    pub quantity_semantics: QuantitySemantics,
-
     pub partial_window: PartialWindow,
+
+    pub fold: Fold,
 }
 impl From<t::UsageRatingPolicyInput> for UsageRatingPolicyInput {
     fn from(v: t::UsageRatingPolicyInput) -> Self {
@@ -772,8 +746,8 @@ impl From<t::UsageRatingPolicyInput> for UsageRatingPolicyInput {
             rating_window: v.rating_window.into(),
             aggregation_scope: v.aggregation_scope.into(),
             reset: v.reset.into(),
-            quantity_semantics: v.quantity_semantics.into(),
             partial_window: v.partial_window.into(),
+            fold: v.fold.into(),
         }
     }
 }
@@ -783,8 +757,8 @@ impl From<UsageRatingPolicyInput> for t::UsageRatingPolicyInput {
             rating_window: v.rating_window.into(),
             aggregation_scope: v.aggregation_scope.into(),
             reset: v.reset.into(),
-            quantity_semantics: v.quantity_semantics.into(),
             partial_window: v.partial_window.into(),
+            fold: v.fold.into(),
         }
     }
 }

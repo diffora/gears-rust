@@ -55,6 +55,7 @@ async fn keyed_entry(f: &Fixture, catalog: &Catalog, book: Uuid, key: &str) -> U
             usage_policy_id: None,
             usage_policy_version: None,
             usage_policy_digest: None,
+            usage_sku_version: None,
             dimension_key: Some(key.to_owned()),
             invoice_line_override: None,
             reservation_id: Uuid::new_v4(),

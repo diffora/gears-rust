@@ -337,6 +337,14 @@ pub(crate) fn project_resolution(s: &ReadSnapshot) -> Result<ResolvedBindings, C
                         sku_code: required(Some(&version.content.code), "sku_code")?,
                         sku_name: required(Some(&version.content.name), "sku_name")?,
                         unit: version.content.unit.clone(),
+                        meter: match kind {
+                            ChargeKind::Usage => version
+                                .content
+                                .usage_type_ref
+                                .as_deref()
+                                .map(crate::domain::usage_policy::meter_ref),
+                            _ => None,
+                        },
                         price,
                         kind,
                         recurring_period,

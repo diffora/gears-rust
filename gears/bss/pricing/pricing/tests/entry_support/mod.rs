@@ -455,6 +455,8 @@ pub struct Script {
     pub readers: std::sync::Mutex<Option<std::collections::BTreeSet<Uuid>>>,
     /// Opt-in: `sku_for_write` fails as an unavailable registry.
     pub skus_down: std::sync::atomic::AtomicBool,
+    /// When set, the SKU's `usage_type_ref` replaces the fixture's `vm-hours`.
+    pub usage_type_ref: std::sync::Mutex<Option<String>>,
 }
 impl Script {
     pub fn set(&self, mode: usize) {
@@ -668,7 +670,13 @@ impl ReferenceRegistryV1 for Script {
             tax_category: None,
             invoice_line_template: None,
             billing_timing: None,
-            usage_type_ref: Some("vm-hours".into()),
+            usage_type_ref: Some(
+                self.usage_type_ref
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .unwrap_or_else(|| "vm-hours".into()),
+            ),
             unit: Some("VM\u{b7}hour".into()),
             // Mode 4 is a fenced SKU: a pending type change refuses every new reference.
             type_change_pending: mode == 4,
@@ -971,6 +979,7 @@ impl Target {
                         usage_policy_id: None,
                         usage_policy_version: None,
                         usage_policy_digest: None,
+                        usage_sku_version: None,
                         dimension_key: None,
                         invoice_line_override: None,
                         reservation_id: Uuid::new_v4(),

@@ -70,7 +70,11 @@ async fn migrate(pg: &Pg, without: Option<&str>) -> Result<MigrationResult, Migr
     let chain = BssPricingGear::default()
         .migrations()
         .into_iter()
-        .filter(|m| Some(m.name()) != without && m.name() != "m20260930_000018_usage_rating_policy")
+        .filter(|m| {
+            Some(m.name()) != without
+                && m.name() != "m20260930_000018_usage_rating_policy"
+                && !m.name().contains("000021")
+        })
         .collect();
     run_migrations_for_testing(&pg.db().await, chain).await
 }

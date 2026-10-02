@@ -199,30 +199,10 @@ fn policy_content(p: &UsageRatingPolicyInput) -> V {
             }),
         ),
         (
-            "quantity_semantics",
-            object([
-                (
-                    "meter",
-                    object([
-                        (
-                            "usage_type_id",
-                            text(&p.quantity_semantics.meter.usage_type_id),
-                        ),
-                        ("version", text(&p.quantity_semantics.meter.version)),
-                    ]),
-                ),
-                ("unit", text(&p.quantity_semantics.unit)),
-                (
-                    "fold",
-                    text(match p.quantity_semantics.fold {
-                        Fold::Sum => "SUM",
-                    }),
-                ),
-                (
-                    "accrual_policy_version",
-                    text(&p.quantity_semantics.accrual_policy_version),
-                ),
-            ]),
+            "fold",
+            text(match p.fold {
+                Fold::Sum => "SUM",
+            }),
         ),
         (
             "partial_window",

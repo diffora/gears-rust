@@ -141,16 +141,8 @@ fn policy_input() -> terms::UsageRatingPolicyInput {
         },
         aggregation_scope: terms::AggregationScope::SubscriptionLine,
         reset: terms::Reset::RatingWindowStart,
-        quantity_semantics: terms::QuantitySemantics {
-            meter: terms::MeterRef {
-                usage_type_id: "cloudlets".into(),
-                version: "1".into(),
-            },
-            unit: "cloudlet_hour".into(),
-            fold: terms::Fold::Sum,
-            accrual_policy_version: "integration-v1".into(),
-        },
         partial_window: terms::PartialWindow::ActualQuantityFullThresholds,
+        fold: terms::Fold::Sum,
     }
 }
 fn sample_binding() -> read::AcceptedBinding {
@@ -168,6 +160,10 @@ fn sample_binding() -> read::AcceptedBinding {
         sku_code: "CLOUD".into(),
         sku_name: "Cloudlet".into(),
         unit: Some("cloudlet_hour".into()),
+        meter: Some(terms::MeterRef {
+            usage_type_id: "cloudlets".into(),
+            version: "1".into(),
+        }),
         price,
         kind: read::ChargeKind::Usage,
         recurring_period: None,
@@ -483,6 +479,83 @@ fn commercial_digests_cover_intent_and_sort_sets_without_reordering_tiers() {
         tiers.reverse();
     }
     assert_ne!(before, terms_digest(&q, &[b]));
+}
+
+#[test]
+fn rules_only_policy_digest_covers_the_five_rating_rules() {
+    use bss_pricing_sdk::digest::{policy_digest, selected_bindings_digest};
+    const OLD_POLICY: &str = "c9dc411f7758532dcb616eeeb4389fc9b6fb10169fd52e60c9df1a599a707c7b";
+    const NEW_POLICY: &str = "2bf1fcebb5742b520e2162b6ab65bcad5d04dc8c1100055d77757eaa87a60abc";
+    const OLD_BINDINGS: &str = "b4be41c8abdd4ba9a808b3a1ab54ce85bec603982d81e19347ccc3cb6aba3e86";
+    const NEW_BINDINGS: &str = "268fe0a1b05d7eaa4092bd5a4415d2669d028c865db702d73b761595e5d74457";
+    // A second policy that differed only in a former quantity_semantics field
+    // (meter, unit, accrual) cannot be built: those fields are not on the type.
+    let rules = terms::UsageRatingPolicyInput {
+        rating_window: terms::RatingWindow::CalendarHour {
+            timezone: terms::Timezone::Utc,
+        },
+        aggregation_scope: terms::AggregationScope::SubscriptionLine,
+        reset: terms::Reset::RatingWindowStart,
+        partial_window: terms::PartialWindow::ActualQuantityFullThresholds,
+        fold: terms::Fold::Sum,
+    };
+    let canonical = "{\"domain\":\"pricing.policy.v1\",\"payload\":{\"aggregation_scope\":\"subscription_line\",\"fold\":\"SUM\",\"partial_window\":\"actual_quantity_full_thresholds\",\"rating_window\":{\"kind\":\"calendar_hour\",\"timezone\":\"UTC\"},\"reset\":\"rating_window_start\"}}";
+    let parsed: Value = serde_json::from_str(canonical).unwrap();
+    let payload = restricted(&parsed["payload"]).unwrap();
+    assert_eq!(
+        String::from_utf8(canonical_json_bytes(&CanonicalValue::Object(
+            BTreeMap::from([
+                (
+                    "domain".into(),
+                    CanonicalValue::String("pricing.policy.v1".into())
+                ),
+                ("payload".into(), payload),
+            ])
+        )))
+        .unwrap(),
+        canonical
+    );
+    assert!(!canonical.contains("quantity_semantics"));
+    assert!(!canonical.contains("accrual_policy_version"));
+    assert!(!canonical.contains("usage_type_id"));
+    assert_eq!(hex(policy_digest(&rules)), NEW_POLICY);
+    assert_ne!(NEW_POLICY, OLD_POLICY);
+
+    let binding = sample_binding();
+    let selection = read::BindingSelection {
+        item_id: binding.item_id,
+        dimension_value: binding.dimension_value.clone(),
+    };
+    let resolved = read::ResolvedBindings {
+        plan_id: uuid::Uuid::from_u128(6),
+        revision_id: uuid::Uuid::from_u128(7),
+        cells: vec![read::ResolvedCell {
+            selection: selection.clone(),
+            binding: Some(binding.clone()),
+        }],
+    };
+    let new_bindings =
+        hex(selected_bindings_digest(&resolved, std::slice::from_ref(&selection)).unwrap());
+    assert_eq!(new_bindings, NEW_BINDINGS);
+    assert_ne!(
+        new_bindings, OLD_BINDINGS,
+        "selected_bindings_digest old {OLD_BINDINGS} -> new {new_bindings} (policy part only)"
+    );
+    let mut other_meter = binding;
+    other_meter.meter = None;
+    let resolved_without = read::ResolvedBindings {
+        plan_id: uuid::Uuid::from_u128(6),
+        revision_id: uuid::Uuid::from_u128(7),
+        cells: vec![read::ResolvedCell {
+            selection: selection.clone(),
+            binding: Some(other_meter),
+        }],
+    };
+    assert_eq!(
+        new_bindings,
+        hex(selected_bindings_digest(&resolved_without, &[selection]).unwrap()),
+        "the meter projection is outside the digest, so the change is the policy part only"
+    );
 }
 
 #[test]

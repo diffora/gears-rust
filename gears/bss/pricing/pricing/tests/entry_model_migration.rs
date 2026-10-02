@@ -132,7 +132,9 @@ impl Lite {
             .migrations()
             .into_iter()
             .filter(|m| {
-                Some(m.name()) != without && m.name() != "m20260930_000018_usage_rating_policy"
+                Some(m.name()) != without
+                    && m.name() != "m20260930_000018_usage_rating_policy"
+                    && !m.name().contains("000021")
             })
             .collect();
         run_migrations_for_testing(&self.pool().await, chain).await
@@ -702,10 +704,9 @@ async fn the_forward_migration_moves_the_model_to_the_entry_and_keeps_every_row(
     // An upgraded database and a fresh one hold the same schema.
     let fresh = Database::connect("sqlite::memory:").await.unwrap();
     let manager = sea_orm_migration::SchemaManager::new(&fresh);
-    for migration in schema_dump::name_ordered_chain()
-        .into_iter()
-        .filter(|m| m.name() != "m20260930_000018_usage_rating_policy")
-    {
+    for migration in schema_dump::name_ordered_chain().into_iter().filter(|m| {
+        m.name() != "m20260930_000018_usage_rating_policy" && !m.name().contains("000021")
+    }) {
         migration.up(&manager).await.unwrap();
     }
     assert_eq!(

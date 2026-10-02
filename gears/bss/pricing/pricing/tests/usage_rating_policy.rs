@@ -18,6 +18,17 @@ fn policy() -> Value {
     })
 }
 
+/// The rules stored and served after D-514. The meter copy is not part of the policy.
+fn stored_rules() -> Value {
+    json!({
+        "rating_window":{"kind":"calendar_hour","timezone":"UTC"},
+        "aggregation_scope":"subscription_line",
+        "reset":"rating_window_start",
+        "partial_window":"actual_quantity_full_thresholds",
+        "fold":"SUM"
+    })
+}
+
 /// The same policy with the three single-valued fields left out (D-513).
 fn policy_without_single_valued_fields() -> Value {
     let mut body = policy();
@@ -48,7 +59,8 @@ async fn authoring_case(f: Fixture) {
         .await;
     assert_eq!(first.0, 201, "{first:?}");
     let original = first.1["usage_rating_policy"].clone();
-    assert_eq!(original["content"], policy());
+    assert_eq!(original["content"], stored_rules());
+    assert_eq!(first.1["usage_sku_version"], json!(1));
     assert_eq!(original["version"], "1");
     assert_eq!(original["digest"].as_str().unwrap().len(), 64);
     let read_path = format!("/price-book-entries/{}", first.1["id"].as_str().unwrap());
@@ -409,11 +421,11 @@ async fn crash_windows_preserve_policy_input_and_confirmed_receipt() {
         let Target::PriceBookEntry { input, .. } = Work::read(&ops[0]).unwrap().target else {
             panic!("entry op")
         };
-        assert_eq!(input.schema_version, Some(2));
+        assert_eq!(input.schema_version, Some(3));
         assert_eq!(input.meter_evidence.as_ref().unwrap().digest, [7; 32]);
         assert_eq!(
             serde_json::to_value(input.usage_rating_policy).unwrap(),
-            policy()
+            stored_rules()
         );
         let before = price_book_entry_repo::find(
             &f.db.conn().unwrap(),
@@ -450,7 +462,7 @@ async fn crash_windows_preserve_policy_input_and_confirmed_receipt() {
             .call("POST", &path, body.clone(), None, Some("crash"))
             .await;
         assert_eq!(result.0, 201, "{result:?}");
-        assert_eq!(result.1["usage_rating_policy"]["content"], policy());
+        assert_eq!(result.1["usage_rating_policy"]["content"], stored_rules());
         if let Some(before) = before {
             assert_eq!(
                 result.1["usage_rating_policy"]["policy_id"],
@@ -491,7 +503,10 @@ async fn legacy_published_usage_upgrades_without_inventing_policy_and_keeps_reso
         .into_iter()
         .filter(|m| {
             let name = m.name();
-            !(name.contains("000018") || name.contains("000019") || name.contains("000020"))
+            !(name.contains("000018")
+                || name.contains("000019")
+                || name.contains("000020")
+                || name.contains("000021"))
         })
         .collect();
     run_migrations_for_testing(&db, prior).await.unwrap();
@@ -959,7 +974,7 @@ async fn rereserve_and_delete_retain_the_original_immutable_policy() {
         .unwrap();
     assert_eq!(
         serde_json::to_value(&remaining[&id].content).unwrap(),
-        policy()
+        stored_rules()
     );
     // No entry references this policy now; its delete is still forbidden by append-only storage.
     let raw = Database::connect(&f.dsn).await.unwrap();
@@ -1017,7 +1032,7 @@ async fn omitted_single_valued_fields_default_on_create_and_match_an_explicit_po
         )
         .await;
     assert_eq!(read.0, 200, "{read:?}");
-    assert_eq!(read.1["usage_rating_policy"]["content"], policy());
+    assert_eq!(read.1["usage_rating_policy"]["content"], stored_rules());
     let spelled = f
         .call(
             "POST",
@@ -1038,13 +1053,128 @@ async fn omitted_single_valued_fields_default_on_create_and_match_an_explicit_po
     );
 }
 
+#[tokio::test]
+async fn a_rules_only_create_records_the_sku_revision_and_matches_the_deploy3_digest() {
+    let f = Fixture::new(Arc::new(Script::default())).await;
+    let (book, _) = f.book().await;
+    let path = format!("/price-books/{}/entries", book["id"].as_str().unwrap());
+    let rules = f
+        .call(
+            "POST",
+            &path,
+            json!({"sku_id":Uuid::new_v4(),"model":"per_unit","usage_rating_policy":{
+                "rating_window":{"kind":"calendar_hour","timezone":"UTC"},
+                "aggregation_scope":"subscription_line"
+            }}),
+            None,
+            Some("rules"),
+        )
+        .await;
+    assert_eq!(rules.0, 201, "{rules:?}");
+    assert_eq!(rules.1["usage_rating_policy"]["content"], stored_rules());
+    assert!(
+        rules.1["usage_rating_policy"]["content"]
+            .get("quantity_semantics")
+            .is_none()
+    );
+    assert_eq!(rules.1["usage_sku_version"], json!(1));
+    let deploy3 = f
+        .call(
+            "POST",
+            &path,
+            json!({"sku_id":Uuid::new_v4(),"model":"per_unit","usage_rating_policy":policy()}),
+            None,
+            Some("deploy3"),
+        )
+        .await;
+    assert_eq!(deploy3.0, 201, "{deploy3:?}");
+    assert_eq!(
+        rules.1["usage_rating_policy"]["digest"],
+        deploy3.1["usage_rating_policy"]["digest"]
+    );
+}
+
+#[tokio::test]
+async fn a_raw_meter_sku_is_an_unconfigured_dependency() {
+    use bss_pricing_sdk::meter_semantics::UsageMeterSemanticsV1;
+    let script = Arc::new(Script::default());
+    *script.usage_type_ref.lock().unwrap() =
+        Some("gts.cf.core.uc.usage_record.v1~cf.test.usage.cpu".into());
+    let f = Fixture::new(script).await;
+    f.state.hub.remove::<dyn UsageMeterSemanticsV1>();
+    f.state
+        .hub
+        .register::<dyn UsageMeterSemanticsV1>(Arc::new(RawMeter));
+    let (book, _) = f.book().await;
+    let answer = f
+        .call(
+            "POST",
+            &format!("/price-books/{}/entries", book["id"].as_str().unwrap()),
+            json!({"sku_id":Uuid::new_v4(),"model":"per_unit","usage_rating_policy":{
+                "rating_window":{"kind":"calendar_hour","timezone":"UTC"},
+                "aggregation_scope":"subscription_line"
+            }}),
+            None,
+            Some("raw"),
+        )
+        .await;
+    assert_eq!(answer.0, 400, "{answer:?}");
+    assert!(
+        answer.1.to_string().contains("UNCONFIGURED_DEPENDENCY"),
+        "{answer:?}"
+    );
+}
+
+struct RawMeter;
+
+#[async_trait::async_trait]
+impl bss_pricing_sdk::meter_semantics::UsageMeterSemanticsV1 for RawMeter {
+    async fn resolve(
+        &self,
+        _ctx: &toolkit_security::SecurityContext,
+        _meter: bss_pricing_sdk::terms::MeterRef,
+    ) -> Result<
+        bss_pricing_sdk::meter_semantics::MeterSemantics,
+        toolkit_canonical_errors::CanonicalError,
+    > {
+        Err(toolkit_canonical_errors::CanonicalError::from(
+            bss_pricing_sdk::meter_semantics::UnconfiguredMeterSemantics,
+        ))
+    }
+}
+
+#[test]
+fn the_served_request_deprecates_quantity_semantics_and_content_omits_it() {
+    use utoipa::PartialSchema;
+    let request = serde_json::to_value(
+        bss_pricing::infra::usage_policy_wire::UsageRatingPolicyRequest::schema(),
+    )
+    .unwrap();
+    let content = serde_json::to_value(
+        bss_pricing::infra::usage_policy_wire::UsageRatingPolicyInput::schema(),
+    )
+    .unwrap();
+    let quantity = serde_json::to_value(
+        bss_pricing::infra::usage_policy_wire::QuantitySemanticsRequest::schema(),
+    )
+    .unwrap();
+    assert_eq!(quantity["deprecated"], true, "{request}");
+    assert!(
+        content["properties"].get("quantity_semantics").is_none(),
+        "{content}"
+    );
+    assert!(content["properties"].get("fold").is_some(), "{content}");
+}
+
 #[test]
 fn omitted_and_explicit_single_valued_fields_share_the_stand_digest() {
     use bss_pricing::infra::usage_policy_wire::{
         UsageRatingPolicyInput, UsageRatingPolicyRequest, digest_text,
     };
     let accrual = "derived-v1:7354bbb184408c5965a4f84c539c1d38a5d4c8470f7341996bcf8e3f5b3b190b";
-    let pin = "8d7119c7e77689f12980cc88b5f14051d54cff9a4234e9cd9106037079ca02a5";
+    // D-514: the pin is the rules-only digest. The former quantity_semantics pin was
+    // 8d7119c7e77689f12980cc88b5f14051d54cff9a4234e9cd9106037079ca02a5.
+    let pin = "0cab8c6e9792e0758c140b193c08716e5862544c792ea6880cce8c9727d5f3e4";
     let quantity = |fold: Option<&str>| {
         let mut semantics = json!({
             "meter":{"usage_type_id":"products.derived/vm-hour@1","version":"1"},
@@ -1172,37 +1302,45 @@ fn complete_meter_evidence_must_match_every_immutable_field_and_sku_unit() {
     use bss_pricing_sdk::{meter_semantics::MeterSemantics, terms::Fold};
     let policy = seam_support::vm_hour_policy();
     let evidence = MeterSemantics {
-        meter: policy.content.quantity_semantics.meter.clone(),
+        meter: bss_pricing_sdk::terms::MeterRef {
+            usage_type_id: "vm-hours".into(),
+            version: "v1".into(),
+        },
         canonical_unit: "VM\u{b7}hour".into(),
         fold: Fold::Sum,
         accrual_policy_version: "integrated-v1".into(),
         source_integrated: true,
         digest: [7; 32],
     };
-    assert!(validate_meter_policy(&policy.content, "VM\u{b7}hour", &evidence).is_ok());
+    assert!(validate_meter_policy(&policy.content, "vm-hours", "VM\u{b7}hour", &evidence).is_ok());
     assert_eq!(
-        validate_meter_policy(&policy.content, "second", &evidence)
+        validate_meter_policy(&policy.content, "vm-hours", "second", &evidence)
             .unwrap_err()
             .code,
         "METER_POLICY_MISMATCH"
     );
-    for field in ["unit", "version", "identity", "accrual", "integration"] {
+    for field in ["unit", "version", "identity", "integration"] {
         let mut wrong = evidence.clone();
         match field {
             "unit" => wrong.canonical_unit = "second".into(),
             "version" => wrong.meter.version = "v2".into(),
             "identity" => wrong.meter.usage_type_id = "other".into(),
-            "accrual" => wrong.accrual_policy_version = "raw-v1".into(),
             _ => wrong.source_integrated = false,
         }
         assert_eq!(
-            validate_meter_policy(&policy.content, "VM\u{b7}hour", &wrong)
+            validate_meter_policy(&policy.content, "vm-hours", "VM\u{b7}hour", &wrong)
                 .unwrap_err()
                 .code,
             "METER_POLICY_MISMATCH",
             "{field}"
         );
     }
+    let mut accrual = evidence;
+    accrual.accrual_policy_version = "raw-v1".into();
+    assert!(
+        validate_meter_policy(&policy.content, "vm-hours", "VM\u{b7}hour", &accrual).is_ok(),
+        "accrual is captured evidence, not a rating rule"
+    );
     // SUM is the only representable SDK fold; wire input cannot smuggle another declaration.
     let mut wrong_fold = serde_json::to_value(
         bss_pricing::infra::usage_policy_wire::UsageRatingPolicyInput::from(&policy.content),
@@ -1578,7 +1716,8 @@ async fn price_and_plan_submit_and_apply_preserve_meter_refusals_outside_transac
     use bss_pricing_sdk::meter_semantics::UsageMeterSemanticsV1;
     use plan_support::entry_support::policy_support::MeterProvider;
     use std::sync::atomic::Ordering;
-    for mode in 0..=7 {
+    // Mode 5 changes only the provider's accrual text. That text is captured evidence, not a rating rule.
+    for mode in [0, 1, 2, 3, 4, 6, 7] {
         let f = Fixture::new(Arc::new(Script::default())).await;
         let meter = Arc::new(MeterProvider {
             probe_db: Some(f.db.clone()),
@@ -1744,10 +1883,10 @@ async fn a_new_usage_price_approval_requires_a_policy_bearing_entry() {
 fn captured_evidence_digest_uses_strict_lowercase_hex_at_storage_boundaries() {
     use bss_pricing::infra::usage_policy_wire::MeterEvidence;
     let evidence = bss_pricing_sdk::meter_semantics::MeterSemantics {
-        meter: seam_support::vm_hour_policy()
-            .content
-            .quantity_semantics
-            .meter,
+        meter: bss_pricing_sdk::terms::MeterRef {
+            usage_type_id: "vm-hours".into(),
+            version: "v1".into(),
+        },
         canonical_unit: "VM\u{b7}hour".into(),
         fold: bss_pricing_sdk::terms::Fold::Sum,
         accrual_policy_version: "integrated-v1".into(),

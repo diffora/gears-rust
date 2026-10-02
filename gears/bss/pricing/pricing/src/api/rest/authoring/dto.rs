@@ -51,6 +51,9 @@ impl From<entity::price_book::Model> for PriceBookDto {
 pub struct PricingPriceBookEntryDto {
     /// Immutable policy materialized from the entry; null for legacy/non-usage entries.
     pub usage_rating_policy: Option<crate::infra::usage_policy_wire::UsageRatingPolicy>,
+    /// The SKU head's `published_version` when the meter was checked. Null for a non-usage entry
+    /// and for a usage entry written before D-514.
+    pub usage_sku_version: Option<i64>,
     pub id: Uuid,
     pub tenant_id: Uuid,
     pub book_id: Uuid,
@@ -80,6 +83,7 @@ impl PricingPriceBookEntryDto {
         let id = m.id;
         Ok(Self {
             usage_rating_policy,
+            usage_sku_version: m.usage_sku_version,
             id,
             tenant_id: m.tenant_id,
             book_id: m.book_id,

@@ -198,7 +198,7 @@ fn validate_model_and_policy(q: &NewSaleQuery, b: &AcceptedBinding) -> Result<()
             if p.policy_id.is_nil()
                 || p.version == 0
                 || policy_digest(&p.content) != p.digest
-                || b.unit.as_deref() != Some(p.content.quantity_semantics.unit.as_str())
+                || b.unit.as_deref().is_none_or(|unit| unit.trim().is_empty())
             {
                 return Err(R::MeterPolicyMismatch.into());
             }
