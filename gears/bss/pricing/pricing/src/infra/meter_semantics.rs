@@ -47,8 +47,15 @@ pub async fn resolve(
         CanonicalError::from(bss_pricing_sdk::meter_semantics::UnconfiguredMeterSemantics)
     })?;
     let content = bss_pricing_sdk::terms::UsageRatingPolicyInput::from(input);
+    let usage_type_ref = sku.usage_type_ref.as_deref().unwrap_or("");
+    if usage_type_ref.trim().is_empty() {
+        return Err(support::invalid(
+            "usage_rating_policy",
+            "UNCONFIGURED_DEPENDENCY",
+        ));
+    }
     let evidence = provider
-        .resolve(ctx, content.quantity_semantics.meter.clone())
+        .resolve(ctx, crate::domain::usage_policy::meter_ref(usage_type_ref))
         .await
         .map_err(provider_outage)?;
     validate(&content, sku, &evidence)?;
@@ -62,15 +69,14 @@ pub fn validate(
     sku: &Sku,
     evidence: &bss_pricing_sdk::meter_semantics::MeterSemantics,
 ) -> Result<(), CanonicalError> {
-    if sku.usage_type_ref.as_deref() != Some(policy.quantity_semantics.meter.usage_type_id.as_str())
-    {
-        return Err(support::invalid(
-            "usage_rating_policy",
-            "METER_POLICY_MISMATCH",
-        ));
-    }
-    validate_meter_policy(policy, sku.unit.as_deref().unwrap_or_default(), evidence)
-        .map_err(|e| support::invalid("usage_rating_policy", e.code))
+    let sku_ref = sku.usage_type_ref.as_deref().unwrap_or("");
+    validate_meter_policy(
+        policy,
+        sku_ref,
+        sku.unit.as_deref().unwrap_or_default(),
+        evidence,
+    )
+    .map_err(|e| support::invalid("usage_rating_policy", e.code))
 }
 /// One entry observation. The transaction must still hold precisely this entry generation.
 #[derive(Clone)]

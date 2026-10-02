@@ -504,6 +504,7 @@ pub async fn entry_with_policy(
             usage_policy_id: policy.as_ref().map(|p| p.policy_id),
             usage_policy_version: policy.as_ref().map(|_| 1),
             usage_policy_digest: policy.as_ref().map(|p| p.digest.clone()),
+            usage_sku_version: None,
             dimension_key: None,
             invoice_line_override: None,
             reservation_id: Uuid::new_v4(),

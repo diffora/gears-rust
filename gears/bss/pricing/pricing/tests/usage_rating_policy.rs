@@ -1172,37 +1172,45 @@ fn complete_meter_evidence_must_match_every_immutable_field_and_sku_unit() {
     use bss_pricing_sdk::{meter_semantics::MeterSemantics, terms::Fold};
     let policy = seam_support::vm_hour_policy();
     let evidence = MeterSemantics {
-        meter: policy.content.quantity_semantics.meter.clone(),
+        meter: bss_pricing_sdk::terms::MeterRef {
+            usage_type_id: "vm-hours".into(),
+            version: "v1".into(),
+        },
         canonical_unit: "VM\u{b7}hour".into(),
         fold: Fold::Sum,
         accrual_policy_version: "integrated-v1".into(),
         source_integrated: true,
         digest: [7; 32],
     };
-    assert!(validate_meter_policy(&policy.content, "VM\u{b7}hour", &evidence).is_ok());
+    assert!(validate_meter_policy(&policy.content, "vm-hours", "VM\u{b7}hour", &evidence).is_ok());
     assert_eq!(
-        validate_meter_policy(&policy.content, "second", &evidence)
+        validate_meter_policy(&policy.content, "vm-hours", "second", &evidence)
             .unwrap_err()
             .code,
         "METER_POLICY_MISMATCH"
     );
-    for field in ["unit", "version", "identity", "accrual", "integration"] {
+    for field in ["unit", "version", "identity", "integration"] {
         let mut wrong = evidence.clone();
         match field {
             "unit" => wrong.canonical_unit = "second".into(),
             "version" => wrong.meter.version = "v2".into(),
             "identity" => wrong.meter.usage_type_id = "other".into(),
-            "accrual" => wrong.accrual_policy_version = "raw-v1".into(),
             _ => wrong.source_integrated = false,
         }
         assert_eq!(
-            validate_meter_policy(&policy.content, "VM\u{b7}hour", &wrong)
+            validate_meter_policy(&policy.content, "vm-hours", "VM\u{b7}hour", &wrong)
                 .unwrap_err()
                 .code,
             "METER_POLICY_MISMATCH",
             "{field}"
         );
     }
+    let mut accrual = evidence.clone();
+    accrual.accrual_policy_version = "raw-v1".into();
+    assert!(
+        validate_meter_policy(&policy.content, "vm-hours", "VM\u{b7}hour", &accrual).is_ok(),
+        "accrual is captured evidence, not a rating rule"
+    );
     // SUM is the only representable SDK fold; wire input cannot smuggle another declaration.
     let mut wrong_fold = serde_json::to_value(
         bss_pricing::infra::usage_policy_wire::UsageRatingPolicyInput::from(&policy.content),
@@ -1744,10 +1752,10 @@ async fn a_new_usage_price_approval_requires_a_policy_bearing_entry() {
 fn captured_evidence_digest_uses_strict_lowercase_hex_at_storage_boundaries() {
     use bss_pricing::infra::usage_policy_wire::MeterEvidence;
     let evidence = bss_pricing_sdk::meter_semantics::MeterSemantics {
-        meter: seam_support::vm_hour_policy()
-            .content
-            .quantity_semantics
-            .meter,
+        meter: bss_pricing_sdk::terms::MeterRef {
+            usage_type_id: "vm-hours".into(),
+            version: "v1".into(),
+        },
         canonical_unit: "VM\u{b7}hour".into(),
         fold: bss_pricing_sdk::terms::Fold::Sum,
         accrual_policy_version: "integrated-v1".into(),

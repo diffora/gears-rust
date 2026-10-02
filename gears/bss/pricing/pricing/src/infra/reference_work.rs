@@ -1515,6 +1515,7 @@ async fn entry_written(
         usage_policy_id: None,
         usage_policy_version: None,
         usage_policy_digest: None,
+        usage_sku_version: None,
         dimension_key: input.dimension_key,
         invoice_line_override: input.invoice_line_override,
         reservation_id: op.reservation_id.ok_or_else(corrupt)?,

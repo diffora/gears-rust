@@ -5,23 +5,26 @@ use bss_pricing_sdk::{
     terms::{AggregationScope, RatingWindow, UsageRatingPolicyInput},
 };
 
-/// Validate shape only; authoritative meter semantics are a separate gate.
+/// Validate shape only. The five rating rules have no free text; the meter is the SKU's.
 /// # Errors
-/// Returns `METER_POLICY_MISMATCH` for an empty meter, version, unit or accrual version.
-pub fn validate_policy_shape(policy: &UsageRatingPolicyInput) -> Result<(), RuleError> {
-    let q = &policy.quantity_semantics;
-    if [
-        &q.meter.usage_type_id,
-        &q.meter.version,
-        &q.unit,
-        &q.accrual_policy_version,
-    ]
-    .iter()
-    .any(|v| v.trim().is_empty())
-    {
-        return Err(RuleError::new("METER_POLICY_MISMATCH"));
-    }
+/// The rules-only content has no shape refusal. The meter gate is [`validate_meter_policy`].
+pub fn validate_policy_shape(_policy: &UsageRatingPolicyInput) -> Result<(), RuleError> {
     Ok(())
+}
+
+/// The meter a provider is asked for the SKU's `usage_type_ref`.
+///
+/// A derived id `products.derived/<code>@<n>` is asked at version `<n>`. Any other ref is asked at
+/// `v1`: a raw meter is unconfigured before that version is read, and the pricing fixtures declare `v1`.
+#[must_use]
+pub fn meter_ref(usage_type_ref: &str) -> bss_pricing_sdk::terms::MeterRef {
+    let version = bss_products_sdk::derived::MeterId::parse(usage_type_ref)
+        .map(|id| id.version().to_string())
+        .unwrap_or_else(|_| "v1".to_owned());
+    bss_pricing_sdk::terms::MeterRef {
+        usage_type_id: usage_type_ref.to_owned(),
+        version,
+    }
 }
 
 /// Content identity for the full entry key; absence is reserved for legacy/non-usage entries.
@@ -37,22 +40,21 @@ pub fn refuses_minimum_fee(content: &UsageRatingPolicyInput) -> bool {
         || content.aggregation_scope == AggregationScope::Resource
 }
 
-/// Compare the complete immutable declaration and SKU unit with an entry's policy.
+/// Compare the SKU's meter and unit with the provider's answer and the policy fold.
 /// # Errors
-/// `METER_POLICY_MISMATCH` means the declaration does not certify these quantities.
+/// `METER_POLICY_MISMATCH` means the answer does not certify this SKU's quantities.
 pub fn validate_meter_policy(
     policy: &UsageRatingPolicyInput,
+    sku_ref: &str,
     sku_unit: &str,
     semantics: &bss_pricing_sdk::meter_semantics::MeterSemantics,
 ) -> Result<(), RuleError> {
     validate_policy_shape(policy)?;
-    let q = &policy.quantity_semantics;
-    if q.meter != semantics.meter
-        || q.unit != sku_unit
-        || q.unit != semantics.canonical_unit
-        || q.fold != semantics.fold
-        || q.fold != bss_pricing_sdk::terms::Fold::Sum
-        || q.accrual_policy_version != semantics.accrual_policy_version
+    let asked = meter_ref(sku_ref);
+    if semantics.meter != asked
+        || semantics.canonical_unit != sku_unit
+        || semantics.fold != policy.fold
+        || policy.fold != bss_pricing_sdk::terms::Fold::Sum
         || !semantics.source_integrated
     {
         return Err(RuleError::new("METER_POLICY_MISMATCH"));
@@ -65,28 +67,17 @@ mod tests {
     #![allow(clippy::unwrap_used, reason = "the assertion is the refusal")]
     use bss_pricing_sdk::terms::*;
     #[test]
-    fn meter_version_is_required() {
+    fn rules_only_shape_has_no_meter_text_to_refuse() {
         let policy = UsageRatingPolicyInput {
             rating_window: RatingWindow::CalendarHour {
                 timezone: Timezone::Utc,
             },
             aggregation_scope: AggregationScope::SubscriptionLine,
             reset: Reset::RatingWindowStart,
-            quantity_semantics: QuantitySemantics {
-                meter: MeterRef {
-                    usage_type_id: "vm-hours".into(),
-                    version: String::new(),
-                },
-                unit: "VM\u{b7}hour".into(),
-                fold: Fold::Sum,
-                accrual_policy_version: "integrated-v1".into(),
-            },
             partial_window: PartialWindow::ActualQuantityFullThresholds,
+            fold: Fold::Sum,
         };
-        assert_eq!(
-            super::validate_policy_shape(&policy).unwrap_err().code,
-            "METER_POLICY_MISMATCH"
-        );
+        assert!(super::validate_policy_shape(&policy).is_ok());
     }
 
     #[test]
@@ -96,16 +87,8 @@ mod tests {
             rating_window: RatingWindow::BillingCycle,
             aggregation_scope: AggregationScope::SubscriptionLine,
             reset: Reset::RatingWindowStart,
-            quantity_semantics: QuantitySemantics {
-                meter: MeterRef {
-                    usage_type_id: "vm-hours".into(),
-                    version: "v1".into(),
-                },
-                unit: "VM\u{b7}hour".into(),
-                fold: Fold::Sum,
-                accrual_policy_version: "integrated-v1".into(),
-            },
             partial_window: PartialWindow::ActualQuantityFullThresholds,
+            fold: Fold::Sum,
         };
         assert!(!super::refuses_minimum_fee(&policy));
         policy.aggregation_scope = AggregationScope::Resource;

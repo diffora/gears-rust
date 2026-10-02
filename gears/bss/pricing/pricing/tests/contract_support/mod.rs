@@ -396,6 +396,7 @@ impl Writer<'_> {
                 usage_policy_id: None,
                 usage_policy_version: None,
                 usage_policy_digest: None,
+                usage_sku_version: None,
                 dimension_key: key.map(str::to_owned),
                 invoice_line_override: line.map(str::to_owned),
                 reservation_id: reservation,

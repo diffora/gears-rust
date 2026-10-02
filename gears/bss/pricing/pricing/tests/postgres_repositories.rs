@@ -57,6 +57,7 @@ async fn postgres_unique_codes_and_price_decimal_roundtrip() {
         usage_policy_id: None,
         usage_policy_version: None,
         usage_policy_digest: None,
+        usage_sku_version: None,
         dimension_key: None,
         invoice_line_override: None,
         reservation_id: Uuid::new_v4(),

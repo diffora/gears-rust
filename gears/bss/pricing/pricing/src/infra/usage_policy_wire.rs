@@ -123,21 +123,59 @@ pub struct QuantitySemantics {
     pub fold: Fold,
     pub accrual_policy_version: String,
 }
-/// Complete policy content. Server-assigned identity is not part of this object.
-/// Author input uses [`UsageRatingPolicyRequest`], which fills the single-valued fields (D-513).
-/// Stored rows and every response keep `fold`, `reset` and `partial_window` required.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+/// Complete policy content: the five rating rules (D-514).
+///
+/// Server-assigned identity is not part of this object. Author input uses
+/// [`UsageRatingPolicyRequest`]. A row stored before D-514 still reads: its `quantity_semantics`
+/// contributes `fold` and is then dropped.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct UsageRatingPolicyInput {
     pub rating_window: RatingWindow,
     pub aggregation_scope: AggregationScope,
     pub reset: Reset,
-    pub quantity_semantics: QuantitySemantics,
     pub partial_window: PartialWindow,
+    pub fold: Fold,
+}
+impl<'de> Deserialize<'de> for UsageRatingPolicyInput {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Stored {
+            rating_window: RatingWindow,
+            aggregation_scope: AggregationScope,
+            reset: Reset,
+            partial_window: PartialWindow,
+            #[serde(default)]
+            fold: Option<Fold>,
+            #[serde(default)]
+            quantity_semantics: Option<QuantitySemantics>,
+        }
+        let stored = Stored::deserialize(deserializer)?;
+        let fold = match (
+            stored.fold,
+            stored.quantity_semantics.as_ref().map(|q| q.fold),
+        ) {
+            (Some(top), Some(inner)) if top != inner => {
+                return Err(serde::de::Error::custom(
+                    "fold disagrees with quantity_semantics.fold",
+                ));
+            }
+            (Some(top), _) => top,
+            (None, Some(inner)) => inner,
+            (None, None) => Fold::Sum,
+        };
+        Ok(Self {
+            rating_window: stored.rating_window,
+            aggregation_scope: stored.aggregation_scope,
+            reset: stored.reset,
+            partial_window: stored.partial_window,
+            fold,
+        })
+    }
 }
 impl From<&UsageRatingPolicyInput> for sdk::UsageRatingPolicyInput {
     fn from(p: &UsageRatingPolicyInput) -> Self {
-        let q = &p.quantity_semantics;
         Self {
             rating_window: match p.rating_window.clone() {
                 RatingWindow::BillingCycle => sdk::RatingWindow::BillingCycle,
@@ -147,22 +185,13 @@ impl From<&UsageRatingPolicyInput> for sdk::UsageRatingPolicyInput {
             },
             aggregation_scope: p.aggregation_scope.into(),
             reset: p.reset.into(),
-            quantity_semantics: sdk::QuantitySemantics {
-                meter: sdk::MeterRef {
-                    usage_type_id: q.meter.usage_type_id.clone(),
-                    version: q.meter.version.clone(),
-                },
-                unit: q.unit.clone(),
-                fold: q.fold.into(),
-                accrual_policy_version: q.accrual_policy_version.clone(),
-            },
             partial_window: p.partial_window.into(),
+            fold: p.fold.into(),
         }
     }
 }
 impl From<&sdk::UsageRatingPolicyInput> for UsageRatingPolicyInput {
     fn from(p: &sdk::UsageRatingPolicyInput) -> Self {
-        let q = &p.quantity_semantics;
         Self {
             rating_window: match p.rating_window.clone() {
                 sdk::RatingWindow::BillingCycle => RatingWindow::BillingCycle,
@@ -172,16 +201,8 @@ impl From<&sdk::UsageRatingPolicyInput> for UsageRatingPolicyInput {
             },
             aggregation_scope: p.aggregation_scope.into(),
             reset: p.reset.into(),
-            quantity_semantics: QuantitySemantics {
-                meter: MeterRef {
-                    usage_type_id: q.meter.usage_type_id.clone(),
-                    version: q.meter.version.clone(),
-                },
-                unit: q.unit.clone(),
-                fold: q.fold.into(),
-                accrual_policy_version: q.accrual_policy_version.clone(),
-            },
             partial_window: p.partial_window.into(),
+            fold: p.fold.into(),
         }
     }
 }
@@ -244,18 +265,12 @@ pub struct UsageRatingPolicyRequest {
 }
 impl From<&UsageRatingPolicyRequest> for UsageRatingPolicyInput {
     fn from(p: &UsageRatingPolicyRequest) -> Self {
-        let q = &p.quantity_semantics;
         Self {
             rating_window: p.rating_window.clone(),
             aggregation_scope: p.aggregation_scope,
             reset: p.reset,
-            quantity_semantics: QuantitySemantics {
-                meter: q.meter.clone(),
-                unit: q.unit.clone(),
-                fold: q.fold,
-                accrual_policy_version: q.accrual_policy_version.clone(),
-            },
             partial_window: p.partial_window,
+            fold: p.quantity_semantics.fold,
         }
     }
 }

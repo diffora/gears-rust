@@ -154,21 +154,12 @@ use uuid::Uuid;
 
 impl Commercial {
     fn policy(&self) -> UsageRatingPolicyInput {
-        let q = &self.quantity_semantics;
         (&wire::UsageRatingPolicyInput {
             rating_window: self.rating_window.clone(),
             aggregation_scope: self.aggregation_scope,
             reset: self.reset,
             partial_window: self.partial_window,
-            quantity_semantics: wire::QuantitySemantics {
-                meter: wire::MeterRef {
-                    usage_type_id: q.usage_type_id.clone(),
-                    version: q.usage_type_version.clone(),
-                },
-                unit: q.unit.clone(),
-                fold: q.fold,
-                accrual_policy_version: q.accrual_policy_version.clone(),
-            },
+            fold: self.quantity_semantics.fold,
         })
             .into()
     }
@@ -421,6 +412,10 @@ impl World {
             sku_code: d.code.clone(),
             sku_name: d.name.clone(),
             unit: Some(e.commercial.quantity_semantics.unit.clone()),
+            meter: Some(MeterRef {
+                usage_type_id: e.commercial.quantity_semantics.usage_type_id.clone(),
+                version: e.commercial.quantity_semantics.usage_type_version.clone(),
+            }),
             price,
             kind: ChargeKind::Usage,
             recurring_period: e
