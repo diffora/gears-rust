@@ -30,16 +30,17 @@ pub const SYSTEM_ACTOR_RESERVED: &str = "SYSTEM_ACTOR_RESERVED";
 /// (D-424, products P-D-222): Products' registry trusts it in-process, and a door hands the
 /// registry its caller's context, so no REST caller may act as it, whatever its token asserts.
 /// Another system subject (Rating's, Subscriptions') passes. Every door calls this first.
+/// A caller with a subject, a tenant and a subject type.
+#[must_use]
+pub fn authenticated(ctx: &SecurityContext) -> bool {
+    !ctx.subject_id().is_nil() && !ctx.subject_tenant_id().is_nil() && ctx.subject_type().is_some()
+}
 pub fn require_authenticated(
     ctx: Option<Extension<SecurityContext>>,
 ) -> Result<SecurityContext, CanonicalError> {
     let ctx = ctx
         .map(|Extension(c)| c)
-        .filter(|c| {
-            !c.subject_id().is_nil()
-                && !c.subject_tenant_id().is_nil()
-                && c.subject_type().is_some()
-        })
+        .filter(authenticated)
         .ok_or_else(|| {
             CanonicalError::unauthenticated()
                 .with_reason("AUTHENTICATION_REQUIRED")
@@ -79,6 +80,48 @@ pub fn invalid_because(field: &str, code: &str, description: &str) -> CanonicalE
     PricingResource::invalid_argument()
         .with_field_violation(field, description, code)
         .create()
+}
+/// Each plain key in `allowed` at most once. `skip` drops a key the extractor owns. An unknown
+/// key is 400 `QUERY_INVALID` with `unknown`'s detail. The keys that were judged come back in order.
+pub fn plain_keys<'a>(
+    pairs: &'a [(String, String)],
+    allowed: &[&str],
+    skip: impl Fn(&str) -> bool,
+    unknown: impl Fn(&str) -> String,
+) -> Result<Vec<&'a str>, CanonicalError> {
+    let mut seen = Vec::new();
+    for (key, _) in pairs {
+        let key = key.as_str();
+        if skip(key) {
+            continue;
+        }
+        if !allowed.contains(&key) {
+            return Err(invalid_because(key, "QUERY_INVALID", &unknown(key)));
+        }
+        if seen.contains(&key) {
+            return Err(invalid_because(
+                key,
+                "QUERY_INVALID",
+                &format!("`{key}` is given more than once"),
+            ));
+        }
+        seen.push(key);
+    }
+    Ok(seen)
+}
+/// The first 8 bytes of the SHA-256 of `payload`, as hex: a list cursor's narrowing hash.
+pub fn page_hash(payload: &serde_json::Value) -> Result<String, CanonicalError> {
+    let digest =
+        crate::api::rest::preconditions::request_digest(payload).map_err(CanonicalError::from)?;
+    Ok(digest
+        .iter()
+        .take(8)
+        .fold(String::with_capacity(16), |mut hex, byte| {
+            const DIGITS: &[u8; 16] = b"0123456789abcdef";
+            hex.push(char::from(DIGITS[usize::from(byte >> 4)]));
+            hex.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
+            hex
+        }))
 }
 /// A 403 with its own code: the caller may act on the resource type, not on this one.
 pub fn forbidden(code: &str) -> CanonicalError {

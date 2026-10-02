@@ -230,7 +230,8 @@ async fn commercial_methods_authorize_each_action_and_bind_the_security_context_
         let problem =
             serde_json::to_string(&toolkit_canonical_errors::Problem::from(e.clone())).unwrap();
         if expected == 503 {
-            assert!(problem.contains("test PDP unavailable"), "{problem}");
+            assert!(problem.contains("authorization unavailable"), "{problem}");
+            assert!(!problem.contains("test PDP unavailable"), "{problem}");
         }
         if expected == 403 {
             assert!(problem.contains("COMMERCIAL_ACCESS_DENIED"), "{problem}");

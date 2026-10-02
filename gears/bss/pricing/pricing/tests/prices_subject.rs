@@ -140,6 +140,7 @@ impl Setup {
             &self.f.ctx,
             entries,
             Vec::new(),
+            bss_pricing::infra::meter_semantics::Selection::None,
         )
         .await
         .unwrap();

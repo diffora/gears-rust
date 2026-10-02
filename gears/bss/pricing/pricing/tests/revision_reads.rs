@@ -226,7 +226,11 @@ async fn the_sale_date_price_follows_the_book_grant_and_the_date() {
         now_price.to_string()
     );
     assert!(entry_of(&narrowed, foreign)["price_on_sale_date"].is_null());
-    assert_ne!(foreign_price, now_price);
+    assert_eq!(
+        entry_of(&read, foreign)["price_on_sale_date"]["id"],
+        foreign_price.to_string(),
+        "the unnarrowed grant still names the foreign price: {read}"
+    );
 
     sale_date(&f, rev, Some(days(10))).await;
     let future = get(&f, &format!("/plan-revisions/{rev}")).await;

@@ -67,14 +67,22 @@ pub async fn insert(
     scope: &AccessScope,
     m: e::Model,
 ) -> Result<e::Model, RepoError> {
-    insert_as_given(runner, scope, d467_shape(m)).await
+    insert_row(runner, scope, d467_shape(m)).await
 }
 /// [`insert`] of `m` exactly as given, its treatment and quantities included: the row shape of
 /// before D-467. No door writes through it; it seeds the legacy rows the suites read, and the
 /// tests of the column CHECKs.
 /// # Errors
 /// As [`insert`]; a shape the column CHECKs refuse is a database failure.
+#[cfg(any(test, feature = "test-support"))]
 pub async fn insert_as_given(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    m: e::Model,
+) -> Result<e::Model, RepoError> {
+    insert_row(runner, scope, m).await
+}
+async fn insert_row(
     runner: &impl DBRunner,
     scope: &AccessScope,
     m: e::Model,

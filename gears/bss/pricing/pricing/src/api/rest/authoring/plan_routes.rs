@@ -3,7 +3,7 @@ use super::{
     AuthoringState,
     caps::Capped,
     dto, plan_items, plans,
-    support::{authz_failure, etag, header, invalid, require_authenticated, transaction},
+    support::{authz_failure, etag, header, invalid_because, require_authenticated, transaction},
 };
 use crate::{
     api::rest::{correlation, preconditions},
@@ -654,7 +654,7 @@ pub(super) fn item_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Rout
         .no_license_required()
         .query_param(
             "revision_ids",
-            false,
+            true,
             "1 to 50 distinct plan revision ids, comma-separated. Required: an empty or missing \
              list is 400 QUERY_INVALID.",
         )
@@ -816,36 +816,60 @@ const CHECKS_LIMIT: usize = 50;
 /// key, a repeated id, an empty list or a malformed id is 400 `QUERY_INVALID`.
 fn revision_ids(uri: &Uri) -> Result<Vec<Uuid>, CanonicalError> {
     let pairs = axum::extract::Query::<Vec<(String, String)>>::try_from_uri(uri)
-        .map_err(|_| invalid("query", "QUERY_INVALID"))?
+        .map_err(|_| invalid_because("query", "QUERY_INVALID", "a malformed query string"))?
         .0;
     let mut seen_key = false;
     let mut raw = None;
     for (key, value) in &pairs {
         if key != "revision_ids" {
-            return Err(invalid(key, "QUERY_INVALID"));
+            return Err(invalid_because(
+                key,
+                "QUERY_INVALID",
+                &format!("`{key}` is not a parameter of this read"),
+            ));
         }
         if seen_key {
-            return Err(invalid("revision_ids", "QUERY_INVALID"));
+            return Err(invalid_because(
+                "revision_ids",
+                "QUERY_INVALID",
+                "`revision_ids` is given more than once",
+            ));
         }
         seen_key = true;
         raw = Some(value.as_str());
     }
     let Some(raw) = raw.filter(|value| !value.is_empty()) else {
-        return Err(invalid("revision_ids", "QUERY_INVALID"));
+        return Err(invalid_because(
+            "revision_ids",
+            "QUERY_INVALID",
+            "`revision_ids` needs 1 to 50 ids",
+        ));
     };
     let mut ids = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
     for token in raw.split(',') {
-        let id = token
-            .parse::<Uuid>()
-            .map_err(|_| invalid("revision_ids", "QUERY_INVALID"))?;
+        let id = token.parse::<Uuid>().map_err(|_| {
+            invalid_because(
+                "revision_ids",
+                "QUERY_INVALID",
+                &format!("`{token}` is not a revision id"),
+            )
+        })?;
         if !seen.insert(id) {
-            return Err(invalid("revision_ids", "QUERY_INVALID"));
+            return Err(invalid_because(
+                "revision_ids",
+                "QUERY_INVALID",
+                &format!("`{id}` is repeated"),
+            ));
         }
         ids.push(id);
     }
-    if ids.is_empty() || ids.len() > CHECKS_LIMIT {
-        return Err(invalid("revision_ids", "QUERY_INVALID"));
+    if ids.len() > CHECKS_LIMIT {
+        return Err(invalid_because(
+            "revision_ids",
+            "QUERY_INVALID",
+            "`revision_ids` lists at most 50 ids",
+        ));
     }
     Ok(ids)
 }

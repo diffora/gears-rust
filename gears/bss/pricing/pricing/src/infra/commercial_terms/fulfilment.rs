@@ -47,10 +47,6 @@ struct Capture {
     receipt: AcceptanceReceipt,
     prices: Vec<(AccessScope, price::Model)>,
 }
-enum Answer {
-    Eligible(FulfilmentEligibility),
-    Held(HeldBindings),
-}
 impl CommercialTermsService {
     pub(crate) async fn hold(
         &self,
@@ -58,27 +54,104 @@ impl CommercialTermsService {
         query: FulfilmentQuery,
         meta: CommandMeta,
     ) -> Result<HeldBindings, CanonicalError> {
-        match self.fulfil(ctx, query, Some(meta)).await? {
-            Answer::Held(receipt) => Ok(receipt),
-            Answer::Eligible(_) => Err(CanonicalError::internal("hold outcome absent").create()),
-        }
+        let (r, db, tenant) = self.opened(ctx, query, Some(meta)).await?;
+        let key = r.key.clone().ok_or_else(|| {
+            CanonicalError::internal("a hold opened without its command").create()
+        })?;
+        support::retry_unit_capture(&db, || async {
+            let conn = self.state.db.conn().map_err(RepoError::from)?;
+            if let Some(held) = replay(&conn, &r).await? {
+                return Ok(held);
+            }
+            let capture = Arc::new(self.capture(ctx, &r).await?);
+            let r = r.clone();
+            let clock = self.clock.clone();
+            let key = key.clone();
+            support::unit_transaction_observed_with_events(&db, &self.state.outbox, move |tx, _| {
+                let r = r.clone();
+                let capture = capture.clone();
+                let clock = clock.clone();
+                let key = key.clone();
+                Box::pin(async move {
+                    if let Some(held) = replay(tx, &r).await? {
+                        return Ok(held);
+                    }
+                    prices_unchanged(tx, tenant, &capture).await?;
+                    let now = clock.now();
+                    let _eligibility = eligible(&r.query, &capture, now)?;
+                    same_activation(tx, &r, tenant, &capture).await?;
+                    let candidate = HeldBindings {
+                        hold_id: Uuid::now_v7(),
+                        acceptance_id: capture.receipt.acceptance_id,
+                        terms_digest: capture.receipt.terms_digest,
+                        activation_at: r.query.activation_at,
+                        bindings: capture.receipt.bindings.clone(),
+                    };
+                    let row = hold_repo::from_receipt(tenant, &candidate, key.caller_id, now)?;
+                    let winner = hold_repo::insert_or_get(tx, &r.related_scope, row).await?;
+                    commercial_command_repo::insert_or_get(
+                        tx,
+                        &r.related_scope,
+                        commercial_command::Model {
+                            id: Uuid::now_v7(),
+                            tenant_id: tenant,
+                            caller_tenant_id: key.caller_tenant_id,
+                            caller_id: key.caller_id,
+                            operation: key.operation.clone(),
+                            idempotency_key: key.idempotency_key.clone(),
+                            request_digest: crate::infra::usage_policy_wire::digest_text(r.digest),
+                            receipt_kind: "hold".into(),
+                            receipt_id: winner.id,
+                            acceptance_id: None,
+                            hold_id: Some(winner.id),
+                        },
+                    )
+                    .await?;
+                    Ok(wire::decode_hold(&winner.receipt_json)?)
+                })
+            })
+            .await
+        })
+        .await
+        .map_err(failure)
     }
     pub(crate) async fn check_fulfilment(
         &self,
         ctx: &SecurityContext,
         query: FulfilmentQuery,
     ) -> Result<FulfilmentEligibility, CanonicalError> {
-        match self.fulfil(ctx, query, None).await? {
-            Answer::Eligible(observation) => Ok(observation),
-            Answer::Held(_) => Err(CanonicalError::internal("eligibility outcome absent").create()),
-        }
+        let (r, db, tenant) = self.opened(ctx, query, None).await?;
+        support::retry_unit_capture(&db, || async {
+            let conn = self.state.db.conn().map_err(RepoError::from)?;
+            // The acceptance must still be visible. A read has no command to replay.
+            replay(&conn, &r).await?;
+            let capture = Arc::new(self.capture(ctx, &r).await?);
+            let r = r.clone();
+            let clock = self.clock.clone();
+            support::unit_transaction_observed_with_events(&db, &self.state.outbox, move |tx, _| {
+                let r = r.clone();
+                let capture = capture.clone();
+                let clock = clock.clone();
+                Box::pin(async move {
+                    replay(tx, &r).await?;
+                    prices_unchanged(tx, tenant, &capture).await?;
+                    let now = clock.now();
+                    let eligibility = eligible(&r.query, &capture, now)?;
+                    same_activation(tx, &r, tenant, &capture).await?;
+                    Ok(eligibility)
+                })
+            })
+            .await
+        })
+        .await
+        .map_err(failure)
     }
-    async fn fulfil(
+    async fn opened(
         &self,
         ctx: &SecurityContext,
         mut query: FulfilmentQuery,
         meta: Option<CommandMeta>,
-    ) -> Result<Answer, CanonicalError> {
+    ) -> Result<(Arc<Request>, toolkit_db::Db, Uuid), CanonicalError> {
         let tenant = query.tenant_axes.seller_tenant_id;
         let scope = self
             .scope(
@@ -110,85 +183,7 @@ impl CommercialTermsService {
                 idempotency_key: m.idempotency_key,
             }),
         });
-        let db = self.state.db.db();
-        support::retry_unit_capture(&db, || async {
-            let conn = self.state.db.conn().map_err(RepoError::from)?;
-            // Only an exact authorized command replays before fresh eligibility.
-            if let Some(held) = replay(&conn, &r).await? {
-                return Ok(Answer::Held(held));
-            }
-            let capture = Arc::new(self.capture(ctx, &r).await?);
-            let r = r.clone();
-            let clock = self.clock.clone();
-            support::unit_transaction_observed_with_events(&db, &self.state.outbox, move |tx, _| {
-                let r = r.clone();
-                let capture = capture.clone();
-                let clock = clock.clone();
-                Box::pin(async move {
-                    if let Some(held) = replay(tx, &r).await? {
-                        return Ok(Answer::Held(held));
-                    }
-                    // No dependency call holds this transaction. Local drift recaptures completely.
-                    for (scope, observed) in &capture.prices {
-                        if price_repo::find(tx, scope, tenant, observed.id)
-                            .await?
-                            .as_ref()
-                            != Some(observed)
-                        {
-                            return Err(DoorError::SelectionMoved);
-                        }
-                    }
-                    let now = clock.now();
-                    let eligibility = eligible(&r.query, &capture, now)?;
-                    if let Some(existing) = hold_repo::find_acceptance(
-                        tx,
-                        &r.related_scope,
-                        tenant,
-                        capture.receipt.acceptance_id,
-                    )
-                    .await?
-                        && wire::decode_hold(&existing.receipt_json)?.activation_at
-                            != r.query.activation_at
-                    {
-                        return Err(CanonicalError::from(R::AcceptanceMismatch).into());
-                    }
-                    let Some(key) = &r.key else {
-                        return Ok(Answer::Eligible(eligibility));
-                    };
-                    let candidate = HeldBindings {
-                        hold_id: Uuid::now_v7(),
-                        acceptance_id: capture.receipt.acceptance_id,
-                        terms_digest: capture.receipt.terms_digest,
-                        activation_at: r.query.activation_at,
-                        bindings: capture.receipt.bindings.clone(),
-                    };
-                    let row = hold_repo::from_receipt(tenant, &candidate, key.caller_id, now)?;
-                    let winner = hold_repo::insert_or_get(tx, &r.related_scope, row).await?;
-                    commercial_command_repo::insert_or_get(
-                        tx,
-                        &r.related_scope,
-                        commercial_command::Model {
-                            id: Uuid::now_v7(),
-                            tenant_id: tenant,
-                            caller_tenant_id: key.caller_tenant_id,
-                            caller_id: key.caller_id,
-                            operation: key.operation.clone(),
-                            idempotency_key: key.idempotency_key.clone(),
-                            request_digest: crate::infra::usage_policy_wire::digest_text(r.digest),
-                            receipt_kind: "hold".into(),
-                            receipt_id: winner.id,
-                            acceptance_id: None,
-                            hold_id: Some(winner.id),
-                        },
-                    )
-                    .await?;
-                    Ok(Answer::Held(wire::decode_hold(&winner.receipt_json)?))
-                })
-            })
-            .await
-        })
-        .await
-        .map_err(failure)
+        Ok((r, self.state.db.db(), tenant))
     }
     async fn capture(&self, ctx: &SecurityContext, r: &Request) -> Result<Capture, DoorError> {
         let tenant = r.query.tenant_axes.seller_tenant_id;
@@ -228,17 +223,58 @@ impl CommercialTermsService {
         }
         let registry = reference_registry::resolve(&self.state.hub)
             .map_err(|e| support::registry_unavailable(&e))?;
+        let ids: Vec<Uuid> = receipt.bindings.iter().map(|b| b.sku_id).collect();
+        let found = registry
+            .skus_for_write(ctx, tenant, &ids)
+            .await
+            .map_err(errors::products)?;
+        let by_id: std::collections::BTreeMap<_, _> =
+            found.into_iter().map(|sku| (sku.id, sku)).collect();
         for binding in &receipt.bindings {
-            let sku = registry
-                .sku_for_write(ctx, tenant, binding.sku_id)
-                .await
-                .map_err(errors::products)?;
+            let sku = match by_id.get(&binding.sku_id).cloned() {
+                Some(sku) => sku,
+                None => registry
+                    .sku_for_write(ctx, tenant, binding.sku_id)
+                    .await
+                    .map_err(errors::products)?,
+            };
             if sku.lifecycle == bss_products_sdk::models::Lifecycle::Retired {
                 return Err(CanonicalError::from(R::SkuRetired).into());
             }
         }
         Ok(Capture { receipt, prices })
     }
+}
+async fn prices_unchanged(
+    tx: &impl DBRunner,
+    tenant: Uuid,
+    capture: &Capture,
+) -> Result<(), DoorError> {
+    for (scope, observed) in &capture.prices {
+        if price_repo::find(tx, scope, tenant, observed.id)
+            .await?
+            .as_ref()
+            != Some(observed)
+        {
+            return Err(DoorError::SelectionMoved);
+        }
+    }
+    Ok(())
+}
+async fn same_activation(
+    tx: &impl DBRunner,
+    r: &Request,
+    tenant: Uuid,
+    capture: &Capture,
+) -> Result<(), DoorError> {
+    if let Some(existing) =
+        hold_repo::find_acceptance(tx, &r.related_scope, tenant, capture.receipt.acceptance_id)
+            .await?
+        && wire::decode_hold(&existing.receipt_json)?.activation_at != r.query.activation_at
+    {
+        return Err(CanonicalError::from(R::AcceptanceMismatch).into());
+    }
+    Ok(())
 }
 fn eligible(
     q: &FulfilmentQuery,

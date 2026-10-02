@@ -1,6 +1,9 @@
 //! Shape and semantic identity of immutable entry policies.
 use super::RuleError;
-use bss_pricing_sdk::{Digest, terms::UsageRatingPolicyInput};
+use bss_pricing_sdk::{
+    Digest,
+    terms::{AggregationScope, RatingWindow, UsageRatingPolicyInput},
+};
 
 /// Validate shape only; authoritative meter semantics are a separate gate.
 /// # Errors
@@ -23,20 +26,27 @@ pub fn validate_policy_shape(policy: &UsageRatingPolicyInput) -> Result<(), Rule
 
 /// Content identity for the full entry key; absence is reserved for legacy/non-usage entries.
 #[must_use]
-pub fn entry_policy_key(policy: Option<&UsageRatingPolicyInput>) -> Option<Digest> {
-    policy.map(bss_pricing_sdk::digest::policy_digest)
+pub fn entry_policy_key(policy: &UsageRatingPolicyInput) -> Digest {
+    bss_pricing_sdk::digest::policy_digest(policy)
+}
+
+/// A minimum fee is unsupported on an hourly window and on any resource-scoped policy (D-504).
+#[must_use]
+pub fn refuses_minimum_fee(content: &UsageRatingPolicyInput) -> bool {
+    matches!(content.rating_window, RatingWindow::CalendarHour { .. })
+        || content.aggregation_scope == AggregationScope::Resource
 }
 
 /// Compare the complete immutable declaration and SKU unit with an entry's policy.
 /// # Errors
 /// `METER_POLICY_MISMATCH` means the declaration does not certify these quantities.
 pub fn validate_meter_policy(
-    policy: &bss_pricing_sdk::terms::UsageRatingPolicy,
+    policy: &UsageRatingPolicyInput,
     sku_unit: &str,
     semantics: &bss_pricing_sdk::meter_semantics::MeterSemantics,
 ) -> Result<(), RuleError> {
-    validate_policy_shape(&policy.content)?;
-    let q = &policy.content.quantity_semantics;
+    validate_policy_shape(policy)?;
+    let q = &policy.quantity_semantics;
     if q.meter != semantics.meter
         || q.unit != sku_unit
         || q.unit != semantics.canonical_unit
@@ -77,5 +87,33 @@ mod tests {
             super::validate_policy_shape(&policy).unwrap_err().code,
             "METER_POLICY_MISMATCH"
         );
+    }
+
+    #[test]
+    fn a_resource_scoped_floor_and_an_hourly_fee_are_the_same_refusal() {
+        use bss_pricing_sdk::terms::*;
+        let mut policy = UsageRatingPolicyInput {
+            rating_window: RatingWindow::BillingCycle,
+            aggregation_scope: AggregationScope::SubscriptionLine,
+            reset: Reset::RatingWindowStart,
+            quantity_semantics: QuantitySemantics {
+                meter: MeterRef {
+                    usage_type_id: "vm-hours".into(),
+                    version: "v1".into(),
+                },
+                unit: "VM\u{b7}hour".into(),
+                fold: Fold::Sum,
+                accrual_policy_version: "integrated-v1".into(),
+            },
+            partial_window: PartialWindow::ActualQuantityFullThresholds,
+        };
+        assert!(!super::refuses_minimum_fee(&policy));
+        policy.aggregation_scope = AggregationScope::Resource;
+        assert!(super::refuses_minimum_fee(&policy));
+        policy.aggregation_scope = AggregationScope::SubscriptionLine;
+        policy.rating_window = RatingWindow::CalendarHour {
+            timezone: Timezone::Utc,
+        };
+        assert!(super::refuses_minimum_fee(&policy));
     }
 }

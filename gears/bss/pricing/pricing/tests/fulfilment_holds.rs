@@ -57,9 +57,10 @@ async fn hold(f: &AcceptanceFixture, a: &AcceptanceReceipt, key: &str) -> HeldBi
         .unwrap()
 }
 fn reason(e: &toolkit_canonical_errors::CanonicalError, expected: &str) {
-    assert!(
-        format!("{e:?}").contains(expected),
-        "expected {expected}: {e:?}"
+    assert_eq!(
+        bss_pricing::infra::commercial_terms::errors::commercial_reason(e).as_deref(),
+        Some(expected),
+        "{e:?}"
     );
 }
 #[tokio::test]
@@ -759,9 +760,11 @@ async fn off_sale_allows_old_descriptors_and_no_meter_or_dated_sku_refresh() {
         .state
         .hub
         .register::<dyn bss_pricing_sdk::meter_semantics::UsageMeterSemanticsV1>(meter);
-    fulfilment_support::Probe::install(&f, None, None, false);
+    let probe = fulfilment_support::Probe::install(&f, None, None, false);
     assert_eq!(hold(&f, &a, "off-sale").await.bindings, a.bindings);
-    assert_eq!(f.catalog.version_readers.lock().unwrap().len(), dated);
+    assert!(probe.calls.load(Ordering::SeqCst) > 0);
+    let readers = f.catalog.version_readers.lock().unwrap().len();
+    assert_eq!(readers, dated);
 }
 #[tokio::test]
 async fn hold_recaptures_local_drift_and_samples_commit_clock_with_bounded_retry() {

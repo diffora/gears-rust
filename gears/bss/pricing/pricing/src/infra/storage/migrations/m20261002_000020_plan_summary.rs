@@ -80,6 +80,26 @@ struct BookCurrency {
     currency: String,
 }
 
+/// The plan columns the backfill reads. A later migration can add a column without breaking this one.
+#[derive(sea_orm::FromQueryResult)]
+struct PlanStamp {
+    id: Uuid,
+    tenant_id: Uuid,
+    updated_at: time::OffsetDateTime,
+}
+
+/// The revision columns the backfill reads. Same reason as [`PlanStamp`].
+#[derive(sea_orm::FromQueryResult)]
+struct RevisionStamp {
+    id: Uuid,
+    tenant_id: Uuid,
+    plan_id: Uuid,
+    book_id: Uuid,
+    state: String,
+    available_from: Option<time::Date>,
+    updated_at: time::OffsetDateTime,
+}
+
 #[expect(
     clippy::disallowed_methods,
     reason = "the backfill reads and updates every tenant; a migration has no caller scope"
@@ -87,10 +107,24 @@ struct BookCurrency {
 async fn backfill(manager: &SchemaManager<'_>) -> Result<(), DbErr> {
     let conn = manager.get_connection();
     let plans = plan_e::Entity::find()
+        .select_only()
+        .column(plan_e::Column::Id)
+        .column(plan_e::Column::TenantId)
+        .column(plan_e::Column::UpdatedAt)
+        .into_model::<PlanStamp>()
         .all(conn)
         .await
         .map_err(|e| DbErr::Migration(format!("{NAME}: read plans: {e}")))?;
     let revisions = revision_e::Entity::find()
+        .select_only()
+        .column(revision_e::Column::Id)
+        .column(revision_e::Column::TenantId)
+        .column(revision_e::Column::PlanId)
+        .column(revision_e::Column::BookId)
+        .column(revision_e::Column::State)
+        .column(revision_e::Column::AvailableFrom)
+        .column(revision_e::Column::UpdatedAt)
+        .into_model::<RevisionStamp>()
         .all(conn)
         .await
         .map_err(|e| DbErr::Migration(format!("{NAME}: read revisions: {e}")))?;

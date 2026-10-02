@@ -29,7 +29,7 @@ use bss_pricing_sdk::{
     digest::{request_digest, selected_bindings_digest, terms_digest},
     read::AcceptedBinding,
 };
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 use toolkit_canonical_errors::CanonicalError;
 use toolkit_db::secure::{AccessScope, DBRunner};
 use toolkit_security::SecurityContext;
@@ -43,6 +43,8 @@ struct Request {
     key: CommandScope,
     digest: bss_pricing_sdk::Digest,
     query: NewSaleQuery,
+    /// One id for this check: catch-up events and the acceptance audit share it.
+    correlation: Uuid,
 }
 impl CommercialTermsService {
     pub(crate) async fn check(
@@ -75,6 +77,7 @@ impl CommercialTermsService {
             },
             digest: request_digest(&query),
             query,
+            correlation: Uuid::now_v7(),
         });
         let db = self.state.db.db();
         support::retry_unit_capture(&db, || async {
@@ -117,7 +120,7 @@ impl CommercialTermsService {
                             tenant,
                             r.query.plan_id,
                             now,
-                            Uuid::now_v7(),
+                            r.correlation,
                         )
                         .await?;
                         pricing_reads::read_stored_at(
@@ -193,12 +196,23 @@ impl CommercialTermsService {
         let mut evidence = Vec::new();
         let registry = reference_registry::resolve(&self.state.hub)
             .map_err(|e| support::registry_unavailable(&e))?;
+        let tenant = q.tenant_axes.seller_tenant_id;
+        let ids: Vec<Uuid> = bindings.iter().map(|b| b.sku_id).collect();
+        let found = registry
+            .skus_for_write(ctx, tenant, &ids)
+            .await
+            .map_err(errors::products)?;
+        let by_id: BTreeMap<Uuid, bss_products_sdk::models::Sku> =
+            found.into_iter().map(|sku| (sku.id, sku)).collect();
         let mut observations = Vec::with_capacity(bindings.len());
         for b in bindings {
-            let sku = registry
-                .sku_for_write(ctx, q.tenant_axes.seller_tenant_id, b.sku_id)
-                .await
-                .map_err(errors::products)?;
+            let sku = match by_id.get(&b.sku_id).cloned() {
+                Some(sku) => sku,
+                None => registry
+                    .sku_for_write(ctx, tenant, b.sku_id)
+                    .await
+                    .map_err(errors::products)?,
+            };
             if let Some(policy) = &b.usage_rating_policy {
                 let meter =
                     meter_semantics::resolve(&self.state.hub, ctx, &(&policy.content).into(), &sku)
@@ -272,7 +286,7 @@ async fn commit(
     {
         return Err(DoorError::SelectionMoved);
     }
-    if r.query.hold_policy_version != policy.version || policy.duration_seconds == 0 {
+    if r.query.hold_policy_version != policy.version.get() {
         return Err(CanonicalError::from(R::UnsupportedTerms).into());
     }
     for b in bindings {
@@ -292,7 +306,7 @@ async fn commit(
             return Err(CanonicalError::from(R::PriceClosed).into());
         }
     }
-    let hold_until = now + time::Duration::seconds(i64::from(policy.duration_seconds));
+    let hold_until = now + time::Duration::seconds(i64::from(policy.duration_seconds.get()));
     if r.query.start_at >= hold_until {
         return Err(CanonicalError::from(R::ActivationOutsideAcceptedWindow).into());
     }
@@ -319,7 +333,7 @@ async fn commit(
                 action: "accept".into(),
                 subject_kind: "acceptance".into(),
                 reason: Some(capture.evidence.to_string()),
-                correlation_id: Some(Uuid::now_v7().to_string()),
+                correlation_id: Some(r.correlation.to_string()),
                 written_at: now,
             },
             winner.id,

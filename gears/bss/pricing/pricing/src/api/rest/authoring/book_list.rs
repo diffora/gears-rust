@@ -188,30 +188,16 @@ fn params(uri: &Uri) -> Result<ListParams, CanonicalError> {
     let axum::extract::Query(pairs) =
         axum::extract::Query::<Vec<(String, String)>>::try_from_uri(uri)
             .map_err(|_| invalid_because("query", "QUERY_INVALID", "a malformed query string"))?;
-    let mut seen: Vec<&str> = Vec::new();
-    for (key, _) in &pairs {
-        let key = key.as_str();
-        if key.starts_with('$') {
-            continue;
-        }
-        if !PLAIN.contains(&key) {
-            return Err(invalid_because(
-                key,
-                "QUERY_INVALID",
-                &format!(
-                    "`{key}` is not a parameter of this read; it takes limit, cursor, q, sku_id and the OData options"
-                ),
-            ));
-        }
-        if seen.contains(&key) {
-            return Err(invalid_because(
-                key,
-                "QUERY_INVALID",
-                &format!("`{key}` is given more than once"),
-            ));
-        }
-        seen.push(key);
-    }
+    super::support::plain_keys(
+        &pairs,
+        PLAIN,
+        |key| key.starts_with('$'),
+        |key| {
+            format!(
+                "`{key}` is not a parameter of this read; it takes limit, cursor, q, sku_id and the OData options"
+            )
+        },
+    )?;
     let value = |name: &str| {
         pairs
             .iter()
@@ -239,21 +225,11 @@ fn params(uri: &Uri) -> Result<ListParams, CanonicalError> {
 /// The cursor's filter hash over everything that narrows the list: the extractor's hash of
 /// `$filter`, `q` and `sku_id` — the first 8 bytes of the SHA-256 of their canonical JSON, as hex.
 fn list_hash(odata: &ODataQuery, params: &ListParams) -> Result<String, CanonicalError> {
-    let digest = crate::api::rest::preconditions::request_digest(&serde_json::json!({
+    super::support::page_hash(&serde_json::json!({
         "filter": odata.filter_hash,
         "q": params.q,
         "sku_id": params.sku_id,
     }))
-    .map_err(CanonicalError::from)?;
-    Ok(digest
-        .iter()
-        .take(8)
-        .fold(String::with_capacity(16), |mut hex, b| {
-            const DIGITS: &[u8; 16] = b"0123456789abcdef";
-            hex.push(char::from(DIGITS[usize::from(b >> 4)]));
-            hex.push(char::from(DIGITS[usize::from(b & 0x0f)]));
-            hex
-        }))
 }
 
 async fn list_books(

@@ -106,7 +106,7 @@ fn complete_model_window_cycle_scope_matrix() {
                         AggregationScope::Resource,
                     ] {
                         let mut q = sale_query();
-                        q.billing_terms.cycle = cycle.clone();
+                        q.billing_terms.cycle = cycle;
                         if cycle == BillingCycle::Year {
                             q.billing_terms.anchor_at =
                                 seam_support::date("2026-01-01").midnight().assume_utc();
@@ -124,8 +124,7 @@ fn complete_model_window_cycle_scope_matrix() {
                         } else {
                             b.usage_rating_policy = None;
                         }
-                        b.recurring_period =
-                            (kind == ChargeKind::Recurring).then_some(cycle.clone());
+                        b.recurring_period = (kind == ChargeKind::Recurring).then_some(cycle);
                         certify(&mut b);
                         let supported = match kind {
                             ChargeKind::Usage => matches!(
@@ -626,10 +625,18 @@ fn billing_terms_wire_requires_explicit_values_and_rejects_unsupported_semantics
         ("phases", serde_json::json!([]), R::UnsupportedTerms),
         ("fx", serde_json::json!("USD"), R::UnsupportedTerms),
     ] {
+        let shown = value.to_string();
         let mut input = valid.clone();
         input[key] = value;
         let e = decode_billing_terms(&input.to_string()).unwrap_err();
         assert_eq!(e.reason, expected);
+        if matches!(key, "cycle" | "timezone" | "schema_version") && shown.starts_with('"') {
+            assert_eq!(e.field, key);
+            assert!(e.value.contains(shown.trim_matches('"')), "{}", e.value);
+        } else {
+            assert_eq!(e.field, "billing_terms");
+            assert!(!e.value.is_empty(), "{key}: {}", e.value);
+        }
         assert_eq!(
             toolkit_canonical_errors::CanonicalError::from(e).status_code(),
             400

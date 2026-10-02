@@ -38,7 +38,7 @@ use bss_products_sdk::{
     models::{Lifecycle, ReferenceKind},
 };
 pub use plan_item::attach_op;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::sync::Arc;
 use time::OffsetDateTime;
 use toolkit_canonical_errors::CanonicalError;
@@ -65,6 +65,42 @@ pub struct Work {
 /// meets `ENTRY_KEY_TAKEN`; else the model that migration gives an entry without prices, its charge
 /// kind's default (`default_model`). A rereserve or a delete never writes the model, so its entry
 /// keeps its own.
+/// The policy an entry op keeps when it does not carry the declaration itself.
+///
+/// Stored rows written as a JSON array `[policy_id, version, digest]` still read. A new row
+/// writes the named fields.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct UsagePolicyReference {
+    pub policy_id: Uuid,
+    pub version: i64,
+    pub digest: String,
+}
+impl<'de> Deserialize<'de> for UsagePolicyReference {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Wire {
+            Named {
+                policy_id: Uuid,
+                version: i64,
+                digest: String,
+            },
+            Legacy(Uuid, i64, String),
+        }
+        match Wire::deserialize(deserializer)? {
+            Wire::Named {
+                policy_id,
+                version,
+                digest,
+            }
+            | Wire::Legacy(policy_id, version, digest) => Ok(Self {
+                policy_id,
+                version,
+                digest,
+            }),
+        }
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EntryInput {
     /// D-503: exact declaration captured as the authorized caller before Tx A.
@@ -76,8 +112,9 @@ pub struct EntryInput {
     #[serde(default)]
     pub usage_rating_policy: Option<Box<crate::infra::usage_policy_wire::UsageRatingPolicyInput>>,
     /// Later operations preserve the existing reference, including an absent legacy policy.
+    /// A row stored as a positional array still reads; a new row writes the named fields.
     #[serde(default)]
-    pub usage_policy_reference: Option<(Uuid, i64, String)>,
+    pub usage_policy_reference: Option<UsagePolicyReference>,
     pub sku_id: Uuid,
     pub period: Option<String>,
     pub dimension_key: Option<String>,
@@ -112,7 +149,11 @@ impl EntryInput {
                 .usage_policy_id
                 .zip(entry.usage_policy_version)
                 .zip(entry.usage_policy_digest.clone())
-                .map(|((id, version), digest)| (id, version, digest)),
+                .map(|((policy_id, version), digest)| UsagePolicyReference {
+                    policy_id,
+                    version,
+                    digest,
+                }),
             sku_id: entry.sku_id,
             period: entry.period.clone(),
             dimension_key: entry.dimension_key.clone(),
@@ -338,23 +379,7 @@ pub fn new_op(
 /// grace only keeps the one-second ticker from racing a live request with a second registry
 /// caller under another actor. An abandoned op (a crash, a dropped request) is due after it.
 pub const IN_FLIGHT_GRACE: time::Duration = time::Duration::seconds(30);
-/// Time and jitter are injectable so recovery tests never sleep for backoff.
-pub trait Clock: Send + Sync {
-    fn now(&self) -> OffsetDateTime;
-    fn jitter_millis(&self) -> i64 {
-        0
-    }
-}
-/// The process clock, cut to the whole microseconds storage keeps.
-pub struct WallClock;
-impl Clock for WallClock {
-    fn now(&self) -> OffsetDateTime {
-        crate::infra::storage::stored_now()
-    }
-    fn jitter_millis(&self) -> i64 {
-        i64::from(Uuid::new_v4().as_bytes()[0])
-    }
-}
+pub use crate::infra::clock::{Clock, WallClock};
 /// Backoff remains bounded even after years of failures.
 #[must_use]
 pub fn backoff(attempts: i32) -> time::Duration {
@@ -1447,22 +1472,13 @@ async fn entry_written(
         let refusal = match (input.schema_version, &input.usage_rating_policy, kind) {
             (Some(1 | 2), Some(policy), crate::domain::price_book_entry::ChargeKind::Usage) => {
                 match &input.meter_evidence {
-                    Some(evidence) => {
-                        let content = policy.as_ref().into();
-                        let policy = bss_pricing_sdk::terms::UsageRatingPolicy {
-                            policy_id: Uuid::nil(),
-                            version: 1,
-                            digest: bss_pricing_sdk::digest::policy_digest(&content),
-                            content,
-                        };
-                        crate::infra::meter_semantics::validate(
-                            &policy,
-                            sku,
-                            &evidence.as_ref().into(),
-                        )
-                        .err()
-                        .map(|_| "METER_POLICY_MISMATCH")
-                    }
+                    Some(evidence) => crate::infra::meter_semantics::validate(
+                        &policy.as_ref().into(),
+                        sku,
+                        &evidence.as_ref().into(),
+                    )
+                    .err()
+                    .map(|_| "METER_POLICY_MISMATCH"),
                     None if input.schema_version == Some(1) => {
                         crate::domain::usage_policy::validate_policy_shape(&policy.as_ref().into())
                             .err()

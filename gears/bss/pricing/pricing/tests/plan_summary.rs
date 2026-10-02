@@ -118,26 +118,43 @@ fn every_plan_write_refreshes_the_summary_or_is_allowed() {
     // Positive control: the matcher sees a write, and only a write.
     let sample = "pub async fn poke() { e::Entity::update_many().exec(runner).await?; }\n\
                   pub async fn read() { e::Entity::find().one(runner).await?; }\n\
+                  async fn patched() { row.update(runner).await?; }\n\
+                  async fn saved() { row.save(runner).await?; }\n\
+                  async fn removed() { row.delete(runner).await?; }\n\
                   pub async fn kept() { e::Entity::insert(active).exec(runner).await?; plan_summary::refresh(runner).await?; }";
     let found: Vec<_> = writers(sample);
-    assert_eq!(found.len(), 2, "{found:?}");
-    assert_eq!(found[0].0, "poke");
+    assert_eq!(
+        found
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
+        ["poke", "patched", "saved", "removed", "kept"],
+        "{found:?}"
+    );
     assert!(!found[0].1.contains("plan_summary::refresh"));
-    assert!(found[1].1.contains("plan_summary::refresh"));
+    assert!(found[4].1.contains("plan_summary::refresh"));
 }
 
 /// `pub async fn` bodies that insert, update or delete.
 fn writers(source: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
     let mut rest = source;
-    while let Some(at) = rest.find("pub async fn ") {
-        rest = &rest[at + "pub async fn ".len()..];
+    while let Some(at) = rest.find("async fn ") {
+        rest = &rest[at + "async fn ".len()..];
         let name = rest.split(['(', '<']).next().unwrap().trim().to_owned();
         let body_at = rest.find('{').unwrap();
         let body = brace_body(&rest[body_at..]);
-        let writes = ["update_many", "delete_many", "::insert(", ".insert("]
-            .iter()
-            .any(|needle| body.contains(needle));
+        let writes = [
+            "update_many",
+            "delete_many",
+            "::insert(",
+            ".insert(",
+            ".update(",
+            ".save(",
+            ".delete(",
+        ]
+        .iter()
+        .any(|needle| body.contains(needle));
         if writes {
             out.push((name, body.to_owned()));
         }
@@ -642,7 +659,7 @@ async fn agree(f: &Fixture, app: &axum::Router, plan_id: Uuid, today: Date, only
         Some(plan::RevisionState::Scheduled) => "scheduled",
         _ => "none",
     };
-    assert_eq!(want_change, from_current);
+    assert_eq!(want_change.as_str(), from_current);
     let listed = read_json(app, &f.ctx, "/plans").await;
     let row = listed["items"]
         .as_array()
@@ -651,11 +668,14 @@ async fn agree(f: &Fixture, app: &axum::Router, plan_id: Uuid, today: Date, only
         .find(|item| item["id"] == plan_id.to_string())
         .unwrap_or_else(|| panic!("plan {plan_id} missing: {listed}"));
     assert_eq!(row["selling"], want_selling, "{row}");
-    assert_eq!(row["change"], want_change, "{row}");
+    assert_eq!(row["change"], want_change.as_str(), "{row}");
     let kept = read_json(
         app,
         &f.ctx,
-        &format!("/plans?selling={want_selling}&change={want_change}"),
+        &format!(
+            "/plans?selling={want_selling}&change={}",
+            want_change.as_str()
+        ),
     )
     .await;
     assert!(
@@ -681,7 +701,7 @@ async fn agree(f: &Fixture, app: &axum::Router, plan_id: Uuid, today: Date, only
         let flag = if want_selling { "true" } else { "false" };
         assert_eq!(counts["total"], 1, "{counts}");
         assert_eq!(counts["by_selling"][flag], 1, "{counts}");
-        assert_eq!(counts["by_change"][want_change], 1, "{counts}");
+        assert_eq!(counts["by_change"][want_change.as_str()], 1, "{counts}");
     }
 }
 

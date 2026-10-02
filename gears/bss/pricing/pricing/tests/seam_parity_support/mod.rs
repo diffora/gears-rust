@@ -28,7 +28,11 @@ pub async fn accept(f: &AcceptanceFixture) -> bss_pricing_sdk::acceptance::Accep
         .unwrap()
 }
 fn reason(e: &toolkit_canonical_errors::CanonicalError, expected: &str) {
-    assert!(format!("{e:?}").contains(expected), "{e:?}");
+    assert_eq!(
+        bss_pricing::infra::commercial_terms::errors::commercial_reason(e).as_deref(),
+        Some(expected),
+        "{e:?}"
+    );
 }
 pub async fn replay_and_conflicts(f: AcceptanceFixture) {
     let first = accept(&f).await;

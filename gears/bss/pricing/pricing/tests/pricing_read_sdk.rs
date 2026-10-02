@@ -104,23 +104,45 @@ async fn read_actions_are_distinct_and_no_actor_name_bypasses_pdp() {
             .status_code(),
         403
     );
-    for context in [
-        toolkit_security::SecurityContext::anonymous(),
-        plan_support::holding(&f.fixture, "bss-rating.system"),
-    ] {
-        assert!(
-            f.provider
-                .price(&context, f.price_query.clone())
-                .await
-                .is_err()
-        );
-        assert!(
-            f.provider
-                .resolve(&context, f.resolve_query.clone())
-                .await
-                .is_err()
-        );
-    }
+    assert_eq!(
+        f.provider
+            .price(
+                &toolkit_security::SecurityContext::anonymous(),
+                f.price_query.clone()
+            )
+            .await
+            .unwrap_err()
+            .status_code(),
+        401
+    );
+    assert_eq!(
+        f.provider
+            .resolve(
+                &toolkit_security::SecurityContext::anonymous(),
+                f.resolve_query.clone()
+            )
+            .await
+            .unwrap_err()
+            .status_code(),
+        401
+    );
+    let system = plan_support::holding(&f.fixture, "bss-rating.system");
+    assert_eq!(
+        f.provider
+            .price(&system, f.price_query.clone())
+            .await
+            .unwrap_err()
+            .status_code(),
+        403
+    );
+    assert_eq!(
+        f.provider
+            .resolve(&system, f.resolve_query.clone())
+            .await
+            .unwrap_err()
+            .status_code(),
+        403
+    );
     let mut foreign = f.price_query.clone();
     foreign.catalog.tenant_id = uuid::Uuid::new_v4();
     assert_eq!(
@@ -521,12 +543,9 @@ async fn dimension_matrix_default_fallback_and_uncovered_cells_match_rest() {
     )
     .await;
     assert_eq!(status, 200);
-    assert_eq!(resolved.cells.len(), 3);
-    for (cell, chain) in resolved
-        .cells
-        .iter()
-        .zip(rest["items"][0]["chains"].as_array().unwrap())
-    {
+    let chains = rest["items"][0]["chains"].as_array().unwrap();
+    assert_eq!(resolved.cells.len(), chains.len());
+    for (cell, chain) in resolved.cells.iter().zip(chains) {
         assert_eq!(
             serde_json::to_value(&cell.selection.dimension_value).unwrap(),
             chain["dim_value"]

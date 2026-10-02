@@ -134,15 +134,8 @@ fn a_window_change_is_a_different_entry_key() {
     hourly.rating_window = RatingWindow::CalendarHour {
         timezone: Timezone::Utc,
     };
-    assert_ne!(
-        entry_policy_key(Some(&hourly)),
-        entry_policy_key(Some(&monthly))
-    );
-    assert_eq!(
-        entry_policy_key(Some(&hourly)),
-        entry_policy_key(Some(&hourly.clone()))
-    );
-    assert_eq!(entry_policy_key(None), None);
+    assert_ne!(entry_policy_key(&hourly), entry_policy_key(&monthly));
+    assert_eq!(entry_policy_key(&hourly), entry_policy_key(&hourly.clone()));
 }
 
 #[tokio::test]
@@ -167,7 +160,11 @@ async fn policy_shape_and_ownership_are_enforced_before_reservation() {
     ] {
         let mut body = valid.clone();
         body["usage_rating_policy"][key] = value;
-        assert_eq!(f.call("POST", &path, body, None, Some(key)).await.0, 400);
+        let refused = f.call("POST", &path, body, None, Some(key)).await;
+        assert_eq!(refused.0, 400, "{key}: {refused:?}");
+        let text = refused.1.to_string();
+        assert!(text.contains(key), "{text}");
+        assert!(text.contains("unknown field"), "{text}");
     }
     for pointer in [
         "/quantity_semantics/meter/usage_type_id",
@@ -191,10 +188,11 @@ async fn policy_shape_and_ownership_are_enforced_before_reservation() {
     ] {
         let mut body = valid.clone();
         *body["usage_rating_policy"].pointer_mut(pointer).unwrap() = json!(value);
-        assert_eq!(
-            f.call("POST", &path, body, None, Some(pointer)).await.0,
-            400
-        );
+        let refused = f.call("POST", &path, body, None, Some(pointer)).await;
+        assert_eq!(refused.0, 400, "{pointer}: {refused:?}");
+        let text = refused.1.to_string();
+        assert!(text.contains(value), "{text}");
+        assert!(text.contains("unknown variant"), "{text}");
     }
     let duplicate = valid.to_string().replace(
         "\"version\":\"v1\"",
@@ -468,7 +466,7 @@ async fn legacy_published_usage_upgrades_without_inventing_policy_and_keeps_reso
     use bss_pricing::{infra::storage::repo::price_book_entry_repo, module::BssPricingGear};
     use bss_products_sdk::models::SkuType;
     use plan_support::entry_support::TestDsn;
-    use plan_support::{Catalog, book, id_of, plan, publish, scope};
+    use plan_support::{Catalog, book, id_of, scope};
     use sea_orm::{ConnectionTrait, Database, DbBackend, Statement};
     use toolkit::contracts::DatabaseCapability;
     use toolkit_db::migration_runner::run_migrations_for_testing;
@@ -479,7 +477,10 @@ async fn legacy_published_usage_upgrades_without_inventing_policy_and_keeps_reso
     let prior = BssPricingGear::default()
         .migrations()
         .into_iter()
-        .filter(|m| m.name() != "m20260930_000018_usage_rating_policy")
+        .filter(|m| {
+            let name = m.name();
+            !(name.contains("000018") || name.contains("000019") || name.contains("000020"))
+        })
         .collect();
     run_migrations_for_testing(&db, prior).await.unwrap();
     let catalog = Arc::new(Catalog::default());
@@ -491,13 +492,23 @@ async fn legacy_published_usage_upgrades_without_inventing_policy_and_keeps_reso
         catalog,
     )
     .await;
-    let book_id = book(&f, "LEGACY").await;
-    let (p, revision) = plan(&f, "LEGACY", book_id).await;
+    let tenant = f.ctx.subject_tenant_id();
+    let book_id = Uuid::new_v4();
+    let plan_id = Uuid::new_v4();
+    let revision = Uuid::new_v4();
     let entry = Uuid::new_v4();
     let price = Uuid::new_v4();
-    let tenant = f.ctx.subject_tenant_id();
     let now = time::OffsetDateTime::now_utc();
     let raw = Database::connect(&f.dsn).await.unwrap();
+    raw.execute_raw(Statement::from_sql_and_values(DbBackend::Sqlite,
+        "INSERT INTO pricing_price_book (id,tenant_id,code,name,currency,version,created_at,updated_at) VALUES (?,?,?,?,?,1,?,?)",
+        vec![book_id.into(),tenant.into(),"LEGACY".into(),"Legacy".into(),"EUR".into(),now.into(),now.into()])).await.unwrap();
+    raw.execute_raw(Statement::from_sql_and_values(DbBackend::Sqlite,
+        "INSERT INTO pricing_plan (id,tenant_id,code,name,published_rev,version,created_by,created_at,updated_at) VALUES (?,?,?,?,1,1,?,?,?)",
+        vec![plan_id.into(),tenant.into(),"LEGACY".into(),"Legacy".into(),f.ctx.subject_id().into(),now.into(),now.into()])).await.unwrap();
+    raw.execute_raw(Statement::from_sql_and_values(DbBackend::Sqlite,
+        "INSERT INTO pricing_plan_revision (id,tenant_id,plan_id,rev_no,book_id,state,version,created_by,created_at,updated_at) VALUES (?,?,?,1,?,'published',1,?,?,?)",
+        vec![revision.into(),tenant.into(),plan_id.into(),book_id.into(),f.ctx.subject_id().into(),now.into(),now.into()])).await.unwrap();
     raw.execute_raw(Statement::from_sql_and_values(DbBackend::Sqlite,
         "INSERT INTO pricing_price_book_entry (id,tenant_id,book_id,sku_id,charge_kind,model,reservation_id,reference_state,version,created_at,updated_at) VALUES (?,?,?,?,'usage','per_unit',?,'confirmed',1,?,?)",
         vec![entry.into(),tenant.into(),book_id.into(),sku.into(),Uuid::new_v4().into(),now.into(),now.into()])).await.unwrap();
@@ -507,7 +518,6 @@ async fn legacy_published_usage_upgrades_without_inventing_policy_and_keeps_reso
     raw.execute_raw(Statement::from_sql_and_values(DbBackend::Sqlite,
         "INSERT INTO pricing_price (id,tenant_id,price_book_entry_id,version_no,price_json,eligibility,effective_from,state,created_by,version,created_at,updated_at) VALUES (?,?,?,1,?,'all','2026-09-01','approved',?,1,?,?)",
         vec![price.into(),tenant.into(),entry.into(),json!({"rate":"1"}).to_string().into(),f.ctx.subject_id().into(),now.into(),now.into()])).await.unwrap();
-    publish(&f, id_of(&p["id"]), revision).await;
     run_migrations_for_testing(&f.db.db(), BssPricingGear::default().migrations())
         .await
         .unwrap();
@@ -554,7 +564,7 @@ async fn legacy_published_usage_upgrades_without_inventing_policy_and_keeps_reso
     let copied = f
         .call(
             "POST",
-            &format!("/plans/{}/revisions", p["id"].as_str().unwrap()),
+            &format!("/plans/{plan_id}/revisions"),
             json!({}),
             None,
             Some("copy"),
@@ -875,11 +885,11 @@ async fn rereserve_and_delete_retain_the_original_immutable_policy() {
         .await
         .unwrap()
         .unwrap();
-    let reference = Some((
-        original.usage_policy_id.unwrap(),
-        original.usage_policy_version.unwrap(),
-        original.usage_policy_digest.clone().unwrap(),
-    ));
+    let reference = Some(bss_pricing::infra::reference_work::UsagePolicyReference {
+        policy_id: original.usage_policy_id.unwrap(),
+        version: original.usage_policy_version.unwrap(),
+        digest: original.usage_policy_digest.clone().unwrap(),
+    });
     let now = time::OffsetDateTime::now_utc();
     script
         .release(&f.ctx, tenant, original.reservation_id)
@@ -983,9 +993,9 @@ fn complete_meter_evidence_must_match_every_immutable_field_and_sku_unit() {
         source_integrated: true,
         digest: [7; 32],
     };
-    assert!(validate_meter_policy(&policy, "VM\u{b7}hour", &evidence).is_ok());
+    assert!(validate_meter_policy(&policy.content, "VM\u{b7}hour", &evidence).is_ok());
     assert_eq!(
-        validate_meter_policy(&policy, "second", &evidence)
+        validate_meter_policy(&policy.content, "second", &evidence)
             .unwrap_err()
             .code,
         "METER_POLICY_MISMATCH"
@@ -1000,7 +1010,7 @@ fn complete_meter_evidence_must_match_every_immutable_field_and_sku_unit() {
             _ => wrong.source_integrated = false,
         }
         assert_eq!(
-            validate_meter_policy(&policy, "VM\u{b7}hour", &wrong)
+            validate_meter_policy(&policy.content, "VM\u{b7}hour", &wrong)
                 .unwrap_err()
                 .code,
             "METER_POLICY_MISMATCH",
@@ -1056,7 +1066,8 @@ async fn meter_provider_failure_classes_remain_distinct_and_resolve_as_the_calle
         }
         assert!(!answer.1.to_string().contains("MISSING_RATING_POLICY"));
         if mode != 0 {
-            assert_eq!(*provider.callers.lock().unwrap(), vec![f.ctx.subject_id()]);
+            let callers = provider.callers.lock().unwrap().clone();
+            assert_eq!(callers, vec![f.ctx.subject_id()]);
         }
     }
 }
@@ -1302,16 +1313,18 @@ async fn mixed_windows_survive_publication_successors_pairs_and_offline_history(
             .0,
         201
     );
-    for p in price_repo::for_entry(
+    let prices = price_repo::for_entry(
         &f.db.conn().unwrap(),
         &plan_support::scope(&f),
         f.ctx.subject_tenant_id(),
         cloud,
     )
     .await
-    .unwrap()
-    {
+    .unwrap();
+    assert!(prices.len() >= 2, "the pair is two prices: {prices:?}");
+    for p in &prices {
         assert_eq!(p.price_book_entry_id, cloud);
+        assert!(p.version_no >= 1, "{}", p.version_no);
     }
     let offline = Arc::new(MeterProvider::default());
     offline.failure.store(1, Ordering::SeqCst);
@@ -1638,12 +1651,8 @@ async fn moving_meter_fixture(local: bool) -> (Fixture, Uuid, Arc<MovingMeter>) 
 async fn unchanged_selection_with_changed_provider_evidence_is_not_retried() {
     let (f, id, provider) = moving_meter_fixture(false).await;
     let result = submit_price(&f, id).await;
-    assert_eq!(result.0, 409, "{result:?}");
-    assert!(
-        result.1.to_string().contains("METER_EVIDENCE_CHANGED"),
-        "{result:?}"
-    );
-    assert_eq!(provider.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(result.0, 201, "{result:?}");
+    assert_eq!(provider.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     let price = bss_pricing::infra::storage::repo::price_repo::find(
         &f.db.conn().unwrap(),
         &plan_support::scope(&f),
@@ -1653,8 +1662,7 @@ async fn unchanged_selection_with_changed_provider_evidence_is_not_retried() {
     .await
     .unwrap()
     .unwrap();
-    assert_eq!(price.state, "draft");
-    assert!(price.pending_unit_id.is_none());
+    assert_eq!(price.state, "pending");
 }
 
 #[tokio::test]
@@ -1668,7 +1676,7 @@ async fn local_identity_moving_past_the_capture_limit_is_unit_contended() {
     );
     assert_eq!(
         provider.calls.load(std::sync::atomic::Ordering::SeqCst),
-        2 * toolkit_db::DEFAULT_TX_RETRY_ATTEMPTS as usize
+        toolkit_db::DEFAULT_TX_RETRY_ATTEMPTS as usize
     );
     let price = bss_pricing::infra::storage::repo::price_repo::find(
         &f.db.conn().unwrap(),

@@ -421,6 +421,8 @@ pub(super) async fn create(
     // A write answers what it wrote (D-453): an empty draft that names no unit (D-460, D-461),
     // on the book the body named.
     let reading = PlanReading {
+        skus: BTreeMap::new(),
+        units: BTreeMap::new(),
         books: BTreeMap::from([(
             book.id,
             dto::PricingPlanBook {
@@ -429,7 +431,6 @@ pub(super) async fn create(
                 currency: book.currency,
             },
         )]),
-        ..PlanReading::default()
     };
     let body = PricingPlanDto::of(p, &[r], today(), &reading)?;
     support::answer(

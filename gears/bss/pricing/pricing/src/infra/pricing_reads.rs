@@ -383,7 +383,7 @@ pub async fn load_resolution(
             .entry
             .as_ref()
             .is_none_or(|e| e.id != row.price_book_entry_id)
-            || row.state != "approved"
+            || row.state != crate::domain::price::PriceState::Approved.as_str()
             || pin
                 .dimension_value
                 .as_ref()

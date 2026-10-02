@@ -11,7 +11,7 @@ use crate::{
         usage_policy_wire::{MeterEvidence, UsageRatingPolicyInput},
     },
 };
-use bss_pricing_sdk::{meter_semantics::UsageMeterSemanticsV1, terms::UsageRatingPolicy};
+use bss_pricing_sdk::meter_semantics::UsageMeterSemanticsV1;
 use bss_products_sdk::models::Sku;
 use std::collections::BTreeMap;
 use toolkit_canonical_errors::CanonicalError;
@@ -46,37 +46,23 @@ pub async fn resolve(
     let provider = hub.get::<dyn UsageMeterSemanticsV1>().map_err(|_| {
         CanonicalError::from(bss_pricing_sdk::meter_semantics::UnconfiguredMeterSemantics)
     })?;
-    let content = input.into();
-    let policy = UsageRatingPolicy {
-        policy_id: Uuid::nil(),
-        version: 1,
-        digest: bss_pricing_sdk::digest::policy_digest(&content),
-        content,
-    };
+    let content = bss_pricing_sdk::terms::UsageRatingPolicyInput::from(input);
     let evidence = provider
-        .resolve(ctx, policy.content.quantity_semantics.meter.clone())
+        .resolve(ctx, content.quantity_semantics.meter.clone())
         .await
         .map_err(provider_outage)?;
-    validate(&policy, sku, &evidence)?;
+    validate(&content, sku, &evidence)?;
     Ok(evidence.into())
 }
 /// Verify SKU identity and complete immutable evidence without dependency calls.
 /// # Errors
 /// A mismatching SKU or declaration is a typed input refusal.
 pub fn validate(
-    policy: &UsageRatingPolicy,
+    policy: &bss_pricing_sdk::terms::UsageRatingPolicyInput,
     sku: &Sku,
     evidence: &bss_pricing_sdk::meter_semantics::MeterSemantics,
 ) -> Result<(), CanonicalError> {
-    if sku.usage_type_ref.as_deref()
-        != Some(
-            policy
-                .content
-                .quantity_semantics
-                .meter
-                .usage_type_id
-                .as_str(),
-        )
+    if sku.usage_type_ref.as_deref() != Some(policy.quantity_semantics.meter.usage_type_id.as_str())
     {
         return Err(support::invalid(
             "usage_rating_policy",
@@ -104,7 +90,7 @@ pub struct Observations {
 }
 /// The local selection that supplied a detached capture, including removals and re-pointing.
 #[derive(Clone, Default)]
-pub(crate) enum Selection {
+pub enum Selection {
     #[default]
     None,
     Revision {
@@ -188,12 +174,16 @@ impl Observations {
         ctx: &SecurityContext,
         entries: Vec<price_book_entry::Model>,
         extra_skus: Vec<Uuid>,
+        selection: Selection,
     ) -> Result<Self, DoorError> {
         let policies =
             usage_policy_repo::for_entries(conn, ctx.subject_tenant_id(), &entries).await?;
         let mut result = Self {
             local_entries: entries.clone(),
-            ..Self::default()
+            selection,
+            entries: BTreeMap::new(),
+            skus: BTreeMap::new(),
+            versions: BTreeMap::new(),
         };
         let wanted: Vec<Uuid> = entries
             .iter()
@@ -261,38 +251,6 @@ impl Observations {
             result.entries.insert(entry.id, observed);
         }
         Ok(result)
-    }
-    /// Re-read provider evidence immediately before entering the commit transaction. Keep any
-    /// refusal with its observation so rejects and non-final votes retain their existing gates.
-    pub async fn verify(&mut self, hub: &toolkit::ClientHub, ctx: &SecurityContext) {
-        for result in self.entries.values_mut() {
-            let Ok(observed) = result else { continue };
-            let checked = async {
-                let provider = hub.get::<dyn UsageMeterSemanticsV1>().map_err(|_| {
-                    CanonicalError::from(
-                        bss_pricing_sdk::meter_semantics::UnconfiguredMeterSemantics,
-                    )
-                })?;
-                let evidence = provider
-                    .resolve(
-                        ctx,
-                        bss_pricing_sdk::terms::MeterRef {
-                            usage_type_id: observed.evidence.meter.usage_type_id.clone(),
-                            version: observed.evidence.meter.version.clone(),
-                        },
-                    )
-                    .await
-                    .map_err(provider_outage)?;
-                if MeterEvidence::from(evidence) != observed.evidence {
-                    return Err(support::conflict("METER_EVIDENCE_CHANGED"));
-                }
-                Ok(())
-            }
-            .await;
-            if let Err(error) = checked {
-                *result = Err(error);
-            }
-        }
     }
     /// Compare the entire local selection and every captured entry before consuming any
     /// provider result. Local drift is a typed rollback signal, never an evidence conflict.

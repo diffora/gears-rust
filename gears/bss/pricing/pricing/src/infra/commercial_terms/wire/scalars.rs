@@ -78,18 +78,8 @@ pub(super) mod digest {
     }
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<[u8; 32], D::Error> {
         let s = String::deserialize(d)?;
-        if s.len() != 64
-            || !s
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-        {
-            return Err(D::Error::custom("invalid digest"));
-        }
-        let mut out = [0; 32];
-        for (i, b) in out.iter_mut().enumerate() {
-            *b = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).map_err(D::Error::custom)?;
-        }
-        Ok(out)
+        crate::infra::usage_policy_wire::parse_digest_text(&s)
+            .ok_or_else(|| D::Error::custom("invalid digest"))
     }
 }
 pub(super) mod date {

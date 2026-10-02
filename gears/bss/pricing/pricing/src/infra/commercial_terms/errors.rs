@@ -56,6 +56,35 @@ pub(super) fn storage(error: RepoError) -> CanonicalError {
     }
 }
 
+/// The commercial reason on a canonical error: [`CommercialReason::as_str`](bss_pricing_sdk::acceptance::CommercialReason::as_str).
+#[cfg(any(test, feature = "test-support"))]
+#[must_use]
+pub fn commercial_reason(error: &CanonicalError) -> Option<String> {
+    use toolkit_canonical_errors::context::InvalidArgument;
+    match error {
+        CanonicalError::Aborted { ctx, .. } => Some(ctx.reason.clone()),
+        CanonicalError::PermissionDenied { ctx, .. } => Some(ctx.reason.clone()),
+        CanonicalError::NotFound { detail, .. } => Some(detail.clone()),
+        CanonicalError::InvalidArgument { ctx, .. } => match ctx {
+            InvalidArgument::FieldViolations { field_violations } => field_violations
+                .first()
+                .map(|violation| violation.reason.clone()),
+            InvalidArgument::Constraint { constraint } => Some(constraint.clone()),
+            InvalidArgument::Format { format } => Some(format.clone()),
+        },
+        _ => None,
+    }
+}
+
+/// Keep definite Products refusals; transient contention and outages are unavailable.
+pub(super) fn products(error: CanonicalError) -> CanonicalError {
+    if crate::infra::reference_work::definite_refusal(&error) {
+        error
+    } else {
+        crate::api::rest::authoring::support::registry_unavailable(&error)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -71,14 +100,5 @@ mod tests {
                 .unwrap();
         assert!(!body.contains("secret policy text"), "{body}");
         assert!(body.contains("authorization unavailable"), "{body}");
-    }
-}
-
-/// Keep definite Products refusals; transient contention and outages are unavailable.
-pub(super) fn products(error: CanonicalError) -> CanonicalError {
-    if crate::infra::reference_work::definite_refusal(&error) {
-        error
-    } else {
-        crate::api::rest::authoring::support::registry_unavailable(&error)
     }
 }

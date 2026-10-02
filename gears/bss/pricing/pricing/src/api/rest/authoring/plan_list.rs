@@ -30,10 +30,52 @@ use toolkit::api::{
 use toolkit_canonical_errors::CanonicalError;
 use toolkit_odata::{
     Error as ODataError,
-    filter::{FilterField, convert_expr_to_filter_node},
+    filter::{FieldKind, FilterField, convert_expr_to_filter_node},
 };
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
+
+/// The fields a plans `$filter` names. `id` stays the tie-break and is not a filter (D-485).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PlanFilterField {
+    Code,
+    Name,
+    BookId,
+    Currency,
+    LastActivityAt,
+}
+impl PlanFilterField {
+    const fn field(self) -> PlanListField {
+        match self {
+            Self::Code => PlanListField::Code,
+            Self::Name => PlanListField::Name,
+            Self::BookId => PlanListField::BookId,
+            Self::Currency => PlanListField::Currency,
+            Self::LastActivityAt => PlanListField::LastActivityAt,
+        }
+    }
+}
+impl FilterField for PlanFilterField {
+    const FIELDS: &'static [Self] = &[
+        Self::Code,
+        Self::Name,
+        Self::BookId,
+        Self::Currency,
+        Self::LastActivityAt,
+    ];
+    fn name(&self) -> &'static str {
+        self.field().name()
+    }
+    fn kind(&self) -> FieldKind {
+        self.field().kind()
+    }
+    fn nullable(&self) -> bool {
+        self.field().nullable()
+    }
+    fn from_name(name: &str) -> Option<Self> {
+        Self::FIELDS.iter().copied().find(|f| f.name() == name)
+    }
+}
 
 /// Register the list and, before `GET /plans/{id}`, the counts. Both under `plan × read`.
 pub(super) fn register(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
@@ -92,7 +134,7 @@ pub(super) fn register(router: Router, openapi: &dyn OpenApiRegistry) -> Router 
             "string",
         )
         .handler(list_plans)
-        .with_odata_filter::<PlanListField>()
+        .with_odata_filter::<PlanFilterField>()
         .with_odata_orderby::<PlanOrderField>()
         .json_response_with_schema::<crate::api::rest::authoring::dto::PricingPlanList>(
             openapi,
@@ -134,7 +176,7 @@ pub(super) fn register(router: Router, openapi: &dyn OpenApiRegistry) -> Router 
             "string",
         )
         .handler(count_plans)
-        .with_odata_filter::<PlanListField>()
+        .with_odata_filter::<PlanFilterField>()
         .json_response_with_schema::<crate::api::rest::authoring::dto::PricingPlanCounts>(
             openapi,
             StatusCode::OK,
@@ -160,28 +202,12 @@ fn params(uri: &Uri, plain: &[&str]) -> Result<Params, CanonicalError> {
     let axum::extract::Query(pairs) =
         axum::extract::Query::<Vec<(String, String)>>::try_from_uri(uri)
             .map_err(|_| invalid_because("query", "QUERY_INVALID", "a malformed query string"))?;
-    let mut seen = Vec::new();
-    for (key, _) in &pairs {
-        let key = key.as_str();
-        if key.starts_with('$') {
-            continue;
-        }
-        if !plain.contains(&key) {
-            return Err(invalid_because(
-                key,
-                "QUERY_INVALID",
-                &format!("`{key}` is not a parameter of this read"),
-            ));
-        }
-        if seen.contains(&key) {
-            return Err(invalid_because(
-                key,
-                "QUERY_INVALID",
-                &format!("`{key}` is given more than once"),
-            ));
-        }
-        seen.push(key);
-    }
+    super::support::plain_keys(
+        &pairs,
+        plain,
+        |key| key.starts_with('$'),
+        |key| format!("`{key}` is not a parameter of this read"),
+    )?;
     let value = |name: &str| {
         pairs
             .iter()
@@ -237,23 +263,13 @@ fn params(uri: &Uri, plain: &[&str]) -> Result<Params, CanonicalError> {
 }
 
 fn list_hash(odata: &toolkit_odata::ODataQuery, params: &Params) -> Result<String, CanonicalError> {
-    let digest = crate::api::rest::preconditions::request_digest(&serde_json::json!({
+    super::support::page_hash(&serde_json::json!({
         "filter": odata.filter_hash,
         "q": params.q,
         "selling": params.selling,
         "change": params.change,
         "sku_id": params.sku_id,
     }))
-    .map_err(CanonicalError::from)?;
-    Ok(digest
-        .iter()
-        .take(8)
-        .fold(String::with_capacity(16), |mut hex, b| {
-            const DIGITS: &[u8; 16] = b"0123456789abcdef";
-            hex.push(char::from(DIGITS[usize::from(b >> 4)]));
-            hex.push(char::from(DIGITS[usize::from(b & 0x0f)]));
-            hex
-        }))
 }
 
 fn prepared(
@@ -274,7 +290,7 @@ fn prepared(
             .create());
     }
     if let Some(expr) = odata.filter.as_deref() {
-        convert_expr_to_filter_node::<PlanListField>(expr)
+        convert_expr_to_filter_node::<PlanFilterField>(expr)
             .map_err(|e| ODataError::InvalidFilter(e.to_string()))?;
     }
     for key in &odata.order.0 {
