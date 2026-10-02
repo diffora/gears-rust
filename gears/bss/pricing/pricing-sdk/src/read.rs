@@ -281,9 +281,9 @@ impl From<IncompleteCommercialInputs> for CanonicalError {
     fn from(value: IncompleteCommercialInputs) -> Self {
         PlanResource::failed_precondition()
             .with_precondition_violation(
-                "IncompleteCommercialInputs",
                 value.field,
-                value.to_string(),
+                format!("incomplete commercial inputs: {}", value.field),
+                "INCOMPLETE_COMMERCIAL_INPUTS",
             )
             .create()
     }

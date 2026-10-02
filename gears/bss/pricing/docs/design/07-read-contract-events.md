@@ -127,7 +127,8 @@ cell has `binding=None`. Complete bindings carry entry identity, dimension key/r
 dated SKU version/code/name/unit, typed exact-decimal money, invoice inputs with template provenance,
 and `via_default`. Legacy entries carry `usage_rating_policy=None`. D-502 stores immutable entry policies and D-503 projects their materialized
 content here; the semantic provider is required only at new-entry and publication gates. Missing priced-cell descriptors or a rounding value not representable by the initial
-`HalfEven` projection returns the typed `IncompleteCommercialInputs` canonical precondition violation.
+`HalfEven` projection returns the typed `IncompleteCommercialInputs` canonical precondition violation
+(type `INCOMPLETE_COMMERCIAL_INPUTS`, subject the missing field).
 REST retains nullable descriptors and its existing rounding vocabulary and goldens. Neither transport
 computes totals. Both adapters map the shared local snapshot, matrix and invoice inputs explicitly;
 dated Products reads occur only after the local read transaction finishes.

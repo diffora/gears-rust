@@ -354,12 +354,13 @@ async fn missing_descriptors_remain_nullable_on_rest_and_typed_failure_on_sdk() 
     assert_eq!(status, 200);
     assert!(rest["items"][0]["sku_version"].is_null());
     let error = provider.resolve(&w.f.ctx, query).await.unwrap_err();
-    assert!(
-        serde_json::to_string(&toolkit_canonical_errors::Problem::from(error.clone()))
-            .unwrap()
-            .contains("IncompleteCommercialInputs"),
-        "{error}"
+    let body = serde_json::to_value(toolkit_canonical_errors::Problem::from_error(&error).unwrap())
+        .unwrap();
+    assert_eq!(
+        body["context"]["violations"][0]["type"], "INCOMPLETE_COMMERCIAL_INPUTS",
+        "{body}"
     );
+    assert_eq!(body["context"]["violations"][0]["subject"], "sku_version");
 }
 
 #[tokio::test]

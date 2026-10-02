@@ -17,7 +17,7 @@ impl From<UnconfiguredDependency> for CanonicalError {
         AcceptanceResource::failed_precondition()
             .with_precondition_violation(
                 error.dependency,
-                error.to_string(),
+                format!("unconfigured dependency: {}", error.dependency),
                 "UNCONFIGURED_DEPENDENCY",
             )
             .create()

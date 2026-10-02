@@ -11,8 +11,8 @@ use crate::{
         UsageRatingPolicyInput,
     },
 };
+use aws_lc_rs::digest::{SHA256, digest as sha256};
 use rust_decimal::Decimal;
-use sha2::{Digest as ShaDigest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use toolkit_canonical_errors::CanonicalError;
 
@@ -117,11 +117,11 @@ pub(crate) fn canonical_json_bytes(value: &V) -> Vec<u8> {
     out.into_bytes()
 }
 pub(crate) fn hash_document(domain: &str, payload: V) -> Digest {
-    Sha256::digest(canonical_json_bytes(&object([
-        ("domain", text(domain)),
-        ("payload", payload),
-    ])))
-    .into()
+    let bytes = canonical_json_bytes(&object([("domain", text(domain)), ("payload", payload)]));
+    let hashed = sha256(&SHA256, &bytes);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(hashed.as_ref());
+    out
 }
 fn tiers(values: &[Tier]) -> V {
     V::Array(

@@ -118,7 +118,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-485 | M | The plans list pages on the stored summary and counts the derived axes | DECIDED 2026-10-02 · Owner, 2026-10-01 (#31, form B); phase 9 plan rev 4 (run 9.8b; review N1, N7); amends D-434, D-460, D-453 |
 | D-486 | M | A SKU's entries narrow, order and page in memory | DECIDED 2026-10-01 · Owner, 2026-10-01 (#25, form A); phase 9 plan rev 4 (run 9.8c; N5); amends D-434 |
 | D-490 | M | Pricing's approval units answer the approvals inbox through pricing's own doors | DECIDED 2026-10-01 · Owner, 2026-10-01 (option A, "yes, A, agreed", then "write the plan"; Run 2 started before 9.5d-2); approvals inbox plan rev 2 (Run 2; design 1 and 3; plan review H1, H3, H4, M1, M5, L1); amends D-470 |
-| D-501 | H | Authorized SDK reads share the frozen preview snapshot and canonical JSON digests | DECIDED 2026-09-30 · Pricing Seam Contracts Task 1 |
+| D-501 | H | Authorized SDK reads share the frozen preview snapshot and canonical JSON digests | DECIDED 2026-09-30 · Pricing Seam Contracts Task 1; amended 2026-10-02 (phase 9 review F1) |
 | D-502 | H | Immutable usage policies belong to entries and their semantic key | DECIDED 2026-10-01 · Pricing Seam Contracts Task 2; amends D-386, D-401, D-427 |
 | D-503 | H | Exact meter evidence gates usage publication and stays out of historical reads | DECIDED 2026-10-01 · Pricing Seam Contracts Task 3; amended 2026-10-01 by the owner (E1a raw and E1b derived meters; products P-D-229 and rating T-D-39 on branch `bss/pricebook-meters`); amended 2026-10-01 by products P-D-233 (E1b provided by Products, E1a still external) |
 | D-504 | H | Pure new-sale terms validate a bounded commercial profile and snapshot integrity | DECIDED 2026-10-01 · Pricing Seam Contracts Task 4 |
@@ -1378,7 +1378,9 @@ an explicit catalog tenant, authorized against PDP-derived constraints under pla
 a subject name grants nothing. The existing REST matrix and approved-price shape remain frozen.
 A shared snapshot owns local loading, resolution and dated Products evidence outside the transaction;
 the SDK requires complete commercial inputs and reports `IncompleteCommercialInputs` when a priced
-cell cannot supply them, while REST preserves nullable historical previews. Missing legacy entry policy
+cell cannot supply them, while REST preserves nullable historical previews. The refusal is a failed
+precondition: violation type `INCOMPLETE_COMMERCIAL_INPUTS`, subject the missing field, description
+`incomplete commercial inputs: <field>` (amended 2026-10-02, phase 9 review F1). Missing legacy entry policy
 remains `None`. Minimal invoice/policy projection types support the exact read signature, without
 publishing later acceptance, hold or meter-provider methods.
 
@@ -1398,6 +1400,7 @@ producer surface, not delivery of consumer integration or sale acceptance.
 **Source:** Pricing Seam Contracts plan, Task 1 (G1), revisions 2 and 3. Extends D-419–D-422 without
 changing their REST behavior; uses phase-8 promotion from D-450–D-451. Later tasks own policy storage,
 new-sale gates and receipts. Decision numbers D-470–D-499 remain reserved for concurrent phase-9 work.
+Amended 2026-10-02 (phase 9 review F1): the incomplete-input violation type is `INCOMPLETE_COMMERCIAL_INPUTS`.
 
 #### D-502 [H] Immutable usage policies belong to entries and their semantic key
 
