@@ -748,7 +748,7 @@ async fn every_vote_refusal_is_the_vote_doors_byte_for_byte() {
             Some(("d9", "s9")),
             true,
             403,
-            "PERMISSION_DENIED",
+            "access denied",
         ),
     ];
     for (who, action, body, keys, denied, status, code) in cases {
