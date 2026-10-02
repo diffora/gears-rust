@@ -1,5 +1,6 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 use super::*;
+use crate::domain::recognized::UsageTypeAnswer;
 use bss_products_sdk::models::{Lifecycle, SkuContent, SkuType};
 use uuid::Uuid;
 
@@ -52,11 +53,15 @@ fn usage_needs_a_meter_and_a_resolved_type_bundle_has_none() {
     ));
     u.usage_type_ref = Some("storage_gb_hours".into());
     u.unit = Some("GB\u{b7}month".into());
-    assert!(validate_publish(&u, Some(&resolved_answer())).is_empty());
+    assert!(has(
+        &validate_publish(&u, Some(&resolved_answer())),
+        "usage_type_ref",
+        "DERIVED_USAGE_TYPE_REQUIRED"
+    ));
     assert!(has(
         &validate_publish(&u, Some(&unresolved_answer())),
         "usage_type_ref",
-        "USAGE_TYPE_UNRESOLVED"
+        "DERIVED_USAGE_TYPE_REQUIRED"
     ));
     let mut b = content(SkuType::Bundle);
     b.unit = Some("x".into());
@@ -134,7 +139,7 @@ fn unresolved_answer() -> UsageRefAnswer {
 }
 
 #[test]
-fn unavailable_is_not_an_unknown_usage_type() {
+fn a_raw_ref_cannot_be_published() {
     let mut c = content(SkuType::Usage);
     c.usage_type_ref = Some("meter".into());
     c.unit = Some("GB".into());
@@ -142,11 +147,12 @@ fn unavailable_is_not_an_unknown_usage_type() {
         &c,
         Some(&UsageRefAnswer::Catalog(UsageTypeAnswer::Unavailable)),
     );
-    assert!(has(&report, "usage_type_ref", "USAGE_TYPE_UNAVAILABLE"));
-    assert!(!has(&report, "usage_type_ref", "USAGE_TYPE_UNRESOLVED"));
-    let canonical =
-        toolkit::api::canonical_prelude::CanonicalError::from(DomainError::Validation(report));
-    assert_eq!(canonical.status_code(), 503);
+    assert!(has(
+        &report,
+        "usage_type_ref",
+        "DERIVED_USAGE_TYPE_REQUIRED"
+    ));
+    assert!(!has(&report, "usage_type_ref", "USAGE_TYPE_UNAVAILABLE"));
 }
 
 #[test]
@@ -214,7 +220,7 @@ fn code_limit_counts_characters_and_blank_meter_fields_fail() {
     c.unit = Some(" ".into());
     let r = validate_publish(&c, Some(&resolved_answer()));
     assert!(has(&r, "usage_type_ref", "USAGE_NEEDS_METER"));
-    assert!(has(&r, "unit", "USAGE_NEEDS_METER"));
+    assert!(!has(&r, "unit", "USAGE_NEEDS_METER"));
 }
 
 /// P-D-196: a patch's explicit null clears the category and an omitted one keeps it; clearing and
@@ -283,12 +289,17 @@ fn a_derived_ref_publishes_on_its_version_and_never_on_a_catalog_answer() {
         "unit",
         "DERIVED_UNIT_MISMATCH"
     ));
+    c.unit = None;
+    assert!(
+        validate_publish(&c, Some(&UsageRefAnswer::Derived(pin.clone()))).is_empty(),
+        "the unit lives on the derived type"
+    );
     let mut g = content(SkuType::Usage);
     g.usage_type_ref = Some("usage:storage".into());
     g.unit = Some("GB".into());
     assert!(has(
         &validate_publish(&g, Some(&UsageRefAnswer::Derived(pin))),
         "usage_type_ref",
-        "USAGE_TYPE_UNRESOLVED"
+        "DERIVED_USAGE_TYPE_REQUIRED"
     ));
 }

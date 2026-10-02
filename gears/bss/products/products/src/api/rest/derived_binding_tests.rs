@@ -300,6 +300,53 @@ impl F {
             .await
     }
 
+    /// A legacy raw usage SKU, written through the repository: the doors no longer accept a raw
+    /// ref (P-D-259). `published` sets the lifecycle without a version snapshot.
+    async fn legacy_raw(&self, code: &str, reference: &str, unit: &str, published: bool) -> Uuid {
+        use crate::domain::sku::NewSku;
+        use bss_products_sdk::models::{Lifecycle, SkuType};
+        let (db, scope) = repo_connection(&self.dsn, self.tenant).await;
+        let conn = db.conn().unwrap();
+        let now = OffsetDateTime::now_utc();
+        let sku = repo::insert_sku(
+            &conn,
+            &scope,
+            self.tenant,
+            NewSku {
+                code: code.to_owned(),
+                name: code.to_owned(),
+                r#type: SkuType::Usage,
+                category_id: None,
+                description: String::new(),
+                sellable: true,
+                gl_code: None,
+                tax_category: None,
+                invoice_line_template: None,
+                billing_timing: None,
+                usage_type_ref: Some(reference.to_owned()),
+                unit: Some(unit.to_owned()),
+            },
+            self.author.subject_id(),
+            now,
+        )
+        .await
+        .unwrap();
+        if published {
+            repo::set_lifecycle(
+                &conn,
+                &scope,
+                self.tenant,
+                sku.id,
+                &[Lifecycle::Draft],
+                Lifecycle::Published,
+                now,
+            )
+            .await
+            .unwrap();
+        }
+        sku.id
+    }
+
     /// [`F::create`] that must succeed; the SKU's id.
     async fn draft(&self, app: &Router, code: &str, reference: &str, unit: &str) -> Uuid {
         let (status, s) = self.create(app, code, Some(reference), Some(unit)).await;
@@ -575,8 +622,8 @@ async fn an_unknown_derived_version_is_refused_at_draft_save() {
 }
 
 /// A unit other than the version's output unit is 400 `DERIVED_UNIT_MISMATCH`, at the create and
-/// at a draft PATCH that changes the unit or the ref. A draft may leave its unit for later; its
-/// publish then needs one (`USAGE_NEEDS_METER`).
+/// at a draft PATCH. A draft may omit its unit: the publish serves the version's output unit, and
+/// the row stores none (P-D-259). A legacy raw draft cannot move onto that version with another unit.
 #[tokio::test]
 async fn a_unit_other_than_the_output_unit_is_refused() {
     for leg in LEGS {
@@ -585,23 +632,27 @@ async fn a_unit_other_than_the_output_unit_is_refused() {
         refused(status, &b, "DERIVED_UNIT_MISMATCH", "unit", leg);
         assert_eq!(f.skus().await, 0);
         let (status, s) = f.create(&f.app, "M", Some(AT_1), None).await;
-        assert_eq!(status, 201, "{leg:?}: a draft names its unit later: {s}");
+        assert_eq!(status, 201, "{leg:?}: a draft omits its unit: {s}");
         let id = Uuid::parse_str(s["id"].as_str().unwrap()).unwrap();
+        assert_eq!(s["unit"], CLOUDLET_UNIT, "{s}");
         let (status, b) = f.patch(id, json!({"unit":"GB"})).await;
         refused(status, &b, "DERIVED_UNIT_MISMATCH", "unit", leg);
-        f.policy(0).await;
-        let (status, b) = f.post(&f.app, id, "/submit", json!({})).await;
-        refused(status, &b, "USAGE_NEEDS_METER", "unit", leg);
-        let (status, b) = f.patch(id, json!({"unit":CLOUDLET_UNIT})).await;
-        assert_eq!(status, 200, "{leg:?}: {b}");
-        // A GTS draft selling `GB` cannot move onto the derived version with its unit.
-        let (status, s) = f.create(&f.setup, "G", Some(GTS), Some("GB")).await;
-        assert_eq!(status, 201, "{s}");
-        let gts = Uuid::parse_str(s["id"].as_str().unwrap()).unwrap();
+        f.publish(&f.app, id).await;
+        let card = f.card(id).await;
+        assert_eq!(card["lifecycle"], "published");
+        assert_eq!(card["unit"], CLOUDLET_UNIT);
+        assert_eq!(
+            raw_i64(
+                &f.dsn,
+                "SELECT COUNT(*) AS v FROM products_sku WHERE unit IS NULL"
+            )
+            .await,
+            1,
+            "a derived SKU stores no unit"
+        );
+        let gts = f.legacy_raw("G", GTS, "GB", false).await;
         let (status, b) = f.patch(gts, json!({ "usage_type_ref": AT_1 })).await;
         refused(status, &b, "DERIVED_UNIT_MISMATCH", "unit", leg);
-        f.publish(&f.app, id).await;
-        assert_eq!(f.card(id).await["lifecycle"], "published");
         f.assert_never_asked();
     }
 }
@@ -671,8 +722,7 @@ async fn after_its_first_publish_a_usage_sku_keeps_its_derived_pin() {
 async fn a_published_gts_usage_sku_cannot_take_a_derived_pin() {
     for leg in LEGS {
         let f = F::new(leg).await;
-        let id = f.draft(&f.setup, "G", GTS, "GB").await;
-        f.publish(&f.setup, id).await;
+        let id = f.legacy_raw("G", GTS, "GB", true).await;
         let (status, b) = f
             .post(
                 &f.app,
@@ -684,7 +734,7 @@ async fn a_published_gts_usage_sku_cannot_take_a_derived_pin() {
         refused(status, &b, "METERING_IMMUTABLE", "usage_type_ref", leg);
         let s = f.card(id).await;
         assert_eq!(s["usage_type_ref"], GTS);
-        assert_eq!(s["published_version"], 1);
+        assert_eq!(s["published_version"], 0);
         f.assert_never_asked();
         let (status, b) = f
             .post(
@@ -724,8 +774,7 @@ async fn a_stale_change_is_refused_at_apply_when_a_concurrent_write_pinned_a_der
             )],
         )
         .await;
-        let id = f.draft(&f.setup, "S", RAW, GB).await;
-        f.publish(&f.setup, id).await;
+        let id = f.legacy_raw("S", RAW, GB, true).await;
         f.policy(1).await;
         let (status, unit) = f
             .post(&f.app, id, "/changes", json!({"usage_type_ref": WRAP}))
@@ -871,8 +920,7 @@ async fn a_published_raw_usage_sku_moves_onto_the_identity_wrapper_of_its_meter(
             assert_eq!(f.card(pinned).await["usage_type_ref"], AT_1);
         }
 
-        let id = f.draft(&f.setup, "R", RAW, GB).await;
-        f.publish(&f.setup, id).await;
+        let id = f.legacy_raw("R", RAW, GB, true).await;
         for body in [
             json!({"usage_type_ref": TWO}),
             json!({"usage_type_ref": CEIL_WRAP}),
@@ -907,7 +955,7 @@ async fn a_published_raw_usage_sku_moves_onto_the_identity_wrapper_of_its_meter(
         let card = f.card(id).await;
         assert_eq!(card["usage_type_ref"], WRAP);
         assert_eq!(card["unit"], GB);
-        assert_eq!(card["published_version"], 2);
+        assert_eq!(card["published_version"], 1);
         f.assert_never_asked();
     }
 }
@@ -936,8 +984,7 @@ async fn a_published_usage_sku_keeps_its_metering() {
         )
         .await;
 
-        let raw = f.draft(&f.setup, "RAW", RAW, GB).await;
-        f.publish(&f.setup, raw).await;
+        let raw = f.legacy_raw("RAW", RAW, GB, true).await;
         let (status, b) = f
             .post(&f.app, raw, "/changes", json!({"usage_type_ref": OTHER}))
             .await;
@@ -985,16 +1032,18 @@ async fn a_published_usage_sku_keeps_its_metering() {
             0,
             "{leg:?}: a published metering change asks no catalog"
         );
-        let draft = f.draft(&f.setup, "DFT", RAW, GB).await;
+        let draft = f.legacy_raw("DFT", RAW, GB, false).await;
         let (status, b) = f
-            .patch(draft, json!({"usage_type_ref": OTHER, "unit": "MB"}))
+            .patch(draft, json!({"usage_type_ref": WRAP, "unit": GB}))
             .await;
-        assert_eq!(status, 200, "{leg:?}: a draft still edits both: {b}");
-        assert_eq!(b["usage_type_ref"], OTHER);
-        assert_eq!(b["unit"], "MB");
+        assert_eq!(
+            status, 200,
+            "{leg:?}: a raw draft moves onto a derived ref: {b}"
+        );
+        assert_eq!(b["usage_type_ref"], WRAP);
+        assert_eq!(b["unit"], GB);
 
-        let moving = f.draft(&f.setup, "WRP", RAW, GB).await;
-        f.publish(&f.setup, moving).await;
+        let moving = f.legacy_raw("WRP", RAW, GB, true).await;
         let (status, b) = f
             .post(&f.app, moving, "/changes", json!({"usage_type_ref": WRAP}))
             .await;
@@ -1003,11 +1052,6 @@ async fn a_published_usage_sku_keeps_its_metering() {
         let card = f.card(moving).await;
         assert_eq!(card["usage_type_ref"], WRAP);
         assert_eq!(card["unit"], GB);
-        let draft_ask = usize::from(leg == Leg::Configured);
-        assert_eq!(
-            f.catalog.asked(),
-            draft_ask,
-            "{leg:?}: only the draft's raw ref is a catalog question"
-        );
+        f.assert_never_asked();
     }
 }

@@ -51,8 +51,15 @@ pub const UNIT_MISMATCH: &str = "DERIVED_UNIT_MISMATCH";
 /// A change that moves a published usage SKU's metering (P-D-258): 400 at submit, 409 at apply.
 /// PROBE-9-13-2: the code is `METERING_IMMUTABLE`.
 pub const METERING_IMMUTABLE: &str = "METERING_IMMUTABLE";
+/// A usage SKU's ref is not a derived usage type (P-D-259): 400 on `usage_type_ref`.
+pub const USAGE_TYPE_REQUIRED: &str = "DERIVED_USAGE_TYPE_REQUIRED";
 /// The binding's codes: they refuse a SKU's write, so they name the SKU, not the derived type.
-pub const SKU_BINDING_CODES: [&str; 3] = [USAGE_TYPE_UNKNOWN, UNIT_MISMATCH, METERING_IMMUTABLE];
+pub const SKU_BINDING_CODES: [&str; 4] = [
+    USAGE_TYPE_UNKNOWN,
+    UNIT_MISMATCH,
+    METERING_IMMUTABLE,
+    USAGE_TYPE_REQUIRED,
+];
 
 // The SDK's caps are the SKU's (Run 1's note): a derived output unit is the selling SKU's unit, and
 // an input ref is a usage-type ref.
@@ -253,6 +260,34 @@ pub struct DerivedPin {
 #[must_use]
 pub fn is_derived_ref(reference: &str) -> bool {
     reference.starts_with(derived::DERIVED_METER_PREFIX)
+}
+
+/// A usage SKU names a derived usage type (P-D-259). A raw ref is 400 [`USAGE_TYPE_REQUIRED`],
+/// before any catalog is asked.
+///
+/// PROBE-9-13-4: a raw ref is refused here.
+#[must_use]
+pub fn usage_type_required() -> DomainError {
+    let mut report = ValidationReport::new();
+    report.violate(
+        USAGE_TYPE_REQUIRED,
+        "usage_type_ref",
+        "a usage SKU names a derived usage type",
+    );
+    DomainError::Validation(report)
+}
+
+/// The unit a derived SKU stores (P-D-259): none. A raw SKU keeps the unit it was given.
+///
+/// PROBE-9-13-5: a derived SKU's unit is not stored.
+#[must_use]
+pub fn persisted_unit(reference: Option<&str>, unit: Option<String>) -> Option<String> {
+    // PROBE-9-13-5: a derived SKU stores no unit.
+    if reference.is_some_and(is_derived_ref) {
+        None
+    } else {
+        unit
+    }
 }
 
 /// The binding rule (P-D-232): a derived `reference` binds when `pin` is the tenant's version of it

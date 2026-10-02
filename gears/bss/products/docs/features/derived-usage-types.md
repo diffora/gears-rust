@@ -245,10 +245,12 @@ Verified by `derived_binding_tests::a_usage_sku_on_a_derived_version_is_created_
 `products/src/domain/approvals/change.rs` and `products/src/api/rest/governance.rs`.
 
 A usage SKU's `products.derived/<code>@<n>` ref is judged from the tenant's store first, at draft save, submit and apply,
-and the catalog is never asked for it: 400 DERIVED_USAGE_TYPE_UNKNOWN or DERIVED_UNIT_MISMATCH. A draft may move its ref
-and its unit. A published usage SKU keeps both, except a raw meter moving onto the identity wrapper of that meter in the
-same unit (P-D-251), and every other change that moves the ref or the unit, or that changes the type away from usage, is
-METERING_IMMUTABLE at submit (400) and at apply (409) (P-D-258). The codes name the SKU (DESIGN §3.1, §3.3, §3.5; P-D-232).
+and the catalog is never asked for it: 400 DERIVED_USAGE_TYPE_UNKNOWN or DERIVED_UNIT_MISMATCH. A raw ref is 400
+DERIVED_USAGE_TYPE_REQUIRED before the catalog is asked (P-D-259). The unit is the version's output unit and is not
+stored on the SKU. A published usage SKU keeps its ref and that unit, except a raw meter moving onto the identity
+wrapper of that meter in the same unit (P-D-251), and every other change that moves the ref or the unit, or that
+changes the type away from usage, is METERING_IMMUTABLE at submit (400) and at apply (409) (P-D-258). The codes name
+the SKU (DESIGN §3.1, §3.3, §3.5; P-D-232).
 
 ### Products answers pricing's derived meter semantics
 

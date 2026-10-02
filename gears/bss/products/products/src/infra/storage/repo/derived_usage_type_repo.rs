@@ -14,7 +14,10 @@ use crate::infra::storage::{
     entity::{derived_usage_type, derived_usage_type_version},
 };
 use sea_orm::sea_query::{Expr, ExprTrait, Query};
-use sea_orm::{ColumnTrait, Condition, EntityTrait, Order, Set};
+use sea_orm::{
+    ColumnTrait, Condition, EntityTrait, FromQueryResult, JoinType, Order, QueryFilter,
+    QuerySelect, RelationTrait, Set,
+};
 use std::collections::HashMap;
 use time::OffsetDateTime;
 use toolkit_db::odata::sea_orm_filter::{
@@ -377,6 +380,85 @@ pub async fn list(
         PaginateOdataTryError::OData(other) => SkuListError::Query(other),
         PaginateOdataTryError::MapError(e) => SkuListError::Repo(e),
     })
+}
+
+#[derive(Debug, FromQueryResult)]
+struct MeterRow {
+    code: String,
+    version: i64,
+    declaration_json: serde_json::Value,
+}
+
+/// The output unit of each referenced derived version, in ONE join (P-D-259). A meter that does
+/// not parse, or that the tenant does not hold, is absent. The caller's scope filters the rows;
+/// pass `tenant_only()` so a SKU resource scope does not hide the type.
+///
+/// PROBE-9-13-6: this is one read for the whole set, not one read per SKU.
+///
+/// # Errors
+/// Scoped storage failures.
+pub async fn output_units(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    meters: &[String],
+) -> Result<HashMap<String, String>, RepoError> {
+    let pairs: Vec<(String, i64)> = meters
+        .iter()
+        .filter_map(|meter| {
+            let id = bss_products_sdk::derived::MeterId::parse(meter).ok()?;
+            Some((id.code().to_owned(), i64::from(id.version())))
+        })
+        .collect();
+    if pairs.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let codes: Vec<String> = pairs.iter().map(|(code, _)| code.clone()).collect();
+    let versions: Vec<i64> = pairs.iter().map(|(_, version)| *version).collect();
+    let wanted: std::collections::HashSet<(String, i64)> = pairs.into_iter().collect();
+    let rows: Vec<MeterRow> = derived_usage_type_version::Entity::find()
+        .filter(derived_usage_type_version::Column::TenantId.eq(tenant_id))
+        .filter(derived_usage_type_version::Column::Version.is_in(versions))
+        .filter(derived_usage_type::Column::Code.is_in(codes))
+        .join(
+            JoinType::InnerJoin,
+            derived_usage_type_version::Relation::Type.def(),
+        )
+        .secure()
+        .scope_with(scope)
+        .project_all(runner, |query| {
+            query
+                .select_only()
+                .column_as(derived_usage_type::Column::Code, "code")
+                .column_as(derived_usage_type_version::Column::Version, "version")
+                .column_as(
+                    derived_usage_type_version::Column::DeclarationJson,
+                    "declaration_json",
+                )
+                .into_model::<MeterRow>()
+        })
+        .await
+        .map_err(|e| driver_failure("derived output units".into(), e))?;
+    let mut units = HashMap::new();
+    for row in rows {
+        if !wanted.contains(&(row.code.clone(), row.version)) {
+            continue;
+        }
+        let Some(unit) = row
+            .declaration_json
+            .get("output_unit")
+            .and_then(serde_json::Value::as_str)
+        else {
+            continue;
+        };
+        let Ok(version) = u32::try_from(row.version) else {
+            continue;
+        };
+        if let Ok(meter) = bss_products_sdk::derived::MeterId::new(&row.code, version) {
+            units.insert(meter.format(), unit.to_owned());
+        }
+    }
+    Ok(units)
 }
 
 #[cfg(test)]

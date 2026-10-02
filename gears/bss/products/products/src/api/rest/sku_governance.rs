@@ -393,6 +393,8 @@ async fn refuse_moved_pin(
         proposed_ref,
     )
     .await?;
+    // The head's unit is the served unit: a derived SKU's is its version's output unit, so a
+    // client that sends that unit again is not a change (P-D-259). The row stores none.
     if let Some(field) = derived::metering_moves(
         derived::Metering {
             usage: current.r#type == SkuType::Usage,

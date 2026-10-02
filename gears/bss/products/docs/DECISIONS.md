@@ -79,6 +79,7 @@
 | P-D-255 | M | A unit says whether its reader may reject or withdraw it, and approve includes the grant | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 63); amends P-D-228 |
 | P-D-257 | M | The derived type list carries each type's latest version | DECIDED 2026-10-02 · Owner, 2026-10-02; run 9.12; amends P-D-231 |
 | P-D-258 | H | A published usage SKU keeps its metering | DECIDED 2026-10-02 · Owner, 2026-10-02; run 9.13; amends P-D-232, P-D-251 |
+| P-D-259 | H | A usage SKU sells a derived usage type, and its unit is that type's | DECIDED 2026-10-02 · Owner, 2026-10-02; run 9.13; amends P-D-207, P-D-229, P-D-232, P-D-251 |
 
 ## Entries
 
@@ -538,6 +539,9 @@ the `q` search, 2026-09-28 (the collector's plugin takes no `contains`).
 usage types have their own list, `GET /derived-usage-types`, under `sku:read` (P-D-231). A derived ref is never read
 through the catalog, so a catalog that refuses the caller, or does not answer, neither refuses nor delays a usage SKU on
 a derived version.
+
+**Amended by P-D-259 (2026-10-02).** The picker stays, and it serves derived-type authoring: its raw types are the inputs
+of a derived usage type. It no longer feeds the SKU form. A usage SKU names a derived usage type.
 
 #### P-D-208 [M] A retired SKU no longer keeps its category in use
 
@@ -1364,6 +1368,9 @@ evaluates, the usage collector stays raw").
   which names the inputs at their exact versions and the formula, is what the digest identifies, and
   `GET /derived-usage-types/{code}/versions/{n}` serves it.
 
+**Amended by P-D-259 (2026-10-02).** A usage SKU sells a derived usage type only. The raw types remain the inputs of those
+derived types.
+
 **Amended by P-D-251 (2026-10-02).** A declaration may name one raw input. The "at least two" line above is the
 original cloudlet; one input is a wrapper of a raw meter (P-D-230 amended).
 
@@ -1624,6 +1631,10 @@ that sets either to another value, clears either, or changes the type away from 
 field is `usage_type_ref` when the ref moves and `unit` when only the unit moves. The code replaces
 `DERIVED_PIN_IMMUTABLE`. The identity wrap (P-D-251) is the one exception. A draft may still change both, and a
 non-usage SKU has no metering.
+
+**Amended by P-D-259 (2026-10-02).** A usage SKU's `usage_type_ref` is a derived ref. A raw ref is 400
+`DERIVED_USAGE_TYPE_REQUIRED` before any catalog is asked. The unit is not stored on a derived SKU: a read serves the
+version's `output_unit`. A client may still send `unit`; it is judged against that output unit and then dropped.
 
 #### P-D-233 [H] Products answers pricing's meter semantics for its derived usage types (E1b)
 
@@ -1919,6 +1930,9 @@ of that meter.
 
 **Amended by P-D-258 (2026-10-02).** The wrap is unchanged and remains the one exception. Every other move of a published usage SKU's ref or unit, and a type change away from usage, is `METERING_IMMUTABLE`.
 
+**Amended by P-D-259 (2026-10-02).** The wrap ends with a derived SKU whose stored `unit` is null. The wrapper's
+`output_unit` still equals the raw SKU's stored unit. A read serves that output unit.
+
 #### P-D-252 [M] The inbox source judges `state` before a foreign empty page
 
 **Status:** DECIDED 2026-10-02.
@@ -1981,3 +1995,17 @@ P-D-232 pinned a published usage SKU's derived ref. P-D-251 allowed one move, a 
 - **The tests.** `derived_binding_tests::a_published_usage_sku_keeps_its_metering`: a published raw SKU and a published derived SKU each refuse a ref change on `usage_type_ref` and a unit change on `unit`; a type change to recurring is refused; the wrap still applies; a draft still edits both; `validate_change` refuses a raw ref change that carries the stored unit. The apply's HTTP answer stays 409 (`a_stale_change_is_refused_at_apply_when_a_concurrent_write_pinned_a_derived_type`).
 
 **Source:** Owner, 2026-10-02 ("может запретим менять для опубликованых?" … "да"). Run 9.13. Amends P-D-232 and P-D-251.
+
+#### P-D-259 [H] A usage SKU sells a derived usage type, and its unit is that type's
+
+**Status:** DECIDED 2026-10-02.
+
+A usage SKU names a derived usage type, `products.derived/<code>@<n>`. A raw GTS ref is 400 `DERIVED_USAGE_TYPE_REQUIRED` on `usage_type_ref`, at the create, the draft PATCH, the change door and the publish, before any catalog is asked. The collector's raw types remain the inputs of derived types. `GET /usage-types` stays for that authoring and no longer feeds the SKU form.
+
+The unit lives on the derived type. A usage SKU's write does not store `unit`. A client may still send it: it is judged against the version's `output_unit` (`DERIVED_UNIT_MISMATCH` when it differs) and then dropped. The row keeps `unit` null. A CHECK on Postgres, and two triggers on SQLite, hold that. Migration `m20261002_000013_derived_sku_unit` nulls the unit of every derived SKU after a Rust check that the stored unit equals the version's output unit. A disagreeing row refuses the migration and is not nulled.
+
+Every SKU read still serves `unit`: the version's `output_unit` for a derived SKU, the stored unit for a legacy raw SKU, and null for a non-usage SKU. The value comes from one read of the referenced versions per page, the same statements for 10 SKUs and for 100. Version snapshots written from now on hold no unit for a derived SKU. Existing snapshots stay. The version reads fill `unit` the same way. The registry (`sku_for_write`, `skus_for_write`, `sku_version_as_of`) serves that unit.
+
+A legacy raw draft may be patched onto a derived ref, and that patch drops its unit. A raw draft cannot be published. A published raw SKU may take P-D-251's wrap, which stores `unit` null, or retire. Every other write that keeps a raw ref is `DERIVED_USAGE_TYPE_REQUIRED`.
+
+**Source:** Owner, 2026-10-02 ("я склоняюсь к тому что бы не копировать", "нам нужно создание sku с сырыми типами?" … "да"). Run 9.13. Amends P-D-207, P-D-229, P-D-232 and P-D-251.

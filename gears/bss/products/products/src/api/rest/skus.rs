@@ -378,6 +378,12 @@ async fn resolve_draft_ref(
     reference: Option<&str>,
     unit: Option<&str>,
 ) -> Result<(), CanonicalError> {
+    // P-D-259: a raw ref is refused before any catalog is asked. A missing ref is a draft that
+    // names its meter later.
+    // PROBE-9-13-4: a raw ref is refused here, before the catalog.
+    if reference.is_some_and(|reference| !derived::is_derived_ref(reference)) {
+        return Err(derived::usage_type_required().into());
+    }
     // P-D-232: a derived ref comes first, before the unconfigured catalog's early `Ok`: it is this
     // gear's own data, judged from its store, and the catalog is never asked for it.
     if let Some(reference) = reference.filter(|reference| derived::is_derived_ref(reference)) {
@@ -569,6 +575,16 @@ async fn update_sku_draft(
     };
     editable(&current, expected, actor).map_err(tx_to_canonical)?;
     let proposed = apply_patch(&SkuContent::from(&current), &patch_tx);
+    // P-D-259: a draft whose result still names a raw ref is refused, a name change included.
+    // A patch onto a derived ref is the raw draft's way forward.
+    if proposed.r#type == bss_products_sdk::models::SkuType::Usage
+        && proposed
+            .usage_type_ref
+            .as_deref()
+            .is_some_and(|reference| !derived::is_derived_ref(reference))
+    {
+        return Err(derived::usage_type_required().into());
+    }
     // A derived ref is judged again when the unit it must match changes (P-D-232).
     let derived_unit_moved = proposed
         .usage_type_ref

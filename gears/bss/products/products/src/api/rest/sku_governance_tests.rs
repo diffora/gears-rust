@@ -17,6 +17,63 @@ use toolkit_security::SecurityContext;
 use tower::ServiceExt;
 use uuid::Uuid;
 
+/// A derived usage type `meter` @1 that sells `GB`, so the fixture's usage SKU names a derived ref.
+async fn seed_gb_meter(dsn: &str, tenant: Uuid) {
+    use crate::domain::derived::{self as rules, NewDerivedType, NewDerivedVersion};
+    use crate::infra::storage::repo::derived_usage_type_repo as store;
+    use bss_products_sdk::derived::{
+        DerivedInput, DerivedUsageDeclaration, Expr, Granularity, GranuleFold, RoundMode,
+    };
+    let (db, scope) = repo_connection(dsn, tenant).await;
+    let conn = db.conn().unwrap();
+    let now = time::OffsetDateTime::now_utc();
+    let created = store::create_type(
+        &conn,
+        &scope,
+        tenant,
+        NewDerivedType {
+            code: "meter".into(),
+            name: "Meter".into(),
+        },
+        Uuid::from_u128(7),
+        now,
+    )
+    .await
+    .unwrap();
+    let declaration = DerivedUsageDeclaration {
+        output_unit: "GB".into(),
+        granularity: Granularity::Hour,
+        inputs: vec![DerivedInput {
+            name: "disk".into(),
+            usage_type_ref: "usage:storage".into(),
+            granule_fold: GranuleFold::Sum,
+            max_hold_seconds: None,
+            unit: "GB".into(),
+        }],
+        formula: Expr::Input("disk".into()),
+        output_scale: 0,
+        output_round: RoundMode::HalfEven,
+    };
+    store::insert_version(
+        &conn,
+        &scope,
+        tenant,
+        NewDerivedVersion {
+            type_id: created.id,
+            version: 1,
+            declaration_json: serde_json::to_value(
+                crate::api::rest::dto::ProductsDerivedDeclaration::from(&declaration),
+            )
+            .unwrap(),
+            digest: rules::digest_hex(&declaration),
+            created_by: Uuid::from_u128(7),
+            created_at: now,
+        },
+    )
+    .await
+    .unwrap();
+}
+
 fn routes(s: Arc<crate::api::rest::ApiState>, o: &dyn toolkit::api::OpenApiRegistry) -> Router {
     crate::api::rest::categories::router(s.clone(), o)
         .merge(crate::api::rest::skus::router(s.clone(), o))
@@ -136,7 +193,8 @@ impl Fixture {
         )
         .await;
         assert_eq!(status, 201, "{c}");
-        let (status,s)=call(&app,&author,Method::POST,"/skus",json!({"code":"SKU","name":"SKU","type":"usage","category_id":c["id"],"usage_type_ref":"storage","unit":"GB"}),None).await;
+        seed_gb_meter(&dsn, tenant).await;
+        let (status,s)=call(&app,&author,Method::POST,"/skus",json!({"code":"SKU","name":"SKU","type":"usage","category_id":c["id"],"usage_type_ref":"products.derived/meter@1","unit":"GB"}),None).await;
         assert_eq!(status, 201, "{s}");
         let f = Self {
             state,
@@ -936,37 +994,39 @@ async fn second_app(
 #[tokio::test]
 async fn a_usage_sku_whose_ref_the_catalog_does_not_know_cannot_be_submitted() {
     let f = Fixture::new(0).await;
-    for (answer, expected, code) in [
-        (
-            crate::domain::recognized::UsageTypeAnswer::Unresolved,
-            400,
-            "USAGE_TYPE_UNRESOLVED",
-        ),
-        (
+    // P-D-259: the catalog is not asked. An unknown derived ref is one 400, and the fixture's
+    // derived SKU still publishes when the catalog would have refused a raw ref.
+    let (status, s) = call(
+        &f.app,
+        &f.author,
+        Method::POST,
+        "/skus",
+        json!({"code":"MISS","name":"Miss","type":"usage","usage_type_ref":"products.derived/missing@1","unit":"GB"}),
+        None,
+    )
+    .await;
+    assert_eq!(status, 400, "{s}");
+    assert_eq!(problem_code(&s), "DERIVED_USAGE_TYPE_UNKNOWN");
+    let app = second_app(
+        &f,
+        Arc::new(StubUsageTypes::always(
             crate::domain::recognized::UsageTypeAnswer::Unavailable,
-            503,
-            "USAGE_TYPE_UNAVAILABLE",
-        ),
-    ] {
-        let app = second_app(&f, Arc::new(StubUsageTypes::always(answer))).await;
-        let (status, b) = call(
+        )),
+    )
+    .await;
+    assert_eq!(
+        call(
             &app,
             &f.author,
             Method::POST,
             &format!("/skus/{}/submit", f.id),
             json!({}),
-            Some("retry-after-catalog"),
+            None,
         )
-        .await;
-        assert_eq!(status, expected, "{b}");
-        assert!(b.to_string().contains(code), "{b}");
-        assert_eq!(
-            raw_i64(&f.dsn, "SELECT count(*) AS v FROM products_approval_unit").await,
-            0
-        );
-        assert_eq!(idempotency_rows_for(&f.dsn, "retry-after-catalog").await, 0);
-    }
-    assert_eq!(f.post("/submit", json!({})).await.0, 200);
+        .await
+        .0,
+        200
+    );
 }
 #[tokio::test]
 async fn a_fence_left_behind_is_resumed_by_the_next_retire_and_expired_ones_are_lifted() {
@@ -1914,7 +1974,7 @@ async fn a_published_usage_sku_ref_change_is_refused_before_the_catalog() {
     .await;
     assert_eq!(status, 400, "{b}");
     assert_eq!(problem_code(&b), "METERING_IMMUTABLE");
-    assert_eq!(f.card().await["usage_type_ref"], "storage");
+    assert_eq!(f.card().await["usage_type_ref"], "products.derived/meter@1");
 }
 #[tokio::test]
 async fn equal_version_dates_work_and_backwards_changes_roll_back_the_head() {
@@ -2056,12 +2116,12 @@ async fn cancelled_submission_does_not_strand_an_idempotency_claim() {
         json!({}),
         Some("crash"),
     ));
+    // P-D-259: a derived SKU's submit does not ask the catalog, so the request is not paused there.
     tokio::select! {
-        () = entered.notified() => {},
-        result = &mut request => panic!("request should be paused: {result:?}"),
+        () = entered.notified() => panic!("a derived SKU submit does not ask the catalog"),
+        result = &mut request => assert_eq!(result.0, 200, "{result:?}"),
     }
-    drop(request);
-    assert_eq!(idempotency_rows_for(&f.dsn, "crash").await, 0);
+    assert_eq!(idempotency_rows_for(&f.dsn, "crash").await, 1);
     let retry = call(
         &f.app,
         &f.author,
@@ -2899,6 +2959,19 @@ async fn real_pricing_entry_blocks_retirement_until_delete_and_ticker_pass() {
     use toolkit::contracts::DatabaseCapability;
     let f = Fixture::new(0).await;
     f.publish().await;
+    // The test provider answers the raw meter `storage`. The published row is that legacy SKU.
+    {
+        use sea_orm::{ConnectionTrait, Database, DatabaseBackend, Statement};
+        let conn = Database::connect(&*f.dsn).await.unwrap();
+        conn.execute_raw(Statement::from_string(
+            DatabaseBackend::Sqlite,
+            "UPDATE products_sku SET usage_type_ref = 'storage', unit = 'GB' WHERE code = 'SKU'"
+                .to_owned(),
+        ))
+        .await
+        .unwrap();
+        conn.close().await.ok();
+    }
     f.policy(1).await;
     // Held for the test's life: pricing's database in its own temporary directory.
     let dsn = TestDsn::new("pricing-cross-gear-");
@@ -3400,13 +3473,11 @@ async fn a_replayed_create_answers_the_deleted_draft() {
     assert_eq!(status, 404);
 }
 
-/// P-D-207 (owner option b): usage types are read as the caller. A collector that refuses the caller is
-/// 403 `USAGE_TYPE_FORBIDDEN` at submit and at approve, never the 503 of an outage; nothing is
-/// recorded and no key is claimed.
+/// P-D-259: a raw ref is refused before the catalog, including a collector that would deny the
+/// caller. The fixture's derived SKU still submits through that catalog, which is not asked.
 #[tokio::test]
 async fn a_collector_denial_is_403_at_submit_and_at_approve() {
     let f = Fixture::new(1).await;
-    // A ref the collector adapter would ask about: a well-formed usage-record GTS id.
     let (status, s) = call(
         &f.app,
         &f.author,
@@ -3417,56 +3488,20 @@ async fn a_collector_denial_is_403_at_submit_and_at_approve() {
         None,
     )
     .await;
-    assert_eq!(status, 201, "{s}");
-    let submit = format!("/skus/{}/submit", s["id"].as_str().unwrap());
+    assert_eq!(status, 400, "{s}");
+    assert_eq!(problem_code(&s), "DERIVED_USAGE_TYPE_REQUIRED");
     let denied = second_app(&f, denying_collector_catalog()).await;
     let (status, b) = call(
         &denied,
         &f.author,
         Method::POST,
-        &submit,
+        &format!("/skus/{}/submit", f.id),
         json!({}),
         Some("denied-submit"),
     )
     .await;
-    assert_eq!(status, 403, "{b}");
-    assert_eq!(problem_code(&b), "USAGE_TYPE_FORBIDDEN");
-    assert_eq!(
-        raw_i64(&f.dsn, "SELECT count(*) AS v FROM products_approval_unit").await,
-        0
-    );
-    assert_eq!(idempotency_rows_for(&f.dsn, "denied-submit").await, 0);
-    let (status, u) = call(&f.app, &f.author, Method::POST, &submit, json!({}), None).await;
-    assert_eq!(status, 200, "{u}");
-    let approve = format!(
-        "/approval-units/{}/approve",
-        u["unit"]["id"].as_str().unwrap()
-    );
-    let (status, b) = call(
-        &denied,
-        &f.reviewer,
-        Method::POST,
-        &approve,
-        json!({"generation":1}),
-        None,
-    )
-    .await;
-    assert_eq!(status, 403, "{b}");
-    assert_eq!(problem_code(&b), "USAGE_TYPE_FORBIDDEN");
-    let (status, b) = call(
-        &f.app,
-        &f.reviewer,
-        Method::POST,
-        &approve,
-        json!({"generation":1}),
-        None,
-    )
-    .await;
-    assert_eq!(
-        status, 200,
-        "a reviewer the collector admits still decides: {b}"
-    );
-    assert_eq!(b["outcome"], "applied", "{b}");
+    assert_eq!(status, 200, "{b}");
+    assert_eq!(b["applied"], false, "{b}");
 }
 
 #[path = "sku_history_tests.rs"]
