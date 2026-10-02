@@ -405,7 +405,9 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .summary("Where a SKU is priced")
         .description(
             "Lists one page of the tenant's price book entries of one SKU across its books \
-             (D-434, D-486), each with its book's code, name and currency, its usage (D-428), \
+             (D-434, D-486), or the entries named by `$filter=id in (...)`, at most 200 ids, \
+             instead of sku_id (D-517). Each item carries its book's code, name and currency, \
+             its usage (D-428), \
              its status and changing on today, its current_price, the default chain's approved \
              price in force today, and its next_price, the default chain's earliest price \
              scheduled after today, else its newest draft or pending price (the highest \
@@ -419,8 +421,11 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
              is book_name (the default) or status, asc or desc; the id breaks a tie in that \
              direction. limit (default 500, clamped at 500) and cursor from page_info page it; a \
              cursor carries the order and a hash of the plain keys, so a continuation sends no \
-             $orderby. Refusals: 400 QUERY_INVALID without exactly one well-formed sku_id, for a \
-             repeated key, for any other key, for $filter, $select or $count, for a malformed \
+             $orderby. `$filter` is `id in (...)` of at most 200 ids, or `id eq` one id, and \
+             replaces sku_id; another \
+             field, `or`, `ne`, or more than 200 ids is refused. Refusals: 400 QUERY_INVALID without \
+             exactly one well-formed sku_id and without that filter, for a repeated key, for any \
+             other key, for $select or $count, for sku_id beside $filter, for a malformed \
              book_id, currency, status, changing or limit, or for more than 50 book ids; 400 \
              INVALID_ORDERBY_FIELD for any other order; 400 ORDER_WITH_CURSOR for $orderby \
              beside a cursor; 400 FILTER_MISMATCH for a cursor replayed under another narrowing; \
@@ -429,7 +434,12 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .tag("Pricing")
         .authenticated()
         .no_license_required()
-        .query_param("sku_id", true, "The SKU whose entries are listed")
+        .query_param(
+            "sku_id",
+            false,
+            "The SKU whose entries are listed. Required unless $filter=id in (...) is sent",
+        )
+        .with_odata_filter::<price_book_entries::EntryIdField>()
         .query_param(
             "book_id",
             false,
@@ -2151,7 +2161,7 @@ async fn list_sku_entries(
     )
     .await
     .map_err(authz_failure)?;
-    // D-486: the query, including $filter, $select and $count, is judged before any read.
+    // D-486, D-517: the query, including $filter, $select and $count, is judged before any read.
     let query = price_book_entries::sku_entries_query(&uri)?;
     // D-434: the money is the export's — price_book read. Without it the entries still list, each
     // with a null current_price; only an unavailable policy fails the read. Status is not money.
@@ -2160,15 +2170,30 @@ async fn list_sku_entries(
     transaction(&state.db.db(), move |tx| {
         let (scope, books, ctx, query) = (scope.clone(), books.clone(), ctx.clone(), query.clone());
         Box::pin(async move {
-            let body = price_book_entries::for_sku(
-                tx,
-                &scope,
-                books.as_ref(),
-                ctx.subject_tenant_id(),
-                &query,
-                today,
-            )
-            .await?;
+            let body = match &query {
+                price_book_entries::EntriesRead::Sku(query) => {
+                    price_book_entries::for_sku(
+                        tx,
+                        &scope,
+                        books.as_ref(),
+                        ctx.subject_tenant_id(),
+                        query,
+                        today,
+                    )
+                    .await?
+                }
+                price_book_entries::EntriesRead::Ids(ids) => {
+                    price_book_entries::for_ids(
+                        tx,
+                        &scope,
+                        books.as_ref(),
+                        ctx.subject_tenant_id(),
+                        ids,
+                        today,
+                    )
+                    .await?
+                }
+            };
             Ok(response(StatusCode::OK, &body, None)?)
         })
     })

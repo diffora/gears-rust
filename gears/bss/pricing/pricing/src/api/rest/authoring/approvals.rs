@@ -175,10 +175,11 @@ fn attach_book_identity(value: &mut serde_json::Value, books: &BTreeMap<Uuid, se
     }
 }
 /// Put `book { id, code, name, currency }` beside every book id a served snapshot names (D-516).
-/// One grouped read for the page, and none when no snapshot names a book. The stored snapshot and
-/// its fingerprint are unchanged: this is what the review reads.
+/// One grouped read for the page, and none when no snapshot names a book. A book the tenant no
+/// longer holds leaves `book` absent, so a decided unit stays readable after its book is deleted.
+/// The stored snapshot and its fingerprint are unchanged: this is what the review reads.
 /// # Errors
-/// `CorruptRow` when a named book is not in the tenant.
+/// Storage failures.
 async fn name_books(
     tx: &impl DBRunner,
     tenant: Uuid,
@@ -194,13 +195,6 @@ async fn name_books(
     let id_list: Vec<Uuid> = ids.iter().copied().collect();
     let found =
         book_repo::find_many(tx, &AccessScope::for_tenant(tenant), tenant, &id_list).await?;
-    if found.len() != ids.len() {
-        let have: BTreeSet<Uuid> = found.iter().map(|book| book.id).collect();
-        let missing = ids.difference(&have).next().copied().unwrap_or(Uuid::nil());
-        return Err(
-            RepoError::CorruptRow(format!("an approval unit names lost book {missing}")).into(),
-        );
-    }
     let books: BTreeMap<Uuid, serde_json::Value> = found
         .into_iter()
         .map(|book| {

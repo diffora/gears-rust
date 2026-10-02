@@ -191,7 +191,7 @@ Requirement: `cpt-cf-bss-pricing-fr-price-book`; PRD AC #2.
 
 - [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-entry-key-unique`
 
-The database enforces SKU × charge kind × normalized period × model × policy digest uniqueness inside a book (D-427, D-502). Charge kind follows the re-read SKU; a bundle, an invalid period or a model the charge kind does not allow is rejected (spec §5, D-386). GET /price-book-entries?sku_id= narrows, orders and pages one SKU's entries in memory (D-486): book_id (1 to 50), currency, q, status (priced, scheduled, unpriced) and changing; book_name or status, the id breaking a tie the same way; 500 per page by default and at most 500. The read makes seven statements for a SKU in 5 books and in 50. A SKU in more than 500 entries returns the first page.
+The database enforces SKU × charge kind × normalized period × model × policy digest uniqueness inside a book (D-427, D-502). Charge kind follows the re-read SKU; a bundle, an invalid period or a model the charge kind does not allow is rejected (spec §5, D-386). GET /price-book-entries?sku_id= narrows, orders and pages one SKU's entries in memory (D-486), and $filter=id in (...) of at most 200 ids lists those entries instead (D-517): book_id (1 to 50), currency, q, status (priced, scheduled, unpriced) and changing; book_name or status, the id breaking a tie the same way; 500 per page by default and at most 500. The read makes seven statements for a SKU in 5 books and in 50. A SKU in more than 500 entries returns the first page.
 Requirement: `cpt-cf-bss-pricing-fr-entry-key`; PRD AC #3.
 
 ### Restricted entry metadata edits

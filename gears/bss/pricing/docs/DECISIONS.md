@@ -116,7 +116,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-483 | M | A book's entries page on the toolkit's pager, in the order (sku_id, charge_kind, model, id) | DECIDED 2026-10-01 · Owner, 2026-10-01 (asks v4, 51); phase 9 plan rev 4 (run 9.8; review H3, A4); amends D-434, D-473 |
 | D-484 | M | A plan stores time-stable list facts; selling and change are derived from the day | DECIDED 2026-10-02 · Owner, 2026-10-01 (#31, form B); phase 9 plan rev 4 (run 9.8b; review N1, N2); amends D-453 |
 | D-485 | M | The plans list pages on the stored summary and counts the derived axes | DECIDED 2026-10-02 · Owner, 2026-10-01 (#31, form B); phase 9 plan rev 4 (run 9.8b; review N1, N7); amends D-434, D-460, D-453; amended 2026-10-02 (phase 9 review F1b); amended by D-515 |
-| D-486 | M | A SKU's entries narrow, order and page in memory | DECIDED 2026-10-01 · Owner, 2026-10-01 (#25, form A); phase 9 plan rev 4 (run 9.8c; N5); amends D-434 |
+| D-486 | M | A SKU's entries narrow, order and page in memory | DECIDED 2026-10-01 · Owner, 2026-10-01 (#25, form A); phase 9 plan rev 4 (run 9.8c; N5); amends D-434; amended by D-517 |
 | D-490 | M | Pricing's approval units answer the approvals inbox through pricing's own doors | DECIDED 2026-10-01 · Owner, 2026-10-01 (option A, "yes, A, agreed", then "write the plan"; Run 2 started before 9.5d-2); approvals inbox plan rev 2 (Run 2; design 1 and 3; plan review H1, H3, H4, M1, M5, L1); amends D-470; amended by D-496 |
 | D-491 | M | An entry op stores its policy reference as a named object | DECIDED 2026-10-02 · phase 9 review F1b |
 | D-496 | M | The inbox source judges `state` before a foreign empty page | DECIDED 2026-10-02 · phase 9 review; amends D-490 |
@@ -137,6 +137,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-514 | H | A usage rating policy is its rating rules and the entry stores the SKU revision | DECIDED 2026-10-02 · Owner, 2026-10-02; amends D-502, D-503, D-504, D-513 |
 | D-515 | M | A plan row's book carries its id and validity | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 67); amends D-485 |
 | D-516 | M | A named book carries its identity beside its id | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 54); amends D-460, D-408 |
+| D-517 | M | Entries can be read by id | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 68); amends D-486 |
 
 ## Entries
 
@@ -1377,7 +1378,9 @@ One SKU's entries are bounded by the tenant's books and its charge kinds, not by
 
 Breaking for a SKU in more than 500 entries: a caller that does not follow next_cursor sees the first 500. The default order is book_name, then id, which replaces D-434's order by book code, charge kind, period, model and id. The deploy notes name both.
 
-**Source:** Owner, 2026-10-01 (#25, form A); phase 9 plan rev 4 (run 9.8c; review N5). Amends D-434.
+**Source:** Owner, 2026-10-01 (#25, form A); phase 9 plan rev 4 (run 9.8c; review N5). Amends D-434. Amended by D-517.
+
+D-517 amends this entry: `$filter=id in (…)` of at most 200 ids replaces `sku_id`. The SKU read still refuses every other `$filter`.
 
 #### D-490 [M] Pricing's approval units answer the approvals inbox through pricing's own doors
 
@@ -2067,8 +2070,21 @@ The owner did not want the policy to copy the SKU's meter, unit and accrual vers
 A screen that shows a revision, or a price unit, had only the book's id. It could not name the book without a second index.
 
 - **Revision headers.** `PricingPlanRevisionHeader` keeps `book_id` and gains `book: { id, code, name, currency }`. Every header on a plan answer carries it, not only `current`. `GET /plans` still reads the books in the one grouped statement it already makes for `current`; the id list is every revision's book. A non-empty page stays five statements.
-- **Approval snapshots.** The snapshots the review reads — a pricing unit on the list, the card, a submit receipt, and the same units through the approvals inbox — gain `book: { id, code, name, currency }` beside each `book_id` whose value is an id. That is the prices snapshot's `book_id`, and `book_id` inside a plan revision's `before` and `after`. A `book_id` that is a diff object is left as it is. The stored snapshot and the fingerprint are unchanged, so a pending unit is not refreshed. The books are one grouped read for the page, and no read when no snapshot names a book.
+- **Approval snapshots.** The snapshots the review reads — a pricing unit on the list, the card, a submit receipt, and the same units through the approvals inbox — gain `book: { id, code, name, currency }` beside each `book_id` whose value is an id. That is the prices snapshot's `book_id`, and `book_id` inside a plan revision's `before` and `after`. A `book_id` that is a diff object is left as it is. The stored snapshot and the fingerprint are unchanged, so a pending unit is not refreshed. The books are one grouped read for the page, and no read when no snapshot names a book. A book the tenant no longer holds leaves `book` absent, and the unit still reads.
 - **The book list.** `GET /price-books?$filter=id in (…)` already answers 200. It is not rebuilt. `tests/book_reads.rs` `the_book_list_filters_by_id` and `tests/postgres_book_reads.rs` pin `eq`, `in`, a malformed uuid and the cursor hash, on both backends.
 - **The tests.** `tests/book_identity.rs` for the header, including a header that is not current, and for both snapshot kinds on the receipt, the card and the list.
 
 **Source:** Owner, 2026-10-02 (ask 54). Amends D-460 and D-408.
+
+#### D-517 [M] Entries can be read by id
+
+**Status:** DECIDED 2026-10-02.
+
+`GET /price-book-entries` required `sku_id` and refused `$filter`. A price unit's review could not name the unit's entries without reading each book whole.
+
+- **The alternative.** `$filter=id in (…)` lists those entries. At most 200 distinct ids. It replaces `sku_id`: any other key beside it, including `sku_id`, is 400 `QUERY_INVALID`. Without `sku_id` and without this filter, `sku_id` is still required.
+- **The shape.** The filter is one `id in` list, or `id eq` for one id. Another field, `or`, `ne`, and more than 200 ids are 400 `QUERY_INVALID`. An id the tenant does not hold, or the caller's entry scope does not admit, is left out. The answer is the SKU export's item, in id order, one page, no cursor.
+- **What stays.** Prices are shown only to a caller who also holds `price_book` read (D-434, D-440). Without that grant the entries are listed and `current_price` and `next_price` are null. The read is tenant scoped. The SKU read's keys, order, page and seven statements are unchanged.
+- **The test.** `tests/sku_reads.rs`: the named entries, an omitted id, another tenant, the money grant, and the refused shapes.
+
+**Source:** Owner, 2026-10-02 (ask 68). Amends D-486.

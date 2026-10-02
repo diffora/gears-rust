@@ -1345,3 +1345,93 @@ async fn sku_entries_of_five_and_fifty_books_read_the_same_statements() {
         "a narrowing that keeps nothing still reads the SKU's entries"
     );
 }
+
+fn filter_query(expr: &str) -> String {
+    format!("/price-book-entries?$filter={}", expr.replace(' ', "%20"))
+}
+
+/// D-517: `$filter=id in (…)` lists those entries instead of `sku_id`, at most 200 ids. Another
+/// field, `or`, more than 200 ids, and `sku_id` beside the filter are 400. Money and the tenant
+/// stay as they are.
+#[tokio::test]
+async fn price_book_entries_can_be_read_by_id() {
+    let (f, catalog) = setup().await;
+    let eur = book(&f, "b-eur").await;
+    let usd = usd_book(&f).await;
+    let sku = catalog.sku(SkuType::Usage);
+    let other = catalog.sku(SkuType::Usage);
+    let left = entry(&f, eur, sku, "usage", None).await;
+    let right = entry(&f, usd, other, "usage", None).await;
+    let hidden = entry(&f, eur, other, "usage", None).await;
+    let (s, page, _) = get(&f, &filter_query(&format!("id in ({left},{right})"))).await;
+    assert_eq!(s, 200, "{page}");
+    assert_eq!(
+        item_ids(&page),
+        {
+            let mut ids = vec![left.to_string(), right.to_string()];
+            ids.sort();
+            ids
+        },
+        "the named entries, in id order: {page}"
+    );
+    assert!(!item_ids(&page).contains(&hidden.to_string()));
+    let (s, foreign, _) = f
+        .call_as(
+            &stranger(),
+            "GET",
+            &filter_query(&format!("id in ({left})")),
+            json!({}),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(s, 200, "{foreign}");
+    assert_eq!(foreign["items"], json!([]), "another tenant sees nothing");
+    let (s, bare, _) = f
+        .call_as(
+            &holding(&f, "price_book_entry:read"),
+            "GET",
+            &filter_query(&format!("id in ({left})")),
+            json!({}),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(s, 200, "{bare}");
+    assert!(bare["items"][0]["current_price"].is_null(), "{bare}");
+    let missing = Uuid::new_v4();
+    let (s, partial, _) = get(&f, &filter_query(&format!("id in ({left},{missing})"))).await;
+    assert_eq!(s, 200, "{partial}");
+    assert_eq!(item_ids(&partial), vec![left.to_string()]);
+    let (s, one, _) = get(&f, &filter_query(&format!("id eq {left}"))).await;
+    assert_eq!(s, 200, "{one}");
+    assert_eq!(item_ids(&one), vec![left.to_string()]);
+    let too_many = (0..201)
+        .map(|_| Uuid::new_v4().to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    for (expr, said) in [
+        ("code eq 'EUR'", "code"),
+        (&format!("id in ({left}) or id in ({right})"), "or"),
+        (&format!("id in ({too_many})"), "200"),
+        ("id ne 00000000-0000-0000-0000-000000000001", "in"),
+    ] {
+        let (s, body, _) = get(&f, &filter_query(expr)).await;
+        assert_eq!(s, 400, "{expr}: {body}");
+        assert!(body.to_string().contains("QUERY_INVALID"), "{expr}: {body}");
+        assert!(
+            body.to_string().contains(said),
+            "{expr}: want {said} in {body}"
+        );
+    }
+    let (s, both, _) = get(
+        &f,
+        &format!(
+            "/price-book-entries?sku_id={sku}&{}",
+            filter_query(&format!("id in ({left})")).trim_start_matches("/price-book-entries?")
+        ),
+    )
+    .await;
+    assert_eq!(s, 400, "{both}");
+    assert!(both.to_string().contains("QUERY_INVALID"), "{both}");
+}

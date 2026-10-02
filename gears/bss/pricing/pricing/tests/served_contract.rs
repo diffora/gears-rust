@@ -375,8 +375,8 @@ async fn the_sku_entries_read_says_how_it_narrows_orders_and_pages() {
     assert_eq!(
         names,
         [
-            "$orderby", "book_id", "changing", "currency", "cursor", "limit", "q", "sku_id",
-            "status",
+            "$filter", "$orderby", "book_id", "changing", "currency", "cursor", "limit", "q",
+            "sku_id", "status",
         ]
     );
     let text = description(&api, "get", path);

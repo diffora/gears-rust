@@ -37,7 +37,7 @@ use toolkit_canonical_errors::CanonicalError;
 use toolkit_db::secure::{AccessScope, DBRunner};
 use toolkit_odata::{
     CursorV1, ODataOrderBy, OrderKey, PageInfo, SortDir,
-    filter::{FieldKind, FilterField},
+    filter::{FieldKind, FilterField, FilterNode, parse_odata_filter},
 };
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
@@ -665,9 +665,42 @@ pub(super) async fn for_sku(
     query: &SkuEntriesQuery,
     today: time::Date,
 ) -> Result<super::dto::PricingSkuEntryList, DoorError> {
+    let entries = price_book_entry_repo::for_skus(tx, scope, tenant, &[query.sku]).await?;
+    page_entries(present(tx, books, tenant, entries, today).await?, query)
+}
+/// `GET /price-book-entries?$filter=id in (…)` (D-517): the named entries, in id order, at most
+/// 200. An id the tenant does not hold, or the caller's entry scope does not admit, is left out.
+/// Money is the same second judgement as the SKU read (D-434, D-440).
+/// # Errors
+/// Storage failures; an entry whose book is gone is a corrupt row.
+pub(super) async fn for_ids(
+    tx: &impl DBRunner,
+    scope: &AccessScope,
+    books: Option<&AccessScope>,
+    tenant: Uuid,
+    ids: &[Uuid],
+    today: time::Date,
+) -> Result<super::dto::PricingSkuEntryList, DoorError> {
+    let entries = price_book_entry_repo::find_many(tx, scope, tenant, ids).await?;
+    Ok(super::dto::PricingSkuEntryList {
+        items: present(tx, books, tenant, entries, today).await?,
+        page_info: PageInfo {
+            next_cursor: None,
+            prev_cursor: None,
+            limit: ID_LIMIT,
+        },
+    })
+}
+const ID_LIMIT: u64 = 200;
+async fn present(
+    tx: &impl DBRunner,
+    books: Option<&AccessScope>,
+    tenant: Uuid,
+    entries: Vec<entity::price_book_entry::Model>,
+    today: time::Date,
+) -> Result<Vec<super::dto::PricingSkuEntryDto>, DoorError> {
     use crate::infra::storage::RepoError;
     use std::collections::{BTreeMap, BTreeSet};
-    let entries = price_book_entry_repo::for_skus(tx, scope, tenant, &[query.sku]).await?;
     let book_ids: Vec<Uuid> = entries
         .iter()
         .map(|e| e.book_id)
@@ -723,7 +756,7 @@ pub(super) async fn for_sku(
             next_price: prices.next,
         });
     }
-    page_entries(items, query)
+    Ok(items)
 }
 
 /// The fields `$orderby` may name (D-486). `id` is the tie-break, not a client key, so it is not
@@ -795,7 +828,15 @@ impl EntryOrder {
     }
 }
 
-/// A parsed `GET /price-book-entries` (D-486). Every refusal is already judged.
+/// A parsed `GET /price-book-entries` (D-486, D-517). Every refusal is already judged.
+#[derive(Clone)]
+pub(super) enum EntriesRead {
+    /// The SKU export (D-486). Boxed so the id-list variant stays small.
+    Sku(Box<SkuEntriesQuery>),
+    /// `id in (…)`, at most 200 distinct ids (D-517).
+    Ids(Vec<Uuid>),
+}
+/// A parsed `GET /price-book-entries?sku_id=` (D-486). Every refusal is already judged.
 #[derive(Clone)]
 pub(super) struct SkuEntriesQuery {
     sku: Uuid,
@@ -812,20 +853,21 @@ pub(super) struct SkuEntriesQuery {
 
 const PAGE_DEFAULT: u64 = 500;
 
-/// The query of `GET /price-book-entries` (D-486), judged before any read. `$orderby` beside a
-/// cursor is 400 `ORDER_WITH_CURSOR` before the cursor is decoded. A `$filter`, `$select`,
-/// `$count` or any other key this read does not take is 400 `QUERY_INVALID`.
+/// The query of `GET /price-book-entries` (D-486, D-517), judged before any read. `$orderby`
+/// beside a cursor is 400 `ORDER_WITH_CURSOR` before the cursor is decoded. `$filter` is accepted
+/// only as `id in (…)`, at most 200 ids, and only instead of `sku_id`. `$select`, `$count` or any
+/// other key this read does not take is 400 `QUERY_INVALID`.
 /// # Errors
 /// 400 `QUERY_INVALID`, `INVALID_ORDERBY_FIELD`, `ORDER_WITH_CURSOR`, `FILTER_MISMATCH` or
 /// `INVALID_CURSOR`.
-pub(super) fn sku_entries_query(uri: &Uri) -> Result<SkuEntriesQuery, CanonicalError> {
+pub(super) fn sku_entries_query(uri: &Uri) -> Result<EntriesRead, CanonicalError> {
     let Query(pairs) = Query::<Vec<(String, String)>>::try_from_uri(uri)
         .map_err(|_| support::invalid("query", "QUERY_INVALID"))?;
     let seen = support::plain_keys(
         &pairs,
         &[
             "sku_id", "book_id", "currency", "q", "status", "changing", "limit", "cursor",
-            "$orderby",
+            "$orderby", "$filter",
         ],
         |_| false,
         |key| format!("`{key}` is not a parameter of this read"),
@@ -839,6 +881,16 @@ pub(super) fn sku_entries_query(uri: &Uri) -> Result<SkuEntriesQuery, CanonicalE
             .find(|(key, _)| key == name)
             .map(|(_, raw)| raw.as_str())
     };
+    if seen.contains(&"$filter") {
+        if seen.len() != 1 {
+            return Err(support::invalid_because(
+                "$filter",
+                "QUERY_INVALID",
+                "`$filter` replaces `sku_id` and takes no other key",
+            ));
+        }
+        return Ok(EntriesRead::Ids(entry_ids(value("$filter").unwrap_or(""))?));
+    }
     let sku = value("sku_id").ok_or_else(|| {
         support::invalid_because("sku_id", "QUERY_INVALID", "`sku_id` is required")
     })?;
@@ -878,7 +930,7 @@ pub(super) fn sku_entries_query(uri: &Uri) -> Result<SkuEntriesQuery, CanonicalE
         }
         None => (requested_order(value("$orderby"))?, None),
     };
-    Ok(SkuEntriesQuery {
+    Ok(EntriesRead::Sku(Box::new(SkuEntriesQuery {
         sku,
         book_ids,
         currency,
@@ -889,7 +941,70 @@ pub(super) fn sku_entries_query(uri: &Uri) -> Result<SkuEntriesQuery, CanonicalE
         order,
         cursor,
         hash,
-    })
+    })))
+}
+
+/// `$filter=id in (…)`, 1 to 200 distinct ids (D-517). Any other shape is 400 `QUERY_INVALID`.
+fn entry_ids(raw: &str) -> Result<Vec<Uuid>, CanonicalError> {
+    let refuse = |detail: &str| support::invalid_because("$filter", "QUERY_INVALID", detail);
+    let node = parse_odata_filter::<EntryIdField>(raw).map_err(|error| {
+        refuse(&format!(
+            "the filter is `id in (...)`, at most {ID_LIMIT} ids: {error}"
+        ))
+    })?;
+    match node {
+        FilterNode::Binary {
+            op: toolkit_odata::filter::FilterOp::Eq,
+            value,
+            ..
+        } => {
+            let toolkit_odata::filter::ODataValue::Uuid(id) = value else {
+                return Err(refuse("the filter is `id eq` one id or `id in (...)`"));
+            };
+            Ok(vec![id])
+        }
+        FilterNode::InList { values, .. } => {
+            if values.len() > usize::try_from(ID_LIMIT).unwrap_or(usize::MAX) {
+                return Err(refuse(&format!(
+                    "`id in (...)` lists at most {ID_LIMIT} ids"
+                )));
+            }
+            let mut ids = BTreeSet::new();
+            for value in values {
+                let toolkit_odata::filter::ODataValue::Uuid(id) = value else {
+                    return Err(refuse("the filter is `id in (...)`, at most 200 ids"));
+                };
+                ids.insert(id);
+            }
+            if ids.is_empty() {
+                return Err(refuse("the filter is `id in (...)`, at most 200 ids"));
+            }
+            Ok(ids.into_iter().collect())
+        }
+        FilterNode::Composite {
+            op: toolkit_odata::filter::FilterOp::Or,
+            ..
+        } => Err(refuse("`or` is not accepted; the filter is `id in (...)`")),
+        _ => Err(refuse("the filter is `id in (...)`, at most 200 ids")),
+    }
+}
+
+/// The one field `$filter` may name (D-517).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum EntryIdField {
+    Id,
+}
+impl FilterField for EntryIdField {
+    const FIELDS: &'static [Self] = &[Self::Id];
+    fn name(&self) -> &'static str {
+        "id"
+    }
+    fn kind(&self) -> FieldKind {
+        FieldKind::Uuid
+    }
+    fn from_name(name: &str) -> Option<Self> {
+        (name == "id").then_some(Self::Id)
+    }
 }
 
 fn book_ids(raw: &str) -> Result<BTreeSet<Uuid>, CanonicalError> {
