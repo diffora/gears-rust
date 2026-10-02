@@ -6408,7 +6408,8 @@
       "InboxSourceStatusDto": {
         "enum": [
           "ok",
-          "forbidden"
+          "forbidden",
+          "unavailable"
         ],
         "type": "string"
       },
@@ -6455,6 +6456,15 @@
       "InboxUnitDto": {
         "properties": {
           "caller_can_approve": {
+            "description": "Whether the caller may approve this unit now. The owning gear judges the engine's rule\nand the caller's approve grant (AP-D-7).",
+            "type": "boolean"
+          },
+          "caller_can_reject": {
+            "description": "Whether the caller may reject this unit now. The owning gear judges the grant, that the\nunit is pending, and that the caller has not voted in this generation (AP-D-7).",
+            "type": "boolean"
+          },
+          "caller_can_withdraw": {
+            "description": "Whether the caller may withdraw this unit now. The owning gear judges the submitter, that\nthe unit is pending, and the submit grant (AP-D-7).",
             "type": "boolean"
           },
           "common_effective_date": {
@@ -6540,7 +6550,9 @@
           "submitted_at",
           "snapshot",
           "decisions",
-          "caller_can_approve"
+          "caller_can_approve",
+          "caller_can_reject",
+          "caller_can_withdraw"
         ],
         "type": "object"
       },
@@ -10743,7 +10755,15 @@
         "description": "An approval unit with its snapshot, decisions and, on the card, the live impact; and whether\nits reader may approve it (D-471).",
         "properties": {
           "caller_can_approve": {
-            "description": "Whether the caller may Approve this unit now (D-471): the approval engine's own rule\n(`bss_approval::approve_eligibility`, D-459) over the unit's stored items and its decisions,\nwith the caller as the voter. It is false for a decided unit, for its submitter and every\nauthor of its items (separation of duties) and for a caller who already voted in its current\ngeneration. It means Approve only: a reject judges no separation of duties, so the submitter\nand an item's author may reject a unit whose flag is false. The grant is not judged here:\nwithout `approval_unit` approve the vote door still answers 403.",
+            "description": "Whether the caller may Approve this unit now (D-471): the approval engine's own rule\n(`bss_approval::approve_eligibility`, D-459) over the unit's stored items and its decisions,\nwith the caller as the voter. It is false for a decided unit, for its submitter and every\nauthor of its items (separation of duties) and for a caller who already voted in its current\ngeneration. It means Approve only: a reject judges no separation of duties. It also\nrequires the caller's `approval_unit:approve` grant on this unit (D-497). Without that\ngrant the vote door is 403.",
+            "type": "boolean"
+          },
+          "caller_can_reject": {
+            "description": "Whether the caller may reject this unit now (D-497): the approve grant, the unit pending,\nand no vote by the caller in this generation.",
+            "type": "boolean"
+          },
+          "caller_can_withdraw": {
+            "description": "Whether the caller may withdraw this unit now (D-497): the caller submitted it, the unit\nis pending, and the caller holds the submit grant the withdraw door asks.",
             "type": "boolean"
           },
           "common_effective_date": {
@@ -10828,7 +10848,9 @@
           "submitted_at",
           "snapshot",
           "decisions",
-          "caller_can_approve"
+          "caller_can_approve",
+          "caller_can_reject",
+          "caller_can_withdraw"
         ],
         "type": "object"
       },
@@ -20216,7 +20238,15 @@
       "UnitDto": {
         "properties": {
           "caller_can_approve": {
-            "description": "Whether the caller may Approve this unit now (P-D-228): the approval engine's own rule\n(`bss_approval::approve_eligibility`, pricing D-459) over the unit's stored items and its\ndecisions, with the caller as the voter. It is false for a decided unit, for its submitter\nand every author of its items (the SKU's creator: separation of duties) and for a caller who\nalready voted in its current generation. It means Approve only: a reject judges no\nseparation of duties, so the submitter and the SKU's creator may reject a unit whose flag\nis false. The grant is not judged here: without products approve the vote door still\nanswers 403.",
+            "description": "Whether the caller may Approve this unit now (P-D-228): the approval engine's own rule\n(`bss_approval::approve_eligibility`, pricing D-459) over the unit's stored items and its\ndecisions, with the caller as the voter. It is false for a decided unit, for its submitter\nand every author of its items (the SKU's creator: separation of duties) and for a caller who\nalready voted in its current generation. It means Approve only: a reject judges no\nseparation of duties, so the submitter and the SKU's creator may reject a unit whose flag\nis false. The grant is not judged here: without products approve the vote door still\nanswers 403.\nWhether the caller may approve this unit now (P-D-228, P-D-255): the engine's approve\nrule and the caller's `approval_unit:approve` grant on this unit. Approve only. Without\nthe grant the vote door is still 403.",
+            "type": "boolean"
+          },
+          "caller_can_reject": {
+            "description": "Whether the caller may reject this unit now (P-D-255): the approve grant, the unit\npending, and no vote by the caller in this generation. That is what the engine allows.",
+            "type": "boolean"
+          },
+          "caller_can_withdraw": {
+            "description": "Whether the caller may withdraw this unit now (P-D-255): the caller submitted it, the\nunit is pending, and the caller holds the submit grant the withdraw door asks.",
             "type": "boolean"
           },
           "common_effective_date": {
@@ -20302,7 +20332,9 @@
           "submitted_at",
           "snapshot",
           "decisions",
-          "caller_can_approve"
+          "caller_can_approve",
+          "caller_can_reject",
+          "caller_can_withdraw"
         ],
         "type": "object"
       },
@@ -21407,6 +21439,7 @@
         "type": "object"
       },
       "VoteRequest": {
+        "additionalProperties": false,
         "properties": {
           "generation": {
             "format": "int32",
@@ -28264,7 +28297,7 @@
     },
     "/bss-approvals/v1/approval-units": {
       "get": {
-        "description": "One page of approval units from every configured BSS gear, merged by submitted_at and then the unit id, in the same direction. The default order is newest first. `limit` defaults to 50 and is clamped at 200. A cursor carries its order and its narrowing, so a continuation sends no `$orderby`. `impact=false` skips the live impact. `sources` names each configured gear as ok or forbidden; a forbidden gear's units are omitted. `total` on the counts counts the readable gears only. Refusals: 400 ORDER_WITH_CURSOR when `$orderby` is sent with a cursor; 400 FILTER_MISMATCH when the narrowing changed; 400 for a cursor or an order that does not read; 403 when every gear forbids the caller; 503 SOURCE_UNAVAILABLE naming a gear that did not answer.",
+        "description": "One page of approval units from every configured BSS gear, merged by submitted_at and then the unit id, in the same direction. The default order is newest first. `limit` defaults to 50 and is clamped at 200. A cursor carries its order and its narrowing, so a continuation sends no `$orderby`. `impact=false` skips the live impact.              `sources` names each configured gear as ok, forbidden or unavailable. A forbidden gear's units are omitted. A gear that does not answer is unavailable and omitted; the page still answers the gears that did. A cursor records a gear that was unavailable when it was cut, and a continuation keeps that gear omitted. `total` on the counts counts the readable gears only. Refusals: 400 ORDER_WITH_CURSOR when `$orderby` is sent with a cursor; 400 FILTER_MISMATCH when the narrowing changed; 400 for a cursor or an order that does not read; 403 when every gear forbids the caller; 503 SOURCE_UNAVAILABLE when every gear did not answer.",
         "operationId": "bss_approvals.list_approval_units",
         "parameters": [
           {
@@ -28322,7 +28355,7 @@
             }
           },
           {
-            "description": "submitted_at asc or submitted_at desc (the default when omitted)",
+            "description": "OData v4 orderby expression\n- submitted_at asc\n- submitted_at desc",
             "in": "query",
             "name": "$orderby",
             "required": false,
@@ -28410,12 +28443,18 @@
         "summary": "list_approval_units",
         "tags": [
           "Approval units"
-        ]
+        ],
+        "x-odata-orderby": {
+          "allowedFields": [
+            "submitted_at asc",
+            "submitted_at desc"
+          ]
+        }
       }
     },
     "/bss-approvals/v1/approval-units/counts": {
       "get": {
-        "description": "The list's narrowing, summed over the gears the caller can read: by_state, by_kind and total. Every state and every kind is named, 0 when none. total counts the readable gears only. `sources` names each gear as ok or forbidden. A forbidden gear is omitted from the sum. Refusals: 400 for a query that does not parse or a key the narrowing does not take; 403 when every gear forbids the caller; 503 SOURCE_UNAVAILABLE naming a gear that did not answer.",
+        "description": "The list's narrowing, summed over the gears the caller can read: by_state, by_kind and total. Every state and every kind is named, 0 when none. total counts the readable gears only. `sources` names each gear as ok, forbidden or unavailable. A forbidden or unavailable gear is omitted from the sum. Refusals: 400 for a query that does not parse or a key the narrowing does not take; 403 when every gear forbids the caller; 503 SOURCE_UNAVAILABLE when every gear did not answer.",
         "operationId": "bss_approvals.count_approval_units",
         "parameters": [
           {
@@ -28637,7 +28676,7 @@
     },
     "/bss-approvals/v1/approval-units/{id}/approve": {
       "post": {
-        "description": "Forwards the body and the Idempotency-Key to the gear that holds the unit, and returns that gear's answer unchanged: status, headers and body. The owner is resolved as the card resolves it. Declared door codes: 400 GENERATION_REQUIRED, GENERATION_MISMATCH, UNIT_STALE, NOTE_REQUIRED, NOTE_TOO_LONG, BODY_UNEXPECTED; 403 for the grant and SOD_VIOLATION; 404; 409 DUPLICATE_VOTE, UNIT_ALREADY_DECIDED, IDEMPOTENCY_CONFLICT; 503. These doors do not answer 412.",
+        "description": "Forwards the body and the Idempotency-Key to the gear that holds the unit, and returns that gear's answer unchanged: status, headers and body. The caller sends the Idempotency-Key; the inbox never mints one. The owner is resolved as the card resolves it. Declared door codes: 400 IDEMPOTENCY_KEY_REQUIRED, GENERATION_REQUIRED, GENERATION_MISMATCH, UNIT_STALE, NOTE_REQUIRED, NOTE_TOO_LONG, BODY_UNEXPECTED; 403 for the grant and SOD_VIOLATION; 404; 409 DUPLICATE_VOTE, UNIT_ALREADY_DECIDED, IDEMPOTENCY_CONFLICT; 503. These doors do not answer 412.",
         "operationId": "bss_approvals.approve_unit",
         "parameters": [
           {
@@ -28650,10 +28689,10 @@
             }
           },
           {
-            "description": "Passed through to the owning gear's vote door",
+            "description": "Required. Passed through to the owning gear's vote door; the inbox never mints one",
             "in": "header",
             "name": "Idempotency-Key",
-            "required": false,
+            "required": true,
             "schema": {
               "type": "string"
             }
@@ -28754,7 +28793,7 @@
     },
     "/bss-approvals/v1/approval-units/{id}/reject": {
       "post": {
-        "description": "Forwards the body and the Idempotency-Key to the gear that holds the unit, and returns that gear's answer unchanged: status, headers and body. The owner is resolved as the card resolves it. Declared door codes: 400 GENERATION_REQUIRED, GENERATION_MISMATCH, UNIT_STALE, NOTE_REQUIRED, NOTE_TOO_LONG, BODY_UNEXPECTED; 403 for the grant and SOD_VIOLATION; 404; 409 DUPLICATE_VOTE, UNIT_ALREADY_DECIDED, IDEMPOTENCY_CONFLICT; 503. These doors do not answer 412.",
+        "description": "Forwards the body and the Idempotency-Key to the gear that holds the unit, and returns that gear's answer unchanged: status, headers and body. The caller sends the Idempotency-Key; the inbox never mints one. The owner is resolved as the card resolves it. Declared door codes: 400 IDEMPOTENCY_KEY_REQUIRED, GENERATION_REQUIRED, GENERATION_MISMATCH, UNIT_STALE, NOTE_REQUIRED, NOTE_TOO_LONG, BODY_UNEXPECTED; 403 for the grant and SOD_VIOLATION; 404; 409 DUPLICATE_VOTE, UNIT_ALREADY_DECIDED, IDEMPOTENCY_CONFLICT; 503. These doors do not answer 412.",
         "operationId": "bss_approvals.reject_unit",
         "parameters": [
           {
@@ -28767,10 +28806,10 @@
             }
           },
           {
-            "description": "Passed through to the owning gear's vote door",
+            "description": "Required. Passed through to the owning gear's vote door; the inbox never mints one",
             "in": "header",
             "name": "Idempotency-Key",
-            "required": false,
+            "required": true,
             "schema": {
               "type": "string"
             }
@@ -28871,7 +28910,7 @@
     },
     "/bss-approvals/v1/approval-units/{id}/withdraw": {
       "post": {
-        "description": "Forwards the body and the Idempotency-Key to the gear that holds the unit, and returns that gear's answer unchanged: status, headers and body. The owner is resolved as the card resolves it. Declared door codes: 400 GENERATION_REQUIRED, GENERATION_MISMATCH, UNIT_STALE, NOTE_REQUIRED, NOTE_TOO_LONG, BODY_UNEXPECTED; 403 for the grant and SOD_VIOLATION; 404; 409 DUPLICATE_VOTE, UNIT_ALREADY_DECIDED, IDEMPOTENCY_CONFLICT; 503. These doors do not answer 412.",
+        "description": "Forwards the body and the Idempotency-Key to the gear that holds the unit, and returns that gear's answer unchanged: status, headers and body. The caller sends the Idempotency-Key; the inbox never mints one. The owner is resolved as the card resolves it. Declared door codes: 400 IDEMPOTENCY_KEY_REQUIRED, GENERATION_REQUIRED, GENERATION_MISMATCH, UNIT_STALE, NOTE_REQUIRED, NOTE_TOO_LONG, BODY_UNEXPECTED; 403 for the grant and SOD_VIOLATION; 404; 409 DUPLICATE_VOTE, UNIT_ALREADY_DECIDED, IDEMPOTENCY_CONFLICT; 503. These doors do not answer 412.",
         "operationId": "bss_approvals.withdraw_unit",
         "parameters": [
           {
@@ -28884,10 +28923,10 @@
             }
           },
           {
-            "description": "Passed through to the owning gear's vote door",
+            "description": "Required. Passed through to the owning gear's vote door; the inbox never mints one",
             "in": "header",
             "name": "Idempotency-Key",
-            "required": false,
+            "required": true,
             "schema": {
               "type": "string"
             }
@@ -44202,7 +44241,7 @@
     },
     "/bss-products/v1/approval-units": {
       "get": {
-        "description": "One page of the tenant's approval units in submission order (P-D-224), filtered by state, kind and SKU, each with its stored snapshot, the decisions of every generation and caller_can_approve, whether the caller may approve it now (the approval engine's rule, P-D-228). `$orderby=submitted_at desc` pages it newest first, and `submitted_at asc`, the default, oldest first; the unit id breaks a tie in the same direction (P-D-227). A client merging pages of several gears compares submitted_at as an instant, never as text, then the id as lower-case hex. `limit` (default 200, clamped at 500) and `cursor` from `page_info` page it; a cursor carries its order, so a continuation sends no `$orderby`. Refusals: 400 for an unknown state, a kind other than sku_publish, sku_change or sku_retire (on kind), or a query that does not parse; 400 FILTER_MISMATCH for a cursor replayed with another state, kind or SKU; 400 for a cursor that does not read; 400 ORDER_WITH_CURSOR for `$orderby` beside a cursor; 400 INVALID_ORDERBY_FIELD for any other order.",
+        "description": "One page of the tenant's approval units in submission order (P-D-224), filtered by state, kind and SKU, each with its stored snapshot, the decisions of every generation and caller_can_approve, whether the caller may approve it now (the approval engine's rule, P-D-228). `$orderby=submitted_at desc` pages it newest first, and `submitted_at asc`, the default, oldest first; the unit id breaks a tie in the same direction (P-D-227). A client merging pages of several gears compares submitted_at as an instant, never as text, then the id as lower-case hex. `limit` (default 200, clamped at 500) and `cursor` from `page_info` page it; a cursor carries its order, so a continuation sends no `$orderby`. Refusals: 400 for an unknown state, a kind other than sku_publish, sku_change or sku_retire (on kind), or a query that does not parse; 400 FILTER_MISMATCH for a cursor replayed with another state, kind or SKU; 400 for a cursor that does not read; 400 ORDER_WITH_CURSOR for `$orderby` beside a cursor; 400 INVALID_ORDERBY_FIELD for any other order; 400 for any other query key (P-D-254).",
         "operationId": "bss_products.list_approval_units",
         "parameters": [
           {
@@ -44594,7 +44633,7 @@
     },
     "/bss-products/v1/approval-units/{id}/approve": {
       "post": {
-        "description": "Approves the unit at the generation its reviewer saw. The note is at most 2000 characters (the approval engine's cap). The apply judges the SKU as it is then: a change that would move a derived pin, or leave a unit other than the pinned version's output unit, is refused (P-D-232). Refusals include 400 NOTE_TOO_LONG on a longer note, 400 GENERATION_MISMATCH, 400 UNIT_STALE after a refresh, 403 SOD_VIOLATION, 409 DUPLICATE_VOTE, and the apply's 409 DERIVED_PIN_IMMUTABLE, DERIVED_UNIT_MISMATCH or DERIVED_USAGE_TYPE_UNKNOWN.",
+        "description": "Approves the unit at the generation its reviewer saw. The body is generation and an optional note; a missing generation is 400 GENERATION_REQUIRED and any other key is 400 BODY_UNEXPECTED (P-D-253). The note is at most 2000 characters (the approval engine's cap). The apply judges the SKU as it is then: a change that would move a derived pin is refused, except a raw meter moving onto the identity wrapper of that meter in the same unit (P-D-251); every other pin move, or a unit other than the pinned version's output unit, is refused (P-D-232). Refusals include 400 NOTE_TOO_LONG on a longer note, 400 GENERATION_MISMATCH, 400 UNIT_STALE after a refresh, 403 SOD_VIOLATION, 409 DUPLICATE_VOTE, and the apply's 409 DERIVED_PIN_IMMUTABLE, DERIVED_UNIT_MISMATCH or DERIVED_USAGE_TYPE_UNKNOWN.",
         "operationId": "bss_products.approve_unit",
         "parameters": [
           {
@@ -44850,6 +44889,7 @@
     },
     "/bss-products/v1/approval-units/{id}/withdraw": {
       "post": {
+        "description": "The submitter withdraws a pending unit. The body is empty or {}. Any other body is 400 BODY_UNEXPECTED and the unit stays pending. The idempotency digest is the body sent, so an empty body and {} do not share a row (P-D-253).",
         "operationId": "bss_products.withdraw_unit",
         "parameters": [
           {
