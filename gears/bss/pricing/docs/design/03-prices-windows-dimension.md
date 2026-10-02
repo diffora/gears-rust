@@ -36,7 +36,9 @@ Dependencies: `cpt-cf-bss-pricing-feature-books-entries`.
 Source: PriceBook spec §2.2, §5–§8, §12–§13 and [DECISIONS](../DECISIONS.md) D-384–D-443.
 
 D-503 refuses CalendarHour with any `min_fee` at price create, submit and apply
-(`UNSUPPORTED_TERMS`), and when publishing a revision selecting such approved money. A successor,
+(`UNSUPPORTED_TERMS`), and when publishing a revision selecting such approved money. D-504's
+predicate also refuses a resource-scoped floor at those gates and at sale validation (amended
+2026-10-02). A successor,
 temporary pair and return keep their entry and therefore the same policy, window, scope and reset.
 Policy changes require a different entry and an explicitly selected revision. The existing dated
 SKU chain guard uses immutable Products history captured before the transaction.
