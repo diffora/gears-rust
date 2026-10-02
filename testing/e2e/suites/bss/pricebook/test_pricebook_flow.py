@@ -198,7 +198,7 @@ def test_a_priced_sku_publishes_its_price_and_blocks_retirement(api, variant):
     assert replay.json() == entry, "the same Idempotency-Key replays the receipt"
 
     # One draft price, published with quorum 0.
-    start = (datetime.date.today() + datetime.timedelta(days=30)).isoformat()
+    start = (datetime.datetime.now(datetime.timezone.utc).date() + datetime.timedelta(days=30)).isoformat()
     r = api.post(
         f"{PRICING}/price-book-entries/{entry['id']}/prices",
         json={**shape["price"], "eligibility": "all", "effective_from": start},
@@ -1748,7 +1748,7 @@ def test_a_draft_item_may_wait_for_its_entry(api):
     )
     assert r.status_code == 201, r.text
     entry = r.json()["id"]
-    start = datetime.date.today().isoformat()
+    start = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
     r = api.post(
         f"{PRICING}/price-book-entries/{entry}/prices",
         json={

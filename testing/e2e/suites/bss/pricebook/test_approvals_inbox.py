@@ -81,7 +81,7 @@ def _priced_entry(api, sku: str, run: str, n: int) -> tuple[str, str]:
     book = _book(api, "EUR", f"{run}-inbox{n}")
     r = _monthly_entry(api, book, sku, "flat")
     assert r.status_code == 201, r.text
-    start = (datetime.date.today() + datetime.timedelta(days=30)).isoformat()
+    start = (datetime.datetime.now(datetime.timezone.utc).date() + datetime.timedelta(days=30)).isoformat()
     return book, _draft_price(api, r.json()["id"], start)
 
 
