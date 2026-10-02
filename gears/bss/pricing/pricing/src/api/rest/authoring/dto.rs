@@ -1428,6 +1428,10 @@ impl From<bss_approval::Decision> for PricingDecisionDto {
 }
 /// An approval unit with its snapshot, decisions and, on the card, the live impact; and whether
 /// its reader may approve it (D-471).
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the wire carries three independent caller flags (D-497)"
+)]
 #[toolkit_macros::api_dto(response)]
 pub struct PricingApprovalUnitDto {
     pub id: Uuid,

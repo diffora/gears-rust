@@ -921,6 +921,10 @@ fn vote_violation(field: &str, code: &'static str, detail: &str) -> CanonicalErr
 
 /// @cpt-cf-bss-products-fr-concurrency-idempotency
 #[expect(
+    clippy::too_many_lines,
+    reason = "the vote door keeps grant, replay, resolve and receipt in one sequence"
+)]
+#[expect(
     clippy::too_many_arguments,
     reason = "the derived pin needs the same enforcer the door already judged"
 )]

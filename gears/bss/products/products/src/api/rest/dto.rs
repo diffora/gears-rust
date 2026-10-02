@@ -492,6 +492,10 @@ pub struct ProductsSkuSubmitRequest {
     #[serde(default)]
     pub note: Option<String>,
 }
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the wire carries three independent caller flags (P-D-255)"
+)]
 #[toolkit_macros::api_dto(response)]
 pub struct UnitDto {
     pub id: Uuid,

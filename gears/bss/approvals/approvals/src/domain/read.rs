@@ -330,6 +330,10 @@ enum Ask {
     Unavailable,
 }
 
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "each source answer is logged on the arm that classifies it"
+)]
 async fn ask_page(
     hub: &ClientHub,
     name: &str,
@@ -368,6 +372,10 @@ enum AskCount {
     Unavailable,
 }
 
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "each source answer is logged on the arm that classifies it"
+)]
 async fn ask_counts(
     hub: &ClientHub,
     name: &str,

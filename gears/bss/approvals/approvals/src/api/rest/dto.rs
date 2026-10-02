@@ -103,6 +103,10 @@ impl From<InboxDecision> for InboxDecisionDto {
     }
 }
 
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the wire carries three independent caller flags (AP-D-7)"
+)]
 #[toolkit_macros::api_dto(response)]
 pub struct InboxUnitDto {
     pub id: Uuid,
