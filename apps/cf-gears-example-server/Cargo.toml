@@ -57,7 +57,9 @@ clickhouse-usage-collector = ["dep:clickhouse_usage_collector_plugin"]
 # Content-based file type detection in file-parser (see that crate's `magika`
 # feature doc comment for what it pulls in).
 magika = ["file_parser/magika"]
-bss-pricing = ["dep:bss_pricing"]
+bss-products = ["dep:bss_products"]
+bss-pricing = ["dep:bss_pricing", "bss-products"]
+bss-approvals = ["dep:bss_approvals"]
 
 [dependencies]
 mimalloc = { workspace = true }
@@ -131,6 +133,8 @@ clickhouse_usage_collector_plugin = { package = "cf-gears-clickhouse-usage-colle
 
 # Optional BSS Plan & Price Modeling gear
 bss_pricing = { package = "cf-gears-bss-pricing", path = "../../gears/bss/pricing/pricing", optional = true }
+bss_products = { package = "cf-gears-bss-products", path = "../../gears/bss/products/products", optional = true }
+bss_approvals = { package = "cf-gears-bss-approvals", path = "../../gears/bss/approvals/approvals", optional = true }
 
 # Optional example module
 users-info = { path = "../../examples/toolkit/users-info/users-info", optional = true }
@@ -138,5 +142,9 @@ calculator-gateway = { path = "../../examples/oop-gears/calculator-gateway/calcu
 calculator = { path = "../../examples/oop-gears/calculator/calculator", optional = true }
 
 [dev-dependencies]
+uuid = { workspace = true }
+tokio-util = { workspace = true }
 tempfile = { workspace = true }
 serde-saphyr = { workspace = true }
+# `tests/schema_guard_boot.rs` seeds a legacy table into an isolated data root.
+sea-orm = { workspace = true, features = ["sqlx-sqlite"] }
