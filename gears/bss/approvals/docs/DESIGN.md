@@ -110,7 +110,7 @@ Each configured source is another gear's `ApprovalSourceV1`, registered under `C
 3. A 403 source is omitted and named `forbidden`. A 503 or a missing registration is named `unavailable` and omitted (AP-D-5). The read is 503 `SOURCE_UNAVAILABLE` only when every configured source is down, and 403 only when every configured source is forbidden. Any other door error is returned as that error. A cursor records the sources that were down when it was cut, and a continuation does not ask them.
 4. The remaining pages are merged by `(submitted_at, id)`. Each source's key becomes the last unit taken from it, or stays. The next cursor is present when any source had more, or returned a unit that was not taken.
 
-The card asks every source. One `Some` wins. Two `Some`s are 500 naming both. Otherwise a 503 or a missing source is 503. Otherwise a 403 is 403 whose body names no gear. Otherwise the card is 404. A vote uses that same resolution and then calls `vote` on the owner.
+The card asks every source. One `Some` wins. Two `Some`s are 500 naming both. Otherwise a 503 or a missing source is 503. Otherwise a 403 is 403 whose body names no gear. Otherwise the card is 404. A vote uses that same resolution and then calls `vote` on the owner. The caller sends `Idempotency-Key`; the inbox refuses the vote without it and never mints a key (AP-D-6).
 
 ### 3.7 Database schemas & tables
 

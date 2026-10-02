@@ -11,6 +11,7 @@
   - [AP-D-3 Grants and owner resolution](#ap-d-3-grants-and-owner-resolution)
   - [AP-D-4 Votes and idempotency](#ap-d-4-votes-and-idempotency)
   - [AP-D-5 A down source is omitted and the walk does not resume it](#ap-d-5-a-down-source-is-omitted-and-the-walk-does-not-resume-it)
+  - [AP-D-6 The inbox requires the caller's Idempotency-Key](#ap-d-6-the-inbox-requires-the-callers-idempotency-key)
 
 <!-- /toc -->
 
@@ -21,8 +22,9 @@
 | AP-D-1 | H | The inbox is a facade and has no authorization resource | DECIDED 2026-10-01 |
 | AP-D-2 | H | The merge, the cursor, the narrowing and `book_id` | DECIDED 2026-10-01 · amended by Run 2 (pricing D-490, products P-D-250); amended by AP-D-5 |
 | AP-D-3 | H | Grants and owner resolution | DECIDED 2026-10-01 · amended by AP-D-5 |
-| AP-D-4 | H | Votes and idempotency | DECIDED 2026-10-01 · amended by Run 2 (pricing D-490, products P-D-250) |
+| AP-D-4 | H | Votes and idempotency | DECIDED 2026-10-01 · amended by Run 2 (pricing D-490, products P-D-250); amended by AP-D-6 |
 | AP-D-5 | H | A down source is omitted and the walk does not resume it | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 60); amends AP-D-2, AP-D-3 |
+| AP-D-6 | H | The inbox requires the caller's Idempotency-Key | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 61); amends AP-D-4 |
 
 ## Entries
 
@@ -64,6 +66,8 @@ Run 2 amends this entry (pricing D-490, products P-D-250). Each source sends the
 
 Declared codes: 400 `GENERATION_REQUIRED`, `GENERATION_MISMATCH`, `UNIT_STALE`, `NOTE_REQUIRED`, `NOTE_TOO_LONG`, `BODY_UNEXPECTED`; 403 for the grant and `SOD_VIOLATION`; 404; 409 `DUPLICATE_VOTE`, `UNIT_ALREADY_DECIDED`, `IDEMPOTENCY_CONFLICT`; 503. These doors do not answer 412. `InboxUnit` has no version.
 
+**Amended by AP-D-6 (2026-10-02).** The inbox no longer forwards a vote that arrived without `Idempotency-Key`.
+
 ### AP-D-5 A down source is omitted and the walk does not resume it
 
 **Status:** DECIDED 2026-10-02.
@@ -82,3 +86,13 @@ The narrowing hash is the canonical JSON of `book_id`, `kind`, `ref_id` and `sta
 The sources of one list or one counts are asked concurrently. `sources` stays in configuration order.
 
 **Source:** Owner, 2026-10-02 (ask 60, "все ок"). Amends AP-D-2 and AP-D-3.
+
+### AP-D-6 The inbox requires the caller's Idempotency-Key
+
+**Status:** DECIDED 2026-10-02.
+
+Approve, reject and withdraw on the inbox require `Idempotency-Key`. The header is required in the served spec. A missing or empty key is 400 `IDEMPOTENCY_KEY_REQUIRED` on the field `Idempotency-Key`. A value that is not text is 400 `IDEMPOTENCY_KEY_INVALID` on that same field. The inbox forwards the key it received and never mints one. The products and pricing vote doors are unchanged: a direct call still follows that door's own rule.
+
+A query the inbox cannot parse is 400 `INVALID_QUERY_PARAMS` on the field `query`, carrying the parser's text. It is not an `INVALID_FILTER`.
+
+**Source:** Owner, 2026-10-02 (ask 61, "все ок"). Amends AP-D-4.

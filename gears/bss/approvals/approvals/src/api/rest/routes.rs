@@ -198,8 +198,10 @@ where
         .summary(summary)
         .description(
             "Forwards the body and the Idempotency-Key to the gear that holds the unit, and \
-             returns that gear's answer unchanged: status, headers and body. The owner is resolved \
-             as the card resolves it. Declared door codes: 400 GENERATION_REQUIRED, \
+             returns that gear's answer unchanged: status, headers and body. The caller sends \
+             the Idempotency-Key; the inbox never mints one. The owner is resolved \
+             as the card resolves it. Declared door codes: 400 IDEMPOTENCY_KEY_REQUIRED, \
+             GENERATION_REQUIRED, \
              GENERATION_MISMATCH, UNIT_STALE, NOTE_REQUIRED, NOTE_TOO_LONG, BODY_UNEXPECTED; 403 \
              for the grant and SOD_VIOLATION; 404; 409 DUPLICATE_VOTE, UNIT_ALREADY_DECIDED, \
              IDEMPOTENCY_CONFLICT; 503. These doors do not answer 412.",
@@ -210,7 +212,8 @@ where
         .path_param("id", "Unit id")
         .param(
             ParamSpec::header("Idempotency-Key")
-                .description("Passed through to the owning gear's vote door"),
+                .required(true)
+                .description("Required. Passed through to the owning gear's vote door; the inbox never mints one"),
         )
         .handler(handler)
         .json_response(

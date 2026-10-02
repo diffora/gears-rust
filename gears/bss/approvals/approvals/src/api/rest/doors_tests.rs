@@ -717,6 +717,28 @@ async fn the_card_outcomes_and_votes_pass_through_byte_for_byte() {
 }
 
 #[tokio::test]
+async fn a_vote_without_an_idempotency_key_is_refused() {
+    let unit = test_support::unit("pricing", 1, 7);
+    let pricing = Arc::new(Fake::serving(vec![unit.clone()]));
+    let app = inbox(&["pricing"], &[("pricing", pricing.clone())]);
+    let (status, _, body) = bytes(
+        call(
+            &app,
+            "POST",
+            &format!("/bss-approvals/v1/approval-units/{}/approve", unit.id),
+            br#"{"generation":1}"#,
+            true,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let text = String::from_utf8(body).unwrap();
+    assert!(text.contains("Idempotency-Key"), "{text}");
+    assert!(pricing.seen.lock().unwrap().is_none());
+}
+
+#[tokio::test]
 async fn the_vote_spec_does_not_declare_412() {
     let registry = OpenApiRegistryImpl::new();
     let _router = router(
@@ -736,7 +758,94 @@ async fn the_vote_spec_does_not_declare_412() {
         assert!(responses.get("412").is_none(), "{responses}");
         assert!(responses.get("409").is_some(), "{responses}");
         assert!(responses.get("400").is_some(), "{responses}");
+        let parameters = json["paths"]
+            [&format!("/bss-approvals/v1/approval-units/{{id}}/{action}")]["post"]["parameters"]
+            .as_array()
+            .unwrap();
+        let key = parameters
+            .iter()
+            .find(|param| param["name"] == "Idempotency-Key")
+            .expect("the key");
+        assert_eq!(key["required"], true, "{key}");
     }
+}
+
+#[tokio::test]
+async fn a_source_vote_that_does_not_read_is_500_and_a_bad_query_names_query() {
+    let unit = test_support::unit("pricing", 1, 7);
+    let pricing = Arc::new(Fake::serving(vec![unit.clone()]));
+    let app = inbox(&["pricing"], &[("pricing", pricing.clone())]);
+    let id = unit.id;
+    for (status, headers) in [
+        (
+            1000_u16,
+            vec![("content-type".to_owned(), "text/plain".to_owned())],
+        ),
+        (200, vec![("not a header".to_owned(), "x".to_owned())]),
+    ] {
+        *pricing.vote.lock().unwrap() = VoteResponse {
+            status,
+            headers,
+            body: b"{}".to_vec(),
+        };
+        let (got, _, _) = bytes(
+            call_with(
+                &app,
+                "POST",
+                &format!("/bss-approvals/v1/approval-units/{id}/approve"),
+                br#"{"generation":1}"#,
+                true,
+                Some("key-1"),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(got, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+    *pricing.vote.lock().unwrap() = VoteResponse {
+        status: 200,
+        headers: vec![
+            ("x-gear".to_owned(), "a".to_owned()),
+            ("x-gear".to_owned(), "b".to_owned()),
+        ],
+        body: b"{}".to_vec(),
+    };
+    let (got, headers, _) = bytes(
+        call_with(
+            &app,
+            "POST",
+            &format!("/bss-approvals/v1/approval-units/{id}/reject"),
+            br#"{"generation":1}"#,
+            true,
+            Some("key-2"),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(got, StatusCode::OK);
+    let values: Vec<_> = headers
+        .get_all("x-gear")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .collect();
+    assert_eq!(values, ["a", "b"]);
+    assert!(headers.get("content-type").is_none());
+
+    let (status, _, body) = bytes(
+        call(
+            &app,
+            "GET",
+            "/bss-approvals/v1/approval-units?limit=nope",
+            b"",
+            true,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let text = String::from_utf8(body).unwrap();
+    assert!(text.contains("\"query\""), "{text}");
+    assert!(!text.contains("INVALID_FILTER"), "{text}");
 }
 
 #[tokio::test]

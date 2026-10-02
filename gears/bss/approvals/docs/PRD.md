@@ -92,7 +92,7 @@ The inbox MUST serve one paged list, one count and one card of approval units, a
 
 The list orders by `submitted_at` as an instant and then by the unit id, in the same direction, newest first when the caller omits the order. A continuation uses the cursor's order. A gear the caller may not read is omitted and named forbidden. A gear that does not answer is omitted and named unavailable; the list and the counts still answer the gears that did, and fail only when every gear is down or every gear forbids the caller (AP-D-5). A continuation does not resume a gear the cursor recorded as down. The count includes only the readable sources.
 
-The card asks every configured source. One hit wins. Two hits are an error naming both. A vote is that gear's own answer: status, headers and body, unchanged.
+The card asks every configured source. One hit wins. Two hits are an error naming both. A vote is that gear's own answer: status, headers and body, unchanged. The caller sends `Idempotency-Key` on approve, reject and withdraw; the inbox never mints one (AP-D-6).
 
 ## 6. Non-Functional Requirements
 

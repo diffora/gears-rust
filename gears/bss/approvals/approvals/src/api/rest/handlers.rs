@@ -11,7 +11,7 @@ use axum::response::{IntoResponse, Response};
 use bss_approvals_sdk::{VoteAction, VoteRequest};
 use serde::Deserialize;
 use toolkit_canonical_errors::{CanonicalError, ForeignPassthrough};
-use toolkit_odata::Error as ODataError;
+use toolkit_odata::errors::OdataError;
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
@@ -176,19 +176,34 @@ async fn vote(
 }
 
 fn vote_request(headers: &HeaderMap, body: Bytes) -> Result<VoteRequest, CanonicalError> {
-    let idempotency_key = match headers.get(IDEMPOTENCY_KEY) {
-        None => None,
-        Some(value) => Some(
-            value
-                .to_str()
-                .map_err(|_| ODataError::InvalidFilter("Idempotency-Key is not valid text".into()))?
-                .to_owned(),
-        ),
+    let Some(value) = headers.get(IDEMPOTENCY_KEY) else {
+        return Err(key_invalid(
+            "Idempotency-Key is required",
+            "IDEMPOTENCY_KEY_REQUIRED",
+        ));
     };
+    let key = value.to_str().map_err(|_| {
+        key_invalid(
+            "Idempotency-Key is not valid text",
+            "IDEMPOTENCY_KEY_INVALID",
+        )
+    })?;
+    if key.is_empty() {
+        return Err(key_invalid(
+            "Idempotency-Key is required",
+            "IDEMPOTENCY_KEY_REQUIRED",
+        ));
+    }
     Ok(VoteRequest {
         body: Vec::from(body),
-        idempotency_key,
+        idempotency_key: Some(key.to_owned()),
     })
+}
+
+fn key_invalid(description: &str, reason: &str) -> CanonicalError {
+    OdataError::invalid_argument()
+        .with_field_violation(IDEMPOTENCY_KEY, description, reason)
+        .create()
 }
 
 /// The owning door's answer as it left that door: status, headers and body. It is marked as a
@@ -202,7 +217,8 @@ fn pass_through(answered: bss_approvals_sdk::VoteResponse) -> Response {
         .create()
         .into_response();
     };
-    let mut response = (status, answered.body).into_response();
+    let mut response = Response::new(axum::body::Body::from(answered.body));
+    *response.status_mut() = status;
     for (name, value) in answered.headers {
         let Ok(name) = HeaderName::try_from(name) else {
             return CanonicalError::internal(
@@ -218,7 +234,7 @@ fn pass_through(answered: bss_approvals_sdk::VoteResponse) -> Response {
             .create()
             .into_response();
         };
-        response.headers_mut().insert(name, value);
+        response.headers_mut().append(name, value);
     }
     response.extensions_mut().insert(ForeignPassthrough);
     response
@@ -236,5 +252,9 @@ fn caller(ctx: Option<Extension<SecurityContext>>) -> Result<SecurityContext, Ca
 }
 
 fn bad_query<T>(query: Result<Query<T>, QueryRejection>) -> Result<Query<T>, CanonicalError> {
-    query.map_err(|_| ODataError::InvalidFilter("the query did not parse".into()).into())
+    query.map_err(|e| {
+        OdataError::invalid_argument()
+            .with_field_violation("query", e.body_text(), "INVALID_QUERY_PARAMS")
+            .create()
+    })
 }
