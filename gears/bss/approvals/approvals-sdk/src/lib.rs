@@ -220,9 +220,9 @@ impl StateCounts {
 }
 
 /// Units of each kind the inbox's closed set names. A gear's counts door names only its own kinds;
-/// read from it, the others are `0`.
+/// read from it, the others are `0`. A kind field outside this set does not decode.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct KindCounts {
     /// Pricing: a price submission.
     pub prices: u64,
@@ -421,5 +421,22 @@ impl InboxUnit {
         fields.entry("subject_live").or_insert(live);
         fields.entry("impact").or_insert(serde_json::Value::Null);
         serde_json::from_value(unit)
+    }
+}
+
+#[cfg(test)]
+mod kind_counts_tests {
+    use super::KindCounts;
+
+    #[test]
+    fn a_missing_kind_is_zero_and_an_unknown_kind_does_not_decode() {
+        let counts: KindCounts = serde_json::from_str(r#"{"sku_retire":4}"#).expect("known kind");
+        assert_eq!(counts.sku_retire, 4);
+        assert_eq!(counts.prices, 0);
+        assert_eq!(counts.plan_revision, 0);
+        assert!(
+            serde_json::from_str::<KindCounts>(r#"{"prices":1,"other":2}"#).is_err(),
+            "an unknown kind must not decode"
+        );
     }
 }

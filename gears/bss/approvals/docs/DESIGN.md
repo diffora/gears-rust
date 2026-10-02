@@ -99,7 +99,7 @@ The gear depends on the SDK, ClientHub, the canonical error types and the OData 
 
 ### 3.5 External Dependencies
 
-Each configured source is another gear's `ApprovalSourceV1`, registered under `ClientScope` equal to that gear's name. Pricing registers `PricingApprovalSource` as `pricing` (pricing D-490) and products registers `ProductsApprovalSource` as `products` (products P-D-250). Each calls its gear's own doors: the list's read with a `CursorV1` built from the source's key, the counts on the plain connection, the card door, and the vote door through the gear's router. This gear's own tests register fake sources; products' tests run the facade over both real gears, on `SQLite` and on Postgres.
+Each configured source is another gear's `ApprovalSourceV1`, registered under `ClientScope` equal to that gear's name. A source name is non-blank and unique; a duplicate or a blank name fails init. A source counts body names only the closed kind set: an absent kind is 0, and a kind field outside the set does not decode. Pricing registers `PricingApprovalSource` as `pricing` (pricing D-490) and products registers `ProductsApprovalSource` as `products` (products P-D-250). Each calls its gear's own doors: the list's read with a `CursorV1` built from the source's key, the counts on the plain connection, the card door, and the vote door through the gear's router. This gear's own tests register fake sources; products' tests run the facade over both real gears, on `SQLite` and on Postgres.
 
 ### 3.6 Interactions & Sequences
 

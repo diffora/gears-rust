@@ -22,7 +22,7 @@
 | ID | Priority | Decision | Status / source |
 | --- | --- | --- | --- |
 | AP-D-1 | H | The inbox is a facade and has no authorization resource | DECIDED 2026-10-01 |
-| AP-D-2 | H | The merge, the cursor, the narrowing and `book_id` | DECIDED 2026-10-01 · amended by Run 2 (pricing D-490, products P-D-250); amended by AP-D-5, AP-D-8 |
+| AP-D-2 | H | The merge, the cursor, the narrowing and `book_id` | DECIDED 2026-10-01 · amended by Run 2 (pricing D-490, products P-D-250); amended by AP-D-5, AP-D-8; amended 2026-10-02 (source names, kind counts) |
 | AP-D-3 | H | Grants and owner resolution | DECIDED 2026-10-01 · amended by AP-D-5 |
 | AP-D-4 | H | Votes and idempotency | DECIDED 2026-10-01 · amended by Run 2 (pricing D-490, products P-D-250); amended by AP-D-6 |
 | AP-D-5 | H | A down source is omitted and the walk does not resume it | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 60); amends AP-D-2, AP-D-3 |
@@ -53,6 +53,8 @@ A kind outside a gear's closed set is an empty page and zero counts, computed in
 A source added to the configuration later starts from an empty key. A removed source's key is ignored.
 
 Run 2 amends this entry (pricing D-490, products P-D-250). Each real source builds the pager's own `CursorV1` from its key and reads through its gear's list read, so the keyset is the pager's column compare. A kind that no gear records, such as `bogus`, is therefore an empty page and zero counts from every source: the inbox answers 200 with no unit and every readable source named `ok`, never 400.
+
+**Amended 2026-10-02.** A configured source name is non-blank and unique. A duplicate or a blank name fails the boot, so a merge cannot see one source twice and a card cannot treat one gear as two owners. A source counts body names only the closed kind set. A kind field that is absent is 0. A kind field outside the set does not decode, so a renamed kind fails the read instead of being counted as zero.
 
 ### AP-D-3 Grants and owner resolution
 

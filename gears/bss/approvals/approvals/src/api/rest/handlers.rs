@@ -103,20 +103,13 @@ pub(super) async fn count_units(
 ) -> Result<Json<InboxCountsDto>, CanonicalError> {
     let ctx = caller(ctx)?;
     let Query(query) = bad_query(query)?;
-    let params = ListParams {
+    let narrowing = bss_approvals_sdk::SourceNarrowing {
         state: query.state,
         kind: query.kind,
         ref_id: query.ref_id,
         book_id: query.book_id,
-        ..ListParams::default()
     };
-    let counted = read::count_all(
-        &state.hub,
-        &state.sources,
-        &ctx,
-        &query::narrowing_of(&params),
-    )
-    .await?;
+    let counted = read::count_all(&state.hub, &state.sources, &ctx, &narrowing).await?;
     Ok(Json(InboxCountsDto::from_counts(
         counted.counts,
         counted.sources,
