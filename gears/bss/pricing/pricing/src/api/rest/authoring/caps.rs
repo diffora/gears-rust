@@ -210,17 +210,17 @@ impl Capped for PricingDimensionKeyPatch {
 mod tests {
     use super::*;
     use crate::infra::usage_policy_wire::{
-        AggregationScope, Fold, MeterRef, PartialWindow, QuantitySemantics, RatingWindow, Reset,
-        UsageRatingPolicyInput,
+        AggregationScope, Fold, MeterRef, PartialWindow, QuantitySemanticsRequest, RatingWindow,
+        Reset, UsageRatingPolicyRequest,
     };
     use uuid::Uuid;
 
-    fn policy(usage_type_id: &str) -> UsageRatingPolicyInput {
-        UsageRatingPolicyInput {
+    fn policy(usage_type_id: &str) -> UsageRatingPolicyRequest {
+        UsageRatingPolicyRequest {
             rating_window: RatingWindow::BillingCycle,
             aggregation_scope: AggregationScope::SubscriptionLine,
             reset: Reset::RatingWindowStart,
-            quantity_semantics: QuantitySemantics {
+            quantity_semantics: QuantitySemanticsRequest {
                 meter: MeterRef {
                     usage_type_id: usage_type_id.to_owned(),
                     version: "1".into(),

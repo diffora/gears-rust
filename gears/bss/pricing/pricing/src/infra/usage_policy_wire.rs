@@ -1,6 +1,6 @@
 //! Closed policy wire/storage adapters; SDK value types remain infrastructure-free.
 use bss_pricing_sdk::terms as sdk;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -123,7 +123,9 @@ pub struct QuantitySemantics {
     pub fold: Fold,
     pub accrual_policy_version: String,
 }
-/// Author input contains no server-assigned policy identity.
+/// Complete policy content. Server-assigned identity is not part of this object.
+/// Author input uses [`UsageRatingPolicyRequest`], which fills the single-valued fields (D-513).
+/// Stored rows and every response keep `fold`, `reset` and `partial_window` required.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct UsageRatingPolicyInput {
@@ -181,6 +183,85 @@ impl From<&sdk::UsageRatingPolicyInput> for UsageRatingPolicyInput {
             },
             partial_window: p.partial_window.into(),
         }
+    }
+}
+fn default_fold() -> Fold {
+    Fold::Sum
+}
+fn default_reset() -> Reset {
+    Reset::RatingWindowStart
+}
+fn default_partial_window() -> PartialWindow {
+    PartialWindow::ActualQuantityFullThresholds
+}
+/// `null` is the same as a missing field: the author named no choice (D-513).
+fn fold_field<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Fold, D::Error> {
+    Ok(Option::<Fold>::deserialize(deserializer)?.unwrap_or(Fold::Sum))
+}
+fn reset_field<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Reset, D::Error> {
+    Ok(Option::<Reset>::deserialize(deserializer)?.unwrap_or(Reset::RatingWindowStart))
+}
+fn partial_window_field<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<PartialWindow, D::Error> {
+    Ok(Option::<PartialWindow>::deserialize(deserializer)?
+        .unwrap_or(PartialWindow::ActualQuantityFullThresholds))
+}
+/// Quantity semantics on author input. `fold` defaults to `SUM` when absent or null (D-513).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct QuantitySemanticsRequest {
+    pub meter: MeterRef,
+    pub unit: String,
+    /// Absent or null defaults to `SUM` (D-513).
+    #[serde(default = "default_fold", deserialize_with = "fold_field")]
+    #[schema(default = "SUM")]
+    pub fold: Fold,
+    pub accrual_policy_version: String,
+}
+/// Author input for a usage policy (D-513).
+///
+/// `fold`, `reset` and `partial_window` default when absent or null. The parse fills them
+/// before validation, the content digest, storage and the meter check. Stored and served
+/// policies use [`UsageRatingPolicyInput`], which keeps those fields required.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UsageRatingPolicyRequest {
+    pub rating_window: RatingWindow,
+    pub aggregation_scope: AggregationScope,
+    /// Absent or null defaults to `rating_window_start` (D-513).
+    #[serde(default = "default_reset", deserialize_with = "reset_field")]
+    #[schema(default = "rating_window_start")]
+    pub reset: Reset,
+    pub quantity_semantics: QuantitySemanticsRequest,
+    /// Absent or null defaults to `actual_quantity_full_thresholds` (D-513).
+    #[serde(
+        default = "default_partial_window",
+        deserialize_with = "partial_window_field"
+    )]
+    #[schema(default = "actual_quantity_full_thresholds")]
+    pub partial_window: PartialWindow,
+}
+impl From<&UsageRatingPolicyRequest> for UsageRatingPolicyInput {
+    fn from(p: &UsageRatingPolicyRequest) -> Self {
+        let q = &p.quantity_semantics;
+        Self {
+            rating_window: p.rating_window.clone(),
+            aggregation_scope: p.aggregation_scope,
+            reset: p.reset,
+            quantity_semantics: QuantitySemantics {
+                meter: q.meter.clone(),
+                unit: q.unit.clone(),
+                fold: q.fold,
+                accrual_policy_version: q.accrual_policy_version.clone(),
+            },
+            partial_window: p.partial_window,
+        }
+    }
+}
+impl From<UsageRatingPolicyRequest> for UsageRatingPolicyInput {
+    fn from(p: UsageRatingPolicyRequest) -> Self {
+        Self::from(&p)
     }
 }
 /// Materialized immutable policy. Version is an exact decimal string on the wire.

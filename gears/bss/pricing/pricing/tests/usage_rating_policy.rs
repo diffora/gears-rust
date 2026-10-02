@@ -18,6 +18,18 @@ fn policy() -> Value {
     })
 }
 
+/// The same policy with the three single-valued fields left out (D-513).
+fn policy_without_single_valued_fields() -> Value {
+    let mut body = policy();
+    body.as_object_mut().unwrap().remove("reset");
+    body.as_object_mut().unwrap().remove("partial_window");
+    body["quantity_semantics"]
+        .as_object_mut()
+        .unwrap()
+        .remove("fold");
+    body
+}
+
 #[tokio::test]
 async fn policy_is_immutable_deduplicated_and_part_of_the_entry_key() {
     authoring_case(Fixture::new(Arc::new(Script::default())).await).await;
@@ -978,6 +990,180 @@ async fn entry_creation_rejects_a_policy_whose_unit_disagrees_with_the_sku() {
         .await;
     assert_eq!(answer.0, 400, "{answer:?}");
     assert!(answer.1.to_string().contains("METER_POLICY_MISMATCH"));
+}
+
+#[tokio::test]
+async fn omitted_single_valued_fields_default_on_create_and_match_an_explicit_policy() {
+    let f = Fixture::new(Arc::new(Script::default())).await;
+    let (book, _) = f.book().await;
+    let path = format!("/price-books/{}/entries", book["id"].as_str().unwrap());
+    let omitted = f
+        .call(
+            "POST",
+            &path,
+            json!({"sku_id":Uuid::new_v4(),"model":"per_unit","usage_rating_policy":policy_without_single_valued_fields()}),
+            None,
+            Some("omitted"),
+        )
+        .await;
+    assert_eq!(omitted.0, 201, "{omitted:?}");
+    let read = f
+        .call(
+            "GET",
+            &format!("/price-book-entries/{}", omitted.1["id"].as_str().unwrap()),
+            json!({}),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(read.0, 200, "{read:?}");
+    assert_eq!(read.1["usage_rating_policy"]["content"], policy());
+    let spelled = f
+        .call(
+            "POST",
+            &path,
+            json!({"sku_id":Uuid::new_v4(),"model":"per_unit","usage_rating_policy":policy()}),
+            None,
+            Some("spelled"),
+        )
+        .await;
+    assert_eq!(spelled.0, 201, "{spelled:?}");
+    assert_eq!(
+        omitted.1["usage_rating_policy"]["digest"],
+        spelled.1["usage_rating_policy"]["digest"]
+    );
+    assert_eq!(
+        omitted.1["usage_rating_policy"]["content"],
+        spelled.1["usage_rating_policy"]["content"]
+    );
+}
+
+#[test]
+fn omitted_and_explicit_single_valued_fields_share_the_stand_digest() {
+    use bss_pricing::infra::usage_policy_wire::{
+        UsageRatingPolicyInput, UsageRatingPolicyRequest, digest_text,
+    };
+    let accrual = "derived-v1:7354bbb184408c5965a4f84c539c1d38a5d4c8470f7341996bcf8e3f5b3b190b";
+    let pin = "8d7119c7e77689f12980cc88b5f14051d54cff9a4234e9cd9106037079ca02a5";
+    let quantity = |fold: Option<&str>| {
+        let mut semantics = json!({
+            "meter":{"usage_type_id":"products.derived/vm-hour@1","version":"1"},
+            "unit":"VM\u{b7}hour",
+            "accrual_policy_version":accrual
+        });
+        if let Some(fold) = fold {
+            semantics["fold"] = json!(fold);
+        }
+        semantics
+    };
+    let body = |reset: Option<&str>, partial: Option<&str>, fold: Option<&str>| {
+        let mut policy = json!({
+            "rating_window":{"kind":"billing_cycle"},
+            "aggregation_scope":"subscription_line",
+            "quantity_semantics":quantity(fold)
+        });
+        if let Some(reset) = reset {
+            policy["reset"] = json!(reset);
+        }
+        if let Some(partial) = partial {
+            policy["partial_window"] = json!(partial);
+        }
+        policy
+    };
+    let digest_of = |value: Value| {
+        let request: UsageRatingPolicyRequest = serde_json::from_value(value).unwrap();
+        let input = UsageRatingPolicyInput::from(request);
+        digest_text(bss_pricing_sdk::digest::policy_digest(&(&input).into()))
+    };
+    assert!(serde_json::from_value::<UsageRatingPolicyInput>(body(None, None, None)).is_err());
+    let spelled = digest_of(body(
+        Some("rating_window_start"),
+        Some("actual_quantity_full_thresholds"),
+        Some("SUM"),
+    ));
+    let omitted = digest_of(body(None, None, None));
+    let mut blanks = body(
+        Some("rating_window_start"),
+        Some("actual_quantity_full_thresholds"),
+        Some("SUM"),
+    );
+    blanks["reset"] = Value::Null;
+    blanks["partial_window"] = Value::Null;
+    blanks["quantity_semantics"]["fold"] = Value::Null;
+    assert!(serde_json::from_value::<UsageRatingPolicyInput>(blanks.clone()).is_err());
+    assert_eq!(spelled, omitted);
+    assert_eq!(spelled, digest_of(blanks));
+    assert_eq!(spelled, pin);
+}
+
+#[tokio::test]
+async fn an_explicit_unknown_fold_is_still_refused() {
+    let f = Fixture::new(Arc::new(Script::default())).await;
+    let (book, _) = f.book().await;
+    let mut wrong = policy();
+    wrong["quantity_semantics"]["fold"] = json!("MAX");
+    let answer = f
+        .call(
+            "POST",
+            &format!("/price-books/{}/entries", book["id"].as_str().unwrap()),
+            json!({"sku_id":Uuid::new_v4(),"model":"per_unit","usage_rating_policy":wrong}),
+            None,
+            Some("max"),
+        )
+        .await;
+    assert_eq!(answer.0, 400, "{answer:?}");
+    let text = answer.1.to_string();
+    assert!(text.contains("MAX"), "{text}");
+    assert!(text.contains("unknown variant"), "{text}");
+}
+
+#[tokio::test]
+async fn a_recurring_entry_still_refuses_a_policy_when_single_valued_fields_are_omitted() {
+    let script = Arc::new(Script::default());
+    script.set(11);
+    let f = Fixture::new(script).await;
+    let (book, _) = f.book().await;
+    let answer = f
+        .call(
+            "POST",
+            &format!("/price-books/{}/entries", book["id"].as_str().unwrap()),
+            json!({
+                "sku_id":Uuid::new_v4(),
+                "model":"flat",
+                "period":"month",
+                "usage_rating_policy":policy_without_single_valued_fields()
+            }),
+            None,
+            Some("recurring"),
+        )
+        .await;
+    assert_eq!(answer.0, 400, "{answer:?}");
+    assert!(
+        answer.1.to_string().contains("UNEXPECTED_RATING_POLICY"),
+        "{answer:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_omitted_policy_with_the_wrong_unit_is_still_a_meter_mismatch() {
+    let f = Fixture::new(Arc::new(Script::default())).await;
+    let (book, _) = f.book().await;
+    let mut mismatched = policy_without_single_valued_fields();
+    mismatched["quantity_semantics"]["unit"] = json!("second");
+    let answer = f
+        .call(
+            "POST",
+            &format!("/price-books/{}/entries", book["id"].as_str().unwrap()),
+            json!({"sku_id":Uuid::new_v4(),"model":"per_unit","usage_rating_policy":mismatched}),
+            None,
+            Some("omitted-unit"),
+        )
+        .await;
+    assert_eq!(answer.0, 400, "{answer:?}");
+    assert!(
+        answer.1.to_string().contains("METER_POLICY_MISMATCH"),
+        "{answer:?}"
+    );
 }
 
 #[test]

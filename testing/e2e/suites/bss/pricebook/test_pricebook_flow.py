@@ -81,17 +81,15 @@ VARIANTS = {
         # E1 must register this exact immutable meter declaration on the real binary.
         "entry": {
             "model": "per_unit",
+            # D-513: fold, reset and partial_window are omitted. The server fills them.
             "usage_rating_policy": {
                 "rating_window": {"kind": "billing_cycle"},
                 "aggregation_scope": "subscription_line",
-                "reset": "rating_window_start",
                 "quantity_semantics": {
                     "meter": {"usage_type_id": USAGE_TYPE, "version": "v1"},
                     "unit": "GB",
-                    "fold": "SUM",
                     "accrual_policy_version": "integrated-v1",
                 },
-                "partial_window": "actual_quantity_full_thresholds",
             },
         },
         "price": {"price": {"rate": "0.10"}},
@@ -161,6 +159,11 @@ def test_a_priced_sku_publishes_its_price_and_blocks_retirement(api, variant):
     assert entry["sku_id"] == sku
     assert entry["charge_kind"] == variant
     assert entry["reference_state"] == "confirmed", entry
+    if variant == "usage":
+        content = entry["usage_rating_policy"]["content"]
+        assert content["quantity_semantics"]["fold"] == "SUM", content
+        assert content["reset"] == "rating_window_start", content
+        assert content["partial_window"] == "actual_quantity_full_thresholds", content
     replay = api.post(f"{PRICING}/price-books/{book}/entries", json=body, headers=key)
     assert replay.status_code == 201, replay.text
     assert replay.json() == entry, "the same Idempotency-Key replays the receipt"

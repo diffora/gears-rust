@@ -371,7 +371,11 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
              reserving the SKU reference in Products before the write and confirming it after; \
              the Idempotency-Key replays the receipt. The invoice-line override is at most 2000 \
              characters (D-457). Usage entries require an immutable usage_rating_policy; other \
-             charge kinds refuse one. Policy identity is server-issued (D-502). Refusals: \
+             charge kinds refuse one. Policy identity is server-issued (D-502). \
+             `quantity_semantics.fold`, `reset` and `partial_window` may be absent or null; \
+             the server fills `SUM`, `rating_window_start` and \
+             `actual_quantity_full_thresholds` (D-513). An unknown value is still refused. \
+             Refusals: \
              400 MISSING_RATING_POLICY, UNEXPECTED_RATING_POLICY, METER_POLICY_MISMATCH, \
              MODEL_INVALID, MODEL_KIND_CHARGEKIND_MISMATCH \
              (judged at the door and again after the reservation), ENTRY_PERIOD_INVALID, \

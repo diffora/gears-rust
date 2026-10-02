@@ -540,7 +540,9 @@ pub struct PricingSettingsDto {
 #[serde(deny_unknown_fields)]
 pub struct PricingPriceBookEntryCreate {
     /// Required for usage entries; immutable after creation. Identity is server assigned.
-    pub usage_rating_policy: Option<crate::infra::usage_policy_wire::UsageRatingPolicyInput>,
+    /// `quantity_semantics.fold`, `reset` and `partial_window` may be absent or null; the server
+    /// fills `SUM`, `rating_window_start` and `actual_quantity_full_thresholds` (D-513).
+    pub usage_rating_policy: Option<crate::infra::usage_policy_wire::UsageRatingPolicyRequest>,
     pub sku_id: Uuid,
     /// Required and fixed for the entry's life (D-427): `flat`, `per_unit`, `graduated`,
     /// `volume` or `package`, one the SKU's charge kind allows.

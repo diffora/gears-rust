@@ -127,7 +127,9 @@ impl From<PricingPriceBookEntryCreate> for EntryInput {
         Self {
             meter_evidence: None,
             schema_version: Some(2),
-            usage_rating_policy: input.usage_rating_policy.map(Box::new),
+            usage_rating_policy: input.usage_rating_policy.map(|policy| {
+                Box::new(crate::infra::usage_policy_wire::UsageRatingPolicyInput::from(policy))
+            }),
             usage_policy_reference: None,
             sku_id: input.sku_id,
             period: input.period,
