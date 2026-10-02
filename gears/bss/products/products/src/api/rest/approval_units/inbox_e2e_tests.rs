@@ -170,6 +170,17 @@ async fn published_sku(products: &Census) -> Uuid {
     )
     .await
     .unwrap();
+    // A real publish writes version 1; pricing records it on the entry (D-514: `usage_sku_version` >= 1).
+    let raw = sea_orm::Database::connect(&products.dsn).await.unwrap();
+    sea_orm::ConnectionTrait::execute_unprepared(
+        &raw,
+        &format!(
+            "UPDATE products_sku SET published_version = 1 WHERE id = x'{}'",
+            sku.id.simple()
+        ),
+    )
+    .await
+    .unwrap();
     products.policy(1).await;
     sku.id
 }
