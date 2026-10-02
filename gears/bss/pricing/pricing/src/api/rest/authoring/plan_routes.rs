@@ -521,18 +521,21 @@ pub(super) fn item_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Rout
         .operation_id("bss_pricing.create_plan_item")
         .summary("Add an item to a draft revision")
         .description(
-            "Adds an item to a draft revision: a SKU and its entry in the plan's book, the entry \
-             required (D-467), reserving the SKU reference in Products; the Idempotency-Key \
-             replays the receipt. A deprecated SKU is added only when the plan's published \
-             revision in effect carries it (D-465). Refusals: 400 BODY_UNEXPECTED for treatment, \
-             included_qty or qty_min, ITEM_ENTRY_MISSING for a missing or null entry, \
-             ITEM_BOOK_FOREIGN for an entry of another book, ITEM_ENTRY_SKU_MISMATCH for an entry \
-             of another SKU, ITEM_SKU_DEPRECATED, ITEM_BUNDLE_SKU or REVISION_ITEMS_TOO_MANY; 403 \
-             NOT_DRAFT_AUTHOR for a draft of another author; 404 for an unknown revision, or an \
-             unknown entry (ENTRY_NOT_FOUND); 409 REVISION_NOT_DRAFT, ITEM_SKU_TAKEN, \
-             IDEMPOTENCY_CONFLICT or IDEMPOTENCY_KEY_IN_FLIGHT, and SKU_FENCED, SKU_RETIRING or \
-             SKU_DRAFT from the item's create op (Products' reserve refusal or its SKU re-read); \
-             Products' own refusal of the SKU read, as Products gave it; 503 \
+            "Adds an item to a draft revision: a SKU, and its entry in the plan's book when the \
+             author has chosen one (D-512). An absent or null price_book_entry_id adds the SKU \
+             with no entry. The checks stay red (ITEM_ENTRY_MISSING, \"Every item points at a \
+             price\") until a PATCH sets the entry, and submit, the scheduled apply and publish \
+             refuse that revision as for any red check. The call reserves the SKU reference in \
+             Products; the Idempotency-Key replays the receipt. A deprecated SKU is added only \
+             when the plan's published revision in effect carries it (D-465). A given entry is \
+             judged as before. Refusals: 400 BODY_UNEXPECTED for treatment, included_qty or \
+             qty_min, ITEM_BOOK_FOREIGN for an entry of another book, ITEM_ENTRY_SKU_MISMATCH \
+             for an entry of another SKU, ITEM_SKU_DEPRECATED, ITEM_BUNDLE_SKU or \
+             REVISION_ITEMS_TOO_MANY; 403 NOT_DRAFT_AUTHOR for a draft of another author; 404 for \
+             an unknown revision, or an unknown entry (ENTRY_NOT_FOUND); 409 REVISION_NOT_DRAFT, \
+             ITEM_SKU_TAKEN, IDEMPOTENCY_CONFLICT or IDEMPOTENCY_KEY_IN_FLIGHT, and SKU_FENCED, \
+             SKU_RETIRING or SKU_DRAFT from the item's create op (Products' reserve refusal or \
+             its SKU re-read); Products' own refusal of the SKU read, as Products gave it; 503 \
              REGISTRY_UNAVAILABLE.",
         )
         .tag("Pricing")
@@ -577,13 +580,14 @@ pub(super) fn item_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Rout
         .operation_id("bss_pricing.patch_plan_item")
         .summary("Change a plan item")
         .description(
-            "Changes a draft item's entry, never its SKU, at the version the caller read \
-             (If-Match): a plan item is a SKU and its entry (D-467). Refusals: 400 \
-             BODY_UNEXPECTED for treatment, included_qty or qty_min, ITEM_ENTRY_MISSING for a \
-             null entry or an item left without one, ITEM_BOOK_FOREIGN for an entry of another \
-             book, ITEM_ENTRY_SKU_MISMATCH for an entry of another SKU; 403 NOT_DRAFT_AUTHOR; \
-             404 for an unknown item, or an unknown entry (ENTRY_NOT_FOUND); 409 \
-             REVISION_NOT_DRAFT or STALE_REVISION.",
+            "Sets a draft item's entry, never its SKU, at the version the caller read \
+             (If-Match), including on an item that has none (D-512). A plan item is a SKU and \
+             its entry (D-467). A null entry is refused: a PATCH never clears an entry. \
+             Refusals: 400 BODY_UNEXPECTED for treatment, included_qty or qty_min, \
+             ITEM_ENTRY_MISSING for a null entry or an item left without one, \
+             ITEM_BOOK_FOREIGN for an entry of another book, ITEM_ENTRY_SKU_MISMATCH for an \
+             entry of another SKU; 403 NOT_DRAFT_AUTHOR; 404 for an unknown item, or an unknown \
+             entry (ENTRY_NOT_FOUND); 409 REVISION_NOT_DRAFT or STALE_REVISION.",
         )
         .tag("Pricing")
         .authenticated()
@@ -673,8 +677,11 @@ pub(super) fn item_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Rout
         .description(
             "Returns every check of the revision on its sale date (coverage, SKUs, references, \
              book), whether it may be submitted, and quorum_required, the plan_revision quorum a \
-             submit will need (D-481), from fresh SKU reads. Refusals: 404 for a revision the \
-             tenant does not hold; Products' own refusal; 503 REGISTRY_UNAVAILABLE.",
+             submit will need (D-481), from fresh SKU reads. An item with no entry keeps the row \
+             ITEM_ENTRY_MISSING (\"Every item points at a price\") red (D-512); submit, the \
+             scheduled apply and publish refuse the revision while any row is red. Refusals: 404 \
+             for a revision the tenant does not hold; Products' own refusal; 503 \
+             REGISTRY_UNAVAILABLE.",
         )
         .tag("Pricing")
         .authenticated()

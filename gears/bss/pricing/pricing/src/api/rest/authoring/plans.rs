@@ -716,7 +716,7 @@ async fn copy_items(
     let mut ops = Vec::new();
     for from in plan_item_repo::for_revision(tx, children, tenant, source).await? {
         // D-467: a copy is a new row, which the repository writes `paid` with no quantity
-        // whatever the source row carries; a legacy item without an entry stays one, so the
+        // whatever the source row carries; an item without an entry stays one (D-512), so the
         // draft's checks show it ITEM_ENTRY_MISSING.
         let copy = plan_item_repo::insert(
             tx,

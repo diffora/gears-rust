@@ -77,8 +77,9 @@ pub struct Reference {
     pub state: ReferenceState,
     pub reservation_id: Option<Uuid>,
 }
-/// One plan item: a SKU and its entry in the plan's book (D-467). A null entry is a legacy row,
-/// an included item stored before D-467: the checks show it `ITEM_ENTRY_MISSING`.
+/// One plan item: a SKU and its entry in the plan's book (D-467). A null entry is a draft item
+/// waiting for its entry (D-512), or a legacy row stored before D-467: the checks show it
+/// `ITEM_ENTRY_MISSING`.
 #[toolkit_macros::domain_model]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Item {
@@ -88,8 +89,9 @@ pub struct Item {
     pub reference: Reference,
 }
 /// The `treatment` a row written from D-467 on stores: `paid` for an item that names an entry,
-/// and `included` only for a copy of a legacy item stored without one, the one entry-less row the
-/// column's CHECK admits. The quantities it stores are always null.
+/// and `included` for an item with no entry (a draft waiting for one, D-512, or a copy of a
+/// legacy item), the entry-less row the column's CHECK admits. The quantities it stores are
+/// always null.
 #[must_use]
 pub const fn stored_treatment(entry: Option<Uuid>) -> Treatment {
     if entry.is_some() {

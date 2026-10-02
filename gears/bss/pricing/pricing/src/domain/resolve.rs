@@ -60,7 +60,8 @@ pub struct Entry {
 pub struct Item {
     pub id: Uuid,
     pub sku_id: Uuid,
-    /// `None` for a legacy item stored without an entry (D-467): it has no chains.
+    /// `None` for an item stored without an entry (a draft waiting for one, D-512, or a legacy
+    /// item, D-467): it has no chains.
     pub entry: Option<Entry>,
 }
 /// Everything the matrix reads, as plain data.

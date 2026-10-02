@@ -136,6 +136,10 @@ async fn the_texts_name_what_the_doors_refuse() {
             "the item create names {code}: {create}"
         );
     }
+    assert!(
+        create.contains("absent or null") && create.contains("Every item points at a price"),
+        "the entry may wait, and the checks row still names it: {create}"
+    );
     let patch = description(&api, "patch", "/bss-pricing/v1/plan-revisions/{id}");
     assert!(
         patch.contains("same SKU, charge kind, period, model and policy digest")
