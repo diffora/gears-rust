@@ -1,5 +1,5 @@
 Created:  2026-10-01 by Virtuozzo International GmbH
-Updated:  2026-10-01 by Virtuozzo International GmbH
+Updated:  2026-10-02 by Virtuozzo International GmbH
 
 # DESIGN — BSS Approvals Inbox
 
@@ -34,7 +34,7 @@ The inbox is a facade. Units stay in the gear that writes them. The facade asks 
 
 | Requirement | Design response |
 | --- | --- |
-| `cpt-cf-bss-approvals-fr-one-inbox` | One list, one count, one card and one vote. The merge key is `(submitted_at, id)`. A 403 source is omitted and named. A 503 or missing source fails the read. The card asks every source. The vote answer is forwarded unchanged. |
+| `cpt-cf-bss-approvals-fr-one-inbox` | One list, one count, one card and one vote. The merge key is `(submitted_at, id)`. A 403 source is omitted and named forbidden. A 503 or missing source is named unavailable and omitted; the read is 503 only when every source is down (AP-D-5). The card asks every source. The vote answer is forwarded unchanged. |
 | `cpt-cf-bss-approvals-nfr-no-store` | The gear implements REST only. It does not implement a database capability and it never requests a database. |
 
 ### 1.3 Architecture Layers
@@ -99,7 +99,7 @@ The gear depends on the SDK, ClientHub, the canonical error types and the OData 
 
 ### 3.5 External Dependencies
 
-Each configured source is another gear's `ApprovalSourceV1`, registered under `ClientScope` equal to that gear's name. Pricing registers `PricingApprovalSource` as `pricing` (pricing D-490) and products registers `ProductsApprovalSource` as `products` (products P-D-250). Each calls its gear's own doors: the list's read with a `CursorV1` built from the source's key, the counts on the plain connection, the card door, and the vote door through the gear's router. This gear's own tests register fake sources; products' tests run the facade over both real gears, on `SQLite` and on Postgres.
+Each configured source is another gear's `ApprovalSourceV1`, registered under `ClientScope` equal to that gear's name. A source name is non-blank and unique; a duplicate or a blank name fails init. A source counts body names only the closed kind set: an absent kind is 0, and a kind field outside the set does not decode. Pricing registers `PricingApprovalSource` as `pricing` (pricing D-490) and products registers `ProductsApprovalSource` as `products` (products P-D-250). Each calls its gear's own doors: the list's read with a `CursorV1` built from the source's key, the counts on the plain connection, the card door, and the vote door through the gear's router. This gear's own tests register fake sources; products' tests run the facade over both real gears, on `SQLite` and on Postgres.
 
 ### 3.6 Interactions & Sequences
 
@@ -107,10 +107,10 @@ Each configured source is another gear's `ApprovalSourceV1`, registered under `C
 
 1. The caller sends the list query. `$orderby` with a cursor is refused before the token is read.
 2. The facade decodes the cursor, checks the narrowing hash, and asks every configured source for up to `limit` units after that source's key.
-3. A 403 source is omitted and named `forbidden`. A 503 or a missing registration fails the read with `SOURCE_UNAVAILABLE`. Any other door error is returned as that error.
+3. A 403 source is omitted and named `forbidden`. A 503 or a missing registration is named `unavailable` and omitted (AP-D-5). The read is 503 `SOURCE_UNAVAILABLE` only when every configured source is down, and 403 only when every configured source is forbidden. Any other door error is returned as that error. A cursor records the sources that were down when it was cut, and a continuation does not ask them.
 4. The remaining pages are merged by `(submitted_at, id)`. Each source's key becomes the last unit taken from it, or stays. The next cursor is present when any source had more, or returned a unit that was not taken.
 
-The card asks every source. One `Some` wins. Two `Some`s are 500 naming both. Otherwise a 503 or a missing source is 503. Otherwise a 403 is 403 whose body names no gear. Otherwise the card is 404. A vote uses that same resolution and then calls `vote` on the owner.
+The card asks every source. One `Some` wins. Two `Some`s are 500 naming both. Otherwise a 503 or a missing source is 503. Otherwise a 403 is 403 whose body names no gear. Otherwise the card is 404. A vote uses that same resolution and then calls `vote` on the owner. The caller sends `Idempotency-Key`; the inbox refuses the vote without it and never mints a key (AP-D-6).
 
 ### 3.7 Database schemas & tables
 

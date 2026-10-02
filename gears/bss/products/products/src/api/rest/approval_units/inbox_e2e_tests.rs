@@ -503,6 +503,23 @@ async fn the_facade_registers_beside_both_gears_in_one_openapi_registry() {
         &openapi,
     )
     .await;
+    let spec = openapi
+        .build_openapi(&toolkit::api::OpenApiInfo::default())
+        .expect("openapi");
+    let json = serde_json::to_value(&spec).unwrap();
+    let paths = json["paths"].as_object().expect("paths");
+    assert!(
+        paths.keys().any(|path| path.starts_with("/bss-products/")),
+        "{paths:?}"
+    );
+    assert!(
+        paths.keys().any(|path| path.starts_with("/bss-pricing/")),
+        "{paths:?}"
+    );
+    assert!(
+        paths.keys().any(|path| path.starts_with("/bss-approvals/")),
+        "{paths:?}"
+    );
 }
 
 /// A walk over prices, plan revisions and the three SKU kinds of both gears, in both orders and at
@@ -768,9 +785,14 @@ async fn products_impact_is_null_for_a_caller_without_entry_read() {
                 .all(|u| u["impact"].is_null()),
             "{publish}"
         );
-        let (_, skipped) = i
+        let (status, skipped) = i
             .get(who, &format!("{FACADE}?kind=sku_change&impact=false"))
             .await;
+        assert_eq!(status, 200, "{skipped}");
+        assert_eq!(
+            skipped["items"][0]["id"], page["items"][0]["id"],
+            "{skipped}"
+        );
         assert_eq!(skipped["items"][0]["impact"], Value::Null, "impact=false");
     }
 }

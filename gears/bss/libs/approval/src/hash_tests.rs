@@ -60,6 +60,19 @@ fn authorship_and_before_are_not_part_of_the_fingerprint() {
 /// turn on `serde_json`'s `preserve_order`, as the gears' builds do, so a `json!` object keeps the
 /// order it is written in and only the canonical form sorts it.
 #[test]
+fn one_flat_price_fingerprint_is_pinned() {
+    let id = Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap();
+    let hash = snapshot_hash(
+        &[item(id, serde_json::json!({"amount": 10, "model": "flat"}))],
+        Some(time::macros::date!(2026 - 10 - 01)),
+    );
+    assert_eq!(
+        hash,
+        "f93205e840daa8ee2803709594b4b4a70034c85ee2fb87a3d3fbf62087f3abc8"
+    );
+}
+
+#[test]
 fn the_hash_ignores_nested_key_order() {
     let a = Uuid::new_v4();
     let x = item(

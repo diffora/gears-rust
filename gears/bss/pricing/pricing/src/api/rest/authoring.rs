@@ -32,6 +32,19 @@ use dto::{
 };
 use std::sync::Arc;
 use support::{authz_failure, etag, header, require_authenticated, response, transaction};
+
+async fn approval_flag_scopes(
+    enforcer: &PolicyEnforcer,
+    ctx: &SecurityContext,
+) -> Result<(toolkit_security::AccessScope, toolkit_security::AccessScope), CanonicalError> {
+    let approve = authz::grant_scope(enforcer, ctx, actions::APPROVE)
+        .await
+        .map_err(authz_failure)?;
+    let submit = authz::grant_scope(enforcer, ctx, actions::SUBMIT)
+        .await
+        .map_err(authz_failure)?;
+    Ok((approve, submit))
+}
 use toolkit::api::{
     OpenApiRegistry,
     operation_builder::{OperationBuilder, OperationBuilderODataExt},
@@ -119,6 +132,16 @@ impl AuthoringState {
         }
     }
 }
+/// The enforcer and the canonical error layer the served gear and the in-process vote share.
+#[must_use = "the layered router is what the gear and the inbox serve"]
+pub fn with_caller_layers(router: Router, enforcer: PolicyEnforcer) -> Router {
+    router
+        .layer(Extension(enforcer))
+        .layer(axum::middleware::from_fn(
+            toolkit::api::canonical_error_middleware,
+        ))
+}
+
 /// Mount the complete authoring surface and establish one audit correlation per request.
 #[allow(
     clippy::too_many_lines,
@@ -999,6 +1022,7 @@ async fn submit_price(
     let correlation = correlation::require_correlation(corr)?;
     let key = preconditions::idempotency_key(&headers)?;
     let digest = preconditions::request_digest(&support::empty_body(&body)?)?;
+    let (approve_scope, submit_scope) = approval_flag_scopes(&enforcer, &ctx).await?;
     let cmd = approvals::Command {
         scope,
         ctx,
@@ -1008,6 +1032,8 @@ async fn submit_price(
         correlation,
         key,
         digest,
+        approve_scope,
+        submit_scope,
     };
     approvals::submit_price(&state.db.db(), cmd, id).await
 }
@@ -1038,6 +1064,7 @@ async fn submit_plan_revision(
     let (payload, note) = support::note_body(&body)?;
     caps::note(note.as_deref())?;
     let digest = preconditions::request_digest(&payload)?;
+    let (approve_scope, submit_scope) = approval_flag_scopes(&enforcer, &ctx).await?;
     let cmd = approvals::Command {
         scope,
         ctx,
@@ -1047,6 +1074,8 @@ async fn submit_plan_revision(
         correlation,
         key,
         digest,
+        approve_scope,
+        submit_scope,
     };
     approvals::submit_revision(&state.db.db(), cmd, id, note).await
 }
@@ -1128,6 +1157,7 @@ async fn publish_changes(
     let input: dto::PricingPublishChangesRequest = preconditions::parse_body(&body)?;
     // D-464: the submitter's optional note, its cap judged before any read.
     input.caps()?;
+    let (approve_scope, submit_scope) = approval_flag_scopes(&enforcer, &ctx).await?;
     let cmd = approvals::Command {
         scope,
         ctx,
@@ -1137,6 +1167,8 @@ async fn publish_changes(
         correlation,
         key,
         digest,
+        approve_scope,
+        submit_scope,
     };
     approvals::publish(&state.db.db(), cmd, id, input).await
 }
@@ -1172,10 +1204,13 @@ async fn list_approval_units(
         query.cursor.as_deref(),
         query.orderby.as_deref(),
     )?;
+    let (approve_scope, submit_scope) = approval_flag_scopes(&enforcer, &ctx).await?;
     let request = approvals::UnitListRequest {
         filter,
         page,
         impact: query.impact.unwrap_or(true),
+        approve_scope,
+        submit_scope,
     };
     transaction(&state.db.db(), move |tx| {
         let (scope, ctx, request) = (scope.clone(), ctx.clone(), request.clone());
@@ -1370,9 +1405,13 @@ async fn get_approval_unit(
     )
     .await
     .map_err(authz_failure)?;
+    let (approve_scope, submit_scope) = approval_flag_scopes(&enforcer, &ctx).await?;
     transaction(&state.db.db(), move |tx| {
         let (scope, ctx) = (scope.clone(), ctx.clone());
-        Box::pin(async move { approvals::get_unit(tx, &scope, &ctx, id).await })
+        let (approve_scope, submit_scope) = (approve_scope.clone(), submit_scope.clone());
+        Box::pin(async move {
+            approvals::get_unit(tx, &scope, &ctx, id, &approve_scope, &submit_scope).await
+        })
     })
     .await
 }
@@ -1401,6 +1440,7 @@ async fn approve_unit(
     let payload: serde_json::Value = preconditions::parse_body(&body)?;
     let digest = preconditions::request_digest(&payload)?;
     let input: dto::PricingVoteRequest = preconditions::parse_body(&body)?;
+    let (approve_scope, submit_scope) = approval_flag_scopes(&enforcer, &ctx).await?;
     let cmd = approvals::Command {
         scope,
         ctx,
@@ -1410,6 +1450,8 @@ async fn approve_unit(
         correlation,
         key,
         digest,
+        approve_scope,
+        submit_scope,
     };
     approvals::vote(
         &state.db.db(),
@@ -1445,6 +1487,7 @@ async fn reject_unit(
     let payload: serde_json::Value = preconditions::parse_body(&body)?;
     let digest = preconditions::request_digest(&payload)?;
     let input: dto::PricingVoteRequest = preconditions::parse_body(&body)?;
+    let (approve_scope, submit_scope) = approval_flag_scopes(&enforcer, &ctx).await?;
     let cmd = approvals::Command {
         scope,
         ctx,
@@ -1454,6 +1497,8 @@ async fn reject_unit(
         correlation,
         key,
         digest,
+        approve_scope,
+        submit_scope,
     };
     approvals::vote(
         &state.db.db(),
@@ -1487,6 +1532,7 @@ async fn withdraw_unit(
     let correlation = correlation::require_correlation(corr)?;
     let key = preconditions::idempotency_key(&headers)?;
     let digest = preconditions::request_digest(&support::empty_body(&body)?)?;
+    let (approve_scope, submit_scope) = approval_flag_scopes(&enforcer, &ctx).await?;
     let cmd = approvals::Command {
         scope,
         ctx,
@@ -1496,6 +1542,8 @@ async fn withdraw_unit(
         correlation,
         key,
         digest,
+        approve_scope,
+        submit_scope,
     };
     approvals::vote(&state.db.db(), cmd, id, approvals::Vote::Withdraw, None).await
 }

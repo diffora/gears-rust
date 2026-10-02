@@ -392,16 +392,16 @@ async fn refuse_moved_pin(
         proposed_ref,
     )
     .await?;
-    if derived::pin_refuses(
-        current_ref,
-        proposed_ref,
-        derived::wrap_exception(
-            current_ref,
-            proposed_ref,
-            current.unit.as_deref(),
-            proposed.unit.as_deref(),
-            stored.as_ref(),
-        ),
+    if derived::pin_check(
+        derived::RefUnit {
+            usage_type_ref: current_ref,
+            unit: current.unit.as_deref(),
+        },
+        derived::RefUnit {
+            usage_type_ref: proposed_ref,
+            unit: proposed.unit.as_deref(),
+        },
+        stored.as_ref(),
     ) {
         return Err(derived::pin_immutable().into());
     }
@@ -450,9 +450,13 @@ async fn execute(
     // The one setting the attempts read, copied once rather than an `Arc<ApiState>` per attempt
     // (RS-55).
     let ttl = state.fence_ttl_minutes;
+    let approve_scope = g::grant_scope(enforcer, &ctx, actions::APPROVE).await?;
+    let submit_scope = g::grant_scope(enforcer, &ctx, actions::SUBMIT).await?;
     let receipt = events::transaction(&db, &sink, config, contention_db_err, move |tx, outbox| {
         let scope = scope.clone();
         let ctx = ctx.clone();
+        let approve_scope = approve_scope.clone();
+        let submit_scope = submit_scope.clone();
         let patch = patch.clone();
         let usage = usage.clone();
         let proposed = proposed.clone();
@@ -582,6 +586,8 @@ async fn execute(
                     &store,
                     submitted.unit,
                     ctx.subject_id(),
+                    &approve_scope,
+                    &submit_scope,
                 )
                 .await?,
                 sku: after.into(),

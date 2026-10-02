@@ -453,7 +453,8 @@ async fn the_list_and_counts_refusals_are_the_doors() {
 
 /// AP-D-2: a kind products does not record, and any `book_id` (products holds no book), are an
 /// empty page and zero counts, decided in the source before any door. The door itself refuses the
-/// kind, ignores the list's `book_id` and refuses the counts' one.
+/// kind, and refuses `book_id` on the list and the counts (P-D-254). The source still answers
+/// an empty page for `book_id` before any door.
 #[tokio::test]
 async fn a_foreign_kind_and_a_book_are_empty_not_the_doors_answer() {
     let c = census(1).await;
@@ -463,7 +464,7 @@ async fn a_foreign_kind_and_a_book_are_empty_not_the_doors_answer() {
         (vec![("kind", "prices")], 400, 400),
         (vec![("kind", "plan_revision")], 400, 400),
         (vec![("kind", "bogus")], 400, 400),
-        (vec![("book_id", book.as_str())], 200, 400),
+        (vec![("book_id", book.as_str())], 400, 400),
     ] {
         let q = query_string(&query);
         let list = send(&c.door, &c.author, "GET", &format!("{UNITS}?{q}"), "", None).await;
@@ -499,6 +500,34 @@ async fn a_foreign_kind_and_a_book_are_empty_not_the_doors_answer() {
             SourceCounts::default(),
             "{q}"
         );
+    }
+}
+
+#[tokio::test]
+async fn a_foreign_narrowing_still_refuses_an_unknown_state() {
+    let c = census(1).await;
+    let book = Uuid::new_v4().to_string();
+    for query in [
+        vec![("kind", "bogus"), ("state", "nope")],
+        vec![("book_id", book.as_str()), ("state", "nope")],
+    ] {
+        let n = narrowing(&query);
+        let page = c
+            .source
+            .page(
+                &c.author,
+                &SourcePageQuery {
+                    narrowing: n.clone(),
+                    order: Order::Desc,
+                    limit: 50,
+                    after: None,
+                    impact: false,
+                },
+            )
+            .await;
+        assert!(page.is_err(), "{query:?}: {page:?}");
+        let counts = c.source.counts(&c.author, &n).await;
+        assert!(counts.is_err(), "{query:?}: {counts:?}");
     }
 }
 
@@ -687,9 +716,17 @@ async fn every_vote_refusal_is_the_vote_doors_byte_for_byte() {
             "7",
             false,
             403,
-            "",
+            "NOT_SUBMITTER",
         ),
-        (&one, approve, gen1.into(), "8", true, 403, ""),
+        (
+            &one,
+            approve,
+            gen1.into(),
+            "8",
+            true,
+            403,
+            "access denied",
+        ),
     ];
     for (who, action, body, n, denied, status, code) in cases {
         let (door, source) = if denied {

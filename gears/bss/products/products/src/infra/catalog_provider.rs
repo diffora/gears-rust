@@ -12,7 +12,6 @@ use bss_pricing_sdk::product_catalog::{
     CatalogSku, CatalogSkuPage, CatalogTaxCategory, ProductCatalogClientV1, catalog_unreachable,
 };
 use bss_products_sdk::models::{Lifecycle, Sku};
-use sea_orm::sea_query::ExprTrait;
 use sea_orm::{ColumnTrait, Condition};
 use std::{collections::BTreeSet, sync::Arc};
 use toolkit_canonical_errors::{CanonicalError, resource_error};
@@ -70,10 +69,10 @@ impl BrowseCatalogProvider {
             return Err(invalid("limit", "limit must be at least one"));
         }
         let mut condition = Condition::all().add(
-            crate::infra::storage::repo::sku_repo::effective_lifecycle_expr(
+            crate::infra::storage::repo::sku_repo::effective_lifecycle_in(
                 crate::infra::storage::stored_now().date(),
-            )
-            .is_in(["published", "deprecated"]),
+                &["published", "deprecated"],
+            ),
         );
         if let Some(filter) = filter.filter(|s| !s.is_empty()) {
             if filter.len() > 32_768 {
@@ -155,10 +154,10 @@ impl BrowseCatalogProvider {
                     Condition::all()
                         .add(sku::Column::Id.is_in(chunk.iter().copied()))
                         .add(
-                            crate::infra::storage::repo::sku_repo::effective_lifecycle_expr(
+                            crate::infra::storage::repo::sku_repo::effective_lifecycle_in(
                                 crate::infra::storage::stored_now().date(),
-                            )
-                            .is_in(["published", "deprecated"]),
+                                &["published", "deprecated"],
+                            ),
                         ),
                 ),
                 lifecycle: None,

@@ -117,8 +117,10 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-484 | M | A plan stores time-stable list facts; selling and change are derived from the day | DECIDED 2026-10-02 · Owner, 2026-10-01 (#31, form B); phase 9 plan rev 4 (run 9.8b; review N1, N2); amends D-453 |
 | D-485 | M | The plans list pages on the stored summary and counts the derived axes | DECIDED 2026-10-02 · Owner, 2026-10-01 (#31, form B); phase 9 plan rev 4 (run 9.8b; review N1, N7); amends D-434, D-460, D-453; amended 2026-10-02 (phase 9 review F1b) |
 | D-486 | M | A SKU's entries narrow, order and page in memory | DECIDED 2026-10-01 · Owner, 2026-10-01 (#25, form A); phase 9 plan rev 4 (run 9.8c; N5); amends D-434 |
-| D-490 | M | Pricing's approval units answer the approvals inbox through pricing's own doors | DECIDED 2026-10-01 · Owner, 2026-10-01 (option A, "yes, A, agreed", then "write the plan"; Run 2 started before 9.5d-2); approvals inbox plan rev 2 (Run 2; design 1 and 3; plan review H1, H3, H4, M1, M5, L1); amends D-470 |
+| D-490 | M | Pricing's approval units answer the approvals inbox through pricing's own doors | DECIDED 2026-10-01 · Owner, 2026-10-01 (option A, "yes, A, agreed", then "write the plan"; Run 2 started before 9.5d-2); approvals inbox plan rev 2 (Run 2; design 1 and 3; plan review H1, H3, H4, M1, M5, L1); amends D-470; amended by D-496 |
 | D-491 | M | An entry op stores its policy reference as a named object | DECIDED 2026-10-02 · phase 9 review F1b |
+| D-496 | M | The inbox source judges `state` before a foreign empty page | DECIDED 2026-10-02 · phase 9 review; amends D-490 |
+| D-497 | M | A unit says whether its reader may reject or withdraw it, and approve includes the grant | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 63); amends D-471 |
 | D-501 | H | Authorized SDK reads share the frozen preview snapshot and canonical JSON digests | DECIDED 2026-09-30 · Pricing Seam Contracts Task 1; amended 2026-10-02 (phase 9 review F1) |
 | D-502 | H | Immutable usage policies belong to entries and their semantic key | DECIDED 2026-10-01 · Pricing Seam Contracts Task 2; amends D-386, D-401, D-427 |
 | D-503 | H | Exact meter evidence gates usage publication and stays out of historical reads | DECIDED 2026-10-01 · Pricing Seam Contracts Task 3; amended 2026-10-01 by the owner (E1a raw and E1b derived meters; products P-D-229 and rating T-D-39 on branch `bss/pricebook-meters`); amended 2026-10-01 by products P-D-233 (E1b provided by Products, E1a still external) |
@@ -1389,6 +1391,8 @@ The approvals inbox (`bss-approvals`, AP-D-1 to AP-D-4) serves ONE paged list, O
 
 **Source:** Owner, 2026-10-01 (asked how to merge the two approval-unit methods into one, then "yes, A, agreed" for the read-and-route facade, then "write the plan"; Run 2 started before 9.5d-2 on the owner's word). Approvals inbox plan rev 2 (Run 2; design 1 and 3; plan review H1, H3, H4, M1, M5, L1). Amends D-470: its order is the inbox's merge key.
 
+**Amended by D-496 (2026-10-02).** A kind pricing does not record is an empty page only after `state` has been accepted. An unknown state is the list door's 400 `UNIT_STATE_INVALID`.
+
 #### D-491 [M] An entry op stores its policy reference as a named object
 
 **Status:** DECIDED 2026-10-02.
@@ -1396,6 +1400,22 @@ The approvals inbox (`bss-approvals`, AP-D-1 to AP-D-4) serves ONE paged list, O
 An entry operation that keeps a policy without the declaration stores `usage_policy_reference` as `{ "policy_id", "version", "digest" }`. A row written earlier as the positional array `[policy_id, version, digest]` still reads. New rows write the named object.
 
 **Source:** Phase 9 review F1b.
+
+#### D-496 [M] The inbox source judges `state` before a foreign empty page
+
+**Status:** DECIDED 2026-10-02.
+
+A kind pricing does not record stays an empty page and zero counts (D-490). The source judges `state` with `approvals::state_filter` first. An unknown state is 400 `UNIT_STATE_INVALID` for the page and the counts, including when the kind is one pricing does not record. A known state, or no state, then takes the foreign empty set.
+
+**Source:** Phase 9 review (products lens a; the pricing source). Amends D-490. Twin of products P-D-252.
+
+#### D-497 [M] A unit says whether its reader may reject or withdraw it, and approve includes the grant
+
+**Status:** DECIDED 2026-10-02.
+
+`PricingApprovalUnitDto` carries `caller_can_reject` and `caller_can_withdraw` beside `caller_can_approve`. The three flags are the same rule as products P-D-255: approve is the engine's rule and the `approval_unit:approve` grant; reject is that grant, the unit pending, and no vote by the caller in this generation; withdraw is the submitter, the unit pending, and the submit grant. Each request compiles those two grants once and tests every unit against them.
+
+**Source:** Owner, 2026-10-02 (ask 63, "все ок"). Amends D-471. Twin of products P-D-255.
 
 #### D-501 [H] Authorized SDK reads share the frozen preview snapshot and canonical JSON digests
 

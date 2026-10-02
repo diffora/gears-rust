@@ -210,7 +210,7 @@ impl RestApiCapability for BssPricingGear {
     ) -> Result<Router> {
         let inner = Router::new();
         let inner = if let Some(runtime) = self.runtime.load_full() {
-            inner
+            let layered = inner
                 .merge(crate::api::rest::authoring::router(
                     runtime.state.clone(),
                     openapi,
@@ -218,11 +218,8 @@ impl RestApiCapability for BssPricingGear {
                 .merge(crate::api::rest::read_contract::router(
                     runtime.state.clone(),
                     openapi,
-                ))
-                .layer(axum::Extension((*runtime.enforcer).clone()))
-                .layer(axum::middleware::from_fn(
-                    toolkit::api::canonical_error_middleware,
-                ))
+                ));
+            crate::api::rest::authoring::with_caller_layers(layered, (*runtime.enforcer).clone())
         } else {
             inner
         };

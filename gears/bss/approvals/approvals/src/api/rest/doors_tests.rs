@@ -328,10 +328,33 @@ async fn a_forbidden_source_is_omitted_and_named_and_a_down_source_is_unavailabl
         .await,
     )
     .await;
+    assert_eq!(status, StatusCode::OK);
+    let page: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(page["items"].as_array().unwrap().len(), 1);
+    assert_eq!(page["sources"][1]["status"], "unavailable");
+
+    let both = inbox(
+        &["pricing", "products"],
+        &[
+            ("pricing", {
+                let fake = Arc::new(Fake::serving(Vec::new()));
+                *fake.mode.lock().unwrap() = Mode::Unavailable;
+                fake
+            }),
+            ("products", {
+                let fake = Arc::new(Fake::serving(Vec::new()));
+                *fake.mode.lock().unwrap() = Mode::Unavailable;
+                fake
+            }),
+        ],
+    );
+    let (status, _, body) =
+        bytes(call(&both, "GET", "/bss-approvals/v1/approval-units", b"", true).await).await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     let text = String::from_utf8(body).unwrap();
     assert!(text.contains("SOURCE_UNAVAILABLE"));
     assert!(text.contains("products"));
+    assert!(text.contains("pricing"));
 
     let missing_app = inbox(
         &["pricing", "products"],
@@ -348,8 +371,58 @@ async fn a_forbidden_source_is_omitted_and_named_and_a_down_source_is_unavailabl
         .await,
     )
     .await;
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
-    assert!(String::from_utf8(body).unwrap().contains("products"));
+    assert_eq!(status, StatusCode::OK);
+    let counts: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(counts["total"], 0);
+    assert_eq!(counts["sources"][1]["name"], "products");
+    assert_eq!(counts["sources"][1]["status"], "unavailable");
+}
+
+#[tokio::test]
+async fn a_down_source_stays_on_the_page_as_unavailable() {
+    let pricing = Arc::new(Fake::serving(vec![
+        test_support::unit("pricing", 1, 1),
+        test_support::unit("pricing", 3, 3),
+    ]));
+    let products = Arc::new(Fake::serving(vec![test_support::unit("products", 2, 2)]));
+    *products.mode.lock().unwrap() = Mode::Unavailable;
+    let app = inbox(
+        &["pricing", "products"],
+        &[("pricing", pricing), ("products", products.clone())],
+    );
+    let (status, _, body) = bytes(
+        call(
+            &app,
+            "GET",
+            "/bss-approvals/v1/approval-units?limit=1",
+            b"",
+            true,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let page: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(page["items"].as_array().unwrap().len(), 1);
+    assert_eq!(page["sources"][1]["name"], "products");
+    assert_eq!(page["sources"][1]["status"], "unavailable");
+    let cursor = page["next_cursor"].as_str().expect("the walk continues");
+    *products.mode.lock().unwrap() = Mode::Serve;
+    let (status, _, body) = bytes(
+        call(
+            &app,
+            "GET",
+            &format!("/bss-approvals/v1/approval-units?limit=1&cursor={cursor}"),
+            b"",
+            true,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let next: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(next["sources"][1]["status"], "unavailable");
+    assert!(products.last_page.lock().unwrap().is_none());
 }
 
 #[tokio::test]
@@ -368,6 +441,21 @@ async fn every_source_forbidden_is_403_and_a_bad_narrowing_is_that_400() {
     let text = String::from_utf8(body).unwrap();
     assert!(!text.contains("pricing"));
     assert!(!text.contains("products"));
+    let (status, _, body) = bytes(
+        call(
+            &app,
+            "GET",
+            "/bss-approvals/v1/approval-units/counts",
+            b"",
+            true,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let text = String::from_utf8(body).unwrap();
+    assert!(!text.contains("pricing"), "{text}");
+    assert!(!text.contains("products"), "{text}");
 
     let pricing = Arc::new(Fake::serving(Vec::new()));
     *pricing.mode.lock().unwrap() = Mode::Reject;
@@ -588,7 +676,14 @@ async fn the_card_outcomes_and_votes_pass_through_byte_for_byte() {
     ];
     let payload = br#"{"generation":1,"note":"keep"}"#;
     for action in ["approve", "reject", "withdraw"] {
+        let expected = match action {
+            "approve" => VoteAction::Approve,
+            "reject" => VoteAction::Reject,
+            "withdraw" => VoteAction::Withdraw,
+            _ => unreachable!("the loop names the three vote doors"),
+        };
         for (status, content_type, body) in cases {
+            *pricing.seen.lock().unwrap() = None;
             *pricing.vote.lock().unwrap() = VoteResponse {
                 status: *status,
                 headers: vec![
@@ -621,11 +716,39 @@ async fn the_card_outcomes_and_votes_pass_through_byte_for_byte() {
                     .and_then(|value| value.to_str().ok()),
                 Some(*content_type)
             );
-            let seen = pricing.seen.lock().unwrap().clone().unwrap();
+            let seen = pricing
+                .seen
+                .lock()
+                .unwrap()
+                .clone()
+                .expect("the source saw this vote");
+            assert_eq!(seen.0, expected, "{action}");
             assert_eq!(seen.1.body, payload);
             assert_eq!(seen.1.idempotency_key.as_deref(), Some("key-1"));
         }
     }
+}
+
+#[tokio::test]
+async fn a_vote_without_an_idempotency_key_is_refused() {
+    let unit = test_support::unit("pricing", 1, 7);
+    let pricing = Arc::new(Fake::serving(vec![unit.clone()]));
+    let app = inbox(&["pricing"], &[("pricing", pricing.clone())]);
+    let (status, _, body) = bytes(
+        call(
+            &app,
+            "POST",
+            &format!("/bss-approvals/v1/approval-units/{}/approve", unit.id),
+            br#"{"generation":1}"#,
+            true,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let text = String::from_utf8(body).unwrap();
+    assert!(text.contains("Idempotency-Key"), "{text}");
+    assert!(pricing.seen.lock().unwrap().is_none());
 }
 
 #[tokio::test]
@@ -642,13 +765,148 @@ async fn the_vote_spec_does_not_declare_412() {
         .build_openapi(&OpenApiInfo::default())
         .expect("openapi");
     let json = serde_json::to_value(&spec).unwrap();
+    let list = &json["paths"]["/bss-approvals/v1/approval-units"]["get"];
+    assert!(
+        list["x-odata-orderby"]["allowedFields"]
+            .as_array()
+            .is_some_and(|fields| fields.iter().any(|field| field == "submitted_at asc")),
+        "{list}"
+    );
     for action in ["approve", "reject", "withdraw"] {
         let responses = &json["paths"]
             [&format!("/bss-approvals/v1/approval-units/{{id}}/{action}")]["post"]["responses"];
         assert!(responses.get("412").is_none(), "{responses}");
         assert!(responses.get("409").is_some(), "{responses}");
         assert!(responses.get("400").is_some(), "{responses}");
+        let parameters = json["paths"]
+            [&format!("/bss-approvals/v1/approval-units/{{id}}/{action}")]["post"]["parameters"]
+            .as_array()
+            .unwrap();
+        let key = parameters
+            .iter()
+            .find(|param| param["name"] == "Idempotency-Key")
+            .expect("the key");
+        assert_eq!(key["required"], true, "{key}");
     }
+}
+
+#[tokio::test]
+async fn a_source_vote_that_does_not_read_is_500_and_a_bad_query_names_query() {
+    let unit = test_support::unit("pricing", 1, 7);
+    let pricing = Arc::new(Fake::serving(vec![unit.clone()]));
+    let app = inbox(&["pricing"], &[("pricing", pricing.clone())]);
+    let id = unit.id;
+    for (status, headers) in [
+        (
+            1000_u16,
+            vec![("content-type".to_owned(), "text/plain".to_owned())],
+        ),
+        (200, vec![("not a header".to_owned(), "x".to_owned())]),
+    ] {
+        *pricing.vote.lock().unwrap() = VoteResponse {
+            status,
+            headers,
+            body: b"{}".to_vec(),
+        };
+        let (got, _, _) = bytes(
+            call_with(
+                &app,
+                "POST",
+                &format!("/bss-approvals/v1/approval-units/{id}/approve"),
+                br#"{"generation":1}"#,
+                true,
+                Some("key-1"),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(got, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+    *pricing.vote.lock().unwrap() = VoteResponse {
+        status: 200,
+        headers: vec![
+            ("x-gear".to_owned(), "a".to_owned()),
+            ("x-gear".to_owned(), "b".to_owned()),
+        ],
+        body: b"{}".to_vec(),
+    };
+    let (got, headers, _) = bytes(
+        call_with(
+            &app,
+            "POST",
+            &format!("/bss-approvals/v1/approval-units/{id}/reject"),
+            br#"{"generation":1}"#,
+            true,
+            Some("key-2"),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(got, StatusCode::OK);
+    let values: Vec<_> = headers
+        .get_all("x-gear")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .collect();
+    assert_eq!(values, ["a", "b"]);
+    assert!(headers.get("content-type").is_none());
+
+    let (status, _, body) = bytes(
+        call(
+            &app,
+            "GET",
+            "/bss-approvals/v1/approval-units?limit=nope",
+            b"",
+            true,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let text = String::from_utf8(body).unwrap();
+    assert!(text.contains("\"query\""), "{text}");
+    assert!(!text.contains("INVALID_FILTER"), "{text}");
+}
+
+#[tokio::test]
+async fn a_card_whose_only_source_is_not_registered_is_unavailable() {
+    let app = inbox(&["pricing"], &[]);
+    let id = test_support::unit("pricing", 1, 11).id;
+    let (status, _, body) = bytes(
+        call(
+            &app,
+            "GET",
+            &format!("/bss-approvals/v1/approval-units/{id}"),
+            b"",
+            true,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    let text = String::from_utf8(body).unwrap();
+    assert!(text.contains("SOURCE_UNAVAILABLE"), "{text}");
+    assert!(text.contains("pricing"), "{text}");
+
+    let products = Arc::new(Fake::serving(vec![test_support::unit("products", 2, 22)]));
+    let app = inbox(&["pricing", "products"], &[("products", products)]);
+    let (status, _, body) = bytes(
+        call(
+            &app,
+            "GET",
+            &format!(
+                "/bss-approvals/v1/approval-units/{}",
+                test_support::unit("products", 2, 22).id
+            ),
+            b"",
+            true,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let text = String::from_utf8(body).unwrap();
+    assert!(text.contains("products"), "{text}");
 }
 
 #[tokio::test]

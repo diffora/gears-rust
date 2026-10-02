@@ -176,6 +176,7 @@ impl ApprovalSourceV1 for ProductsApprovalSource {
         ctx: &SecurityContext,
         q: &SourcePageQuery,
     ) -> Result<SourcePage, CanonicalError> {
+        super::narrowing(q.narrowing.state.as_deref(), None, None)?;
         if foreign(&q.narrowing) {
             return Ok(SourcePage {
                 units: Vec::new(),
@@ -206,7 +207,18 @@ impl ApprovalSourceV1 for ProductsApprovalSource {
             Some(after) => page.with_cursor(keyset_cursor(after, direction)?),
             None => page.with_order(submission_order(direction)),
         };
-        let list = super::page_of(&self.state, scope, &ctx, filter, page).await?;
+        let approve_scope = g::grant_scope(&self.enforcer, &ctx, actions::APPROVE).await?;
+        let submit_scope = g::grant_scope(&self.enforcer, &ctx, actions::SUBMIT).await?;
+        let list = super::page_of(
+            &self.state,
+            scope,
+            &ctx,
+            filter,
+            page,
+            approve_scope,
+            submit_scope,
+        )
+        .await?;
         let has_more = list.page_info.next_cursor.is_some();
         let mut units = list
             .items
@@ -227,6 +239,7 @@ impl ApprovalSourceV1 for ProductsApprovalSource {
         ctx: &SecurityContext,
         n: &SourceNarrowing,
     ) -> Result<SourceCounts, CanonicalError> {
+        super::narrowing(n.state.as_deref(), None, None)?;
         if foreign(n) {
             return Ok(SourceCounts::default());
         }

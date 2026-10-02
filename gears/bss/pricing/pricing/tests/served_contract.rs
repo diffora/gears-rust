@@ -264,14 +264,15 @@ async fn every_unit_says_whether_its_reader_may_approve_it() {
     let unit = &api["components"]["schemas"]["PricingApprovalUnitDto"];
     let flag = &unit["properties"]["caller_can_approve"];
     assert_eq!(flag["type"], "boolean", "{flag}");
-    assert!(
-        unit["required"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|r| r == "caller_can_approve"),
-        "{unit}"
-    );
+    let required = unit["required"].as_array().unwrap();
+    for name in [
+        "caller_can_approve",
+        "caller_can_reject",
+        "caller_can_withdraw",
+    ] {
+        assert!(required.iter().any(|r| r == name), "{name}");
+        assert_eq!(unit["properties"][name]["type"], "boolean", "{name}");
+    }
     let said = flag["description"].as_str().unwrap_or_default();
     assert!(
         said.contains("Approve only") && said.contains("403"),

@@ -292,11 +292,11 @@ impl ReferenceRegistryV1 for LocalReferenceRegistry {
         let found = repo::find_skus(&conn, backend, &scope, tenant, &ordered)
             .await
             .map_err(|e| rest::repo_error_to_canonical(&e))?;
-        let by_id: std::collections::HashMap<Uuid, Sku> =
+        let mut by_id: std::collections::HashMap<Uuid, Sku> =
             found.into_iter().map(|sku| (sku.id, sku)).collect();
         Ok(ordered
             .into_iter()
-            .filter_map(|id| by_id.get(&id).cloned())
+            .filter_map(|id| by_id.remove(&id))
             .collect())
     }
     async fn sku_version_as_of(

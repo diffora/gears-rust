@@ -71,8 +71,12 @@
 | P-D-247 | L | A usage-type picker page may be kept privately for a minute | DECIDED 2026-10-01 · Owner, 2026-10-01 (asks v4, 56); phase 9 plan rev 4 (run 9.8); extends P-D-207 |
 | P-D-248 | H | A retire under review keeps the SKU's lifecycle; `retire_pending` is the fence | DECIDED 2026-10-01 · Owner, 2026-10-01; phase 9 plan rev 4 run 9.8d; amends P-D-189, P-D-208, P-D-211, P-D-213 |
 | P-D-249 | H | A lifecycle change honours its date | DECIDED 2026-10-01 · Owner, 2026-10-01; phase 9 plan rev 4 run 9.8d; amends P-D-191 |
-| P-D-250 | M | The approval units answer the approvals inbox through this gear's own doors (twin of pricing D-490) | DECIDED 2026-10-01 · Owner, 2026-10-01 (option A, "yes, A, agreed", then "write the plan"; Run 2 started before 9.5d-2); approvals inbox plan rev 2 (Run 2; design 1 and 3; plan review H1, H3, H4, M1, M2, M5, L1); amends P-D-227 |
+| P-D-250 | M | The approval units answer the approvals inbox through this gear's own doors (twin of pricing D-490) | DECIDED 2026-10-01 · Owner, 2026-10-01 (option A, "yes, A, agreed", then "write the plan"; Run 2 started before 9.5d-2); approvals inbox plan rev 2 (Run 2; design 1 and 3; plan review H1, H3, H4, M1, M2, M5, L1); amends P-D-227; amended by P-D-252 |
 | P-D-251 | H | A derived usage type may wrap one raw meter, and a usage SKU may move onto that wrapper | DECIDED 2026-10-02 · Owner, 2026-10-02 ("let's convert the ones we have into derived form"); amends P-D-230, P-D-232 |
+| P-D-252 | M | The inbox source judges `state` before a foreign empty page | DECIDED 2026-10-02 · phase 9 review; amends P-D-250 |
+| P-D-253 | M | A products vote body is a closed set, and withdraw digests the body sent | DECIDED 2026-10-02 · phase 9 review |
+| P-D-254 | M | `GET /approval-units` refuses a query key it does not declare | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 62) |
+| P-D-255 | M | A unit says whether its reader may reject or withdraw it, and approve includes the grant | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 63); amends P-D-228 |
 
 ## Entries
 
@@ -1493,6 +1497,8 @@ and what the doors answer. Migration `m20261001_000012_derived_usage_type`, the 
     into a usage policy: `meter_ref`, `canonical_unit` (the output unit) and `accrual_policy_version`
     (`derived-v1:<digest>`). An `n` that is not a canonical decimal names no version: 404.
 
+  **Amended 2026-10-02 (fix run F2 part b).** A path `code` that is not the meter-id code, or an `n` that is not a canonical version, is that same 404. The 404 detail is the fixed sentence `derived usage type` and does not repeat the path. A type with no stored version is a corrupt row on the version-create door, as it is on the list. An invalid decimal's detail includes the parse error.
+
   Each write takes an optional `Idempotency-Key` (P-D-198), looked up before the body is judged or the catalog asked, and
   claimed and answered in the write's transaction. 503 is declared on every door; the served text names every code.
 - **The grants (O-3).** The writes ask `author` on the new PDP resource `derived_usage_type`
@@ -1777,6 +1783,10 @@ A `sku_change` whose `effective_from` is after today stores `lifecycle_next` and
 
 **Amendment (2026-10-01, run 9.8d-fix).** An act's history records a next lifecycle only when that act changed `lifecycle_next`: the next it stored, or the lifecycle in force when it cleared the next. An act that leaves a pending next untouched records the lifecycle in force. The list `$filter` on `lifecycle` is `eq`, `ne` or `in`, and those joined by `and`, compared through the `CASE`. A `lifecycle` term under `or` or `not`, or `contains`, `startswith` or `endswith` on `lifecycle`, is 400 `INVALID_FILTER` on the list and on the counts. The stored column is not compared.
 
+**Amended 2026-10-02.** The 400 detail names those accepted shapes and the refused shapes. It does not say the term is not counted.
+
+**Amended 2026-10-02 (fix run F2 part b).** A stored `lifecycle_next` pair that sets only one of the two columns is a corrupt row. A filter compares the lifecycle in force as an OR of the due next and the stored lifecycle, so the comparison can use an index. The counts projection keeps the `CASE`, because Postgres treats two copies of that expression as different `GROUP BY` terms.
+
 **Source:** Owner, 2026-10-01. Phase 9 plan rev 4, run 9.8d. Amends P-D-191.
 
 #### P-D-250 [M] The approval units answer the approvals inbox through this gear's own doors (twin of pricing D-490)
@@ -1892,3 +1902,43 @@ of that meter.
   submit and apply, because versions are append-only (P-D-231).
 
 **Source:** Owner, 2026-10-02 ("let's convert the ones we have into derived form"). Amends P-D-230 and P-D-232.
+
+**Amended 2026-10-02.** The approve door's text names the same exception as the change door: a raw meter moving onto the identity wrapper of that meter, in the same unit, is applied; every other pin move is 409 `DERIVED_PIN_IMMUTABLE`.
+
+#### P-D-252 [M] The inbox source judges `state` before a foreign empty page
+
+**Status:** DECIDED 2026-10-02.
+
+A kind products does not record, and any `book_id`, stay an empty page and zero counts (P-D-250). The source judges `state` with the list door's rule first. An unknown state is 400 on `state` for the page and the counts, including when the kind is foreign or a book is set. A known state, or no state, then takes the foreign empty set.
+
+**Source:** Phase 9 review (products lens a). Amends P-D-250. Twin of pricing D-496.
+
+#### P-D-253 [M] A products vote body is a closed set, and withdraw digests the body sent
+
+**Status:** DECIDED 2026-10-02.
+
+`VoteRequest` denies unknown fields. Approve and reject require `generation`. A missing `generation` is 400 `GENERATION_REQUIRED`. Any other key is 400 `BODY_UNEXPECTED` on that key. Withdraw accepts an empty body or `{}` and refuses anything else with 400 `BODY_UNEXPECTED`, and it does not withdraw. The idempotency digest is the body that was sent: an empty body digests as JSON null and `{}` digests as an empty object, so the two do not share a row.
+
+**Source:** Phase 9 review (products lens a).
+
+#### P-D-254 [M] `GET /approval-units` refuses a query key it does not declare
+
+**Status:** DECIDED 2026-10-02.
+
+The list takes `state`, `kind`, `ref_id`, `limit`, `cursor` and `$orderby`. Any other key is 400, the same refusal the counts already give. A census of this repository and of `vhp-core/tests/e2e/tests` found no caller that sends a key outside that set on the products list.
+
+**Source:** Owner, 2026-10-02 (ask 62, "все ок").
+
+#### P-D-255 [M] A unit says whether its reader may reject or withdraw it, and approve includes the grant
+
+**Status:** DECIDED 2026-10-02.
+
+Every unit DTO carries `caller_can_reject` and `caller_can_withdraw` beside `caller_can_approve`.
+
+- `caller_can_approve` is the engine's approve rule and the caller's `approval_unit:approve` grant on that unit.
+- `caller_can_reject` is that same grant, the unit pending, and no vote by the caller in this generation. The engine's reject judges no separation of duties and does not look at the note until the vote is sent.
+- `caller_can_withdraw` is the caller being the submitter, the unit pending, and the `approval_unit:submit` grant the withdraw door asks.
+
+The list, the card, a receipt and the inbox source compile each grant once per request and test each unit against that scope. A denial is an empty scope, so the page still answers. An unreachable PDP is 503.
+
+**Source:** Owner, 2026-10-02 (ask 63, "все ок"). Amends P-D-228. Twin of pricing D-497 and approvals AP-D-7.

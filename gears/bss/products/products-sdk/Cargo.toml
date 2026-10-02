@@ -34,3 +34,6 @@ toolkit-gts = { workspace = true }
 time = { workspace = true }
 # A derived declaration's constants and quantities are exact decimals (P-D-230); no float.
 rust_decimal = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

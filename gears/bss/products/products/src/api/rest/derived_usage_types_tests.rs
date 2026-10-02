@@ -767,6 +767,27 @@ async fn an_idempotent_replay_answers_the_first_receipt_and_writes_once() {
     );
 }
 
+#[tokio::test]
+async fn a_path_off_the_meter_id_pattern_is_a_fixed_404() {
+    let tenant = Uuid::new_v4();
+    let (app, _dsn) = rest_app(tenant, router).await;
+    let code = "Z".repeat(80);
+    let (status, body) = send(
+        &app,
+        tenant,
+        Method::GET,
+        &format!("{BASE}/{code}"),
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    let text = body.to_string();
+    assert!(!text.contains(&code), "{text}");
+    assert!(text.contains("derived usage type"), "{text}");
+    assert_eq!(body["detail"], "derived usage type");
+}
+
 /// A new version of a code the tenant does not hold is 404 and asks no catalog.
 #[tokio::test]
 async fn a_version_of_an_unknown_code_is_404() {
@@ -1071,7 +1092,42 @@ async fn writes_ask_derived_author_and_reads_ask_sku_read() {
         crate::authz::labels::DERIVED_USAGE_TYPE,
         "{b}"
     );
+    let (status, b) = send(
+        &reader,
+        tenant,
+        Method::POST,
+        &format!("{BASE}/cloudlets/versions"),
+        Some(json!({"declaration": cloudlet()})),
+        &[],
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{b}");
+    assert_eq!(
+        b["context"]["resource_type"],
+        crate::authz::labels::DERIVED_USAGE_TYPE,
+        "{b}"
+    );
     let sku_author = app_with(crate::authz::labels::SKU, "author");
+    let (status, b) = send(
+        &sku_author,
+        tenant,
+        Method::POST,
+        &format!("{BASE}/cloudlets/versions"),
+        Some(json!({"declaration": cloudlet()})),
+        &[],
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{b}");
+    let (status, b) = send(
+        &author,
+        tenant,
+        Method::POST,
+        &format!("{BASE}/cloudlets/versions"),
+        Some(json!({"declaration": cloudlet()})),
+        &[],
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{b}");
     let (status, _) = send(
         &sku_author,
         tenant,

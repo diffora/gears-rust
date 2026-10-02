@@ -422,6 +422,7 @@ async fn the_list_and_counts_refusals_are_the_doors() {
     let (a, b) = (Uuid::new_v4().to_string(), Uuid::new_v4().to_string());
     for (query, sees) in [
         (vec![("state", "bogus")], 400),
+        (vec![("kind", "sku_publish"), ("state", "bogus")], 400),
         (vec![("ref_id", a.as_str()), ("book_id", b.as_str())], 400),
     ] {
         for door_path in [UNITS.to_owned(), format!("{UNITS}/counts")] {
@@ -666,7 +667,7 @@ async fn every_vote_refusal_is_the_vote_doors_byte_for_byte() {
             Some(("d1", "s1")),
             false,
             400,
-            "",
+            "generation",
         ),
         (
             &one,
@@ -675,7 +676,7 @@ async fn every_vote_refusal_is_the_vote_doors_byte_for_byte() {
             Some(("d2", "s2")),
             false,
             400,
-            "",
+            "expected",
         ),
         (
             &one,
@@ -747,7 +748,7 @@ async fn every_vote_refusal_is_the_vote_doors_byte_for_byte() {
             Some(("d9", "s9")),
             true,
             403,
-            "",
+            "access denied",
         ),
     ];
     for (who, action, body, keys, denied, status, code) in cases {

@@ -3,7 +3,6 @@
 use std::collections::{BTreeMap, HashMap};
 
 use bss_approvals_sdk::{InboxUnit, Order, SortKey};
-use uuid::Uuid;
 
 use super::merge::{self, SourceAnswer};
 use crate::test_support::{self, page_after};
@@ -19,7 +18,7 @@ fn page(
     limit: u32,
     keys: &BTreeMap<String, Option<SortKey>>,
 ) -> merge::MergedPage {
-    let owned: Vec<(String, Vec<InboxUnit>, bool)> = names
+    let pages: Vec<SourceAnswer> = names
         .iter()
         .map(|name| {
             let after = keys.get(*name).copied().flatten();
@@ -29,18 +28,14 @@ fn page(
                 limit,
                 after,
             );
-            ((*name).to_owned(), units, has_more)
+            SourceAnswer {
+                source: (*name).to_owned(),
+                units,
+                has_more,
+            }
         })
         .collect();
-    let views: Vec<SourceAnswer<'_>> = owned
-        .iter()
-        .map(|(name, units, has_more)| SourceAnswer {
-            source: name,
-            units,
-            has_more: *has_more,
-        })
-        .collect();
-    merge::merge(order, limit, keys, &views)
+    merge::merge(order, limit, keys, pages)
 }
 
 fn walk(
@@ -77,19 +72,6 @@ fn catalog<'a>(rows: &'a [(&'a str, i64, u128)]) -> HashMap<&'a str, Vec<InboxUn
             .push(test_support::unit(name, *secs, *id));
     }
     out
-}
-
-#[test]
-fn uuid_order_matches_lowercase_hex() {
-    let ids: Vec<Uuid> = (0..32_u128)
-        .map(|n| Uuid::from_u128(n.saturating_mul(0x0101_0203_0405_0607)))
-        .collect();
-    let mut by_bytes = ids.clone();
-    let mut by_hex: Vec<String> = ids.iter().map(ToString::to_string).collect();
-    by_bytes.sort();
-    by_hex.sort();
-    let rendered: Vec<String> = by_bytes.iter().map(ToString::to_string).collect();
-    assert_eq!(rendered, by_hex);
 }
 
 #[test]

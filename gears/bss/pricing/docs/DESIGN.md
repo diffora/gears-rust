@@ -538,7 +538,7 @@ merges its pages with products' by D-470's order, `(submitted_at, id)`. The sour
 list's read (`approvals::list_units` over `page_units`) with a `CursorV1` it builds from the inbox's key, so the keyset
 is the pager's compare; the counts' grouped statement on the plain connection; the card door, whose 404 is a miss; and
 the vote door through the authoring router as `module.rs` serves it, so the grant, the idempotency endpoint and the
-answer's bytes are the door's. A kind pricing does not record is an empty page and zero counts. `subject_live` is null.
+answer's bytes are the door's. A kind pricing does not record is an empty page and zero counts, after `state` has been accepted (D-496). An unknown state is the list door's 400. `subject_live` is null.
 Reserve is idempotent on the live logical reference, not on a released receipt. The same tenant and SKU must be
 bound to the receipt and object. Products versions?as_of provides descriptor history in phase 4. There is no
 SkuChanged listener/local SKU read model in phase 2 (D-399). Subscriptions migration execution and Rating

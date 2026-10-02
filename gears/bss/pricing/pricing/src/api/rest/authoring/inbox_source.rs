@@ -57,11 +57,10 @@ impl PricingApprovalSource {
     /// The source over the gear's own state and enforcer.
     #[must_use]
     pub fn new(state: Arc<AuthoringState>, enforcer: authz_resolver_sdk::PolicyEnforcer) -> Self {
-        let doors = super::router(state.clone(), &toolkit::api::OpenApiRegistryImpl::new())
-            .layer(Extension(enforcer.clone()))
-            .layer(axum::middleware::from_fn(
-                toolkit::api::canonical_error_middleware,
-            ));
+        let doors = super::with_caller_layers(
+            super::router(state.clone(), &toolkit::api::OpenApiRegistryImpl::new()),
+            enforcer.clone(),
+        );
         Self {
             state,
             enforcer,
@@ -165,6 +164,7 @@ impl ApprovalSourceV1 for PricingApprovalSource {
         ctx: &SecurityContext,
         q: &SourcePageQuery,
     ) -> Result<SourcePage, CanonicalError> {
+        approvals::state_filter(q.narrowing.state.as_deref())?;
         if foreign_kind(&q.narrowing) {
             return Ok(SourcePage {
                 units: Vec::new(),
@@ -189,30 +189,36 @@ impl ApprovalSourceV1 for PricingApprovalSource {
             Some(after) => page.with_cursor(keyset_cursor(after, direction)?),
             None => page.with_order(submission_order(direction)),
         };
+        let (approve_scope, submit_scope) = (
+            crate::authz::grant_scope(&self.enforcer, &ctx, actions::APPROVE)
+                .await
+                .map_err(authz_failure)?,
+            crate::authz::grant_scope(&self.enforcer, &ctx, actions::SUBMIT)
+                .await
+                .map_err(authz_failure)?,
+        );
         let request = approvals::UnitListRequest {
             filter,
             page,
             impact: q.impact,
+            approve_scope,
+            submit_scope,
         };
-        let response = transaction(&self.state.db.db(), move |tx| {
+        let listed = transaction(&self.state.db.db(), move |tx| {
             let (scope, ctx, request) = (scope.clone(), ctx.clone(), request.clone());
-            Box::pin(async move { approvals::list_units(tx, &scope, &ctx, &request).await })
+            Box::pin(async move { approvals::read_unit_page(tx, &scope, &ctx, &request).await })
         })
         .await?;
-        let mut body = door_json(response).await?;
-        let has_more = body["page_info"]["next_cursor"].is_string();
-        let units = match body["items"].take() {
-            serde_json::Value::Array(items) => items
-                .into_iter()
-                .map(|item| InboxUnit::from_door(SOURCE, item))
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| not_inbox(&e))?,
-            _ => {
-                return Err(not_inbox(&serde::de::Error::custom(
-                    "the list has no items",
-                )));
-            }
-        };
+        let has_more = listed.page_info.next_cursor.is_some();
+        let units = listed
+            .items
+            .into_iter()
+            .map(|item| {
+                serde_json::to_value(item)
+                    .map_err(|e| not_inbox(&e))
+                    .and_then(|item| InboxUnit::from_door(SOURCE, item).map_err(|e| not_inbox(&e)))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(SourcePage { units, has_more })
     }
 
@@ -221,6 +227,7 @@ impl ApprovalSourceV1 for PricingApprovalSource {
         ctx: &SecurityContext,
         n: &SourceNarrowing,
     ) -> Result<SourceCounts, CanonicalError> {
+        approvals::state_filter(n.state.as_deref())?;
         if foreign_kind(n) {
             return Ok(SourceCounts::default());
         }

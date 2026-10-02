@@ -32,29 +32,74 @@ pub(crate) fn effective_lifecycle_expr(today: Date) -> SimpleExpr {
     .finally(Expr::col((sku::Entity, sku::Column::Lifecycle)))
     .into()
 }
+
+/// The same rule as [`effective_lifecycle_expr`], as an OR the planner can seek: a due
+/// `lifecycle_next`, or the stored `lifecycle` when the next has not arrived. The counts
+/// projection keeps the `CASE`, because Postgres treats two copies of it as different
+/// expressions in `GROUP BY`.
+pub(crate) fn effective_lifecycle_in<T: AsRef<str>>(today: Date, tokens: &[T]) -> Condition {
+    let mut any = Condition::any();
+    for token in tokens {
+        let token = token.as_ref();
+        let due = Condition::all()
+            .add(sku::Column::LifecycleNextFrom.is_not_null())
+            .add(sku::Column::LifecycleNextFrom.lte(today))
+            .add(sku::Column::LifecycleNext.eq(token));
+        let stored = Condition::all()
+            .add(
+                Condition::any()
+                    .add(sku::Column::LifecycleNextFrom.is_null())
+                    .add(sku::Column::LifecycleNextFrom.gt(today)),
+            )
+            .add(sku::Column::Lifecycle.eq(token));
+        any = any.add(Condition::any().add(due).add(stored));
+    }
+    any
+}
+
+/// Effective lifecycle other than `token`.
+pub(crate) fn effective_lifecycle_ne(today: Date, token: &str) -> Condition {
+    effective_lifecycle_in(today, &[token]).not()
+}
 fn today() -> Date {
     crate::infra::storage::stored_now().date()
 }
 fn lifecycle_in_force(row: &sku::Model) -> Result<Lifecycle, RepoError> {
     let stored = Lifecycle::parse(&row.lifecycle)
         .ok_or_else(|| RepoError::CorruptRow(format!("SKU lifecycle {}", row.lifecycle)))?;
-    let next = row
-        .lifecycle_next
-        .as_deref()
-        .map(|token| {
-            Lifecycle::parse(token).ok_or_else(|| {
-                RepoError::CorruptRow(format!("SKU {} lifecycle_next {token}", row.id))
-            })
-        })
-        .transpose()?;
+    let next = scheduled_next(
+        row.id,
+        row.lifecycle_next.as_deref(),
+        row.lifecycle_next_from,
+    )?;
     Ok(effective_lifecycle(
         LifecycleHead {
             lifecycle: stored,
             next,
-            next_from: row.lifecycle_next_from,
         },
         today(),
     ))
+}
+
+/// Both columns null, or both set. A half-set pair is a corrupt row (P-D-249).
+fn scheduled_next(
+    id: Uuid,
+    next: Option<&str>,
+    from: Option<Date>,
+) -> Result<Option<LifecycleNext>, RepoError> {
+    let next = next
+        .map(|token| {
+            Lifecycle::parse(token)
+                .ok_or_else(|| RepoError::CorruptRow(format!("SKU {id} lifecycle_next {token}")))
+        })
+        .transpose()?;
+    match (next, from) {
+        (None, None) => Ok(None),
+        (Some(lifecycle), Some(from)) => Ok(Some(LifecycleNext { lifecycle, from })),
+        _ => Err(RepoError::CorruptRow(format!(
+            "SKU {id} stores only half of lifecycle_next"
+        ))),
+    }
 }
 /// Fold a due `lifecycle_next` into `lifecycle` before a head write, so the write's predicate
 /// sees the lifecycle in force (P-D-249). A read never depends on this.
@@ -93,25 +138,13 @@ async fn fold_head(
 pub(crate) fn sku_of(m: sku::Model) -> Result<Sku, RepoError> {
     let stored = Lifecycle::parse(&m.lifecycle)
         .ok_or_else(|| RepoError::CorruptRow(format!("SKU lifecycle {}", m.lifecycle)))?;
-    let next = m
-        .lifecycle_next
-        .as_deref()
-        .map(|token| {
-            Lifecycle::parse(token).ok_or_else(|| {
-                RepoError::CorruptRow(format!("SKU {} lifecycle_next {token}", m.id))
-            })
-        })
-        .transpose()?;
+    let next = scheduled_next(m.id, m.lifecycle_next.as_deref(), m.lifecycle_next_from)?;
     let day = today();
     let head = LifecycleHead {
         lifecycle: stored,
         next,
-        next_from: m.lifecycle_next_from,
     };
-    let lifecycle_next = match (next, m.lifecycle_next_from) {
-        (Some(lifecycle), Some(from)) if from > day => Some(LifecycleNext { lifecycle, from }),
-        _ => None,
-    };
+    let lifecycle_next = next.filter(|scheduled| scheduled.from > day);
     Ok(Sku {
         id: m.id,
         tenant_id: m.tenant_id,
@@ -231,36 +264,6 @@ pub async fn find_sku(
         .map(sku_of)
         .transpose()
 }
-/// `id` in `ids`, with ONE bind whatever the set's size (P-D-245, P-D-212's form): a JSON array
-/// read by `json_each` on `SQLite` (a UUID is stored as 16 bytes there, hence `unhex`), a
-/// `uuid[]` on Postgres.
-//
-// Raw SQL, on purpose: sea-query's `is_in` binds one parameter per id, so the statement's text
-// varies with the set and a large union meets the dialects' bind limits. The ids stay bound, and
-// the select around this condition stays `.secure().scope_with(scope)`.
-fn id_membership(backend: DbBackend, ids: &[Uuid]) -> Condition {
-    let expr = if backend == DbBackend::Postgres {
-        let array = format!(
-            "{{{}}}",
-            ids.iter()
-                .map(|id| id.hyphenated().to_string())
-                .collect::<Vec<_>>()
-                .join(",")
-        );
-        Expr::cust_with_values(r#""products_sku"."id" = ANY(CAST($1 AS uuid[]))"#, [array])
-    } else {
-        let hex: Vec<String> = ids
-            .iter()
-            .map(|id| id.simple().to_string().to_uppercase())
-            .collect();
-        let json = serde_json::Value::from(hex).to_string();
-        Expr::cust_with_values(
-            r#""products_sku"."id" IN (SELECT unhex("value") FROM json_each(?))"#,
-            [json],
-        )
-    };
-    Condition::all().add(expr)
-}
 /// The tenant's SKUs among `ids`, in ONE statement whatever their number (P-D-245). An id the
 /// tenant does not hold, or the scope does not admit, has no row. The caller orders them.
 ///
@@ -282,7 +285,7 @@ pub async fn find_skus(
         .filter(
             Condition::all()
                 .add(sku::Column::TenantId.eq(tenant_id))
-                .add(id_membership(backend, ids)),
+                .add(super::sku_list_repo::membership(backend, ids)),
         )
         .all(runner)
         .await
@@ -315,7 +318,7 @@ pub async fn list_skus(
         c = c.add(filter.clone());
     }
     if let Some(v) = q.lifecycle {
-        c = c.add(effective_lifecycle_expr(today()).eq(v.as_str()));
+        c = c.add(effective_lifecycle_in(today(), &[v.as_str()]));
     }
     if let Some(v) = &q.after_code {
         c = c.add(sku::Column::Code.gt(v));
@@ -352,7 +355,10 @@ pub async fn distinct_tax_categories(
         .filter(
             Condition::all()
                 .add(sku::Column::TenantId.eq(tenant_id))
-                .add(effective_lifecycle_expr(today()).eq(Lifecycle::Published.as_str()))
+                .add(effective_lifecycle_in(
+                    today(),
+                    &[Lifecycle::Published.as_str()],
+                ))
                 .add(sku::Column::TaxCategory.is_not_null()),
         )
         .project_all(runner, |q| {
@@ -608,7 +614,10 @@ pub async fn fence_sku(
     let r = q
         .filter(
             key(tenant_id, id)
-                .add(effective_lifecycle_expr(today()).is_in(["published", "deprecated"]))
+                .add(effective_lifecycle_in(
+                    today(),
+                    &["published", "deprecated"],
+                ))
                 .add(sku::Column::RetirePending.eq(false))
                 .add(sku::Column::PendingUnitId.is_null())
                 .add(sku::Column::FencedAt.is_null())

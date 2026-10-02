@@ -69,6 +69,9 @@ pub struct Command {
     pub correlation: Uuid,
     pub key: String,
     pub digest: Vec<u8>,
+    /// Compiled once per request for the unit flags (D-497).
+    pub approve_scope: AccessScope,
+    pub submit_scope: AccessScope,
 }
 impl Command {
     fn tenant(&self) -> Uuid {
@@ -111,10 +114,17 @@ async fn unit_dto(
     store: &PricingApprovalStore,
     unit: Unit,
     reader: Uuid,
+    approve_scope: &AccessScope,
+    submit_scope: &AccessScope,
 ) -> Result<PricingApprovalUnitDto, DoorError> {
     let (authors, decisions) = rows_of(tx, store, unit.id).await?;
     Ok(PricingApprovalUnitDto::of(
-        unit, &authors, decisions, reader,
+        unit,
+        &authors,
+        decisions,
+        reader,
+        approve_scope,
+        submit_scope,
     )?)
 }
 /// One unit's item authors and decisions, one statement each: what its receipt's flag and, for a
@@ -430,6 +440,8 @@ async fn record_prices(
             &authors_of(&items),
             decisions,
             cmd.ctx.subject_id(),
+            &cmd.approve_scope,
+            &cmd.submit_scope,
         )?,
         prices,
     };
@@ -587,6 +599,8 @@ pub async fn submit_revision(
                         &authors,
                         decisions,
                         cmd.ctx.subject_id(),
+                        &cmd.approve_scope,
+                        &cmd.submit_scope,
                     )?,
                     revision,
                 };
@@ -857,6 +871,8 @@ pub struct UnitListRequest {
     pub page: toolkit_odata::ODataQuery,
     /// `false` (`impact=false`): no plan is read and every unit answers `impact: null`.
     pub impact: bool,
+    pub approve_scope: AccessScope,
+    pub submit_scope: AccessScope,
 }
 /// `GET /approval-units`: one page in submission order (D-458), oldest or newest first (D-470),
 /// each unit with every generation's decisions, whether the caller `ctx` may approve it (D-471)
@@ -872,6 +888,18 @@ pub async fn list_units(
     ctx: &SecurityContext,
     request: &UnitListRequest,
 ) -> Result<Response, DoorError> {
+    let listed = read_unit_page(tx, scope, ctx, request).await?;
+    Ok(support::response(StatusCode::OK, &listed, None)?)
+}
+
+/// The list door's page, as a value. The HTTP door wraps it; the inbox reads it without parsing
+/// the response body back out of JSON.
+pub async fn read_unit_page(
+    tx: &DbTx<'_>,
+    scope: &AccessScope,
+    ctx: &SecurityContext,
+    request: &UnitListRequest,
+) -> Result<PricingApprovalUnitList, DoorError> {
     let (tenant, reader) = (ctx.subject_tenant_id(), ctx.subject_id());
     let page = approval_repo::page_units(tx, scope, tenant, &request.filter, &request.page)
         .await
@@ -927,20 +955,23 @@ pub async fn list_units(
         let touched = touched.remove(&id).unwrap_or_default();
         let authors = authors.remove(&id).unwrap_or_default();
         let decisions = decisions.remove(&id).unwrap_or_default();
-        let mut dto = PricingApprovalUnitDto::of(unit, &authors, decisions, reader)?;
+        let mut dto = PricingApprovalUnitDto::of(
+            unit,
+            &authors,
+            decisions,
+            reader,
+            &request.approve_scope,
+            &request.submit_scope,
+        )?;
         dto.impact = reading
             .as_ref()
             .map(|reading| kind.impact_from(reading, &touched));
         items.push(dto);
     }
-    Ok(support::response(
-        StatusCode::OK,
-        &PricingApprovalUnitList {
-            items,
-            page_info: page.page_info,
-        },
-        None,
-    )?)
+    Ok(PricingApprovalUnitList {
+        items,
+        page_info: page.page_info,
+    })
 }
 /// `GET /approval-units/counts` (D-470): the units the list's narrowing keeps, by state and by
 /// kind, in ONE grouped statement, which the door reads outside any transaction: one statement is
@@ -990,6 +1021,8 @@ pub async fn get_unit(
     scope: &AccessScope,
     ctx: &SecurityContext,
     id: Uuid,
+    approve_scope: &AccessScope,
+    submit_scope: &AccessScope,
 ) -> Result<Response, DoorError> {
     let (tenant, reader) = (ctx.subject_tenant_id(), ctx.subject_id());
     let store = PricingApprovalStore {
@@ -1000,7 +1033,14 @@ pub async fn get_unit(
     let kind = Kind::of(&unit)?;
     let items = store.items(tx, id).await.map_err(approval_failure)?;
     let decisions = store.decisions(tx, id).await.map_err(approval_failure)?;
-    let mut dto = PricingApprovalUnitDto::of(unit, &authors_of(&items), decisions, reader)?;
+    let mut dto = PricingApprovalUnitDto::of(
+        unit,
+        &authors_of(&items),
+        decisions,
+        reader,
+        approve_scope,
+        submit_scope,
+    )?;
     dto.impact = Some(kind.impact(tx, tenant, &items).await?);
     Ok(support::response(StatusCode::OK, &dto, None)?)
 }
@@ -1258,7 +1298,15 @@ async fn vote_in(
         have,
         need,
         outcome: label,
-        unit: unit_dto(tx, &store, unit, actor).await?,
+        unit: unit_dto(
+            tx,
+            &store,
+            unit,
+            actor,
+            &cmd.approve_scope,
+            &cmd.submit_scope,
+        )
+        .await?,
     };
     support::answer(
         tx,

@@ -1,5 +1,6 @@
 //! The list, the counts, the card and the three vote doors.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::Json;
@@ -11,7 +12,7 @@ use axum::response::{IntoResponse, Response};
 use bss_approvals_sdk::{VoteAction, VoteRequest};
 use serde::Deserialize;
 use toolkit_canonical_errors::{CanonicalError, ForeignPassthrough};
-use toolkit_odata::Error as ODataError;
+use toolkit_odata::errors::OdataError;
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
@@ -24,7 +25,6 @@ use crate::domain::read;
 const IDEMPOTENCY_KEY: &str = "Idempotency-Key";
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(super) struct ListQuery {
     state: Option<String>,
     kind: Option<String>,
@@ -32,9 +32,27 @@ pub(super) struct ListQuery {
     book_id: Option<Uuid>,
     limit: Option<u64>,
     cursor: Option<String>,
-    #[serde(rename = "$orderby")]
-    orderby: Option<String>,
     impact: Option<bool>,
+    /// Keys other than the named fields. `$orderby` is taken here so the query struct
+    /// does not rename a field to a non-snake-case wire name (DE0803). Any other key is refused.
+    #[serde(flatten)]
+    rest: BTreeMap<String, String>,
+}
+
+impl ListQuery {
+    fn take_order(mut self) -> Result<(Self, Option<String>), CanonicalError> {
+        let orderby = self.rest.remove("$orderby");
+        if let Some(key) = self.rest.keys().next() {
+            return Err(OdataError::invalid_argument()
+                .with_field_violation(
+                    "query",
+                    format!("unknown query key {key}"),
+                    "INVALID_QUERY_PARAMS",
+                )
+                .create());
+        }
+        Ok((self, orderby))
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -59,6 +77,7 @@ pub(super) async fn list_units(
 ) -> Result<Json<InboxUnitListDto>, CanonicalError> {
     let ctx = caller(ctx)?;
     let Query(query) = bad_query(query)?;
+    let (query, orderby) = query.take_order()?;
     let prepared = query::prepare_list(&ListParams {
         state: query.state,
         kind: query.kind,
@@ -66,7 +85,7 @@ pub(super) async fn list_units(
         book_id: query.book_id,
         limit: query.limit,
         cursor: query.cursor,
-        orderby: query.orderby,
+        orderby,
         impact: query.impact,
     })?;
     let listed = read::list_page(&state.hub, &state.sources, &ctx, &prepared).await?;
@@ -84,20 +103,13 @@ pub(super) async fn count_units(
 ) -> Result<Json<InboxCountsDto>, CanonicalError> {
     let ctx = caller(ctx)?;
     let Query(query) = bad_query(query)?;
-    let params = ListParams {
+    let narrowing = bss_approvals_sdk::SourceNarrowing {
         state: query.state,
         kind: query.kind,
         ref_id: query.ref_id,
         book_id: query.book_id,
-        ..ListParams::default()
     };
-    let counted = read::count_all(
-        &state.hub,
-        &state.sources,
-        &ctx,
-        &query::narrowing_of(&params),
-    )
-    .await?;
+    let counted = read::count_all(&state.hub, &state.sources, &ctx, &narrowing).await?;
     Ok(Json(InboxCountsDto::from_counts(
         counted.counts,
         counted.sources,
@@ -176,19 +188,34 @@ async fn vote(
 }
 
 fn vote_request(headers: &HeaderMap, body: Bytes) -> Result<VoteRequest, CanonicalError> {
-    let idempotency_key = match headers.get(IDEMPOTENCY_KEY) {
-        None => None,
-        Some(value) => Some(
-            value
-                .to_str()
-                .map_err(|_| ODataError::InvalidFilter("Idempotency-Key is not valid text".into()))?
-                .to_owned(),
-        ),
+    let Some(value) = headers.get(IDEMPOTENCY_KEY) else {
+        return Err(key_invalid(
+            "Idempotency-Key is required",
+            "IDEMPOTENCY_KEY_REQUIRED",
+        ));
     };
+    let key = value.to_str().map_err(|_| {
+        key_invalid(
+            "Idempotency-Key is not valid text",
+            "IDEMPOTENCY_KEY_INVALID",
+        )
+    })?;
+    if key.is_empty() {
+        return Err(key_invalid(
+            "Idempotency-Key is required",
+            "IDEMPOTENCY_KEY_REQUIRED",
+        ));
+    }
     Ok(VoteRequest {
         body: Vec::from(body),
-        idempotency_key,
+        idempotency_key: Some(key.to_owned()),
     })
+}
+
+fn key_invalid(description: &str, reason: &str) -> CanonicalError {
+    OdataError::invalid_argument()
+        .with_field_violation(IDEMPOTENCY_KEY, description, reason)
+        .create()
 }
 
 /// The owning door's answer as it left that door: status, headers and body. It is marked as a
@@ -202,7 +229,8 @@ fn pass_through(answered: bss_approvals_sdk::VoteResponse) -> Response {
         .create()
         .into_response();
     };
-    let mut response = (status, answered.body).into_response();
+    let mut response = Response::new(axum::body::Body::from(answered.body));
+    *response.status_mut() = status;
     for (name, value) in answered.headers {
         let Ok(name) = HeaderName::try_from(name) else {
             return CanonicalError::internal(
@@ -218,7 +246,7 @@ fn pass_through(answered: bss_approvals_sdk::VoteResponse) -> Response {
             .create()
             .into_response();
         };
-        response.headers_mut().insert(name, value);
+        response.headers_mut().append(name, value);
     }
     response.extensions_mut().insert(ForeignPassthrough);
     response
@@ -236,5 +264,9 @@ fn caller(ctx: Option<Extension<SecurityContext>>) -> Result<SecurityContext, Ca
 }
 
 fn bad_query<T>(query: Result<Query<T>, QueryRejection>) -> Result<Query<T>, CanonicalError> {
-    query.map_err(|_| ODataError::InvalidFilter("the query did not parse".into()).into())
+    query.map_err(|e| {
+        OdataError::invalid_argument()
+            .with_field_violation("query", e.body_text(), "INVALID_QUERY_PARAMS")
+            .create()
+    })
 }

@@ -13,6 +13,8 @@ workspace = true
 [dependencies]
 anyhow = { workspace = true }
 arc-swap = { workspace = true }
+futures = { workspace = true }
+tracing = { workspace = true }
 async-trait = { workspace = true }
 aws-lc-rs = { workspace = true }
 axum = { workspace = true }
@@ -32,6 +34,7 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 http-body-util = { workspace = true }
+proptest = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tokio-util = { workspace = true }
 tower = { workspace = true }
