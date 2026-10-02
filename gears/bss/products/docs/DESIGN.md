@@ -171,7 +171,7 @@ A pending lock is business ownership, not a database row lock (P-D-192; spec §2
 | `ApprovalUnit` | Shared crate type: kind, subject reference, state, quorum, generation, snapshot/hash, date, submitter, decision metadata and concurrency version. |
 | `Decision` | Shared crate type: unit, actor, generation, approve/reject, note, timestamp and stale flag. One vote per actor per generation. |
 | `SkuReference` | Tenant, id, sku_id, owner_gear, price_book_entry/plan_item/sold_as kind, ref_id, reserved/confirmed/released state, timestamps, released_by and release_reason. Released attempts remain recorded. |
-| `DerivedUsageDeclaration` | One version of a derived usage type (P-D-229, P-D-230), in `products-sdk`'s `derived` module: output unit, granularity (an hour), at least two raw inputs (name, GTS ref at its exact version, granule fold, a hold bound for a time-weighted input, unit), a formula over them, output scale and rounding. Stored per version with its digest (P-D-231). |
+| `DerivedUsageDeclaration` | One version of a derived usage type (P-D-229, P-D-230), in `products-sdk`'s `derived` module: output unit, granularity (an hour), at least one raw input (name, GTS ref at its exact version, granule fold, a hold bound for a time-weighted input, unit), a formula over them, output scale and rounding. One input may be the identity wrapper of a raw meter (P-D-251). Stored per version with its digest (P-D-231). |
 | `DerivedUsageType` | Tenant, id (UUID v7), code (`^[a-z0-9][a-z0-9._-]{0,63}$`, unique per tenant), name, creator and creation time, and versions 1, 2, … each holding one immutable declaration and the SHA-256 of its canonical bytes. No lifecycle and no approval of its own (O-1); the meter id of version `n` is `products.derived/<code>@<n>` (P-D-231). |
 
 A usage SKU needs both `usage_type_ref` and `unit` at publication; submit and apply resolve the reference.
@@ -181,8 +181,8 @@ Pricing plan, never priced or included as a plan item (P-D-184–185).
 **The derived usage declaration** (P-D-229, P-D-230). The `derived` module of `products-sdk` holds the declaration, its
 grammar and its one evaluator. It is pure (no I/O, serde or hashing), so Rating evaluates through the function Products
 validates with:
-- `validate` refuses a declaration with one `DeclarationError` variant per rule: an unknown, unused or duplicate input, fewer
-  than two inputs, a derived input, a division by zero, a `Max` or `Min` of fewer than two operands, a formula deeper than 32
+- `validate` refuses a declaration with one `DeclarationError` variant per rule: an unknown, unused or duplicate input, no
+  inputs, a derived input, a division by zero, a `Max` or `Min` of fewer than two operands, a formula deeper than 32
   or of more than 256 nodes, a scale above 12, a hold missing on a time-weighted input, present elsewhere or outside
   1..=86,400 seconds, an input name off its pattern, and an empty or over-cap unit or input ref. Its walk is iterative.
 - `evaluate` applies the formula to one granule's folded input quantities, keyed by input name, with checked decimal
@@ -205,9 +205,11 @@ the gear reads the tenant's version from its own store, before the unconfigured 
 catalog call, so the catalog is never asked for a derived ref. The ref binds when the tenant holds that version and the
 SKU's unit, when named, is its output unit: otherwise 400 `DERIVED_USAGE_TYPE_UNKNOWN` (one answer for an unknown code or
 version, another tenant's type and a non-canonical id) or `DERIVED_UNIT_MISMATCH`. A draft may move its pin; a published
-SKU keeps it. `SkuChange::validate_change` refuses, at submit (400) and at apply (409), `DERIVED_PIN_IMMUTABLE`, a change
-whose current or proposed ref is derived when the two differ: another version, GTS to derived, derived to GTS, a dropped
-ref. A new formula version is sold through a new usage SKU (M1).
+SKU keeps it, except one move (P-D-251): a raw GTS ref may become `products.derived/<code>@<n>` when that stored version
+wraps the raw meter — exactly one input, that ref whole-string, the identity formula, and the same unit, which the change
+does not move. `SkuChange::validate_change` refuses every other move, at submit (400) and at apply (409),
+`DERIVED_PIN_IMMUTABLE`: another version, raw to a derived version that does not wrap, raw to derived with a unit change,
+derived to raw, a dropped ref. A new formula version is sold through a new usage SKU (M1).
 
 The `sku` row holds the latest applied content, possibly future-effective. `revision` is the SKU concurrency
 version for ETag, If-Match and compare-and-swap; `published_version` identifies each published
@@ -351,7 +353,7 @@ registration and standardized errors.
 | SKU history | `GET /skus/{id}/history?$top&cursor` | products:read; the SKU's audit rows and its approval units' rows, in the order the acts wrote them (`audit_id`, a UUID v7 minted in the act's transaction), as `Page<ProductsSkuHistoryEntry>`: `{ at, actor, action, from_lifecycle, to_lifecycle, unit_id, unit_kind, note }`; `$top`/`limit` 50, clamped at 200; other keys 400; 404 for a foreign SKU or a deleted draft (P-D-213). |
 | Versions | `GET /skus/{id}/versions`; `GET /skus/{id}/versions/as-of?date=<date>` | The history is always an array, oldest first (empty before the first publication); any query key is 400. The dated read answers one version: greatest effective_from not after `date`, then greatest published_version; 404 `NO_VERSION_IN_FORCE` before the first version; a missing or malformed `date` is 400 (P-D-214). |
 | Publication | `POST /skus/{id}/submit` | Submit `sku_publish`. An optional body `{ note }` carries the submitter's note (P-D-219). |
-| Change | `POST /skus/{id}/changes` | Published/deprecated content and/or lifecycle proposal; effective_from defaults to today; submit `sku_change`; an optional `note` (P-D-213, P-D-219). A change that moves a derived pin is 400 `DERIVED_PIN_IMMUTABLE` before any catalog is asked, and again at apply (409) (P-D-232). |
+| Change | `POST /skus/{id}/changes` | Published/deprecated content and/or lifecycle proposal; effective_from defaults to today; submit `sku_change`; an optional `note` (P-D-213, P-D-219). A change that moves a derived pin is 400 `DERIVED_PIN_IMMUTABLE` before any catalog is asked, and again at apply (409), except a raw meter moving onto the identity wrapper of that meter in the same unit (P-D-232, P-D-251). |
 | Retirement/recovery | `POST /skus/{id}/retire`; `POST /skus/{id}/unfence` | Guarded fence and `sku_retire` submission in one transaction, with an optional body `{ note }` (P-D-219); unfence only expired orphans. |
 | Reference reads | `GET /skus/{id}/references` | products:read; live rows by default; include_released=true adds history with released_at, released_by, forced and release_reason. Live summary retains price_book_entries/plans/reserved totals and adds by_owner maps keyed by owner then kind, plus each owner’s reserved subset. |
 | Reserve | `POST /skus/{id}/references/reserve { owner, kind, ref_id }` | 201 `{ reservation_id }`, or 200 existing live logical reservation; fenced SKU refuses a new reservation. |
@@ -389,7 +391,7 @@ reason. SoD and submitter checks apply in the domain regardless of grants (spec 
 | `DERIVED_CODE_TAKEN` | 409; the tenant has a derived usage type with this code (P-D-231) |
 | `DERIVED_DECLARATION_INVALID` | 400 on `declaration`, the detail led by the rule the SDK or the wire shape refused (P-D-231) |
 | `DERIVED_USAGE_TYPE_UNKNOWN`, `DERIVED_UNIT_MISMATCH` | 400 on `usage_type_ref` or `unit` at a SKU's draft save, submit or change; 409 at apply. The tenant holds no such derived version, or the unit is not its output unit; names the SKU (P-D-232) |
-| `DERIVED_PIN_IMMUTABLE` | 400 at a change's submit, 409 at its apply; the change moves a published usage SKU's derived pin; names the SKU (P-D-232) |
+| `DERIVED_PIN_IMMUTABLE` | 400 at a change's submit, 409 at its apply; the change moves a published usage SKU's derived pin, other than a raw meter onto the identity wrapper of that meter in the same unit; names the SKU (P-D-232, P-D-251) |
 | `NOTE_TOO_LONG` | 400; a submitter's note over 2000 characters on submit, changes or retire, or a vote's note on approve or reject; nothing is written (P-D-219, P-D-225) |
 | `FIELD_TOO_LONG` | 400 on the field; a text over its cap on a SKU create, draft PATCH or change, a category create or rename, or a forced release's reason; nothing is written (P-D-225) |
 | `SKU_TYPE_FROZEN`, `SKU_REFERENCED`, `SKU_FENCED`, `REFERENCE_RELEASED` | 409; live reference, fence or terminal reservation conflict |
@@ -1045,4 +1047,4 @@ registry and Pricing protocol; P-D-196 → the optional category; P-D-197 → th
 P-D-198–P-D-204 → the rules carried from the backup register (replay mechanics, event delivery, the audit
 shape, the request digest, the validation answer, the usage-type resolve bound, the authz label registration);
 P-D-205 → the policy's `If-Match`; P-D-206 → the draft delete; P-D-207 → usage types as the caller and the
-picker; P-D-208 → category retirement; P-D-209 → the fence TTL as a deployment setting; P-D-216 → the override reset; P-D-218 → moving the default category; P-D-219 → the submitter's note on the unit; P-D-220 → a retired category is never the default; P-D-229 → derived usage meters (Products declares, Rating evaluates); P-D-230 → the declaration, grammar, evaluator and canonical bytes; P-D-231 → the derived usage type's storage, doors, grants and audit; P-D-232 → a usage SKU's derived ref and its pin; P-D-233 → the derived meter semantics Products answers to pricing (E1b); P-D-250 → the approvals inbox's source. Spec §2.2, §4, §6, §7.2–§7.3 and §13 govern the corresponding sections.
+picker; P-D-208 → category retirement; P-D-209 → the fence TTL as a deployment setting; P-D-216 → the override reset; P-D-218 → moving the default category; P-D-219 → the submitter's note on the unit; P-D-220 → a retired category is never the default; P-D-229 → derived usage meters (Products declares, Rating evaluates); P-D-230 → the declaration, grammar, evaluator and canonical bytes; P-D-231 → the derived usage type's storage, doors, grants and audit; P-D-232 → a usage SKU's derived ref and its pin; P-D-233 → the derived meter semantics Products answers to pricing (E1b); P-D-250 → the approvals inbox's source; P-D-251 → one input, and a raw meter moving onto its identity wrapper. Spec §2.2, §4, §6, §7.2–§7.3 and §13 govern the corresponding sections.

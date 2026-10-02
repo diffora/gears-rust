@@ -209,7 +209,11 @@ impl<'a> ApprovalSubject<DbTx<'a>> for SkuChange {
 
 /// Recheck durable content and fence constraints at both submit and apply.
 impl SkuChange {
-    async fn validate_change(&self, tx: &DbTx<'_>, items: &[ItemRef]) -> Result<(), ApprovalError> {
+    pub(crate) async fn validate_change(
+        &self,
+        tx: &DbTx<'_>,
+        items: &[ItemRef],
+    ) -> Result<(), ApprovalError> {
         let b = &self.base;
         for i in items {
             let s = sku(tx, &b.scope, b.tenant_id, i.item_id).await?;
@@ -232,11 +236,36 @@ impl SkuChange {
                     "use the fenced retire operation to retire",
                 ));
             }
-            // P-D-232 (M1): a published usage SKU keeps its derived pin. Judged against the head
-            // as it is now, at submit and again at apply, whatever the fence or the type says.
-            if derived::pin_moves(
-                s.usage_type_ref.as_deref(),
-                proposed.content.usage_type_ref.as_deref(),
+            // P-D-232 (M1), amended by P-D-251: a published usage SKU keeps its derived pin, except
+            // a raw meter moving onto the identity wrapper of that meter, in the same unit. Judged
+            // against the head as it is now, at submit and again at apply, before the fence and
+            // type checks. The version is the same tenant-scoped read the change door uses.
+            let current_ref = s.usage_type_ref.as_deref();
+            let proposed_ref = proposed.content.usage_type_ref.as_deref();
+            let stored = match proposed_ref {
+                Some(reference) if derived::wrap_candidate(current_ref, Some(reference)) => {
+                    let read_scope = b.scope.tenant_only();
+                    crate::api::rest::derived_usage_types::stored_declaration(
+                        tx,
+                        &read_scope,
+                        b.tenant_id,
+                        reference,
+                    )
+                    .await
+                    .map_err(store_err)?
+                }
+                _ => None,
+            };
+            if derived::pin_refuses(
+                current_ref,
+                proposed_ref,
+                derived::wrap_exception(
+                    current_ref,
+                    proposed_ref,
+                    s.unit.as_deref(),
+                    proposed.content.unit.as_deref(),
+                    stored.as_ref(),
+                ),
             ) {
                 return Err(invalid(
                     derived::PIN_IMMUTABLE,

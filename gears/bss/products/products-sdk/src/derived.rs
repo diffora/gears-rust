@@ -26,8 +26,8 @@ use std::fmt;
 
 /// The reserved prefix of a derived meter id. A GTS usage type id never starts with it.
 pub const DERIVED_METER_PREFIX: &str = "products.derived/";
-/// The fewest inputs a declaration names.
-pub const MIN_INPUTS: usize = 2;
+/// The fewest inputs a declaration names. One is enough (P-D-251); zero is refused.
+pub const MIN_INPUTS: usize = 1;
 /// The deepest formula: a leaf alone has depth 1.
 pub const MAX_DEPTH: usize = 32;
 /// The most formula nodes: every [`Expr`] counts one.
@@ -54,7 +54,7 @@ pub struct DerivedUsageDeclaration {
     pub output_unit: String,
     /// The span the formula applies to.
     pub granularity: Granularity,
-    /// At least two inputs with distinct names, each a raw GTS usage type.
+    /// At least one input, each a raw GTS usage type, with a distinct name.
     pub inputs: Vec<DerivedInput>,
     /// How the inputs' folded quantities combine.
     pub formula: Expr,

@@ -385,8 +385,8 @@ async fn every_declaration_refusal_is_derived_declaration_invalid_naming_its_rul
         (
             "too_few_inputs",
             edited(|d| {
-                d["inputs"] = json!([d["inputs"][0].clone()]);
-                d["formula"] = share("ram_mb", "128");
+                d["inputs"] = json!([]);
+                d["formula"] = json!({"op":"const","value":"1"});
             }),
         ),
         (

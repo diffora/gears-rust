@@ -177,6 +177,8 @@ struct F {
     setup: Router,
     /// Held for the test's life: its temporary directory holds the database.
     dsn: TestDsn,
+    /// The doors' event sink, so a direct `validate_change` can build a subject.
+    sink: crate::infra::broker::EventSink,
     tenant: Uuid,
     author: SecurityContext,
     reviewer: SecurityContext,
@@ -221,6 +223,7 @@ impl F {
             catalog,
             setup,
             dsn,
+            sink: state.sink.clone(),
             tenant,
             author: authed_ctx(tenant),
             reviewer: authed_ctx(tenant),
@@ -413,6 +416,80 @@ impl F {
             "{:?}: the catalog is never asked for a derived ref",
             self.leg
         );
+    }
+
+    /// Apply's own judgement of `body`: `SkuChange::validate_change` on the head, in a transaction.
+    ///
+    /// A stored version cannot stop wrapping between submit and apply, because versions are
+    /// append-only (P-D-231). This call is that judgement. The door's 400 never records a unit, so
+    /// an HTTP apply of a refused change does not exist.
+    async fn at_apply(&self, id: Uuid, body: Value) -> Result<(), bss_approval::ApprovalError> {
+        use crate::domain::approvals::change::SkuChange;
+        use crate::domain::approvals::{SkuProposal, publish::SkuPublish};
+        use crate::domain::recognized::UsageRefAnswer;
+        use crate::domain::sku::{SkuPatch, apply_patch};
+        use crate::infra::events::TxOutbox;
+        use bss_approval::ItemRef;
+        use bss_products_sdk::models::SkuContent;
+
+        let request: crate::api::rest::dto::SkuChangeRequest =
+            serde_json::from_value(body).unwrap();
+        let patch = SkuPatch::try_from(request.patch).unwrap();
+        let (db, scope) = repo_connection(&self.dsn, self.tenant).await;
+        let conn = db.conn().unwrap();
+        let sku = repo::find_sku(&conn, &scope, self.tenant, id)
+            .await
+            .unwrap()
+            .unwrap();
+        let content = SkuContent::from(&sku);
+        let proposed = apply_patch(&content, &patch);
+        let usage_type = proposed
+            .usage_type_ref
+            .as_deref()
+            .filter(|reference| rules::is_derived_ref(reference))
+            .map(|meter| {
+                UsageRefAnswer::Derived(rules::DerivedPin {
+                    meter: meter.to_owned(),
+                    output_unit: proposed.unit.clone().unwrap_or_default(),
+                })
+            });
+        let change = SkuChange {
+            base: SkuPublish {
+                scope: AccessScope::for_tenant(self.tenant),
+                tenant_id: self.tenant,
+                outbox: TxOutbox::new(self.sink.clone()),
+                actor: sku.created_by,
+                now: OffsetDateTime::now_utc(),
+                usage_type,
+            },
+            patch,
+            effective_from: OffsetDateTime::now_utc().date(),
+            fence_op_id: None,
+        };
+        let item = ItemRef {
+            item_type: "sku".into(),
+            item_id: id,
+            created_by: sku.created_by,
+            before: Some(
+                serde_json::to_value(&SkuProposal {
+                    content: content.clone(),
+                    lifecycle: None,
+                })
+                .unwrap(),
+            ),
+            after: serde_json::to_value(&SkuProposal {
+                content: proposed,
+                lifecycle: None,
+            })
+            .unwrap(),
+        };
+        db.transaction(|tx| {
+            let change = change.clone();
+            let item = item.clone();
+            Box::pin(async move { Ok(change.validate_change(tx, &[item]).await) })
+        })
+        .await
+        .unwrap()
     }
 }
 
@@ -686,5 +763,171 @@ async fn a_stale_change_is_refused_at_apply_when_a_concurrent_write_pinned_a_der
         assert_eq!(status, 409, "{b}");
         assert_eq!(problem_code(&b), "DERIVED_PIN_IMMUTABLE", "{b}");
         assert_eq!(f.card(other).await["usage_type_ref"], AT_1);
+    }
+}
+
+fn named_input(name: &str, reference: &str, unit: &str) -> Value {
+    json!({
+        "name": name,
+        "usage_type_ref": reference,
+        "granule_fold": "sum",
+        "unit": unit
+    })
+}
+fn declaration(output: &str, inputs: &[Value], formula: &Value) -> Value {
+    json!({
+        "output_unit": output,
+        "granularity": "hour",
+        "inputs": inputs,
+        "formula": formula,
+        "output_scale": 0,
+        "output_round": "half_even"
+    })
+}
+fn identity_formula() -> Value {
+    json!({"op": "input", "name": "disk"})
+}
+
+/// A published raw meter may move onto the one-input identity wrapper of that meter, in the same
+/// unit (P-D-251). Every other move stays `DERIVED_PIN_IMMUTABLE` at the change door and in
+/// `validate_change`.
+///
+/// A version cannot stop wrapping between submit and apply: versions are append-only (P-D-231).
+/// Apply's own judgement is the direct `validate_change` call, not an HTTP apply of a change the
+/// door already refused.
+#[tokio::test]
+async fn a_published_raw_usage_sku_moves_onto_the_identity_wrapper_of_its_meter() {
+    const RAW: &str = "usage:storage";
+    const GB: &str = "GB";
+    const WRAP: &str = "products.derived/wrap@1";
+    const CEIL_WRAP: &str = "products.derived/ceil@1";
+    const MISMATCH: &str = "products.derived/mismatch@1";
+    const TWO: &str = "products.derived/two@1";
+    const MOVED: &str = "products.derived/moved@1";
+    const OTHER: &str = "products.derived/other@1";
+    let identity = identity_formula();
+    let ceil = json!({"op":"ceil","arg":{"op":"input","name":"disk"}});
+    for leg in LEGS {
+        let f = F::new(leg).await;
+        seed(
+            &f.dsn,
+            f.tenant,
+            "wrap",
+            &[declaration(GB, &[named_input("disk", RAW, GB)], &identity)],
+        )
+        .await;
+        seed(
+            &f.dsn,
+            f.tenant,
+            "ceil",
+            &[declaration(GB, &[named_input("disk", RAW, GB)], &ceil)],
+        )
+        .await;
+        seed(
+            &f.dsn,
+            f.tenant,
+            "mismatch",
+            &[declaration(
+                GB,
+                &[named_input("disk", RAW, "MB")],
+                &identity,
+            )],
+        )
+        .await;
+        seed(
+            &f.dsn,
+            f.tenant,
+            "two",
+            &[declaration(
+                GB,
+                &[
+                    named_input("disk", RAW, GB),
+                    named_input("extra", "usage:other", GB),
+                ],
+                &identity,
+            )],
+        )
+        .await;
+        seed(
+            &f.dsn,
+            f.tenant,
+            "moved",
+            &[declaration(
+                "MB",
+                &[named_input("disk", RAW, "MB")],
+                &identity,
+            )],
+        )
+        .await;
+        seed(
+            &f.dsn,
+            f.tenant,
+            "other",
+            &[declaration(
+                GB,
+                &[named_input("disk", "usage:other", GB)],
+                &identity,
+            )],
+        )
+        .await;
+
+        let pinned = f.draft(&f.app, "P", AT_1, CLOUDLET_UNIT).await;
+        f.publish(&f.app, pinned).await;
+        for body in [
+            json!({"usage_type_ref": RAW, "unit": GB}),
+            json!({"usage_type_ref": AT_2}),
+            json!({"usage_type_ref": null}),
+            json!({"type": "recurring", "usage_type_ref": null, "unit": null}),
+        ] {
+            let (status, b) = f.post(&f.app, pinned, "/changes", body.clone()).await;
+            refused(status, &b, "DERIVED_PIN_IMMUTABLE", "usage_type_ref", leg);
+            match f.at_apply(pinned, body).await {
+                Err(bss_approval::ApprovalError::InvalidSubmit { code, field, .. }) => {
+                    assert_eq!(code, "DERIVED_PIN_IMMUTABLE", "{leg:?}");
+                    assert_eq!(field, "usage_type_ref");
+                }
+                other => panic!("{leg:?}: apply judged {other:?}"),
+            }
+            assert_eq!(f.card(pinned).await["usage_type_ref"], AT_1);
+        }
+
+        let id = f.draft(&f.setup, "R", RAW, GB).await;
+        f.publish(&f.setup, id).await;
+        for body in [
+            json!({"usage_type_ref": TWO}),
+            json!({"usage_type_ref": CEIL_WRAP}),
+            json!({"usage_type_ref": MISMATCH}),
+            json!({"usage_type_ref": MOVED, "unit": "MB"}),
+            json!({"usage_type_ref": OTHER}),
+            json!({"usage_type_ref": "products.derived/missing@1"}),
+        ] {
+            let (status, b) = f.post(&f.app, id, "/changes", body.clone()).await;
+            refused(status, &b, "DERIVED_PIN_IMMUTABLE", "usage_type_ref", leg);
+            match f.at_apply(id, body).await {
+                Err(bss_approval::ApprovalError::InvalidSubmit { code, field, .. }) => {
+                    assert_eq!(code, "DERIVED_PIN_IMMUTABLE", "{leg:?}");
+                    assert_eq!(field, "usage_type_ref");
+                }
+                other => panic!("{leg:?}: apply judged {other:?}"),
+            }
+            let card = f.card(id).await;
+            assert_eq!(card["usage_type_ref"], RAW);
+            assert_eq!(card["unit"], GB);
+        }
+
+        let wrap = json!({"usage_type_ref": WRAP});
+        let judged = f.at_apply(id, wrap.clone()).await;
+        assert!(
+            judged.is_ok(),
+            "{leg:?}: apply allows the identity wrapper: {judged:?}"
+        );
+        let (status, b) = f.post(&f.app, id, "/changes", wrap).await;
+        assert_eq!(status, 200, "{leg:?}: the wrap is a change: {b}");
+        assert_eq!(b["applied"], true, "{b}");
+        let card = f.card(id).await;
+        assert_eq!(card["usage_type_ref"], WRAP);
+        assert_eq!(card["unit"], GB);
+        assert_eq!(card["published_version"], 2);
+        f.assert_never_asked();
     }
 }

@@ -46,7 +46,8 @@
 This feature stores and serves derived usage types: composite meters, such as a cloudlet-hour computed from RAM and CPU usage,
 declared as versioned catalog data (P-D-229). The declaration, its grammar, its evaluator and its canonical bytes are the
 SDK's (`bss_products_sdk::derived`, P-D-230); this feature adds the storage, the doors, the grants and the audit (P-D-231),
-a usage SKU's binding to a version, pinned at its first publish (P-D-232), and the meter semantics Products answers to
+a usage SKU's binding to a version, pinned at its first publish (P-D-232), with one later move onto the identity
+wrapper of a raw meter (P-D-251), and the meter semantics Products answers to
 pricing for a derived meter, E1b of pricing's E1 (P-D-233). It has no design slice of its own: [DESIGN](../DESIGN.md)
 §3.1, §3.3, §3.5 and §3.7 are its design, and [DECOMPOSITION](../DECOMPOSITION.md) entry 2.5 places it.
 
@@ -68,7 +69,7 @@ writes ask `author` on the resource `derived_usage_type`; the reads ask `sku:rea
 - [PRD](../PRD.md): `fr-derived-usage-type`, AC #30, AC #31 and AC #32.
 - [DESIGN](../DESIGN.md): §3.1 (the derived usage declaration, type and pin), §3.3 (the doors and the SKU doors' derived
   codes), §3.5 (the catalog port's derived sibling and pricing's meter semantics), §3.7 (the tables).
-- [DECISIONS](../DECISIONS.md): P-D-229, P-D-230, P-D-231, P-D-232, P-D-233; pricing D-503 (amended).
+- [DECISIONS](../DECISIONS.md): P-D-229, P-D-230, P-D-231, P-D-232, P-D-233, P-D-251; pricing D-503 (amended).
 - The plan: `docs/superpowers/plans/2026-10-01-products-derived-usage-types.md` in the main checkout, rev 3, runs 1 to 4.
 
 ## 2. Actor Flows (CDSL)
@@ -143,7 +144,7 @@ writes ask `author` on the resource `derived_usage_type`; the reads ask `sku:rea
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-derived-usage-types-pin-holds`
 
-1. [ ] - `p1` - Compare the head's ref with the proposed ref; when either is derived and they differ, refuse DERIVED_PIN_IMMUTABLE on `usage_type_ref`: another version, GTS to derived, derived to GTS, a dropped ref (a type change included) - `inst-derived-pin-compare`
+1. [ ] - `p1` - Compare the head's ref with the proposed ref. When the head is a raw GTS id and the proposed ref is the identity wrapper of that meter (one input, that ref whole-string, the same unit, which the change does not move), allow it (P-D-251). Otherwise, when either ref is derived and they differ, refuse DERIVED_PIN_IMMUTABLE on `usage_type_ref`: another version, raw to a derived version that does not wrap, raw to derived with a unit change, derived to raw, a dropped ref (a type change included) - `inst-derived-pin-compare`
 2. [ ] - `p1` - At submit the change door refuses it before resolving the proposal (400), and the subject again in the transaction; at apply the subject judges the head it finds (409) - `inst-derived-pin-when`
 
 ### meter-semantics
@@ -164,7 +165,7 @@ writes ask `author` on the resource `derived_usage_type`; the reads ask `sku:rea
 
 1. [ ] - `p1` - A type has no lifecycle: create gives it version 1, and no door renames, retires or deletes it (O-1).
 2. [ ] - `p1` - A version is immutable from its insert: the storage refuses every update and delete; a new formula is a new version.
-3. [ ] - `p1` - A usage SKU's derived pin moves only while the SKU is a draft that was never published; its first publish fixes it, and a new formula is sold through a new usage SKU (M1).
+3. [ ] - `p1` - A usage SKU's derived pin moves only while the SKU is a draft that was never published, except a published raw meter moving onto the identity wrapper of that meter in the same unit (P-D-251); its first publish otherwise fixes it, and a new formula is sold through a new usage SKU (M1).
 
 ## 5. Definitions of Done
 
@@ -234,14 +235,17 @@ Verified by `derived_binding_tests::a_usage_sku_on_a_derived_version_is_created_
 `derived_binding_tests::a_draft_moves_its_derived_pin_until_its_first_publish`,
 `derived_binding_tests::after_its_first_publish_a_usage_sku_keeps_its_derived_pin`,
 `derived_binding_tests::a_published_gts_usage_sku_cannot_take_a_derived_pin`,
+`derived_binding_tests::a_published_raw_usage_sku_moves_onto_the_identity_wrapper_of_its_meter`,
 `derived_binding_tests::a_stale_change_is_refused_at_apply_when_a_concurrent_write_pinned_a_derived_type`,
 `domain::derived_tests::a_derived_ref_binds_to_its_version_and_its_output_unit` and
-`domain::derived_tests::the_pin_moves_only_between_gts_refs`. Implementation markers in `products/src/domain/derived.rs`,
+`domain::derived_tests::the_pin_moves_only_between_gts_refs` and
+`domain::derived_tests::wraps_is_the_identity_of_that_one_raw_meter_in_the_sku_unit`. Implementation markers in `products/src/domain/derived.rs`,
 `products/src/domain/approvals/change.rs` and `products/src/api/rest/governance.rs`.
 
 A usage SKU's `products.derived/<code>@<n>` ref is judged from the tenant's store first, at draft save, submit and apply,
 and the catalog is never asked for it: 400 DERIVED_USAGE_TYPE_UNKNOWN or DERIVED_UNIT_MISMATCH. A draft may move it; a
-published SKU keeps it, and a change that moves it is DERIVED_PIN_IMMUTABLE at submit (400) and at apply (409). The three
+published SKU keeps it, except a raw meter moving onto the identity wrapper of that meter in the same unit (P-D-251),
+and every other change that moves it is DERIVED_PIN_IMMUTABLE at submit (400) and at apply (409). The three
 codes name the SKU (DESIGN §3.1, §3.3, §3.5; P-D-232).
 
 ### Products answers pricing's derived meter semantics
@@ -276,5 +280,5 @@ Each criterion below corresponds to exactly one DoD above and cites [PRD §9](..
 | `cpt-cf-bss-products-dod-derived-usage-type-store` | AC #29, #30; `cpt-cf-bss-products-fr-derived-usage-type` | Given a stored version, when anything updates or deletes it on either engine, then the storage refuses; a version naming another tenant's type is refused by its key, and a second type with the tenant's code by its index. |
 | `cpt-cf-bss-products-dod-derived-usage-type-rules` | AC #30; `cpt-cf-bss-products-fr-derived-usage-type` | Given a declaration that breaks a rule, when it is created or added as a version, then it is 400 DERIVED_DECLARATION_INVALID naming the rule and nothing is written; given the cloudlet, its stored digest is the SHA-256 of its canonical bytes. |
 | `cpt-cf-bss-products-dod-derived-usage-type-doors` | AC #28, #30; `cpt-cf-bss-products-fr-derived-usage-type` | Given an author with `author` on `derived_usage_type`, when the cloudlet is created and a second version added, then both read back with their meter ids and version 1 is unchanged, each write has its audit row, a replayed key answers the first receipt, another tenant reads nothing, and a caller with only `sku:read` reads and cannot write. |
-| `cpt-cf-bss-products-dod-derived-usage-type-pin` | AC #31; `cpt-cf-bss-products-fr-derived-usage-type` | Given the tenant's derived type with versions 1 and 2 and a catalog configured or not, when a usage SKU is created on version 1 with its output unit, published and then changed, then the catalog is never asked; an unknown version or another unit is refused at draft save; the draft may move to version 2 before its first publish; after it, a change to version 2, to or from a GTS ref, or one that drops the ref is refused at submit (400) and at apply (409). |
+| `cpt-cf-bss-products-dod-derived-usage-type-pin` | AC #31; `cpt-cf-bss-products-fr-derived-usage-type` | Given the tenant's derived type with versions 1 and 2 and a catalog configured or not, when a usage SKU is created on version 1 with its output unit, published and then changed, then the catalog is never asked; an unknown version or another unit is refused at draft save; the draft may move to version 2 before its first publish; after it, a change to version 2, to or from a GTS ref, or one that drops the ref is refused at submit (400) and at apply (409). A published raw meter may move onto the identity wrapper of that meter, in the same unit (P-D-251). |
 | `cpt-cf-bss-products-dod-derived-meter-semantics` | AC #32; `cpt-cf-bss-products-fr-derived-usage-type` | Given the cloudlet type, a published usage SKU on its version 1 and pricing beside the registry with no other meter provider, when a usage entry names the meter, its output unit and its accrual, and a price, a plan revision and a sale follow, then the sale is accepted through pricing's gates; another unit or accrual is METER_POLICY_MISMATCH, a raw meter is unconfigured, another tenant's type is unknown, and a store outage is 503 at the entry create. |

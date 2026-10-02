@@ -17,13 +17,15 @@
 //!
 //! A usage SKU names a version by its meter id and pins it at its first publish (P-D-232):
 //! [`judge_binding`] is the binding rule the draft doors and the publish rule share, and
-//! [`pin_moves`] the pin rule a change is judged by, at submit and at apply.
+//! [`pin_moves`] the pin rule a change is judged by, at submit and at apply. A published raw meter
+//! may move onto the identity wrapper of that meter ([`wraps`], P-D-251); every other move stays
+//! refused.
 use crate::domain::caps;
 use crate::domain::error::DomainError;
 use crate::domain::recognized::UsageTypeAnswer;
 use crate::domain::validation::ValidationReport;
 use aws_lc_rs::digest::{SHA256, digest as sha256};
-use bss_products_sdk::derived::{self, DeclarationError, DerivedUsageDeclaration, MeterId};
+use bss_products_sdk::derived::{self, DeclarationError, DerivedUsageDeclaration, Expr, MeterId};
 use bss_products_sdk::usage_types::UsageTypeCatalog;
 use time::OffsetDateTime;
 use toolkit_macros::domain_model;
@@ -284,14 +286,81 @@ pub fn judge_binding(
     }
 }
 
-/// The pin rule (P-D-232, M1): a published usage SKU's derived usage type never moves. True when
-/// the current or the proposed ref is derived and the two differ: `@1` → `@2`, GTS → derived,
-/// derived → GTS, and a derived ref dropped (a type change included). A new formula version is
-/// sold through a new usage SKU.
+/// The pin rule (P-D-232, M1), pure: true when the current or the proposed ref is derived and
+/// the two differ. `@1` → `@2`, raw → derived, derived → raw, and a derived ref dropped (a type
+/// change included) are all moves. A raw meter moving onto the identity wrapper of that meter is
+/// still a move here; the callers allow it only when [`wrap_exception`] holds (P-D-251).
 #[must_use]
 pub fn pin_moves(current: Option<&str>, proposed: Option<&str>) -> bool {
     current != proposed
         && (current.is_some_and(is_derived_ref) || proposed.is_some_and(is_derived_ref))
+}
+
+/// Whether `declaration` wraps the raw meter `current_raw` and sells `sku_unit` (P-D-251).
+///
+/// All of these hold: exactly one input; that input's `usage_type_ref` equals `current_raw`
+/// whole-string; the formula is the identity `{"op":"input","name":<that input>}`; `output_unit`
+/// equals the input's `unit` and equals `sku_unit`.
+#[must_use]
+pub fn wraps(current_raw: &str, declaration: &DerivedUsageDeclaration, sku_unit: &str) -> bool {
+    // PROBE-W-1: exactly one input.
+    let [input] = declaration.inputs.as_slice() else {
+        return false;
+    };
+    if input.usage_type_ref != current_raw {
+        return false;
+    }
+    // PROBE-W-2: the formula is the identity over that input.
+    let identity = matches!(&declaration.formula, Expr::Input(name) if name == &input.name);
+    if !identity {
+        return false;
+    }
+    // PROBE-W-3: the output unit is the input's unit and the SKU's unit.
+    declaration.output_unit == input.unit && declaration.output_unit == sku_unit
+}
+
+/// A blank unit is no unit, as a draft may leave its unit for later.
+fn named_unit(unit: Option<&str>) -> Option<&str> {
+    unit.filter(|unit| !unit.trim().is_empty())
+}
+
+/// The current ref is a raw GTS id and the proposed ref is derived: the only shape that can be a
+/// wrap. Every other move is not a candidate.
+#[must_use]
+pub fn wrap_candidate(current: Option<&str>, proposed: Option<&str>) -> bool {
+    match (current, proposed) {
+        (Some(current), Some(proposed)) => !is_derived_ref(current) && is_derived_ref(proposed),
+        _ => false,
+    }
+}
+
+/// The one move P-D-251 allows: `stored` is the proposed version, the SKU's unit does not change,
+/// and [`wraps`] holds. A missing version is not a wrap.
+#[must_use]
+pub fn wrap_exception(
+    current_ref: Option<&str>,
+    proposed_ref: Option<&str>,
+    current_unit: Option<&str>,
+    proposed_unit: Option<&str>,
+    stored: Option<&DerivedUsageDeclaration>,
+) -> bool {
+    if !wrap_candidate(current_ref, proposed_ref) {
+        return false;
+    }
+    let (Some(current), Some(unit)) = (current_ref, named_unit(current_unit)) else {
+        return false;
+    };
+    if named_unit(proposed_unit) != Some(unit) {
+        return false;
+    }
+    stored.is_some_and(|declaration| wraps(current, declaration, unit))
+}
+
+/// The pin refuses this change, unless it is the wrap [`wrap_exception`] allows.
+#[must_use]
+pub fn pin_refuses(current: Option<&str>, proposed: Option<&str>, wrap: bool) -> bool {
+    // PROBE-W-4: derived → raw, and every other move, stays refused.
+    pin_moves(current, proposed) && !wrap
 }
 
 /// The pin rule's refusal: 400 [`PIN_IMMUTABLE`] on `usage_type_ref`.
