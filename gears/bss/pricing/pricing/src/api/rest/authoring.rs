@@ -1512,13 +1512,12 @@ async fn get_effective_policy(
         crate::infra::approval_kinds::Kind::Prices => &resource_types::PRICE_BOOK_ENTRY,
         crate::infra::approval_kinds::Kind::PlanRevision => &resource_types::PLAN,
     };
-    let scope = authz::access_scope(&enforcer, &ctx, resource, actions::READ, None, None)
+    authz::access_scope(&enforcer, &ctx, resource, actions::READ, None, None)
         .await
         .map_err(authz_failure)?;
     let tenant = ctx.subject_tenant_id();
     transaction(&state.db.db(), move |tx| {
-        let scope = scope.clone();
-        Box::pin(async move { approvals::effective_quorum(tx, &scope, tenant, kind).await })
+        Box::pin(async move { approvals::effective_quorum(tx, tenant, kind).await })
     })
     .await
 }

@@ -1300,16 +1300,18 @@ pub async fn get_policy(
     )?)
 }
 /// `GET /approval-policy/{kind}/effective` (D-481): the quorum a submit of `kind` needs, the
-/// kind's override or the tenant default. One statement, under the caller's scope.
+/// kind's override or the tenant default. One statement. The door has already judged the
+/// caller's grant. The policy's resource column is `kind` (text), so this read is the
+/// tenant's, as `stored_contexts` is: a resource constraint must not compare `kind` to a uuid.
 /// # Errors
 /// Storage failures.
 pub async fn effective_quorum(
     tx: &impl DBRunner,
-    scope: &AccessScope,
     tenant: Uuid,
     kind: Kind,
 ) -> Result<Response, DoorError> {
-    let policy = approval_repo::read_policy(tx, scope, tenant).await?;
+    let scope = AccessScope::for_tenant(tenant);
+    let policy = approval_repo::read_policy(tx, &scope, tenant).await?;
     Ok(support::response(
         StatusCode::OK,
         &PricingEffectivePolicyDto {

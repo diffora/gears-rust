@@ -111,7 +111,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-472 | M | An entry names its next price | DECIDED 2026-10-01 · Owner, 2026-09-30 (validation 3 item 7, "ok"); phase 9 plan rev 2 (decision 12; plan review M5, L7); amends D-434, D-440; amended by D-473 |
 | D-473 | M | The book's entries list reads its prices on a date | DECIDED 2026-10-01 · Owner, 2026-09-30 (validation 3 item 7, "ok"); phase 9 plan rev 2 (decision 13; plan review M5, L6); amends D-440, D-472; amended by the phase 9 review R1 (fix run 9.5d-1), D-483 |
 | D-480 | M | A revision read carries its entries, sale-date prices and reservation state | DECIDED 2026-10-01 · phase 9 plan rev 4 (run 9.6, asks 48, 49, 50); amends D-442, D-460, D-462 |
-| D-481 | M | The quorum a submit needs is on the checks and on an effective-policy read | DECIDED 2026-10-01 · phase 9 plan rev 4 (run 9.6, asks 54, 55); amends D-435, D-462 |
+| D-481 | M | The quorum a submit needs is on the checks and on an effective-policy read | DECIDED 2026-10-01 · phase 9 plan rev 4 (run 9.6, asks 54, 55); amends D-435, D-462; amended 2026-10-02 (phase 9 review F1) |
 | D-482 | M | The checks read their context as a set, and many revisions in one read | DECIDED 2026-10-01 · phase 9 plan rev 4 (run 9.7, ask 47); amends D-408, D-460 |
 | D-483 | M | A book's entries page on the toolkit's pager, in the order (sku_id, charge_kind, model, id) | DECIDED 2026-10-01 · Owner, 2026-10-01 (asks v4, 51); phase 9 plan rev 4 (run 9.8; review H3, A4); amends D-434, D-473 |
 | D-484 | M | A plan stores time-stable list facts; selling and change are derived from the day | DECIDED 2026-10-02 · Owner, 2026-10-01 (#31, form B); phase 9 plan rev 4 (run 9.8b; review N1, N2); amends D-453 |
@@ -1268,7 +1268,9 @@ The book page and the plan page showed a quorum the submit would need only by re
 - **The effective policy.** GET /bss-pricing/v1/approval-policy/{kind}/effective answers { kind, quorum_required }: the kind's override, or the tenant default. One statement, approval_repo::read_policy. kind is parsed through the closed set of kinds pricing records; an unknown kind is 400 QUERY_INVALID. prices is read under price_book_entry read, the grant the book page's entry and price lists need. plan_revision is read under plan read. The path keeps DELETE /approval-policy/{kind} as it is.
 - **Not price read.** The quorum is not money. Pricing serves no price read of its own (GET /prices/{id} is a price, D-440's list is price_book_entry read plus the money's second judgement), so price read is not this door's grant.
 
-**Source:** Phase 9 plan rev 4 (run 9.6, asks 54 and 55; A3). Amends D-435 and D-462.
+**Amended 2026-10-02 (phase 9 review F1).** The caller's grant stays the admission. `read_policy` then runs under `AccessScope::for_tenant`, as `stored_contexts` already does. `pricing_approval_policy` is scoped on `kind`, a text column. A grant constrained by `RESOURCE_ID` was compiled onto that column: Postgres answered 500 (`operator does not exist: text = uuid`) and SQLite matched no row, so quorum 3 or 0 was answered as the fail-safe 1. The checks door already read this policy under the tenant scope, so the two doors agree for this grant too.
+
+**Source:** Phase 9 plan rev 4 (run 9.6, asks 54 and 55; A3). Amends D-435 and D-462. Amended 2026-10-02 (phase 9 review F1): the effective read uses the tenant scope after the grant.
 
 #### D-482 [M] The checks read their context as a set, and many revisions in one read
 

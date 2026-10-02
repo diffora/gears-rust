@@ -842,3 +842,88 @@ async fn the_quorum_is_on_the_checks_and_on_the_effective_policy() {
     assert_eq!(s, 400, "{b}");
     assert!(b.to_string().contains("QUERY_INVALID"), "{b}");
 }
+
+/// A grant that allows the tenant, and constrains `price_book_entry` read and `plan` read
+/// to one resource id. That id is not a policy kind.
+struct Narrow {
+    tenant: Uuid,
+    resource: Uuid,
+}
+#[async_trait::async_trait]
+impl authz_resolver_sdk::AuthZResolverApi for Narrow {
+    async fn evaluate(
+        &self,
+        _: toolkit_security::PlatformSecurityContext,
+        request: authz_resolver_sdk::EvaluationRequest,
+    ) -> Result<authz_resolver_sdk::EvaluationResponse, toolkit_canonical_errors::CanonicalError>
+    {
+        use authz_resolver_sdk::*;
+        let constrained = request.action.name == "read"
+            && matches!(
+                request.resource.resource_type.as_str(),
+                "gts.cf.bss.pricing.price_book_entry.v1~" | "gts.cf.bss.pricing.plan.v1~"
+            );
+        let mut predicates = vec![Predicate::In(InPredicate::new(
+            toolkit_security::pep_properties::OWNER_TENANT_ID,
+            vec![self.tenant],
+        ))];
+        if constrained {
+            predicates.push(Predicate::In(InPredicate::new(
+                toolkit_security::pep_properties::RESOURCE_ID,
+                vec![self.resource],
+            )));
+        }
+        Ok(EvaluationResponse {
+            decision: true,
+            context: EvaluationResponseContext {
+                constraints: vec![Constraint { predicates }],
+                deny_reason: None,
+            },
+        })
+    }
+}
+fn narrow_app(f: &Fixture, resource: Uuid) -> axum::Router {
+    entry_support::production(f.state.clone()).layer(axum::Extension(
+        authz_resolver_sdk::PolicyEnforcer::new(Arc::new(Narrow {
+            tenant: f.ctx.subject_tenant_id(),
+            resource,
+        })),
+    ))
+}
+
+/// D-481: the effective quorum is the tenant's policy. A resource constraint on the grant
+/// is the admission, not a filter on `kind`.
+#[tokio::test]
+async fn the_effective_quorum_is_the_tenants_under_a_resource_constraint() {
+    let (f, _) = setup().await;
+    policy(&f, "prices", 3).await;
+    policy(&f, "plan_revision", 0).await;
+    let app = narrow_app(&f, Uuid::new_v4());
+    let (s, prices, _) = request(
+        &app,
+        &f.ctx,
+        "GET",
+        "/approval-policy/prices/effective",
+        json!({}),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(s, 200, "{prices}");
+    assert_eq!(prices, json!({"kind": "prices", "quorum_required": 3}));
+    let (s, plans, _) = request(
+        &app,
+        &f.ctx,
+        "GET",
+        "/approval-policy/plan_revision/effective",
+        json!({}),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(s, 200, "{plans}");
+    assert_eq!(
+        plans,
+        json!({"kind": "plan_revision", "quorum_required": 0})
+    );
+}
