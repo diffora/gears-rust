@@ -122,9 +122,9 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-496 | M | The inbox source judges `state` before a foreign empty page | DECIDED 2026-10-02 · phase 9 review; amends D-490 |
 | D-497 | M | A unit says whether its reader may reject or withdraw it, and approve includes the grant | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 63); amends D-471 |
 | D-501 | H | Authorized SDK reads share the frozen preview snapshot and canonical JSON digests | DECIDED 2026-09-30 · Pricing Seam Contracts Task 1; amended 2026-10-02 (phase 9 review F1) |
-| D-502 | H | Immutable usage policies belong to entries and their semantic key | DECIDED 2026-10-01 · Pricing Seam Contracts Task 2; amends D-386, D-401, D-427; amended by D-513 |
-| D-503 | H | Exact meter evidence gates usage publication and stays out of historical reads | DECIDED 2026-10-01 · Pricing Seam Contracts Task 3; amended 2026-10-01 by the owner (E1a raw and E1b derived meters; products P-D-229 and rating T-D-39 on branch `bss/pricebook-meters`); amended 2026-10-01 by products P-D-233 (E1b provided by Products, E1a still external) |
-| D-504 | H | Pure new-sale terms validate a bounded commercial profile and snapshot integrity | DECIDED 2026-10-01 · Pricing Seam Contracts Task 4; amended 2026-10-02 (phase 9 review F1b) |
+| D-502 | H | Immutable usage policies belong to entries and their semantic key | DECIDED 2026-10-01 · Pricing Seam Contracts Task 2; amends D-386, D-401, D-427; amended by D-513, D-514 |
+| D-503 | H | Exact meter evidence gates usage publication and stays out of historical reads | DECIDED 2026-10-01 · Pricing Seam Contracts Task 3; amended 2026-10-01 by the owner (E1a raw and E1b derived meters; products P-D-229 and rating T-D-39 on branch `bss/pricebook-meters`); amended 2026-10-01 by products P-D-233 (E1b provided by Products, E1a still external); amended by D-514 |
+| D-504 | H | Pure new-sale terms validate a bounded commercial profile and snapshot integrity | DECIDED 2026-10-01 · Pricing Seam Contracts Task 4; amended 2026-10-02 (phase 9 review F1b); amended by D-514 |
 | D-505 | H | Durable commercial receipt storage | DECIDED 2026-10-01 · Pricing Seam Contracts Task 5a |
 | D-506 | H | Authorized commercial provider boundary | DECIDED 2026-10-01 · Pricing Seam Contracts Task 5b |
 | D-507 | H | Atomic acceptance and durable authenticated command replay | DECIDED 2026-10-01 · Pricing Seam Contracts Task 5c |
@@ -133,7 +133,8 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-510 | H | Database parity and provider handoff | DECIDED 2026-10-01 · Pricing Seam Contracts Task 8; E1 restated as E1a and E1b per the D-503 amendment; E1b delivered by products P-D-233 |
 | D-511 | H | Commercial commands enforce scoped prices and nonempty activation windows | DECIDED 2026-10-01 · Pricing Seam Contracts review fix run |
 | D-512 | H | A plan item may wait for its entry in a draft | DECIDED 2026-10-02 · Owner, 2026-10-02; amends D-407, D-413, D-420, D-467, D-469 |
-| D-513 | M | A usage policy's single-valued fields default on input | DECIDED 2026-10-02 · Owner, 2026-10-02; amends D-502 |
+| D-513 | M | A usage policy's single-valued fields default on input | DECIDED 2026-10-02 · Owner, 2026-10-02; amends D-502; amended by D-514 |
+| D-514 | H | A usage rating policy is its rating rules and the entry stores the SKU revision | DECIDED 2026-10-02 · Owner, 2026-10-02; amends D-502, D-503, D-504, D-513 |
 
 ## Entries
 
@@ -1492,7 +1493,9 @@ legacy policy never becomes a new policy. Explicit item selection chooses the re
 
 **Amended by D-513.** On author input, `quantity_semantics.fold`, `reset` and `partial_window` may be absent or null. The parse fills `SUM`, `rating_window_start` and `actual_quantity_full_thresholds` before validation, the content digest, storage and the meter check. An explicit value is accepted and an unknown value is refused. Stored and served policies still carry all three. There is no migration.
 
-**Source:** Pricing Seam Contracts plan revision 3, Task 2. Amends D-386, D-401, D-427. Atlas C10 ownership is refined from item to entry; the atlas source remains externally owned. Amended by D-513.
+**Amended by D-514.** The stored and served policy is the five rating rules. `quantity_semantics` is not stored. A deploy-3 body may still send it; the server verifies it and drops it. The entry stores `usage_sku_version`, the SKU head's `published_version` at create. Migration `m20261002_000021_policy_references_sku` rewrites stored policies and leaves that column null on rows written before it.
+
+**Source:** Pricing Seam Contracts plan revision 3, Task 2. Amends D-386, D-401, D-427. Atlas C10 ownership is refined from item to entry; the atlas source remains externally owned. Amended by D-513 and D-514.
 
 #### D-503 [H] Exact meter evidence gates usage publication and stays out of historical reads
 
@@ -1602,7 +1605,9 @@ sells a cloudlet through Pricing's entry, price, plan and sellability gates with
 Pricing's checks do not change.
 E1 = E1a (raw meters, the usage collector / types registry; external) + E1b (derived meters, provided by Products since P-D-233).
 
-**Source:** Pricing Seam Contracts plan revision 3, Task 3 (G2). Extends D-393, D-408 and D-502; preserves D-449–D-453 scheduling. The externally owned atlas C01/C10 is not modified by this task. Amended 2026-10-01 by the owner: E1a/E1b (products P-D-229, rating T-D-39 on branch `bss/pricebook-meters`). Amended 2026-10-01 by products P-D-233: E1b is provided by Products; E1a is still external.
+**Amended by D-514.** The meter asked of the provider is the SKU head's `usage_type_ref`, not a copy stored on the policy. A derived id `products.derived/<code>@<n>` is asked at version `<n>`. The provider's canonical unit, fold and `source_integrated` must match the SKU and the policy fold. A deploy-3 `quantity_semantics` object, when present, must equal that answer and is then dropped.
+
+**Source:** Pricing Seam Contracts plan revision 3, Task 3 (G2). Extends D-393, D-408 and D-502; preserves D-449–D-453 scheduling. The externally owned atlas C01/C10 is not modified by this task. Amended 2026-10-01 by the owner: E1a/E1b (products P-D-229, rating T-D-39 on branch `bss/pricebook-meters`). Amended 2026-10-01 by products P-D-233: E1b is provided by Products; E1a is still external. Amended by D-514.
 
 
 #### D-504 [H] Pure new-sale terms validate a bounded commercial profile and snapshot integrity
@@ -1620,6 +1625,8 @@ D-504 defines the pure new-sale profile, narrower than the readable catalog:
 | BillingCycle minimum fee | SubscriptionLine only; any Resource-scoped floor is refused | UnsupportedTerms |
 
 **Amended 2026-10-02 (phase 9 review F1b).** `refuses_minimum_fee` is that predicate at price validation, at the plan-revision check, and at sale validation. A minimum fee with CalendarHour or a resource-scoped policy is unsupported at all three.
+
+**Amended by D-514.** The usage policy in this table is the five rating rules. The binding's unit is the dated SKU's unit. It is not copied into the policy.
 | FX / cross-currency sale | Currency must equal the selected price currency | CURRENCY_MISMATCH |
 | Package, promotions, phases, allowances, quarter | Not part of new-sale terms; historical catalog reads remain intact | UnsupportedModel / UnsupportedTerms |
 
@@ -2016,4 +2023,21 @@ The stored row does not change, and there is no migration. Entry reads, export, 
 
 The SDK `UsageRatingPolicyInput` stays a total type. No SDK consumer builds an author policy. The REST request shape is the parse that fills the defaults.
 
-**Source:** Owner, 2026-10-02 (whether `quantity_semantics.fold` should default when it has one choice; then yes, default those fields). Amends D-502.
+**Amended by D-514.** `fold` defaults on the request itself. `quantity_semantics.fold` is used only when a deploy-3 body sends `quantity_semantics` and the top-level `fold` is absent. A disagreement between the two folds is 400 `METER_POLICY_MISMATCH`.
+
+**Source:** Owner, 2026-10-02 (whether `quantity_semantics.fold` should default when it has one choice; then yes, default those fields). Amends D-502. Amended by D-514.
+
+#### D-514 [H] A usage rating policy is its rating rules and the entry stores the SKU revision
+
+**Status:** DECIDED 2026-10-02.
+
+The owner did not want the policy to copy the SKU's meter, unit and accrual version. The entry stores the SKU revision it was checked against. The policy stores the rating rules.
+
+- **The policy.** `rating_window`, `aggregation_scope`, `reset`, `partial_window` and `fold`. The canonical digest covers those five fields. Equal rules share one row per tenant. `quantity_semantics` is not stored and is not in the digest.
+- **The entry.** `usage_sku_version` is the SKU head's `published_version` at create, for a usage entry created after this decision. It is null for every other entry and for usage entries created before the migration. A non-null version requires a policy and is at least 1.
+- **Deploy 3.** A body may still send `quantity_semantics`. The server checks the meter, the unit and the accrual against the SKU and the provider, then drops the object. A conflict between its `fold` and the top-level `fold` is 400 `METER_POLICY_MISMATCH`. The request schema marks the object deprecated.
+- **The meter.** Later checks read the SKU head through `skus_for_write`. A derived meter's id is pinned for the SKU's life, so the head names the meter of every revision. The dated-version walk remains only to supply the unit to the price chain guard.
+- **Migration** `m20261002_000021_policy_references_sku`. It rewrites each stored policy into the rules-only content and digest, re-points entries, and keeps the old policy rows. `usage_sku_version` stays null. It refuses to run when `pricing_acceptance` holds a receipt whose frozen binding still embeds `quantity_semantics`. The digest is the Rust digest of `bss-pricing-sdk`, on SQLite and on Postgres. SQLite enforces the new check with triggers, the same precedent as 000020.
+- **Readers.** Resolve still serves `meter` and `sku_version`. `AcceptedBinding.meter` is the dated SKU's usage type, absent for a non-usage binding, and it is not part of the digest. The entry DTO serves `usage_sku_version`. A plan revision's fingerprint keeps the policy id, version and digest, and the SKU revision when one was recorded. The approval snapshot shows the rules and that revision. A unit pending before the digest moved answers 400 `UNIT_STALE` on its first vote and records no vote; the next generation applies.
+
+**Source:** Owner, 2026-10-02 ("не хочу дубликатов", "можем хранить ревизию SKU и не дублировать?", "да ок пишем"). Amends D-502, D-503, D-504 and D-513.
