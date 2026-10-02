@@ -285,6 +285,76 @@ fn a_derived_ref_binds_to_its_version_and_its_output_unit() {
     assert_eq!(PIN_IMMUTABLE, "DERIVED_PIN_IMMUTABLE");
 }
 
+fn identity_of(reference: &str, input_unit: &str, output_unit: &str) -> DerivedUsageDeclaration {
+    DerivedUsageDeclaration {
+        output_unit: output_unit.to_owned(),
+        granularity: Granularity::Hour,
+        inputs: vec![DerivedInput {
+            name: "disk".to_owned(),
+            usage_type_ref: reference.to_owned(),
+            granule_fold: GranuleFold::Sum,
+            max_hold_seconds: None,
+            unit: input_unit.to_owned(),
+        }],
+        formula: Expr::Input("disk".to_owned()),
+        output_scale: 0,
+        output_round: RoundMode::HalfEven,
+    }
+}
+
+/// P-D-251: a wrap is one input, that raw meter whole-string, the identity formula, and one unit.
+#[test]
+fn wraps_is_the_identity_of_that_one_raw_meter_in_the_sku_unit() {
+    let raw = "usage:storage";
+    let decl = identity_of(raw, "GB", "GB");
+    assert!(wraps(raw, &decl, "GB"));
+    let mut two = decl.clone();
+    two.inputs.push(DerivedInput {
+        name: "extra".to_owned(),
+        usage_type_ref: "usage:other".to_owned(),
+        granule_fold: GranuleFold::Sum,
+        max_hold_seconds: None,
+        unit: "GB".to_owned(),
+    });
+    assert!(!wraps(raw, &two, "GB"), "two inputs");
+    let mut scaled = decl.clone();
+    scaled.formula = Expr::Ceil(Box::new(Expr::Input("disk".to_owned())));
+    assert!(!wraps(raw, &scaled, "GB"), "not the identity");
+    assert!(
+        !wraps(raw, &identity_of(raw, "GB", "MB"), "MB"),
+        "output unit is not the input's unit"
+    );
+    assert!(
+        !wraps(raw, &decl, "MB"),
+        "output unit is not the SKU's unit"
+    );
+    assert!(!wraps("usage:other", &decl, "GB"), "another meter");
+    assert!(!wraps("usage:storage ", &decl, "GB"), "not whole-string");
+    assert!(!wraps(&format!("{raw}x"), &decl, "GB"));
+    let wrapped = Some("products.derived/wrap@1");
+    assert!(wrap_exception(
+        Some(raw),
+        wrapped,
+        Some("GB"),
+        Some("GB"),
+        Some(&decl),
+    ));
+    assert!(
+        !wrap_exception(Some(raw), wrapped, Some("GB"), Some("MB"), Some(&decl)),
+        "the change moves the unit"
+    );
+    assert!(
+        !wrap_exception(Some(raw), wrapped, Some("GB"), Some("GB"), None),
+        "a missing version is not a wrap"
+    );
+    assert!(
+        !wrap_exception(wrapped, Some(raw), Some("GB"), Some("GB"), Some(&decl)),
+        "derived to raw"
+    );
+    assert!(pin_refuses(wrapped, Some(raw), false));
+    assert!(!pin_refuses(Some(raw), wrapped, true));
+}
+
 /// P-D-232's pin: refused when the current or the proposed ref is derived and the two differ.
 #[test]
 fn the_pin_moves_only_between_gts_refs() {

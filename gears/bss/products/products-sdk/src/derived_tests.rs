@@ -220,16 +220,33 @@ fn two_inputs_with_one_name_are_refused() {
     );
 }
 
+/// One input, named `disk`, with the given formula (P-D-251).
+fn one_input(formula: Expr) -> DerivedUsageDeclaration {
+    DerivedUsageDeclaration {
+        output_unit: "GB".to_owned(),
+        granularity: Granularity::Hour,
+        inputs: vec![sum_input("disk", LEFT_REF)],
+        formula,
+        output_scale: 0,
+        output_round: RoundMode::HalfEven,
+    }
+}
+
+/// P-D-251: one input is a declaration. The identity formula is `{"op":"input","name":<the input>}`.
+/// Any formula the grammar already allows is valid. It evaluates per granule, and a window sums those
+/// outputs. Zero inputs is still `TooFewInputs`.
 #[test]
-fn fewer_than_two_inputs_are_refused() {
-    let mut one = left_plus_right();
-    one.inputs.truncate(1);
-    one.formula = ceil(input("left"));
-    assert_eq!(
-        validate(&one),
-        Err(DeclarationError::TooFewInputs { count: 1 })
-    );
-    let mut none = one;
+fn a_one_input_identity_validates_evaluates_and_sums_a_window() {
+    let mut identity = one_input(input("disk"));
+    identity.inputs[0].unit = "GB".to_owned();
+    assert_eq!(validate(&identity), Ok(()));
+    let hours = [granule(&[("disk", "3")]), granule(&[("disk", "4")])];
+    assert_eq!(evaluate(&identity, &hours[0]), Ok(dec("3")));
+    assert_eq!(evaluate(&identity, &hours[1]), Ok(dec("4")));
+    assert_eq!(evaluate_window(&identity, &hours), Ok(dec("7")));
+    // A one-input formula the grammar already allows, not only the identity.
+    assert_eq!(validate(&one_input(ceil(input("disk")))), Ok(()));
+    let mut none = identity;
     none.inputs.clear();
     none.formula = konst("1");
     assert_eq!(

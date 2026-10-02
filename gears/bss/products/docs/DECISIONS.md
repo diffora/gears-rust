@@ -62,9 +62,9 @@
 | P-D-227 | M | The approval units are counted by state and kind and list newest first on request (twin of pricing D-470) | DECIDED 2026-09-30 · Owner, 2026-09-30 (the approvals option 1, "ok"); pricing phase 9 plan rev 2 (decision 10; plan review M4, L11); amends P-D-224; amended by the phase 9 review (C, R32; fix run 9.5d-1; I, fix run 9.5d-2); amended by P-D-250 |
 | P-D-228 | M | A unit says whether its reader may approve it (twin of pricing D-471) | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 4, "ok"); pricing phase 9 plan rev 2 (decision 11; W2; plan review H1, M2); amends P-D-224; amended by the phase 9 review (E, fix run 9.5d-1) |
 | P-D-229 | H | A derived usage meter is a catalog declaration that Rating evaluates | DECIDED 2026-10-01 · Owner, 2026-10-01 (who computes a cloudlet from RAM and CPU); supersedes the PriceBook spec §3 item 11 disposition for derived meters; rating T-D-39 |
-| P-D-230 | H | A derived usage type is versioned data with one evaluator, in the SDK | DECIDED 2026-10-01 · Derived usage types plan rev 3 (design decisions 1–4, run 1); implements P-D-229 and its amendment |
+| P-D-230 | H | A derived usage type is versioned data with one evaluator, in the SDK | DECIDED 2026-10-01 · Derived usage types plan rev 3 (design decisions 1–4, run 1); implements P-D-229 and its amendment; amended by P-D-251 |
 | P-D-231 | H | Derived usage types are stored append-only and served by five doors | DECIDED 2026-10-01 · Owner, 2026-10-01 (O-1, O-2, O-3); derived usage types plan rev 3 (design decisions 4, 8, 9, run 2); implements P-D-229 and P-D-230 |
-| P-D-232 | H | A usage SKU pins a derived usage type at its first publish | DECIDED 2026-10-01 · Owner, 2026-10-01 (M1, O-2); derived usage types plan rev 3 (design decision 7, run 3); implements P-D-229's pin; amends P-D-184, P-D-207, P-D-231 |
+| P-D-232 | H | A usage SKU pins a derived usage type at its first publish | DECIDED 2026-10-01 · Owner, 2026-10-01 (M1, O-2); derived usage types plan rev 3 (design decision 7, run 3); implements P-D-229's pin; amends P-D-184, P-D-207, P-D-231; amended by P-D-251 |
 | P-D-233 | H | Products answers pricing's meter semantics for its derived usage types (E1b) | DECIDED 2026-10-01 · Derived usage types plan rev 3 (design decisions 5 and 6, run 4); implements P-D-229's pricing reference; amends P-D-229, P-D-230, P-D-231, P-D-232; pricing D-503 and D-510 amended |
 | P-D-245 | M | The reference registry reads many SKUs in one call | DECIDED 2026-10-01 · phase 9 plan rev 4 (run 9.7); amends P-D-222 |
 | P-D-246 | M | The SKU pickers narrow by one book or one plan revision (`priced_in`, `not_priced_in`, `not_in_revision`) through the port's scoped sets | DECIDED 2026-10-01 · Owner, 2026-10-01 (asks v4, 52 and 46); phase 9 plan rev 4 (run 9.8; review M5, M6, M8); amends P-D-210, P-D-212 |
@@ -72,6 +72,7 @@
 | P-D-248 | H | A retire under review keeps the SKU's lifecycle; `retire_pending` is the fence | DECIDED 2026-10-01 · Owner, 2026-10-01; phase 9 plan rev 4 run 9.8d; amends P-D-189, P-D-208, P-D-211, P-D-213 |
 | P-D-249 | H | A lifecycle change honours its date | DECIDED 2026-10-01 · Owner, 2026-10-01; phase 9 plan rev 4 run 9.8d; amends P-D-191 |
 | P-D-250 | M | The approval units answer the approvals inbox through this gear's own doors (twin of pricing D-490) | DECIDED 2026-10-01 · Owner, 2026-10-01 (option A, "yes, A, agreed", then "write the plan"; Run 2 started before 9.5d-2); approvals inbox plan rev 2 (Run 2; design 1 and 3; plan review H1, H3, H4, M1, M2, M5, L1); amends P-D-227 |
+| P-D-251 | H | A derived usage type may wrap one raw meter, and a usage SKU may move onto that wrapper | DECIDED 2026-10-02 · Owner, 2026-10-02 ("let's convert the ones we have into derived form"); amends P-D-230, P-D-232 |
 
 ## Entries
 
@@ -1357,6 +1358,9 @@ evaluates, the usage collector stays raw").
   which names the inputs at their exact versions and the formula, is what the digest identifies, and
   `GET /derived-usage-types/{code}/versions/{n}` serves it.
 
+**Amended by P-D-251 (2026-10-02).** A declaration may name one raw input. The "at least two" line above is the
+original cloudlet; one input is a wrapper of a raw meter (P-D-230 amended).
+
 #### P-D-230 [H] A derived usage type is versioned data with one evaluator, in the SDK
 
 **Status:** DECIDED 2026-10-01.
@@ -1375,7 +1379,7 @@ the declaration Rating computes.
   `HalfEven` (a midpoint goes to the even neighbour), `HalfUp` (a midpoint goes away from zero), `Up` (away from zero) and
   `Down` (toward zero).
 - **`validate` refuses**, with one `DeclarationError` variant per rule, so Products can name the rule in its 400:
-  - an unknown input name, an unused input, a duplicate name, fewer than two inputs, a derived input (`products.derived/…`);
+  - an unknown input name, an unused input, a duplicate name, no inputs, a derived input (`products.derived/…`);
   - a `DivConst` by zero, a `Max` or `Min` with fewer than two operands;
   - a formula deeper than 32 (a leaf is depth 1) or of more than 256 nodes (every `Expr` counts), a scale above 12 (the
     output's or a `Round`'s);
@@ -1423,6 +1427,11 @@ the declaration Rating computes.
 
 **Amended by P-D-233 (2026-10-01).** The "Not built yet" line above is done: versions are stored and served (P-D-231), a
 usage SKU pins one (P-D-232), and Products answers pricing's meter semantics for them (P-D-233).
+
+**Amended by P-D-251 (2026-10-02).** A declaration may name one input. Zero inputs is still refused
+(`too_few_inputs`). A one-input declaration is valid with any formula the grammar already allows; the identity
+formula is `{"op":"input","name":<the input>}`. `max` and `min` still need at least two operands. The canonical
+bytes, and so the digest, of every declaration with two or more inputs are unchanged.
 
 #### P-D-231 [H] Derived usage types are stored append-only and served by five doors
 
@@ -1594,6 +1603,9 @@ SKU, a never-published draft may change its pin; O-2: the ref). Implements P-D-2
 
 **Amended by P-D-233 (2026-10-01).** The "Not built yet" line above is done: Products answers pricing's meter semantics
 (P-D-233), so a pricing usage entry can name a derived usage SKU's meter.
+
+**Amended by P-D-251 (2026-10-02).** A published usage SKU whose `usage_type_ref` is a raw GTS id may move onto
+the identity wrapper of that meter, in the same unit. Every other move of the ref stays `DERIVED_PIN_IMMUTABLE`.
 
 #### P-D-233 [H] Products answers pricing's meter semantics for its derived usage types (E1b)
 
@@ -1846,3 +1858,37 @@ this gear's side; pricing D-490 is its twin.
 the read-and-route facade, then "write the plan"; Run 2 started before 9.5d-2 on the owner's word). Approvals inbox
 plan rev 2 (Run 2; design 1 and 3; plan review H1, H3, H4, M1, M2, M5, L1). Amends P-D-227: its order is the inbox's
 merge key.
+
+#### P-D-251 [H] A derived usage type may wrap one raw meter, and a usage SKU may move onto that wrapper
+
+**Status:** DECIDED 2026-10-02.
+
+After the pricing seam, a usage entry needs a rating policy whose meter Products answers (E1b, P-D-233). A raw meter
+has no provider (E1a), so it fails closed. The owner decided to convert the raw meters already sold into derived form:
+a derived usage type may name one input, and a published usage SKU on a raw meter may move onto the identity wrapper
+of that meter.
+- **One input (amends P-D-230).** `MIN_INPUTS` is 1. A one-input declaration is valid with any formula the grammar
+  already allows. The identity formula is `{"op":"input","name":<the input>}`. `max` and `min` still need at least two
+  operands. The canonical bytes, and so the digest, of every declaration with two or more inputs are unchanged: the
+  cloudlet golden vector is the same bytes.
+- **The wrap (amends P-D-232).** A change on a published usage SKU whose current `usage_type_ref` is a raw GTS id `X`
+  (it does not start with `products.derived/`) may set `usage_type_ref` to `products.derived/<code>@<n>` when that
+  stored version, in the caller's tenant, satisfies all of: exactly one input; that input's `usage_type_ref` equals
+  `X` whole-string; the formula is the identity over that input; `output_unit` equals the input's `unit` and equals
+  the SKU's unit after the change. The change does not move the unit.
+- **Every other move** stays `DERIVED_PIN_IMMUTABLE`, as P-D-232: derived to raw, derived `@n` to `@m` or another
+  code, raw to a derived version that does not wrap, raw to derived together with a unit change, and a derived ref
+  dropped. `pin_moves` stays pure. `wraps` is the pure predicate of the declaration. The change door, before its
+  transaction, and `SkuChange::validate_change`, inside the transaction at submit and at apply, read the proposed
+  version through the same tenant-scoped read `pin` uses, and only when the current ref is raw and the proposed ref
+  is derived. They allow the move only when `wraps` holds. A version the tenant does not hold is not a wrap, so the
+  door's answer stays `DERIVED_PIN_IMMUTABLE`, the answer it already gave for an unknown derived ref before it looked
+  one up.
+- **The governed change is unchanged.** Approval, quorum and history are the change unit's, as every other change.
+- **The tests.** `products-sdk` `derived_tests`: a one-input identity validates, evaluates per granule and sums a
+  window; zero inputs is `TooFewInputs`. `domain/derived_tests`: `wraps` on its own. `derived_binding_tests`: the wrap
+  is submitted and applied at quorum 0 and the SKU reads the derived ref; each refused shape is 400
+  `DERIVED_PIN_IMMUTABLE` at the door and `validate_change` refuses it too. A version cannot stop wrapping between
+  submit and apply, because versions are append-only (P-D-231).
+
+**Source:** Owner, 2026-10-02 ("let's convert the ones we have into derived form"). Amends P-D-230 and P-D-232.

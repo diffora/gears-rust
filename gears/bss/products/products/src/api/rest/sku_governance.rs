@@ -27,7 +27,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use bss_approval::{Engine, SubmitRequest};
-use bss_products_sdk::models::{Lifecycle, SkuContent};
+use bss_products_sdk::models::{Lifecycle, Sku, SkuContent};
 use serde_json::Value;
 use std::sync::Arc;
 use time::OffsetDateTime;
@@ -97,8 +97,10 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
             "Submits a change of a published SKU for approval, effective from `effective_from`. \
              The texts it carries have the caps of the create (P-D-225), and the note at most \
              2000 characters. A usage SKU keeps the derived usage type it was first published on \
-             (P-D-232): a change that moves it to another version, to a GTS ref, from a GTS ref, \
-             or drops it (a type change included) is refused before any catalog is asked. \
+             (P-D-232), except a raw meter moving onto the identity wrapper of that meter, in the \
+             same unit (P-D-251). Every other move (another version, to a raw ref, from a derived \
+             ref, a unit change with the move, or a dropped ref, a type change included) is \
+             refused before any catalog is asked. \
              Refusals include 400 FIELD_TOO_LONG on a text over its cap, 400 NOTE_TOO_LONG on \
              the note, 400 DERIVED_PIN_IMMUTABLE, and 400 DERIVED_UNIT_MISMATCH for a unit other \
              than the pinned version's output unit.",
@@ -366,6 +368,45 @@ async fn run(
     )
     .await
 }
+
+/// P-D-232, amended by P-D-251. A change that moves a derived pin is refused before any catalog is
+/// asked, except a raw meter moving onto the identity wrapper of that meter, in the same unit.
+async fn refuse_moved_pin(
+    enforcer: &PolicyEnforcer,
+    state: &ApiState,
+    ctx: &SecurityContext,
+    kind: SubmitKind,
+    current: &Sku,
+    proposed: &SkuContent,
+) -> Result<(), CanonicalError> {
+    if !matches!(kind, SubmitKind::Change) {
+        return Ok(());
+    }
+    let current_ref = current.usage_type_ref.as_deref();
+    let proposed_ref = proposed.usage_type_ref.as_deref();
+    let stored = super::derived_usage_types::wrap_declaration(
+        state,
+        enforcer,
+        ctx,
+        current_ref,
+        proposed_ref,
+    )
+    .await?;
+    if derived::pin_refuses(
+        current_ref,
+        proposed_ref,
+        derived::wrap_exception(
+            current_ref,
+            proposed_ref,
+            current.unit.as_deref(),
+            proposed.unit.as_deref(),
+            stored.as_ref(),
+        ),
+    ) {
+        return Err(derived::pin_immutable().into());
+    }
+    Ok(())
+}
 #[expect(
     clippy::too_many_arguments,
     reason = "Submission captures all values once before transaction retries"
@@ -393,16 +434,9 @@ async fn execute(
     .await
     .map_err(tx_to_canonical)?;
     let proposed = apply_patch(&SkuContent::from(&current), &patch);
-    // P-D-232: a change that moves a derived pin is refused before any catalog is asked. The rule
-    // is `SkuChange::validate_change`'s, judged again in the transaction and at apply.
-    if matches!(kind, SubmitKind::Change)
-        && derived::pin_moves(
-            current.usage_type_ref.as_deref(),
-            proposed.usage_type_ref.as_deref(),
-        )
-    {
-        return Err(derived::pin_immutable().into());
-    }
+    // P-D-232, P-D-251: refuse a pin move before any catalog is asked. `validate_change` judges it
+    // again in the transaction and at apply.
+    refuse_moved_pin(enforcer, &state, &ctx, kind, &current, &proposed).await?;
     let usage = if matches!(kind, SubmitKind::Retire) {
         None
     } else {

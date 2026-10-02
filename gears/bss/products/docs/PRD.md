@@ -233,7 +233,7 @@ CPU, for example), as versioned data with one evaluator that Rating calls (P-D-2
 
 **Rules**
 
-- A version names its output unit, its granularity (an hour), at least two raw inputs, a formula over them, and the
+- A version names its output unit, its granularity (an hour), at least one raw input, a formula over them, and the
   output's scale and rounding. Each input is a GTS usage type at its exact version, with its granule fold and, for a
   time-weighted input, its hold bound. A version never changes; a new formula is a new version.
 - The formula is data in a closed grammar: inputs, constants, add, subtract, multiply, divide by a non-zero constant, the
@@ -254,7 +254,8 @@ CPU, for example), as versioned data with one evaluator that Rating calls (P-D-2
 - A usage SKU names a derived meter by its id as its `usage_type_ref`, and sells its version's output unit. The registry
   judges the ref from its own store, never from the usage-type catalog, configured or not: a version the tenant does not
   hold, and a unit other than its output unit, are refused. A draft may move to another version; the first publish pins
-  it, and no change moves it after that (to another version, to or from a GTS ref, or by dropping it). A new formula is
+  it. After that, a raw meter may move onto the identity wrapper of that meter, in the same unit (P-D-251). Every other
+  change of the ref is refused (to another version, to or from a raw ref, or by dropping it). A new formula is
   sold through a new usage SKU (P-D-232).
 - The registry answers pricing's meter semantics for a derived meter (E1b): the version's output unit, a sum over the
   granules, the accrual `derived-v1:<digest>` and the stored digest, read in the caller's tenant under the SKU read grant;
@@ -847,7 +848,8 @@ transport (`GET /bss-products/v1/browse`) remain until phase 2, as required by t
 - **When** an author creates a usage SKU on version 1 selling its output unit, publishes it, and then proposes changes.
 - **Then** the draft saves and publishes without the catalog being asked; an unknown version and another unit are
   refused at draft save; the draft may move to version 2 before its first publish; after it, a change to version 2, to a
-  GTS ref, from a GTS ref, or one that drops the ref, is refused at submit and again at apply (P-D-232).
+  GTS ref, from a GTS ref, or one that drops the ref, is refused at submit and again at apply (P-D-232). A published raw
+  meter may move onto the identity wrapper of that meter, in the same unit (P-D-251).
 
 **AC #32. A derived meter sells through pricing — `fr-derived-usage-type`**
 

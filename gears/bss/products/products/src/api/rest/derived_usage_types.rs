@@ -89,7 +89,7 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .description(format!(
             "A derived usage type and its version 1 (P-D-229, P-D-231): a `code` unique in the \
              tenant (`^[a-z0-9][a-z0-9._-]{{0,63}}$`), a `name`, and a `declaration` — at least \
-             two raw GTS usage-type inputs, the formula one granule's folded inputs give, and the \
+             one raw GTS usage-type input, the formula one granule's folded inputs give, and the \
              output's unit, scale and rounding. Each input resolves through the usage-type \
              catalog. The version is append-only and needs no approval (O-1); pricing names it \
              as `products.derived/<code>@1`. Asks `author` on `derived_usage_type`. Refusals: 400 \
@@ -264,6 +264,12 @@ pub(crate) fn corrupt_row(err: &RepoError) -> CanonicalError {
     DerivedUsageTypeResource::data_loss("a stored derived meter row does not read")
         .with_resource("derived usage type")
         .create()
+}
+
+/// A derived-row failure. `CorruptRow` stays 500 with a fixed detail; every other repository failure keeps the
+/// shared mapping.
+pub(crate) fn read_failure(err: &RepoError) -> CanonicalError {
+    stored_row_error(err)
 }
 
 /// A derived-row failure. `CorruptRow` stays 500 with a fixed detail; every other repository failure keeps the
@@ -752,6 +758,55 @@ pub(crate) async fn stored_version(
     };
     let declaration = version_dto(&t, &v)?.declaration;
     Ok(Some((v, declaration)))
+}
+
+/// The tenant's stored declaration that `reference` names, through the same read as [`pin`]
+/// ([`stored_version`], under the caller's tenant scope). `None` when the ref is not a canonical
+/// meter id or the tenant holds no such version. A stored row that does not read is a corrupt row.
+///
+/// # Errors
+/// A storage failure, or a stored declaration that does not read.
+pub(crate) async fn stored_declaration(
+    conn: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    reference: &str,
+) -> Result<Option<DerivedUsageDeclaration>, RepoError> {
+    let Ok(meter) = MeterId::parse(reference) else {
+        return Ok(None);
+    };
+    let Some((_, declaration)) = stored_version(conn, scope, tenant, &meter).await? else {
+        return Ok(None);
+    };
+    DerivedUsageDeclaration::try_from(&declaration)
+        .map(Some)
+        .map_err(|error| RepoError::CorruptRow(format!("derived usage type {reference}: {error}")))
+}
+
+/// The proposed version when a change might be a wrap (P-D-251): [`pin`]'s tenant-scoped read, or
+/// `None` when the current ref is not raw or the proposed ref is not derived. A missing version
+/// is `None`.
+///
+/// # Errors
+/// A storage failure, a stored row that does not read, or a `sku:read` denial.
+pub(super) async fn wrap_declaration(
+    state: &ApiState,
+    enforcer: &PolicyEnforcer,
+    ctx: &SecurityContext,
+    current_ref: Option<&str>,
+    proposed_ref: Option<&str>,
+) -> Result<Option<DerivedUsageDeclaration>, CanonicalError> {
+    let Some(reference) = proposed_ref else {
+        return Ok(None);
+    };
+    if !derived::wrap_candidate(current_ref, Some(reference)) {
+        return Ok(None);
+    }
+    let scope = read_scope(enforcer, ctx).await?.tenant_only();
+    let conn = state.db.conn().map_err(|e| tx_to_canonical(e.into()))?;
+    stored_declaration(&conn, &scope, ctx.subject_tenant_id(), reference)
+        .await
+        .map_err(|e| read_failure(&e))
 }
 
 /// A usage SKU's derived `reference` as the tenant's store holds it (P-D-232): the version its meter
