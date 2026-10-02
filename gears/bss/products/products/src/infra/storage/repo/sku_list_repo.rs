@@ -305,8 +305,9 @@ pub enum SkuListError {
 
 /// A lifecycle term the `CASE` does not serve. The list and the counts both answer 400 with this
 /// text (P-D-249).
-pub(crate) const LIFECYCLE_FILTER_REFUSED: &str = "the counts drop `lifecycle` only from top-level `and` terms; a `lifecycle` term \
-     under `or` or `not` is not counted";
+pub(crate) const LIFECYCLE_FILTER_REFUSED: &str = "a `lifecycle` comparison must be `eq`, `ne` or `in`, joined only by top-level \
+     `and`; a `lifecycle` term under `or` or `not`, or `contains`, `startswith` or `endswith` on \
+     `lifecycle`, is refused";
 
 fn is_lifecycle(expr: &toolkit_odata::ast::Expr) -> bool {
     matches!(expr, toolkit_odata::ast::Expr::Identifier(name) if name == "lifecycle")

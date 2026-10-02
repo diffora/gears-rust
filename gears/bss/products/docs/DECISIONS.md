@@ -1781,6 +1781,8 @@ A `sku_change` whose `effective_from` is after today stores `lifecycle_next` and
 
 **Amendment (2026-10-01, run 9.8d-fix).** An act's history records a next lifecycle only when that act changed `lifecycle_next`: the next it stored, or the lifecycle in force when it cleared the next. An act that leaves a pending next untouched records the lifecycle in force. The list `$filter` on `lifecycle` is `eq`, `ne` or `in`, and those joined by `and`, compared through the `CASE`. A `lifecycle` term under `or` or `not`, or `contains`, `startswith` or `endswith` on `lifecycle`, is 400 `INVALID_FILTER` on the list and on the counts. The stored column is not compared.
 
+**Amended 2026-10-02.** The 400 detail names those accepted shapes and the refused shapes. It does not say the term is not counted.
+
 **Source:** Owner, 2026-10-01. Phase 9 plan rev 4, run 9.8d. Amends P-D-191.
 
 #### P-D-250 [M] The approval units answer the approvals inbox through this gear's own doors (twin of pricing D-490)

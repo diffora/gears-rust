@@ -1393,9 +1393,12 @@ async fn a_due_lifecycle_is_filtered_through_the_case_or_refused() {
         for uri in [list(&[("$filter", filter)]), counts(&[("$filter", filter)])] {
             let body = d.refused(&uri).await;
             assert_eq!(problem_code(&body), "INVALID_FILTER", "{filter}: {body}");
+            let text = body.to_string();
             assert!(
-                body.to_string().contains("under `or` or `not`"),
-                "{filter}: {body}"
+                text.contains("under `or` or `not`")
+                    && text.contains("`eq`, `ne` or `in`")
+                    && text.contains("startswith"),
+                "{filter}: {text}"
             );
         }
     }
