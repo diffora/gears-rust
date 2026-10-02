@@ -122,7 +122,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-496 | M | The inbox source judges `state` before a foreign empty page | DECIDED 2026-10-02 · phase 9 review; amends D-490 |
 | D-497 | M | A unit says whether its reader may reject or withdraw it, and approve includes the grant | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 63); amends D-471 |
 | D-501 | H | Authorized SDK reads share the frozen preview snapshot and canonical JSON digests | DECIDED 2026-09-30 · Pricing Seam Contracts Task 1; amended 2026-10-02 (phase 9 review F1) |
-| D-502 | H | Immutable usage policies belong to entries and their semantic key | DECIDED 2026-10-01 · Pricing Seam Contracts Task 2; amends D-386, D-401, D-427 |
+| D-502 | H | Immutable usage policies belong to entries and their semantic key | DECIDED 2026-10-01 · Pricing Seam Contracts Task 2; amends D-386, D-401, D-427; amended by D-513 |
 | D-503 | H | Exact meter evidence gates usage publication and stays out of historical reads | DECIDED 2026-10-01 · Pricing Seam Contracts Task 3; amended 2026-10-01 by the owner (E1a raw and E1b derived meters; products P-D-229 and rating T-D-39 on branch `bss/pricebook-meters`); amended 2026-10-01 by products P-D-233 (E1b provided by Products, E1a still external) |
 | D-504 | H | Pure new-sale terms validate a bounded commercial profile and snapshot integrity | DECIDED 2026-10-01 · Pricing Seam Contracts Task 4; amended 2026-10-02 (phase 9 review F1b) |
 | D-505 | H | Durable commercial receipt storage | DECIDED 2026-10-01 · Pricing Seam Contracts Task 5a |
@@ -133,6 +133,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-510 | H | Database parity and provider handoff | DECIDED 2026-10-01 · Pricing Seam Contracts Task 8; E1 restated as E1a and E1b per the D-503 amendment; E1b delivered by products P-D-233 |
 | D-511 | H | Commercial commands enforce scoped prices and nonempty activation windows | DECIDED 2026-10-01 · Pricing Seam Contracts review fix run |
 | D-512 | H | A plan item may wait for its entry in a draft | DECIDED 2026-10-02 · Owner, 2026-10-02; amends D-407, D-413, D-420, D-467, D-469 |
+| D-513 | M | A usage policy's single-valued fields default on input | DECIDED 2026-10-02 · Owner, 2026-10-02; amends D-502 |
 
 ## Entries
 
@@ -1489,7 +1490,9 @@ key and an equal dimension key. With no equivalent target, the item retains the 
 ITEM_BOOK_FOREIGN blocks publication. An hourly entry never silently becomes monthly, and an absent
 legacy policy never becomes a new policy. Explicit item selection chooses the replacement entry.
 
-**Source:** Pricing Seam Contracts plan revision 3, Task 2. Amends D-386, D-401, D-427. Atlas C10 ownership is refined from item to entry; the atlas source remains externally owned.
+**Amended by D-513.** On author input, `quantity_semantics.fold`, `reset` and `partial_window` may be absent or null. The parse fills `SUM`, `rating_window_start` and `actual_quantity_full_thresholds` before validation, the content digest, storage and the meter check. An explicit value is accepted and an unknown value is refused. Stored and served policies still carry all three. There is no migration.
+
+**Source:** Pricing Seam Contracts plan revision 3, Task 2. Amends D-386, D-401, D-427. Atlas C10 ownership is refined from item to entry; the atlas source remains externally owned. Amended by D-513.
 
 #### D-503 [H] Exact meter evidence gates usage publication and stays out of historical reads
 
@@ -1994,3 +1997,23 @@ The owner asked why a draft could not take a SKU with no entry, and then add the
 - **The tests.** `tests/plan_item_doors.rs`: the door adds an entry-less item, the checks name it, submit refuses, a PATCH with a price turns the checks green, and copy, clone and the remap keep it entry-less while resolve of a published one has no chains. A foreign entry and a mismatched SKU stay refused. The insert and the remap statements are unchanged, so no new Postgres test.
 
 **Source:** Owner, 2026-10-02 (why a draft cannot add a SKU with no entry and add the entry later; then yes, do that). Amends D-407, D-413, D-420, D-467 and D-469.
+
+#### D-513 [M] A usage policy's single-valued fields default on input
+
+**Status:** DECIDED 2026-10-02.
+
+The owner asked whether `quantity_semantics.fold` should default when it has one choice, and then said to default the single-valued fields.
+
+`POST /price-books/{id}/entries` is the only author input that carries a policy. On that body:
+
+- `quantity_semantics.fold` absent or null becomes `SUM`;
+- `reset` absent or null becomes `rating_window_start`;
+- `partial_window` absent or null becomes `actual_quantity_full_thresholds`.
+
+An explicit value is accepted as before. An unknown value is refused as before. `null` is the same as absent: the author named no choice, and each field has one legal value. The parse fills the three fields before validation, the content digest, deduplication by `(tenant_id, digest)`, storage and the meter check. A request that omits them and a request that spells them out are the same policy.
+
+The stored row does not change, and there is no migration. Entry reads, export, write answers, durable create receipts, resolve and approval snapshots still return all five parts. The request schema lists the three fields as not required, each with its default. The response schemas keep them required.
+
+The SDK `UsageRatingPolicyInput` stays a total type. No SDK consumer builds an author policy. The REST request shape is the parse that fills the defaults.
+
+**Source:** Owner, 2026-10-02 (whether `quantity_semantics.fold` should default when it has one choice; then yes, default those fields). Amends D-502.
