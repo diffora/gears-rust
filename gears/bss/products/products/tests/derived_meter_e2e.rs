@@ -599,7 +599,14 @@ fn sale_query(
         schema_version: 1,
         cycle: BillingCycle::Month,
         anchor: BillingAnchor::Calendar,
-        anchor_at: start_at,
+        // A calendar anchor is the first day of a month at 00:00 UTC (pricing's commercial terms
+        // refuse any other as UNALIGNED_BILLING_ANCHOR), so the sale starting today anchors on
+        // this month's first day. `today` itself passed only on the 1st.
+        anchor_at: today
+            .replace_day(1)
+            .expect("the first day of a month")
+            .midnight()
+            .assume_utc(),
         timezone: Timezone::Utc,
         source: TermsSource::ExplicitOrder,
         digest: [0; 32],
