@@ -459,8 +459,8 @@ pub(super) struct AcceptedBinding {
     #[serde(deserialize_with = "scalars::required_option")]
     pub unit: Option<String>,
 
-    /// Dated SKU usage type. Absent on a receipt written before D-514.
-    #[serde(default)]
+    /// Dated SKU usage type. Absent on a receipt written before D-514, and omitted when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub meter: Option<MeterRef>,
 
     pub price: ImmutablePrice,
