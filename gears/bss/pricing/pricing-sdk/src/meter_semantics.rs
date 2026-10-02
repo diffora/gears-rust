@@ -1,8 +1,6 @@
 //! Consumer-required immutable meter evidence. E1's authoritative provider is external.
-use crate::{
-    Digest,
-    terms::{Fold, MeterRef},
-};
+pub use crate::terms::MeterRef;
+use crate::{Digest, terms::Fold};
 use toolkit_canonical_errors::CanonicalError;
 use toolkit_security::SecurityContext;
 

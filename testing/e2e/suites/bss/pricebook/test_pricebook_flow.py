@@ -81,15 +81,10 @@ VARIANTS = {
         # E1 must register this exact immutable meter declaration on the real binary.
         "entry": {
             "model": "per_unit",
-            # D-513: fold, reset and partial_window are omitted. The server fills them.
+            # D-514: the create sends the two choices. The server fills fold, reset and partial_window.
             "usage_rating_policy": {
                 "rating_window": {"kind": "billing_cycle"},
                 "aggregation_scope": "subscription_line",
-                "quantity_semantics": {
-                    "meter": {"usage_type_id": USAGE_TYPE, "version": "v1"},
-                    "unit": "GB",
-                    "accrual_policy_version": "integrated-v1",
-                },
             },
         },
         "price": {"price": {"rate": "0.10"}},
@@ -161,7 +156,9 @@ def test_a_priced_sku_publishes_its_price_and_blocks_retirement(api, variant):
     assert entry["reference_state"] == "confirmed", entry
     if variant == "usage":
         content = entry["usage_rating_policy"]["content"]
-        assert content["quantity_semantics"]["fold"] == "SUM", content
+        assert content["fold"] == "SUM", content
+        assert "quantity_semantics" not in content, content
+        assert entry["usage_sku_version"] == 1, entry
         assert content["reset"] == "rating_window_start", content
         assert content["partial_window"] == "actual_quantity_full_thresholds", content
     replay = api.post(f"{PRICING}/price-books/{book}/entries", json=body, headers=key)

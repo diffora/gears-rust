@@ -41,7 +41,7 @@ fn the_chain_names_the_plan_summary_migration() {
     );
     assert_eq!(
         names.last().map(String::as_str),
-        Some("m20261002_000020_plan_summary")
+        Some("m20261002_000021_policy_references_sku")
     );
 }
 

@@ -134,7 +134,9 @@ async fn check_sku_rules(
     let policy = input
         .usage_rating_policy
         .as_ref()
-        .map(crate::infra::usage_policy_wire::UsageRatingPolicyInput::from);
+        .map(crate::infra::usage_policy_wire::UsageRatingPolicyRequest::rules)
+        .transpose()
+        .map_err(|e| support::invalid("usage_rating_policy", e.code))?;
     if let Ok(kind) = price_book_entry::charge_kind_for(sku.r#type) {
         match (&policy, kind) {
             (None, price_book_entry::ChargeKind::Usage) => {
@@ -162,9 +164,30 @@ async fn check_sku_rules(
             Err(support::invalid("model", "MODEL_KIND_CHARGEKIND_MISMATCH"))
         }
         _ => match &policy {
-            Some(policy) => crate::infra::meter_semantics::resolve(&state.hub, ctx, policy, &sku)
-                .await
-                .map(Some),
+            Some(policy) => {
+                let evidence =
+                    crate::infra::meter_semantics::resolve(&state.hub, ctx, policy, &sku).await?;
+                if let Some(legacy) = input
+                    .usage_rating_policy
+                    .as_ref()
+                    .and_then(|request| request.quantity_semantics.as_ref())
+                {
+                    crate::domain::usage_policy::legacy_quantity_matches(
+                        &crate::domain::usage_policy::LegacyQuantity {
+                            meter_id: &legacy.meter.usage_type_id,
+                            meter_version: &legacy.meter.version,
+                            unit: &legacy.unit,
+                            accrual: &legacy.accrual_policy_version,
+                            fold: legacy.fold.into(),
+                        },
+                        sku.usage_type_ref.as_deref().unwrap_or(""),
+                        sku.unit.as_deref().unwrap_or(""),
+                        &((&evidence).into()),
+                    )
+                    .map_err(|e| support::invalid("usage_rating_policy", e.code))?;
+                }
+                Ok(Some(evidence))
+            }
             None => Ok(None),
         },
     }

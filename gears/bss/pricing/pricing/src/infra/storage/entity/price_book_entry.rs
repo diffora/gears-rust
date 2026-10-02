@@ -22,6 +22,9 @@ pub struct Model {
     pub usage_policy_id: Option<Uuid>,
     pub usage_policy_version: Option<i64>,
     pub usage_policy_digest: Option<String>,
+    /// The SKU head's `published_version` when the meter was checked. Null for a non-usage entry
+    /// and for a usage entry written before D-514.
+    pub usage_sku_version: Option<i64>,
     pub dimension_key: Option<String>,
     pub invoice_line_override: Option<String>,
     pub reservation_id: Uuid,

@@ -13,8 +13,8 @@ use crate::infra::storage::{
     RepoError, RepoRefusal,
     entity::{derived_usage_type, derived_usage_type_version},
 };
-use sea_orm::sea_query::{Expr, ExprTrait};
-use sea_orm::{ColumnTrait, Condition, EntityTrait, FromQueryResult, Order, QuerySelect, Set};
+use sea_orm::sea_query::{Expr, ExprTrait, Query};
+use sea_orm::{ColumnTrait, Condition, EntityTrait, Order, Set};
 use std::collections::HashMap;
 use time::OffsetDateTime;
 use toolkit_db::odata::sea_orm_filter::{
@@ -208,14 +208,28 @@ pub async fn list_versions(
         .collect()
 }
 
-#[derive(Debug, FromQueryResult)]
-struct Latest {
-    type_id: Uuid,
-    latest: i64,
+/// `(type_id, max(version))` for the page, one grouped read. The outer query keeps the row whose
+/// version is that maximum, so the caller gets the version, not only its number (P-D-257).
+fn latest_version_numbers(tenant_id: Uuid, types: &[Uuid]) -> sea_orm::sea_query::SelectStatement {
+    Query::select()
+        .column(derived_usage_type_version::Column::TypeId)
+        .expr(
+            Expr::col((
+                derived_usage_type_version::Entity,
+                derived_usage_type_version::Column::Version,
+            ))
+            .max(),
+        )
+        .from(derived_usage_type_version::Entity)
+        .and_where(derived_usage_type_version::Column::TenantId.eq(tenant_id))
+        .and_where(derived_usage_type_version::Column::TypeId.is_in(types.iter().copied()))
+        .group_by_col(derived_usage_type_version::Column::TypeId)
+        .to_owned()
 }
 
-/// The latest version of each of the tenant's `types`, in ONE grouped read; a type without a
-/// version is absent.
+/// The latest version row of each of the tenant's `types`, in ONE grouped read; a type without a
+/// version is absent. The caller's scope filters the returned rows. The grouped maximum repeats
+/// the tenant and the page's type ids.
 /// # Errors
 /// Scoped storage failures; a stored version out of range is a corrupt row.
 pub async fn latest_versions(
@@ -223,7 +237,7 @@ pub async fn latest_versions(
     scope: &AccessScope,
     tenant_id: Uuid,
     types: &[Uuid],
-) -> Result<HashMap<Uuid, u32>, RepoError> {
+) -> Result<HashMap<Uuid, DerivedUsageTypeVersion>, RepoError> {
     if types.is_empty() {
         return Ok(HashMap::new());
     }
@@ -233,34 +247,28 @@ pub async fn latest_versions(
         .filter(
             Condition::all()
                 .add(derived_usage_type_version::Column::TenantId.eq(tenant_id))
-                .add(derived_usage_type_version::Column::TypeId.is_in(types.iter().copied())),
+                .add(derived_usage_type_version::Column::TypeId.is_in(types.iter().copied()))
+                .add(
+                    Expr::tuple([
+                        Expr::col((
+                            derived_usage_type_version::Entity,
+                            derived_usage_type_version::Column::TypeId,
+                        )),
+                        Expr::col((
+                            derived_usage_type_version::Entity,
+                            derived_usage_type_version::Column::Version,
+                        )),
+                    ])
+                    .in_subquery(latest_version_numbers(tenant_id, types)),
+                ),
         )
-        .project_all(runner, |q| {
-            q.select_only()
-                .column(derived_usage_type_version::Column::TypeId)
-                .column_as(
-                    Expr::col((
-                        derived_usage_type_version::Entity,
-                        derived_usage_type_version::Column::Version,
-                    ))
-                    .max(),
-                    "latest",
-                )
-                .group_by(derived_usage_type_version::Column::TypeId)
-                .into_model::<Latest>()
-        })
+        .all(runner)
         .await
         .map_err(|e| driver_failure("latest derived usage type versions".into(), e))?
         .into_iter()
         .map(|row| {
-            u32::try_from(row.latest)
-                .map(|n| (row.type_id, n))
-                .map_err(|_| {
-                    RepoError::CorruptRow(format!(
-                        "derived usage type {} version {} is out of range",
-                        row.type_id, row.latest
-                    ))
-                })
+            let version = version_of(row)?;
+            Ok((version.type_id, version))
         })
         .collect()
 }

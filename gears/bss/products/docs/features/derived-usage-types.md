@@ -69,7 +69,7 @@ writes ask `author` on the resource `derived_usage_type`; the reads ask `sku:rea
 - [PRD](../PRD.md): `fr-derived-usage-type`, AC #30, AC #31 and AC #32.
 - [DESIGN](../DESIGN.md): §3.1 (the derived usage declaration, type and pin), §3.3 (the doors and the SKU doors' derived
   codes), §3.5 (the catalog port's derived sibling and pricing's meter semantics), §3.7 (the tables).
-- [DECISIONS](../DECISIONS.md): P-D-229, P-D-230, P-D-231, P-D-232, P-D-233, P-D-251; pricing D-503 (amended).
+- [DECISIONS](../DECISIONS.md): P-D-229, P-D-230, P-D-231, P-D-232, P-D-233, P-D-251, P-D-257; pricing D-503 (amended).
 - The plan: `docs/superpowers/plans/2026-10-01-products-derived-usage-types.md` in the main checkout, rev 3, runs 1 to 4.
 
 ## 2. Actor Flows (CDSL)
@@ -88,7 +88,7 @@ writes ask `author` on the resource `derived_usage_type`; the reads ask `sku:rea
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-derived-usage-types-pricing-reads`
 
 1. [ ] - `p1` - Ask `sku:read` (403 denied, 503 unreachable); the SQL filter is `tenant_only()` of that scope beside the caller's tenant, so a SKU `resource_id` does not select a derived row, and a constraint with no `owner_tenant_id` is deny-all - `inst-derived-read-scope`
-2. [ ] - `p1` - List the tenant's types by code, 50 to a page and at most 200, with a cursor and each type's latest version; read one type with its versions' headers - `inst-derived-read-list`
+2. [ ] - `p1` - List the tenant's types by code, 50 to a page and at most 200, with a cursor. Each item carries `latest_version` and `latest`, the latest version in the version-read shape (the declaration, including its formula, the digest, the meter reference, the canonical unit, the accrual policy version, the creator and the time), from one grouped read of the page (P-D-257); read one type with its versions' headers - `inst-derived-read-list`
 3. [ ] - `p1` - Read one version: the declaration, the stored digest, `meter_ref` `{usage_type_id: "products.derived/<code>@<n>", version: "<n>"}`, `canonical_unit` and `accrual_policy_version` `derived-v1:<digest>`; a non-canonical `n`, an unknown code or version, and another tenant's type are 404 - `inst-derived-read-version`
 
 ### Author sells a derived version through a usage SKU
@@ -223,7 +223,7 @@ Verified by `derived_usage_types_tests::create_gives_version_1_and_a_new_version
 Two writes under `author` on `derived_usage_type` and three reads under `sku:read`, registered through OperationBuilder with
 503 declared on each and a served text naming every code; writes take an optional `Idempotency-Key` and write one audit row
 each in their transaction (`subject_kind = derived_usage_type`, the type's id, the version); the list pages as the SKU list
-does (DESIGN §3.3; P-D-231).
+does and each item carries the latest version in full, from one grouped read (DESIGN §3.3; P-D-231, P-D-257).
 
 ### A usage SKU pins its derived version
 

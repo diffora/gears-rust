@@ -114,7 +114,9 @@ impl Capped for PricingPriceBookEntryCreate {
         let Some(policy) = &self.usage_rating_policy else {
             return Ok(());
         };
-        let quantity = &policy.quantity_semantics;
+        let Some(quantity) = &policy.quantity_semantics else {
+            return Ok(());
+        };
         field(
             "usage_rating_policy.usage_type_id",
             &quantity.meter.usage_type_id,
@@ -221,7 +223,7 @@ mod tests {
             rating_window: RatingWindow::BillingCycle,
             aggregation_scope: AggregationScope::SubscriptionLine,
             reset: Reset::RatingWindowStart,
-            quantity_semantics: QuantitySemanticsRequest {
+            quantity_semantics: Some(QuantitySemanticsRequest {
                 meter: MeterRef {
                     usage_type_id: usage_type_id.to_owned(),
                     version: "1".into(),
@@ -229,8 +231,9 @@ mod tests {
                 unit: "h".into(),
                 fold: Fold::Sum,
                 accrual_policy_version: "v1".into(),
-            },
+            }),
             partial_window: PartialWindow::ActualQuantityFullThresholds,
+            fold: None,
         }
     }
     fn create(usage_type_id: &str) -> PricingPriceBookEntryCreate {
@@ -262,9 +265,12 @@ mod tests {
     #[test]
     fn a_derived_accrual_version_and_a_long_gts_id_fit() {
         let mut entry = create("gts.cf.core.uc.usage_record.v1~cf.bss.usage_type.memorygbhours.v1");
-        if let Some(policy) = entry.usage_rating_policy.as_mut() {
-            policy.quantity_semantics.accrual_policy_version =
-                format!("derived-v1:{}", "a".repeat(64));
+        if let Some(quantity) = entry
+            .usage_rating_policy
+            .as_mut()
+            .and_then(|policy| policy.quantity_semantics.as_mut())
+        {
+            quantity.accrual_policy_version = format!("derived-v1:{}", "a".repeat(64));
         }
         assert!(entry.caps().is_ok());
     }

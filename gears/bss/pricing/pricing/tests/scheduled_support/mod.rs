@@ -102,6 +102,7 @@ fn entry(
         usage_policy_id: None,
         usage_policy_version: None,
         usage_policy_digest: None,
+        usage_sku_version: None,
         dimension_key: None,
         invoice_line_override: Some("{name} per month".into()),
         reservation_id: Uuid::new_v4(),

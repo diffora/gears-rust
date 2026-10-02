@@ -280,7 +280,7 @@ fn each_binding_mutation_has_one_stable_refusal() {
     type Mutation = fn(&mut AcceptedBinding);
     let cases: &[(Mutation, R)] = &[
         (|b| b.usage_rating_policy = None, R::MissingRatingPolicy),
-        (|b| b.unit = Some("second".into()), R::MeterPolicyMismatch),
+        (|b| b.unit = None, R::MeterPolicyMismatch),
         (
             |b| b.usage_rating_policy.as_mut().unwrap().digest = [9; 32],
             R::MeterPolicyMismatch,

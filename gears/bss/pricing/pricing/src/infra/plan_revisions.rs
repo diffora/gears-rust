@@ -240,6 +240,9 @@ pub fn content(
                     item["usage_policy"] = json!({"policy_id": id,
                         "version": entry.usage_policy_version.map(|v| v.to_string()),
                         "digest": entry.usage_policy_digest});
+                    if let Some(version) = entry.usage_sku_version {
+                        item["usage_sku_version"] = json!(version);
+                    }
                 }
                 item
             })

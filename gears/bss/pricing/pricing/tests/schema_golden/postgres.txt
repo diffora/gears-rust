@@ -195,6 +195,7 @@ COLUMN bss.pricing_price_book_entry updated_at timestamp with time zone NOT NULL
 COLUMN bss.pricing_price_book_entry usage_policy_digest text NULL DEFAULT -
 COLUMN bss.pricing_price_book_entry usage_policy_id uuid NULL DEFAULT -
 COLUMN bss.pricing_price_book_entry usage_policy_version bigint NULL DEFAULT -
+COLUMN bss.pricing_price_book_entry usage_sku_version bigint NULL DEFAULT -
 COLUMN bss.pricing_price_book_entry version bigint NOT NULL DEFAULT 1
 COLUMN bss.pricing_reference_op attempts integer NOT NULL DEFAULT 0
 COLUMN bss.pricing_reference_op created_at timestamp with time zone NOT NULL DEFAULT -
@@ -359,6 +360,7 @@ CONSTRAINT bss.pricing_price_book pricing_price_book_tenant_id_code_key UNIQUE (
 CONSTRAINT bss.pricing_price_book pricing_price_book_tenant_id_id_key UNIQUE (tenant_id, id)
 CONSTRAINT bss.pricing_price_book_entry pricing_entry_policy_complete CHECK ((((usage_policy_id IS NULL) AND (usage_policy_version IS NULL) AND (usage_policy_digest IS NULL)) OR ((usage_policy_id IS NOT NULL) AND (usage_policy_version IS NOT NULL) AND (usage_policy_digest IS NOT NULL) AND (charge_kind = 'usage'::text))))
 CONSTRAINT bss.pricing_price_book_entry pricing_entry_policy_fk FOREIGN KEY (tenant_id, usage_policy_id, usage_policy_version, usage_policy_digest) REFERENCES bss.pricing_usage_rating_policy(tenant_id, policy_id, version, digest)
+CONSTRAINT bss.pricing_price_book_entry pricing_entry_sku_version CHECK (((usage_sku_version IS NULL) OR ((usage_policy_id IS NOT NULL) AND (usage_sku_version >= 1))))
 CONSTRAINT bss.pricing_price_book_entry pricing_price_book_entry_book_id_fkey FOREIGN KEY (book_id) REFERENCES bss.pricing_price_book(id)
 CONSTRAINT bss.pricing_price_book_entry pricing_price_book_entry_charge_kind_check CHECK ((charge_kind = ANY (ARRAY['recurring'::text, 'usage'::text, 'one_time'::text])))
 CONSTRAINT bss.pricing_price_book_entry pricing_price_book_entry_check CHECK ((((charge_kind = 'recurring'::text) AND (period IS NOT NULL) AND (period = ANY (ARRAY['month'::text, 'year'::text]))) OR ((charge_kind = ANY (ARRAY['usage'::text, 'one_time'::text])) AND (period IS NULL))))

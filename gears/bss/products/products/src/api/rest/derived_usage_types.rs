@@ -149,11 +149,14 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .operation_id("bss_products.list_derived_usage_types")
         .summary("List derived usage types")
         .description(
-            "One page of the tenant's derived usage types by code (tie-break id), each with its \
-             latest version: `$top` (alias `limit`; default 50, clamped at 200) and `cursor` \
-             (alias `$skiptoken`) from `page_info`, as the SKU list pages. Asks `sku:read` \
-             (O-3). Any other key, `$filter`, `$orderby` and `$select` are 400 \
-             UNSUPPORTED_QUERY_PARAM; a malformed cursor, or one another list cut, is 400.",
+            "One page of the tenant's derived usage types by code (tie-break id). Each item \
+             carries `latest_version` and `latest`, the latest version in the version-read \
+             shape: `version`, `declaration` (inputs and formula), `digest`, `meter_ref`, \
+             `canonical_unit`, `accrual_policy_version`, `created_by` and `created_at`. `$top` \
+             (alias `limit`; default 50, clamped at 200) and `cursor` (alias `$skiptoken`) from \
+             `page_info`, as the SKU list pages. Asks `sku:read` (O-3). Any other key, \
+             `$filter`, `$orderby` and `$select` are 400 UNSUPPORTED_QUERY_PARAM; a malformed \
+             cursor, or one another list cut, is 400.",
         )
         .tag(TAG)
         .authenticated()
@@ -551,7 +554,7 @@ async fn create_derived_usage_type_version(
                         .await
                         .map_err(TxError::Repo)?
                         .get(&t.id)
-                        .copied()
+                        .map(|row| row.version)
                         .ok_or_else(|| {
                             TxError::Repo(RepoError::CorruptRow(format!(
                                 "derived usage type {} has no version",
@@ -655,14 +658,17 @@ async fn list_derived_usage_types(
         .items
         .into_iter()
         .map(|t| {
-            let latest_version = latest.get(&t.id).copied().ok_or_else(|| {
+            let row = latest.get(&t.id).ok_or_else(|| {
                 RepoError::CorruptRow(format!("derived usage type {} has no version", t.id))
             })?;
+            let latest_version = row.version;
+            let latest_row = version_dto(&t, row)?;
             Ok(ProductsDerivedUsageTypeItem {
                 id: t.id,
                 code: t.code,
                 name: t.name,
                 latest_version,
+                latest: latest_row,
                 created_by: t.created_by,
                 created_at: t.created_at,
             })

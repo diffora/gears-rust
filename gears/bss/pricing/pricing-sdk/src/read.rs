@@ -8,6 +8,7 @@ use time::Date;
 
 use crate::{
     Digest,
+    meter_semantics::MeterRef,
     terms::{BillingCycle, InvoiceInputs, UsageRatingPolicy},
 };
 
@@ -127,7 +128,10 @@ pub struct AcceptedBinding {
     pub sku_name: String,
 
     /// Unit.
-    pub unit: Option<String>, // Dated SKU unit; matches usage policy for usage bindings.
+    pub unit: Option<String>, // Dated SKU unit.
+
+    /// Dated SKU usage type. `None` for a non-usage binding. A projection, not policy storage.
+    pub meter: Option<MeterRef>,
 
     /// Price.
     pub price: ImmutablePrice,

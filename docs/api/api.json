@@ -12630,6 +12630,14 @@
               }
             ]
           },
+          "usage_sku_version": {
+            "description": "The SKU head's `published_version` when the meter was checked. Null for a non-usage entry\nand for a usage entry written before D-514.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "version": {
             "format": "int64",
             "type": "integer"
@@ -15196,33 +15204,10 @@
         ],
         "type": "object"
       },
-      "QuantitySemantics": {
-        "additionalProperties": false,
-        "properties": {
-          "accrual_policy_version": {
-            "type": "string"
-          },
-          "fold": {
-            "$ref": "#/components/schemas/Fold"
-          },
-          "meter": {
-            "$ref": "#/components/schemas/MeterRef"
-          },
-          "unit": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "meter",
-          "unit",
-          "fold",
-          "accrual_policy_version"
-        ],
-        "type": "object"
-      },
       "QuantitySemanticsRequest": {
         "additionalProperties": false,
-        "description": "Quantity semantics on author input. `fold` defaults to `SUM` when absent or null (D-513).",
+        "deprecated": true,
+        "description": "Quantity semantics on author input. `fold` defaults to `SUM` when absent or null (D-513).\nDeprecated: the deploy-3 copy is verified and dropped (D-514).",
         "properties": {
           "accrual_policy_version": {
             "type": "string"
@@ -20970,16 +20955,16 @@
       },
       "UsageRatingPolicyInput": {
         "additionalProperties": false,
-        "description": "Complete policy content. Server-assigned identity is not part of this object.\nAuthor input uses [`UsageRatingPolicyRequest`], which fills the single-valued fields (D-513).\nStored rows and every response keep `fold`, `reset` and `partial_window` required.",
+        "description": "Complete policy content: the five rating rules (D-514).\n\nServer-assigned identity is not part of this object. Author input uses\n[`UsageRatingPolicyRequest`]. A row stored before D-514 still reads: its `quantity_semantics`\ncontributes `fold` and is then dropped.",
         "properties": {
           "aggregation_scope": {
             "$ref": "#/components/schemas/AggregationScope"
           },
+          "fold": {
+            "$ref": "#/components/schemas/Fold"
+          },
           "partial_window": {
             "$ref": "#/components/schemas/PartialWindow"
-          },
-          "quantity_semantics": {
-            "$ref": "#/components/schemas/QuantitySemantics"
           },
           "rating_window": {
             "$ref": "#/components/schemas/RatingWindow"
@@ -20992,17 +20977,28 @@
           "rating_window",
           "aggregation_scope",
           "reset",
-          "quantity_semantics",
-          "partial_window"
+          "partial_window",
+          "fold"
         ],
         "type": "object"
       },
       "UsageRatingPolicyRequest": {
         "additionalProperties": false,
-        "description": "Author input for a usage policy (D-513).\n\n`fold`, `reset` and `partial_window` default when absent or null. The parse fills them\nbefore validation, the content digest, storage and the meter check. Stored and served\npolicies use [`UsageRatingPolicyInput`], which keeps those fields required.",
+        "description": "Author input for a usage policy (D-513, D-514).\n\n`fold`, `reset` and `partial_window` default when absent or null. `quantity_semantics` is the\ndeploy-3 body: when present it is verified against the SKU and the provider, then dropped.\nIt is not stored. Stored and served policies use [`UsageRatingPolicyInput`].",
         "properties": {
           "aggregation_scope": {
             "$ref": "#/components/schemas/AggregationScope"
+          },
+          "fold": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Fold",
+                "description": "Absent or null defers to `quantity_semantics.fold`, or `SUM` when that is absent too (D-513)."
+              }
+            ]
           },
           "partial_window": {
             "default": "actual_quantity_full_thresholds",
@@ -21014,7 +21010,15 @@
             ]
           },
           "quantity_semantics": {
-            "$ref": "#/components/schemas/QuantitySemanticsRequest"
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/QuantitySemanticsRequest",
+                "description": "Deploy-3 meter copy. Deprecated: verified, then dropped (D-514)."
+              }
+            ]
           },
           "rating_window": {
             "$ref": "#/components/schemas/RatingWindow"
@@ -21031,8 +21035,7 @@
         },
         "required": [
           "rating_window",
-          "aggregation_scope",
-          "quantity_semantics"
+          "aggregation_scope"
         ],
         "type": "object"
       },

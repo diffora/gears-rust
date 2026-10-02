@@ -123,21 +123,59 @@ pub struct QuantitySemantics {
     pub fold: Fold,
     pub accrual_policy_version: String,
 }
-/// Complete policy content. Server-assigned identity is not part of this object.
-/// Author input uses [`UsageRatingPolicyRequest`], which fills the single-valued fields (D-513).
-/// Stored rows and every response keep `fold`, `reset` and `partial_window` required.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+/// Complete policy content: the five rating rules (D-514).
+///
+/// Server-assigned identity is not part of this object. Author input uses
+/// [`UsageRatingPolicyRequest`]. A row stored before D-514 still reads: its `quantity_semantics`
+/// contributes `fold` and is then dropped.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct UsageRatingPolicyInput {
     pub rating_window: RatingWindow,
     pub aggregation_scope: AggregationScope,
     pub reset: Reset,
-    pub quantity_semantics: QuantitySemantics,
     pub partial_window: PartialWindow,
+    pub fold: Fold,
+}
+impl<'de> Deserialize<'de> for UsageRatingPolicyInput {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Stored {
+            rating_window: RatingWindow,
+            aggregation_scope: AggregationScope,
+            reset: Reset,
+            partial_window: PartialWindow,
+            #[serde(default)]
+            fold: Option<Fold>,
+            #[serde(default)]
+            quantity_semantics: Option<QuantitySemantics>,
+        }
+        let stored = Stored::deserialize(deserializer)?;
+        let fold = match (
+            stored.fold,
+            stored.quantity_semantics.as_ref().map(|q| q.fold),
+        ) {
+            (Some(top), Some(inner)) if top != inner => {
+                return Err(serde::de::Error::custom(
+                    "fold disagrees with quantity_semantics.fold",
+                ));
+            }
+            (Some(top), _) => top,
+            (None, Some(inner)) => inner,
+            (None, None) => Fold::Sum,
+        };
+        Ok(Self {
+            rating_window: stored.rating_window,
+            aggregation_scope: stored.aggregation_scope,
+            reset: stored.reset,
+            partial_window: stored.partial_window,
+            fold,
+        })
+    }
 }
 impl From<&UsageRatingPolicyInput> for sdk::UsageRatingPolicyInput {
     fn from(p: &UsageRatingPolicyInput) -> Self {
-        let q = &p.quantity_semantics;
         Self {
             rating_window: match p.rating_window.clone() {
                 RatingWindow::BillingCycle => sdk::RatingWindow::BillingCycle,
@@ -147,22 +185,13 @@ impl From<&UsageRatingPolicyInput> for sdk::UsageRatingPolicyInput {
             },
             aggregation_scope: p.aggregation_scope.into(),
             reset: p.reset.into(),
-            quantity_semantics: sdk::QuantitySemantics {
-                meter: sdk::MeterRef {
-                    usage_type_id: q.meter.usage_type_id.clone(),
-                    version: q.meter.version.clone(),
-                },
-                unit: q.unit.clone(),
-                fold: q.fold.into(),
-                accrual_policy_version: q.accrual_policy_version.clone(),
-            },
             partial_window: p.partial_window.into(),
+            fold: p.fold.into(),
         }
     }
 }
 impl From<&sdk::UsageRatingPolicyInput> for UsageRatingPolicyInput {
     fn from(p: &sdk::UsageRatingPolicyInput) -> Self {
-        let q = &p.quantity_semantics;
         Self {
             rating_window: match p.rating_window.clone() {
                 sdk::RatingWindow::BillingCycle => RatingWindow::BillingCycle,
@@ -172,16 +201,8 @@ impl From<&sdk::UsageRatingPolicyInput> for UsageRatingPolicyInput {
             },
             aggregation_scope: p.aggregation_scope.into(),
             reset: p.reset.into(),
-            quantity_semantics: QuantitySemantics {
-                meter: MeterRef {
-                    usage_type_id: q.meter.usage_type_id.clone(),
-                    version: q.meter.version.clone(),
-                },
-                unit: q.unit.clone(),
-                fold: q.fold.into(),
-                accrual_policy_version: q.accrual_policy_version.clone(),
-            },
             partial_window: p.partial_window.into(),
+            fold: p.fold.into(),
         }
     }
 }
@@ -208,7 +229,9 @@ fn partial_window_field<'de, D: Deserializer<'de>>(
         .unwrap_or(PartialWindow::ActualQuantityFullThresholds))
 }
 /// Quantity semantics on author input. `fold` defaults to `SUM` when absent or null (D-513).
+/// Deprecated: the deploy-3 copy is verified and dropped (D-514).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[schema(deprecated)]
 #[serde(deny_unknown_fields)]
 pub struct QuantitySemanticsRequest {
     pub meter: MeterRef,
@@ -219,11 +242,11 @@ pub struct QuantitySemanticsRequest {
     pub fold: Fold,
     pub accrual_policy_version: String,
 }
-/// Author input for a usage policy (D-513).
+/// Author input for a usage policy (D-513, D-514).
 ///
-/// `fold`, `reset` and `partial_window` default when absent or null. The parse fills them
-/// before validation, the content digest, storage and the meter check. Stored and served
-/// policies use [`UsageRatingPolicyInput`], which keeps those fields required.
+/// `fold`, `reset` and `partial_window` default when absent or null. `quantity_semantics` is the
+/// deploy-3 body: when present it is verified against the SKU and the provider, then dropped.
+/// It is not stored. Stored and served policies use [`UsageRatingPolicyInput`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct UsageRatingPolicyRequest {
@@ -233,7 +256,10 @@ pub struct UsageRatingPolicyRequest {
     #[serde(default = "default_reset", deserialize_with = "reset_field")]
     #[schema(default = "rating_window_start")]
     pub reset: Reset,
-    pub quantity_semantics: QuantitySemanticsRequest,
+    /// Deploy-3 meter copy. Deprecated: verified, then dropped (D-514).
+    #[serde(default)]
+    #[schema(deprecated)]
+    pub quantity_semantics: Option<QuantitySemanticsRequest>,
     /// Absent or null defaults to `actual_quantity_full_thresholds` (D-513).
     #[serde(
         default = "default_partial_window",
@@ -241,22 +267,42 @@ pub struct UsageRatingPolicyRequest {
     )]
     #[schema(default = "actual_quantity_full_thresholds")]
     pub partial_window: PartialWindow,
+    /// Absent or null defers to `quantity_semantics.fold`, or `SUM` when that is absent too (D-513).
+    #[serde(default)]
+    pub fold: Option<Fold>,
+}
+impl UsageRatingPolicyRequest {
+    /// The five rating rules. A fold named twice and disagreeing is `METER_POLICY_MISMATCH`.
+    /// # Errors
+    /// The two folds disagree.
+    pub fn rules(&self) -> Result<UsageRatingPolicyInput, crate::domain::RuleError> {
+        let nested = self.quantity_semantics.as_ref().map(|q| q.fold);
+        let fold = match (self.fold, nested) {
+            (Some(top), Some(inner)) if top != inner => {
+                return Err(crate::domain::RuleError::new("METER_POLICY_MISMATCH"));
+            }
+            (Some(top), _) => top,
+            (None, Some(inner)) => inner,
+            (None, None) => Fold::Sum,
+        };
+        Ok(UsageRatingPolicyInput {
+            rating_window: self.rating_window.clone(),
+            aggregation_scope: self.aggregation_scope,
+            reset: self.reset,
+            partial_window: self.partial_window,
+            fold,
+        })
+    }
 }
 impl From<&UsageRatingPolicyRequest> for UsageRatingPolicyInput {
     fn from(p: &UsageRatingPolicyRequest) -> Self {
-        let q = &p.quantity_semantics;
-        Self {
+        p.rules().unwrap_or(UsageRatingPolicyInput {
             rating_window: p.rating_window.clone(),
             aggregation_scope: p.aggregation_scope,
             reset: p.reset,
-            quantity_semantics: QuantitySemantics {
-                meter: q.meter.clone(),
-                unit: q.unit.clone(),
-                fold: q.fold,
-                accrual_policy_version: q.accrual_policy_version.clone(),
-            },
             partial_window: p.partial_window,
-        }
+            fold: Fold::Sum,
+        })
     }
 }
 impl From<UsageRatingPolicyRequest> for UsageRatingPolicyInput {
