@@ -55,12 +55,14 @@ fn list_route(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
              and then the unit id, in the same direction. The default order is newest first. \
              `limit` defaults to 50 and is clamped at 200. A cursor carries its order and its \
              narrowing, so a continuation sends no `$orderby`. `impact=false` skips the live \
-             impact. `sources` names each configured gear as ok or forbidden; a forbidden gear's \
-             units are omitted. `total` on the counts counts the readable gears only. Refusals: \
-             400 ORDER_WITH_CURSOR when `$orderby` is sent with a cursor; 400 FILTER_MISMATCH \
-             when the narrowing changed; 400 for a cursor or an order that does not read; 403 \
-             when every gear forbids the caller; 503 SOURCE_UNAVAILABLE naming a gear that did \
-             not answer.",
+             impact.              `sources` names each configured gear as ok, forbidden or unavailable. A forbidden \
+             gear's units are omitted. A gear that does not answer is unavailable and omitted; \
+             the page still answers the gears that did. A cursor records a gear that was \
+             unavailable when it was cut, and a continuation keeps that gear omitted. `total` \
+             on the counts counts the readable gears only. Refusals: 400 ORDER_WITH_CURSOR when \
+             `$orderby` is sent with a cursor; 400 FILTER_MISMATCH when the narrowing changed; \
+             400 for a cursor or an order that does not read; 403 when every gear forbids the \
+             caller; 503 SOURCE_UNAVAILABLE when every gear did not answer.",
         )
         .tag(TAG)
         .authenticated()
@@ -115,10 +117,10 @@ fn counts_route(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .description(
             "The list's narrowing, summed over the gears the caller can read: by_state, by_kind \
              and total. Every state and every kind is named, 0 when none. total counts the \
-             readable gears only. `sources` names each gear as ok or forbidden. A forbidden gear \
-             is omitted from the sum. Refusals: 400 for a query that does not parse or a key the \
-             narrowing does not take; 403 when every gear forbids the caller; 503 \
-             SOURCE_UNAVAILABLE naming a gear that did not answer.",
+             readable gears only. `sources` names each gear as ok, forbidden or unavailable. A \
+             forbidden or unavailable gear is omitted from the sum. Refusals: 400 for a query \
+             that does not parse or a key the narrowing does not take; 403 when every gear \
+             forbids the caller; 503 SOURCE_UNAVAILABLE when every gear did not answer.",
         )
         .tag(TAG)
         .authenticated()

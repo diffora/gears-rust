@@ -328,10 +328,33 @@ async fn a_forbidden_source_is_omitted_and_named_and_a_down_source_is_unavailabl
         .await,
     )
     .await;
+    assert_eq!(status, StatusCode::OK);
+    let page: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(page["items"].as_array().unwrap().len(), 1);
+    assert_eq!(page["sources"][1]["status"], "unavailable");
+
+    let both = inbox(
+        &["pricing", "products"],
+        &[
+            ("pricing", {
+                let fake = Arc::new(Fake::serving(Vec::new()));
+                *fake.mode.lock().unwrap() = Mode::Unavailable;
+                fake
+            }),
+            ("products", {
+                let fake = Arc::new(Fake::serving(Vec::new()));
+                *fake.mode.lock().unwrap() = Mode::Unavailable;
+                fake
+            }),
+        ],
+    );
+    let (status, _, body) =
+        bytes(call(&both, "GET", "/bss-approvals/v1/approval-units", b"", true).await).await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     let text = String::from_utf8(body).unwrap();
     assert!(text.contains("SOURCE_UNAVAILABLE"));
     assert!(text.contains("products"));
+    assert!(text.contains("pricing"));
 
     let missing_app = inbox(
         &["pricing", "products"],
@@ -348,8 +371,58 @@ async fn a_forbidden_source_is_omitted_and_named_and_a_down_source_is_unavailabl
         .await,
     )
     .await;
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
-    assert!(String::from_utf8(body).unwrap().contains("products"));
+    assert_eq!(status, StatusCode::OK);
+    let counts: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(counts["total"], 0);
+    assert_eq!(counts["sources"][1]["name"], "products");
+    assert_eq!(counts["sources"][1]["status"], "unavailable");
+}
+
+#[tokio::test]
+async fn a_down_source_stays_on_the_page_as_unavailable() {
+    let pricing = Arc::new(Fake::serving(vec![
+        test_support::unit("pricing", 1, 1),
+        test_support::unit("pricing", 3, 3),
+    ]));
+    let products = Arc::new(Fake::serving(vec![test_support::unit("products", 2, 2)]));
+    *products.mode.lock().unwrap() = Mode::Unavailable;
+    let app = inbox(
+        &["pricing", "products"],
+        &[("pricing", pricing), ("products", products.clone())],
+    );
+    let (status, _, body) = bytes(
+        call(
+            &app,
+            "GET",
+            "/bss-approvals/v1/approval-units?limit=1",
+            b"",
+            true,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let page: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(page["items"].as_array().unwrap().len(), 1);
+    assert_eq!(page["sources"][1]["name"], "products");
+    assert_eq!(page["sources"][1]["status"], "unavailable");
+    let cursor = page["next_cursor"].as_str().expect("the walk continues");
+    *products.mode.lock().unwrap() = Mode::Serve;
+    let (status, _, body) = bytes(
+        call(
+            &app,
+            "GET",
+            &format!("/bss-approvals/v1/approval-units?limit=1&cursor={cursor}"),
+            b"",
+            true,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let next: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(next["sources"][1]["status"], "unavailable");
+    assert!(products.last_page.lock().unwrap().is_none());
 }
 
 #[tokio::test]
@@ -368,6 +441,21 @@ async fn every_source_forbidden_is_403_and_a_bad_narrowing_is_that_400() {
     let text = String::from_utf8(body).unwrap();
     assert!(!text.contains("pricing"));
     assert!(!text.contains("products"));
+    let (status, _, body) = bytes(
+        call(
+            &app,
+            "GET",
+            "/bss-approvals/v1/approval-units/counts",
+            b"",
+            true,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let text = String::from_utf8(body).unwrap();
+    assert!(!text.contains("pricing"), "{text}");
+    assert!(!text.contains("products"), "{text}");
 
     let pricing = Arc::new(Fake::serving(Vec::new()));
     *pricing.mode.lock().unwrap() = Mode::Reject;

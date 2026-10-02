@@ -44,25 +44,33 @@ fn sample() -> DecodedCursor {
         order: Order::Asc,
         narrowing_hash: cursor::narrowing_hash(&SourceNarrowing::default()),
         keys,
+        unavailable: Vec::new(),
     }
 }
 
 #[test]
 fn the_cursor_round_trips() {
     let cursor = sample();
-    let token = cursor::encode(cursor.order, &cursor.narrowing_hash, &cursor.keys).unwrap();
+    let token = cursor::encode(
+        cursor.order,
+        &cursor.narrowing_hash,
+        &cursor.keys,
+        &cursor.unavailable,
+    )
+    .unwrap();
     let decoded = cursor::decode(&token).unwrap();
     assert_eq!(decoded.order, cursor.order);
     assert_eq!(decoded.narrowing_hash, cursor.narrowing_hash);
     assert_eq!(decoded.keys, cursor.keys);
+    assert_eq!(decoded.unavailable, cursor.unavailable);
 }
 
 #[test]
 fn a_different_version_is_rejected() {
-    let token = cursor::encode(Order::Desc, "hash", &BTreeMap::new()).unwrap();
+    let token = cursor::encode(Order::Desc, "hash", &BTreeMap::new(), &[]).unwrap();
     let mut raw: serde_json::Value =
         serde_json::from_slice(&URL_SAFE_NO_PAD.decode(&token).unwrap()).unwrap();
-    raw["v"] = serde_json::json!(2);
+    raw["v"] = serde_json::json!(1);
     let tampered = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&raw).unwrap());
     let err = cursor::decode(&tampered).unwrap_err();
     assert_eq!(err.status_code(), 400);
@@ -99,7 +107,7 @@ fn orderby_with_a_cursor_is_order_with_cursor_before_the_token_is_read() {
 #[test]
 fn a_changed_narrowing_is_filter_mismatch() {
     let hash = cursor::narrowing_hash(&SourceNarrowing::default());
-    let token = cursor::encode(Order::Asc, &hash, &BTreeMap::new()).unwrap();
+    let token = cursor::encode(Order::Asc, &hash, &BTreeMap::new(), &[]).unwrap();
     let err = query::prepare_list(&ListParams {
         state: Some("pending".to_owned()),
         cursor: Some(token),
@@ -138,7 +146,7 @@ fn a_cursor_keeps_its_order_and_starts_a_new_source_at_null() {
     keys.insert("pricing".to_owned(), Some(sample_key()));
     keys.insert("gone".to_owned(), Some(sample_key()));
     let hash = cursor::narrowing_hash(&SourceNarrowing::default());
-    let token = cursor::encode(Order::Asc, &hash, &keys).unwrap();
+    let token = cursor::encode(Order::Asc, &hash, &keys, &[]).unwrap();
     let prepared = query::prepare_list(&ListParams {
         cursor: Some(token),
         ..ListParams::default()

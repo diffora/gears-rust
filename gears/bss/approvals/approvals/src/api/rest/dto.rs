@@ -163,6 +163,8 @@ pub enum InboxSourceStatusDto {
     Ok,
     #[serde(rename = "forbidden")]
     Forbidden,
+    #[serde(rename = "unavailable")]
+    Unavailable,
 }
 
 impl From<SourceHealth> for InboxSourceStatusDto {
@@ -170,6 +172,7 @@ impl From<SourceHealth> for InboxSourceStatusDto {
         match status {
             SourceHealth::Ok => Self::Ok,
             SourceHealth::Forbidden => Self::Forbidden,
+            SourceHealth::Unavailable => Self::Unavailable,
         }
     }
 }

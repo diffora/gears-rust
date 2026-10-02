@@ -9,8 +9,9 @@ use bss_approvals_sdk::{Order, SortKey, SourceNarrowing};
 use serde::{Deserialize, Serialize};
 use toolkit_canonical_errors::CanonicalError;
 use toolkit_odata::Error as ODataError;
+use uuid::Uuid;
 
-const CURSOR_VERSION: u32 = 1;
+const CURSOR_VERSION: u32 = 2;
 
 /// A cursor the inbox minted, after it has been checked.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,6 +22,8 @@ pub struct DecodedCursor {
     pub narrowing_hash: String,
     /// Each source's last taken key. `None` means that source is still at the start.
     pub keys: BTreeMap<String, Option<SortKey>>,
+    /// Sources that were down when this cursor was cut. A continuation does not ask them.
+    pub unavailable: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -30,25 +33,31 @@ struct StoredCursor {
     order: Order,
     narrowing_hash: String,
     keys: BTreeMap<String, Option<SortKey>>,
+    /// Absent on a token this version does not mint. Decode still requires version 2.
+    #[serde(default)]
+    unavailable: Vec<String>,
+}
+
+/// The four narrowing fields, in a fixed order, with absent values as JSON null.
+#[derive(Serialize)]
+struct NarrowingCanon<'a> {
+    book_id: Option<Uuid>,
+    kind: Option<&'a str>,
+    ref_id: Option<Uuid>,
+    state: Option<&'a str>,
 }
 
 /// The narrowing's identity. The order is not part of it.
 #[must_use]
 pub fn narrowing_hash(narrowing: &SourceNarrowing) -> String {
-    let canonical = format!(
-        "book_id={}\nkind={}\nref_id={}\nstate={}",
-        narrowing
-            .book_id
-            .map(|id| id.to_string())
-            .unwrap_or_default(),
-        narrowing.kind.as_deref().unwrap_or(""),
-        narrowing
-            .ref_id
-            .map(|id| id.to_string())
-            .unwrap_or_default(),
-        narrowing.state.as_deref().unwrap_or(""),
-    );
-    hex_digest(sha256(&SHA256, canonical.as_bytes()).as_ref())
+    let canonical = NarrowingCanon {
+        book_id: narrowing.book_id,
+        kind: narrowing.kind.as_deref(),
+        ref_id: narrowing.ref_id,
+        state: narrowing.state.as_deref(),
+    };
+    let bytes = serde_json::to_vec(&canonical).unwrap_or_default();
+    hex_digest(sha256(&SHA256, &bytes).as_ref())
 }
 
 /// Encodes the cursor the next page sends back.
@@ -59,12 +68,14 @@ pub fn encode(
     order: Order,
     narrowing_hash: &str,
     keys: &BTreeMap<String, Option<SortKey>>,
+    unavailable: &[String],
 ) -> Result<String, CanonicalError> {
     let stored = StoredCursor {
         v: CURSOR_VERSION,
         order,
         narrowing_hash: narrowing_hash.to_owned(),
         keys: keys.clone(),
+        unavailable: unavailable.to_vec(),
     };
     let raw = serde_json::to_vec(&stored).map_err(|err| {
         CanonicalError::internal(format!("bss-approvals: cursor did not encode: {err}")).create()
@@ -89,6 +100,7 @@ pub fn decode(token: &str) -> Result<DecodedCursor, CanonicalError> {
         order: stored.order,
         narrowing_hash: stored.narrowing_hash,
         keys: stored.keys,
+        unavailable: stored.unavailable,
     })
 }
 

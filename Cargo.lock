@@ -1918,6 +1918,7 @@ dependencies = [
  "cf-gears-toolkit-macros",
  "cf-gears-toolkit-odata",
  "cf-gears-toolkit-security",
+ "futures",
  "http-body-util",
  "serde",
  "serde_json",
@@ -1925,6 +1926,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tower",
+ "tracing",
  "utoipa",
  "uuid",
 ]
