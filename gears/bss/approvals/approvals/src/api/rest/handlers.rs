@@ -1,5 +1,6 @@
 //! The list, the counts, the card and the three vote doors.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::Json;
@@ -24,7 +25,6 @@ use crate::domain::read;
 const IDEMPOTENCY_KEY: &str = "Idempotency-Key";
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(super) struct ListQuery {
     state: Option<String>,
     kind: Option<String>,
@@ -32,9 +32,27 @@ pub(super) struct ListQuery {
     book_id: Option<Uuid>,
     limit: Option<u64>,
     cursor: Option<String>,
-    #[serde(rename = "$orderby")]
-    orderby: Option<String>,
     impact: Option<bool>,
+    /// Keys other than the named fields. `$orderby` is taken here so the query struct
+    /// does not rename a field to a non-snake-case wire name (DE0803). Any other key is refused.
+    #[serde(flatten)]
+    rest: BTreeMap<String, String>,
+}
+
+impl ListQuery {
+    fn take_order(mut self) -> Result<(Self, Option<String>), CanonicalError> {
+        let orderby = self.rest.remove("$orderby");
+        if let Some(key) = self.rest.keys().next() {
+            return Err(OdataError::invalid_argument()
+                .with_field_violation(
+                    "query",
+                    format!("unknown query key {key}"),
+                    "INVALID_QUERY_PARAMS",
+                )
+                .create());
+        }
+        Ok((self, orderby))
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -59,6 +77,7 @@ pub(super) async fn list_units(
 ) -> Result<Json<InboxUnitListDto>, CanonicalError> {
     let ctx = caller(ctx)?;
     let Query(query) = bad_query(query)?;
+    let (query, orderby) = query.take_order()?;
     let prepared = query::prepare_list(&ListParams {
         state: query.state,
         kind: query.kind,
@@ -66,7 +85,7 @@ pub(super) async fn list_units(
         book_id: query.book_id,
         limit: query.limit,
         cursor: query.cursor,
-        orderby: query.orderby,
+        orderby,
         impact: query.impact,
     })?;
     let listed = read::list_page(&state.hub, &state.sources, &ctx, &prepared).await?;

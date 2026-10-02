@@ -12,6 +12,7 @@
   - [AP-D-4 Votes and idempotency](#ap-d-4-votes-and-idempotency)
   - [AP-D-5 A down source is omitted and the walk does not resume it](#ap-d-5-a-down-source-is-omitted-and-the-walk-does-not-resume-it)
   - [AP-D-6 The inbox requires the caller's Idempotency-Key](#ap-d-6-the-inbox-requires-the-callers-idempotency-key)
+  - [AP-D-8 The inbox publishes `$orderby` through the toolkit](#ap-d-8-the-inbox-publishes-orderby-through-the-toolkit)
 
 <!-- /toc -->
 
@@ -20,11 +21,12 @@
 | ID | Priority | Decision | Status / source |
 | --- | --- | --- | --- |
 | AP-D-1 | H | The inbox is a facade and has no authorization resource | DECIDED 2026-10-01 |
-| AP-D-2 | H | The merge, the cursor, the narrowing and `book_id` | DECIDED 2026-10-01 · amended by Run 2 (pricing D-490, products P-D-250); amended by AP-D-5 |
+| AP-D-2 | H | The merge, the cursor, the narrowing and `book_id` | DECIDED 2026-10-01 · amended by Run 2 (pricing D-490, products P-D-250); amended by AP-D-5, AP-D-8 |
 | AP-D-3 | H | Grants and owner resolution | DECIDED 2026-10-01 · amended by AP-D-5 |
 | AP-D-4 | H | Votes and idempotency | DECIDED 2026-10-01 · amended by Run 2 (pricing D-490, products P-D-250); amended by AP-D-6 |
 | AP-D-5 | H | A down source is omitted and the walk does not resume it | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 60); amends AP-D-2, AP-D-3 |
 | AP-D-6 | H | The inbox requires the caller's Idempotency-Key | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 61); amends AP-D-4 |
+| AP-D-8 | M | The inbox publishes `$orderby` through the toolkit | DECIDED 2026-10-02 · amends AP-D-2 |
 
 ## Entries
 
@@ -41,6 +43,8 @@ The shared order is the facade's merge key: `submitted_at` as an instant, then t
 Every source is asked on every page after its own key. The key becomes the last unit taken from that source, or stays. There is no exhausted state. The next cursor is present when any source had more or returned a unit that was not taken.
 
 The cursor carries its order outside the narrowing hash. `$orderby` with a cursor is 400 `ORDER_WITH_CURSOR`. A changed narrowing is 400 `FILTER_MISMATCH`.
+
+**Amended by AP-D-8 (2026-10-02).** `$orderby` is published with `.with_odata_orderby`, so the served contract carries `x-odata-orderby` for `submitted_at asc` and `submitted_at desc`. The door still accepts only that field.
 
 A kind outside a gear's closed set is an empty page and zero counts, computed in the source. `book_id` on products is that same empty set. `book_id` on pricing remains the alias of `ref_id`: it keeps `prices` units of that book and no `plan_revision`, whose reference is the revision. A state or id the door would refuse is that refusal for the whole read.
 
@@ -96,3 +100,11 @@ Approve, reject and withdraw on the inbox require `Idempotency-Key`. The header 
 A query the inbox cannot parse is 400 `INVALID_QUERY_PARAMS` on the field `query`, carrying the parser's text. It is not an `INVALID_FILTER`.
 
 **Source:** Owner, 2026-10-02 (ask 61, "все ок"). Amends AP-D-4.
+
+### AP-D-8 The inbox publishes `$orderby` through the toolkit
+
+**Status:** DECIDED 2026-10-02.
+
+The list declares `$orderby` with `.with_odata_orderby::<InboxOrderField>()`. The served contract therefore carries `x-odata-orderby` for `submitted_at asc` and `submitted_at desc`. The door still accepts only `submitted_at`, ascending or descending, and refuses any other order with 400 `INVALID_ORDERBY_FIELD`. The query struct does not rename a field to `$orderby`.
+
+**Source:** Phase 9 review fix (architecture lints DE0802 and DE0803). Amends AP-D-2.

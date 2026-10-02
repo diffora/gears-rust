@@ -752,6 +752,13 @@ async fn the_vote_spec_does_not_declare_412() {
         .build_openapi(&OpenApiInfo::default())
         .expect("openapi");
     let json = serde_json::to_value(&spec).unwrap();
+    let list = &json["paths"]["/bss-approvals/v1/approval-units"]["get"];
+    assert!(
+        list["x-odata-orderby"]["allowedFields"]
+            .as_array()
+            .is_some_and(|fields| fields.iter().any(|field| field == "submitted_at asc")),
+        "{list}"
+    );
     for action in ["approve", "reject", "withdraw"] {
         let responses = &json["paths"]
             [&format!("/bss-approvals/v1/approval-units/{{id}}/{action}")]["post"]["responses"];

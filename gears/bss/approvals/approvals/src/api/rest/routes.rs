@@ -6,13 +6,36 @@ use std::sync::Arc;
 use axum::Router;
 use axum::http::StatusCode;
 use toolkit::api::OpenApiRegistry;
-use toolkit::api::operation_builder::{OperationBuilder, ParamSpec};
+use toolkit::api::operation_builder::{OperationBuilder, OperationBuilderODataExt, ParamSpec};
+use toolkit_odata::filter::FilterField;
 
 use super::handlers;
 use crate::api::ApiState;
 use crate::api::rest::dto::{InboxCountsDto, InboxUnitDto, InboxUnitListDto};
 
 const TAG: &str = "Approval units";
+
+/// The one field the inbox list's `$orderby` takes: `submitted_at`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum InboxOrderField {
+    SubmittedAt,
+}
+
+impl FilterField for InboxOrderField {
+    const FIELDS: &'static [Self] = &[Self::SubmittedAt];
+
+    fn name(&self) -> &'static str {
+        "submitted_at"
+    }
+
+    fn kind(&self) -> toolkit_odata::filter::FieldKind {
+        toolkit_odata::filter::FieldKind::DateTimeUtc
+    }
+
+    fn from_name(name: &str) -> Option<Self> {
+        (name == "submitted_at").then_some(Self::SubmittedAt)
+    }
+}
 
 pub fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Router {
     let router = Router::new();
@@ -93,12 +116,7 @@ fn list_route(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
             "integer",
         )
         .query_param_typed("cursor", false, "Continuation from next_cursor", "string")
-        .query_param_typed(
-            "$orderby",
-            false,
-            "submitted_at asc or submitted_at desc (the default when omitted)",
-            "string",
-        )
+        .with_odata_orderby::<InboxOrderField>()
         .query_param_typed("impact", false, "false skips the live impact", "boolean")
         .handler(handlers::list_units)
         .json_response_with_schema::<InboxUnitListDto>(openapi, StatusCode::OK, "One merged page")
