@@ -168,18 +168,18 @@ impl From<&sdk::UsageRatingPolicyInput> for UsageRatingPolicyInput {
                     timezone: timezone.into(),
                 },
             },
-            aggregation_scope: p.aggregation_scope.clone().into(),
-            reset: p.reset.clone().into(),
+            aggregation_scope: p.aggregation_scope.into(),
+            reset: p.reset.into(),
             quantity_semantics: QuantitySemantics {
                 meter: MeterRef {
                     usage_type_id: q.meter.usage_type_id.clone(),
                     version: q.meter.version.clone(),
                 },
                 unit: q.unit.clone(),
-                fold: q.fold.clone().into(),
+                fold: q.fold.into(),
                 accrual_policy_version: q.accrual_policy_version.clone(),
             },
-            partial_window: p.partial_window.clone().into(),
+            partial_window: p.partial_window.into(),
         }
     }
 }
@@ -202,6 +202,22 @@ pub fn digest_text(digest: bss_pricing_sdk::Digest) -> String {
         text.push(char::from(HEX[usize::from(byte & 15)]));
     }
     text
+}
+/// The inverse of [`digest_text`]: 64 lowercase hex digits, or `None`.
+#[must_use]
+pub fn parse_digest_text(text: &str) -> Option<bss_pricing_sdk::Digest> {
+    if text.len() != 64
+        || !text
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return None;
+    }
+    let mut out = [0; 32];
+    for (index, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&text[index * 2..index * 2 + 2], 16).ok()?;
+    }
+    Some(out)
 }
 
 impl UsageRatingPolicy {
@@ -284,20 +300,7 @@ mod evidence_digest {
         deserializer: D,
     ) -> Result<[u8; 32], D::Error> {
         let text = String::deserialize(deserializer)?;
-        if text.len() != 64
-            || !text
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-        {
-            return Err(D::Error::custom(
-                "expected 64 lowercase hexadecimal characters",
-            ));
-        }
-        let mut digest = [0; 32];
-        for (index, byte) in digest.iter_mut().enumerate() {
-            *byte = u8::from_str_radix(&text[index * 2..index * 2 + 2], 16)
-                .map_err(D::Error::custom)?;
-        }
-        Ok(digest)
+        super::parse_digest_text(&text)
+            .ok_or_else(|| D::Error::custom("expected 64 lowercase hexadecimal characters"))
     }
 }

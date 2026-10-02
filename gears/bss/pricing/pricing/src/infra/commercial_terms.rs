@@ -50,10 +50,7 @@ impl CommercialTermsService {
         action: &str,
         id: Option<Uuid>,
     ) -> Result<AccessScope, CanonicalError> {
-        if ctx.subject_id().is_nil()
-            || ctx.subject_tenant_id().is_nil()
-            || ctx.subject_type().is_none()
-        {
+        if !crate::api::rest::authoring::support::authenticated(ctx) {
             return Err(CanonicalError::unauthenticated()
                 .with_reason("AUTHENTICATION_REQUIRED")
                 .create());

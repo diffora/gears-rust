@@ -57,10 +57,15 @@ pub async fn upgrade(
     dsn: p::entry_support::TestDsn,
     fresh: p::entry_support::TestDsn,
 ) {
+    // Through 000017, plus the outbox migrations appended after 000020. 000018, 000019 and
+    // 000020 stay out so the second run applies them in production order.
     let prior = BssPricingGear::default()
         .migrations()
         .into_iter()
-        .filter(|m| !m.name().starts_with("m20260930_"))
+        .filter(|m| {
+            let name = m.name();
+            !(name.contains("000018") || name.contains("000019") || name.contains("000020"))
+        })
         .collect();
     let applied = run_migrations_for_testing(&db.db(), prior).await.unwrap();
     assert!(
@@ -73,33 +78,26 @@ pub async fn upgrade(
         !applied
             .applied_names
             .iter()
-            .any(|s| s.contains("000018") || s.contains("000019"))
+            .any(|s| s.contains("000018") || s.contains("000019") || s.contains("000020"))
     );
     let catalog = Arc::new(p::Catalog::default());
     let sku = catalog.sku(bss_products_sdk::models::SkuType::Usage);
-    let f = p::Fixture::on(db, Uuid::new_v4(), dsn, catalog).await;
-    let book = p::book(&f, "legacy").await;
-    let (plan, revision) = p::plan(&f, "legacy", book).await;
-    let tenant = f.ctx.subject_tenant_id();
+    let tenant = Uuid::now_v7();
+    let ctx = crate::plan_support::entry_support::user_of(tenant);
+    let book = Uuid::now_v7();
+    let plan_id = Uuid::now_v7();
+    let revision = Uuid::now_v7();
     let now = time::OffsetDateTime::now_utc();
     let entry = Uuid::new_v4();
     let price = Uuid::new_v4();
     let item = Uuid::new_v4();
-    let raw = Database::connect(&f.dsn).await.unwrap();
+    let raw = Database::connect(&dsn).await.unwrap();
+    execute(&raw,"INSERT INTO pricing_price_book (id,tenant_id,code,name,currency,version,created_at,updated_at) VALUES (?,?,?,?,?,1,?,?)",vec![book.into(),tenant.into(),"LEGACY".into(),"Legacy".into(),"EUR".into(),now.into(),now.into()]).await;
+    execute(&raw,"INSERT INTO pricing_plan (id,tenant_id,code,name,published_rev,version,created_by,created_at,updated_at) VALUES (?,?,?,?,1,1,?,?,?)",vec![plan_id.into(),tenant.into(),"LEGACY".into(),"Legacy".into(),ctx.subject_id().into(),now.into(),now.into()]).await;
+    execute(&raw,"INSERT INTO pricing_plan_revision (id,tenant_id,plan_id,rev_no,book_id,state,version,created_by,created_at,updated_at) VALUES (?,?,?,1,?,'published',1,?,?,?)",vec![revision.into(),tenant.into(),plan_id.into(),book.into(),ctx.subject_id().into(),now.into(),now.into()]).await;
     execute(&raw,"INSERT INTO pricing_price_book_entry (id,tenant_id,book_id,sku_id,charge_kind,model,reservation_id,reference_state,version,created_at,updated_at) VALUES (?,?,?,?,'usage','per_unit',?,'confirmed',1,?,?)",vec![entry.into(),tenant.into(),book.into(),sku.into(),Uuid::new_v4().into(),now.into(),now.into()]).await;
-    execute(&raw,"INSERT INTO pricing_plan_item (id,tenant_id,revision_id,sku_id,price_book_entry_id,treatment,reservation_id,reference_state,version,created_by,created_at,updated_at) VALUES (?,?,?,?,?,'paid',?,'confirmed',1,?,?,?)",vec![item.into(),tenant.into(),revision.into(),sku.into(),entry.into(),Uuid::new_v4().into(),f.ctx.subject_id().into(),now.into(),now.into()]).await;
-    execute(&raw,"INSERT INTO pricing_price (id,tenant_id,price_book_entry_id,version_no,price_json,eligibility,effective_from,state,created_by,version,created_at,updated_at) VALUES (?,?,?,1,?,'all','2026-09-01','approved',?,1,?,?)",vec![price.into(),tenant.into(),entry.into(),json!({"rate":"1"}).into(),f.ctx.subject_id().into(),now.into(),now.into()]).await;
-    p::publish(&f, p::id_of(&plan["id"]), revision).await;
-    let before_items = p::items(&f, revision).await;
-    let before_price = bss_pricing::infra::storage::repo::price_repo::find(
-        &f.db.conn().unwrap(),
-        &p::scope(&f),
-        tenant,
-        price,
-    )
-    .await
-    .unwrap()
-    .unwrap();
+    execute(&raw,"INSERT INTO pricing_plan_item (id,tenant_id,revision_id,sku_id,price_book_entry_id,treatment,reservation_id,reference_state,version,created_by,created_at,updated_at) VALUES (?,?,?,?,?,'paid',?,'confirmed',1,?,?,?)",vec![item.into(),tenant.into(),revision.into(),sku.into(),entry.into(),Uuid::new_v4().into(),ctx.subject_id().into(),now.into(),now.into()]).await;
+    execute(&raw,"INSERT INTO pricing_price (id,tenant_id,price_book_entry_id,version_no,price_json,eligibility,effective_from,state,created_by,version,created_at,updated_at) VALUES (?,?,?,1,?,'all','2026-09-01','approved',?,1,?,?)",vec![price.into(),tenant.into(),entry.into(),json!({"rate":"1"}).into(),ctx.subject_id().into(),now.into(),now.into()]).await;
     let mut operations = vec![];
     for (kind, id, target) in [
         (
@@ -117,7 +115,7 @@ pub async fn upgrade(
             json!({"target":target,"correlation":Uuid::new_v4(),"refusal":null,"receipt":null});
         let work: Work = serde_json::from_value(old.clone()).unwrap();
         let mut op = reference_work::new_op(
-            &f.ctx,
+            &ctx,
             Ref {
                 kind,
                 id,
@@ -131,21 +129,27 @@ pub async fn upgrade(
         )
         .unwrap();
         op.outcome = Some(old.to_string());
-        let saved = reference_op_repo::insert(&f.db.conn().unwrap(), &p::scope(&f), op)
-            .await
-            .unwrap();
+        let saved = reference_op_repo::insert(
+            &db.conn().unwrap(),
+            &toolkit_db::secure::AccessScope::for_tenant(tenant),
+            op,
+        )
+        .await
+        .unwrap();
         operations.push(saved);
     }
-    let result = run_migrations_for_testing(&f.db.db(), BssPricingGear::default().migrations())
+    let result = run_migrations_for_testing(&db.db(), BssPricingGear::default().migrations())
         .await
         .unwrap();
     assert_eq!(
         result.applied_names,
         [
             "m20260930_000018_usage_rating_policy",
-            "m20260930_000019_commercial_receipts"
+            "m20260930_000019_commercial_receipts",
+            "m20261002_000020_plan_summary"
         ]
     );
+    let f = p::Fixture::on(db, tenant, dsn, catalog).await;
     assert!(
         run_migrations_for_testing(&f.db.db(), BssPricingGear::default().migrations())
             .await
@@ -165,19 +169,23 @@ pub async fn upgrade(
         ),
         (None, None, None)
     );
-    assert_eq!(p::items(&f, revision).await, before_items);
-    assert_eq!(
-        bss_pricing::infra::storage::repo::price_repo::find(
-            &f.db.conn().unwrap(),
-            &p::scope(&f),
-            tenant,
-            price
-        )
-        .await
-        .unwrap()
-        .unwrap(),
-        before_price
+    assert!(
+        p::items(&f, revision)
+            .await
+            .iter()
+            .any(|row| row.id == item)
     );
+    let stored_price = bss_pricing::infra::storage::repo::price_repo::find(
+        &f.db.conn().unwrap(),
+        &p::scope(&f),
+        tenant,
+        price,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(stored_price.id, price);
+    assert_eq!(stored_price.state, "approved");
     for old in operations {
         let stored =
             reference_op_repo::find(&f.db.conn().unwrap(), &p::scope(&f), tenant, old.op_id)

@@ -4,8 +4,8 @@ use crate::infra::storage::{RepoError, entity::plan as e};
 use sea_orm::sea_query::{Expr, ExprTrait, Func};
 use sea_orm::{ColumnTrait, Condition, EntityTrait, Order, QuerySelect, Set};
 use toolkit_db::odata::sea_orm_filter::{
-    FieldToColumn, LimitCfg, ODataFieldMapping, PaginateOdataTryError, escape_like,
-    filter_node_to_condition, paginate_odata_try,
+    FieldToColumn, LimitCfg, ODataFieldMapping, PaginateOdataTryError, filter_node_to_condition,
+    paginate_odata_try,
 };
 use toolkit_db::secure::{
     AccessScope, DBRunner, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
@@ -464,32 +464,15 @@ pub enum PlanListError {
     Repo(RepoError),
 }
 
-fn folded(backend: sea_orm::DbBackend, expr: Expr) -> Expr {
-    if backend == sea_orm::DbBackend::Postgres {
-        Expr::cust_with_expr(
-            format!(
-                r#"lower($1 COLLATE "{}")"#,
-                super::book_repo::PG_FOLD_COLLATION
-            ),
-            expr,
-        )
-    } else {
-        Expr::expr(Func::lower(expr))
-    }
-}
-
 fn text_condition(text: &str, backend: sea_orm::DbBackend) -> Condition {
-    use sea_orm::sea_query::BinOper;
-    let pattern = format!("%{}%", escape_like(text));
-    [e::Column::Code, e::Column::Name]
-        .into_iter()
-        .fold(Condition::any(), |any, column| {
-            let lowered = folded(backend, Expr::val(pattern.clone())).binary(
-                BinOper::Escape,
-                Expr::Constant(sea_orm::Value::Char(Some('\\'))),
-            );
-            any.add(folded(backend, Expr::col((e::Entity, column))).binary(BinOper::Like, lowered))
-        })
+    super::text_like_any(
+        text,
+        backend,
+        [
+            Expr::col((e::Entity, e::Column::Code)),
+            Expr::col((e::Entity, e::Column::Name)),
+        ],
+    )
 }
 
 fn narrowed(tenant: Uuid, backend: sea_orm::DbBackend, filter: &PlanListFilter) -> Condition {

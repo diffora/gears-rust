@@ -60,14 +60,14 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-421 | H | The binding carries resolved invoice inputs with their source | DECIDED 2026-09-26 · Phase 4 plan rev 3 (Run 4.2); PRD AC #13; plan review H3, L7; amended by D-467 |
 | D-422 | H | The pinned price read serves approved money forever | DECIDED 2026-09-26 · Phase 4 plan rev 3 (Run 4.2); spec §7.1; plan review H4 |
 | D-423 | H | Both gears refuse a legacy or stale schema at boot | DECIDED 2026-09-26 · Phase 4 plan rev 2 (Run 4.1); plan review H1, M1, M2, L6 |
-| D-424 | H | Resolve reads SKU versions as pricing's system actor | DECIDED 2026-09-26 · Phase 4 review, fix run 8 (docs M1); amends D-421 |
+| D-424 | H | Resolve reads SKU versions as pricing's system actor | DECIDED 2026-09-26 · Phase 4 review, fix run 8 (docs M1); amends D-421; amended 2026-10-02 (phase 9 review F1) |
 | D-425 | H | The binding says where it ends for its holder | DECIDED 2026-09-26 · Phase 4 review, fix run 8 (contract C-1, docs M2); amends D-420 |
 | D-426 | H | An entry's invoice line is locked once the entry carries money | DECIDED 2026-09-26 · Owner, 2026-09-26 (option 1 of three); amends D-421 |
 | D-427 | H | The model belongs to the entry, fixed for its life, and is part of its key | DECIDED 2026-09-26 · Owner, 2026-09-26; phase 5 plan rev 2; closes D-412; amends D-386, D-390, D-391, D-401, D-402 |
 | D-428 | H | Entries and SKUs report their usage | DECIDED 2026-09-26 · Owner, 2026-09-26; phase 5 plan rev 2; amended by D-440, D-453 |
 | D-429 | M | The replay store's mechanics (twin of products P-D-198) | DECIDED 2026-09-27 · Carried from D-142 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27 |
 | D-430 | M | A tier ladder's top band is open | DECIDED 2026-09-27 · Carried from D-17 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27 |
-| D-431 | M | The request's correlation id is minted at the authoring edge | DECIDED 2026-09-27 · Carried from D-178 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27 |
+| D-431 | M | The request's correlation id is minted at the authoring edge | DECIDED 2026-09-27 · Carried from D-178 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27; amended 2026-10-02 (phase 9 review F1b) |
 | D-432 | M | If-Match on every write to a versioned row, and on a draft price's DELETE | DECIDED 2026-09-27 · Carried from D-141 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27; extends D-396 |
 | D-433 | M | The audit log is append-only with a reserved sealing seam (twin of products P-D-200) | DECIDED 2026-09-27 · Carried from P-D-08, P-D-28, P-D-46, P-D-118 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27 |
 | D-434 | M | Where a SKU is priced and sold: its entries across books, the plans that name it, one plan item | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amended by D-440, D-453, D-460, D-461, D-472, D-483, D-484, D-485, D-486 |
@@ -93,7 +93,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-454 | M | Resolve serves a scheduled revision from its sale date | DECIDED 2026-09-29 · Owner, 2026-09-28; phase 8 plan rev 2 (run 8.2); plan review M3 |
 | D-455 | M | The outbox wakes its sequencer after the commit | DECIDED 2026-09-29 · Main sync of 2026-09-29 (toolkit-db 2bfc76aec); phase 8 plan rev 2 (run 8.2b) |
 | D-456 | M | A plan names only a book its author may read | DECIDED 2026-09-29 · Whole-branch review PS-08 (fix run W1a); extends D-440; extended by D-463, D-468 |
-| D-457 | M | Every text a request writes has an explicit length cap | DECIDED 2026-09-29 · Whole-branch review PS-09, PS-10, X-01 (fix run W1a); twin of a products decision in W1b; extended by D-468 |
+| D-457 | M | Every text a request writes has an explicit length cap | DECIDED 2026-09-29 · Whole-branch review PS-09, PS-10, X-01 (fix run W1a); twin of a products decision in W1b; extended by D-468; amended 2026-10-02 (phase 9 review F1) |
 | D-458 | M | The approval-unit list pages and reads its page set-based | DECIDED 2026-09-29 · Owner, 2026-09-29 (dispositions O2, "2"); whole-branch review PS-13 (fix run W1a); amended by D-470 |
 | D-459 | M | One approve-eligibility predicate for the engine and its readers | DECIDED 2026-09-30 · Phase 9 plan rev 2 (W2, binding; plan review W2, L5); extends D-393; amended by the phase 9 review (E, fix run 9.5d-1) |
 | D-460 | M | The plans list names each plan's current revision and the one in effect | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 1); phase 9 plan rev 2 (decision 1; plan review M6, M7, W3, L4); amends D-434, D-453; amended by D-461, D-480, D-482, D-485 |
@@ -111,17 +111,18 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-472 | M | An entry names its next price | DECIDED 2026-10-01 · Owner, 2026-09-30 (validation 3 item 7, "ok"); phase 9 plan rev 2 (decision 12; plan review M5, L7); amends D-434, D-440; amended by D-473 |
 | D-473 | M | The book's entries list reads its prices on a date | DECIDED 2026-10-01 · Owner, 2026-09-30 (validation 3 item 7, "ok"); phase 9 plan rev 2 (decision 13; plan review M5, L6); amends D-440, D-472; amended by the phase 9 review R1 (fix run 9.5d-1), D-483 |
 | D-480 | M | A revision read carries its entries, sale-date prices and reservation state | DECIDED 2026-10-01 · phase 9 plan rev 4 (run 9.6, asks 48, 49, 50); amends D-442, D-460, D-462 |
-| D-481 | M | The quorum a submit needs is on the checks and on an effective-policy read | DECIDED 2026-10-01 · phase 9 plan rev 4 (run 9.6, asks 54, 55); amends D-435, D-462 |
+| D-481 | M | The quorum a submit needs is on the checks and on an effective-policy read | DECIDED 2026-10-01 · phase 9 plan rev 4 (run 9.6, asks 54, 55); amends D-435, D-462; amended 2026-10-02 (phase 9 review F1) |
 | D-482 | M | The checks read their context as a set, and many revisions in one read | DECIDED 2026-10-01 · phase 9 plan rev 4 (run 9.7, ask 47); amends D-408, D-460 |
 | D-483 | M | A book's entries page on the toolkit's pager, in the order (sku_id, charge_kind, model, id) | DECIDED 2026-10-01 · Owner, 2026-10-01 (asks v4, 51); phase 9 plan rev 4 (run 9.8; review H3, A4); amends D-434, D-473 |
 | D-484 | M | A plan stores time-stable list facts; selling and change are derived from the day | DECIDED 2026-10-02 · Owner, 2026-10-01 (#31, form B); phase 9 plan rev 4 (run 9.8b; review N1, N2); amends D-453 |
-| D-485 | M | The plans list pages on the stored summary and counts the derived axes | DECIDED 2026-10-02 · Owner, 2026-10-01 (#31, form B); phase 9 plan rev 4 (run 9.8b; review N1, N7); amends D-434, D-460, D-453 |
+| D-485 | M | The plans list pages on the stored summary and counts the derived axes | DECIDED 2026-10-02 · Owner, 2026-10-01 (#31, form B); phase 9 plan rev 4 (run 9.8b; review N1, N7); amends D-434, D-460, D-453; amended 2026-10-02 (phase 9 review F1b) |
 | D-486 | M | A SKU's entries narrow, order and page in memory | DECIDED 2026-10-01 · Owner, 2026-10-01 (#25, form A); phase 9 plan rev 4 (run 9.8c; N5); amends D-434 |
 | D-490 | M | Pricing's approval units answer the approvals inbox through pricing's own doors | DECIDED 2026-10-01 · Owner, 2026-10-01 (option A, "yes, A, agreed", then "write the plan"; Run 2 started before 9.5d-2); approvals inbox plan rev 2 (Run 2; design 1 and 3; plan review H1, H3, H4, M1, M5, L1); amends D-470 |
-| D-501 | H | Authorized SDK reads share the frozen preview snapshot and canonical JSON digests | DECIDED 2026-09-30 · Pricing Seam Contracts Task 1 |
+| D-491 | M | An entry op stores its policy reference as a named object | DECIDED 2026-10-02 · phase 9 review F1b |
+| D-501 | H | Authorized SDK reads share the frozen preview snapshot and canonical JSON digests | DECIDED 2026-09-30 · Pricing Seam Contracts Task 1; amended 2026-10-02 (phase 9 review F1) |
 | D-502 | H | Immutable usage policies belong to entries and their semantic key | DECIDED 2026-10-01 · Pricing Seam Contracts Task 2; amends D-386, D-401, D-427 |
 | D-503 | H | Exact meter evidence gates usage publication and stays out of historical reads | DECIDED 2026-10-01 · Pricing Seam Contracts Task 3; amended 2026-10-01 by the owner (E1a raw and E1b derived meters; products P-D-229 and rating T-D-39 on branch `bss/pricebook-meters`); amended 2026-10-01 by products P-D-233 (E1b provided by Products, E1a still external) |
-| D-504 | H | Pure new-sale terms validate a bounded commercial profile and snapshot integrity | DECIDED 2026-10-01 · Pricing Seam Contracts Task 4 |
+| D-504 | H | Pure new-sale terms validate a bounded commercial profile and snapshot integrity | DECIDED 2026-10-01 · Pricing Seam Contracts Task 4; amended 2026-10-02 (phase 9 review F1b) |
 | D-505 | H | Durable commercial receipt storage | DECIDED 2026-10-01 · Pricing Seam Contracts Task 5a |
 | D-506 | H | Authorized commercial provider boundary | DECIDED 2026-10-01 · Pricing Seam Contracts Task 5b |
 | D-507 | H | Atomic acceptance and durable authenticated command replay | DECIDED 2026-10-01 · Pricing Seam Contracts Task 5c |
@@ -465,7 +466,9 @@ Rating and Subscriptions call GET /bss-pricing/v1/resolve as system subjects (bs
 
 The registry's trust of pricing's system actor is in-process only; its threat model is products P-D-222 (whole-branch review RS-02, fix run W1b). A pricing door hands the registry its caller's context (the entry and plan item doors, the plan checks' SKU reads), so no REST door of either gear serves that actor: a caller whose context carries it in either half, the subject type bss-pricing.system or the id PRICING_SYSTEM_ACTOR, is 403 SYSTEM_ACTOR_RESERVED at every door, before the PDP (support::require_authenticated, which every door calls first; the test is bss_products_sdk::is_pricing_system_actor). Before, a token carrying both halves, with a pricing grant, got the registry's tenant-wide trust through an entry create (the second review of W1b, M1; fix run W1c). Rating's and Subscriptions' system subjects are not refused: they pass the edge and the PDP judges their plan:read, as above. Resolve still builds its own system actor after the caller passed plan:read.
 
-**Source:** Phase 4 review, fix run 8 (docs M1: the decision change that the review names as the alternative; the orchestrator's decision). Amends D-421. Amended by the second review of W1b, M1 (fix run W1c): the REST edge refuses pricing's system actor.
+**Amended 2026-10-02 (phase 9 review F1).** The same actor is the contract on `PricingReadV1::resolve`. REST resolve and the SDK method both call `pricing_reads::finish`, which calls `versions_as_of`. That read builds `reference_ticker::system_actor` for the caller's tenant and does not forward the caller's context to Products. It runs only after the caller passed `plan:read` and the revision was found in the caller's tenant: the REST door's plan read, or `PricingReadProvider::scope` on the SDK path. A consumer Products does not trust would be refused if the read used the caller's context. The SKU ids still come only from the admitted revision, in the caller's tenant.
+
+**Source:** Phase 4 review, fix run 8 (docs M1: the decision change that the review names as the alternative; the orchestrator's decision). Amends D-421. Amended by the second review of W1b, M1 (fix run W1c): the REST edge refuses pricing's system actor. Amended 2026-10-02 (phase 9 review F1): the SDK resolve path uses the same system actor.
 
 #### D-425 [H] The binding says where it ends for its holder
 
@@ -535,7 +538,9 @@ A graduated or volume price has at least one band (TIER_BAND_EMPTY), strictly as
 
 **Status:** DECIDED 2026-09-27.
 
-The authoring router mounts correlation::establish: each request gets one UUID v7 before any handler runs, and an inbound traceparent is not consumed. Every audit row the request writes carries it as correlation_id, so the rows of one call join. It is not the Idempotency-Key and is not derived from the payload. A handler reached without the layer answers 500 and never mints its own. A rereserve op is the exception: the reference ticker starts it, or the Tx C of a create, an attach or another rereserve op does when the reservation was released before its confirm — a Tx C the door's own drive may run inside a request — and it mints its own UUID v7 when it is created. The confirm and reference-lost audit rows its completion writes carry that id, which matches no request. Pricing never writes a NULL correlation_id. The read-contract router (resolve, the pinned price read) writes nothing and mounts none; events carry no correlation id. Products establishes no correlation and writes NULL (P-D-200).
+The authoring router mounts correlation::establish: each request gets one UUID v7 before any handler runs, and an inbound traceparent is not consumed. Every audit row the request writes carries it as correlation_id, so the rows of one call join. It is not the Idempotency-Key and is not derived from the payload. A handler reached without the layer answers 500 and never mints its own.
+
+**Amended 2026-10-02 (phase 9 review F1b).** A commercial check has no authoring edge. It mints one correlation id for the check and passes that id to catch-up and to the acceptance audit row, so those rows join. A rereserve op is the exception: the reference ticker starts it, or the Tx C of a create, an attach or another rereserve op does when the reservation was released before its confirm — a Tx C the door's own drive may run inside a request — and it mints its own UUID v7 when it is created. The confirm and reference-lost audit rows its completion writes carry that id, which matches no request. Pricing never writes a NULL correlation_id. The read-contract router (resolve, the pinned price read) writes nothing and mounts none; events carry no correlation id. Products establishes no correlation and writes NULL (P-D-200).
 
 **Source:** Carried from D-178 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27.
 
@@ -922,7 +927,9 @@ D-468 extends this entry: a new plan's code off the rule is 400 PLAN_CODE_INVALI
 
 D-468 extends this entry: a new plan's code also follows a rule of at most 32 characters; the 64-character cap is judged first.
 
-**Source:** Whole-branch review of 2026-09-29, PS-09, PS-10 and X-01 (fix run W1a; the dispositions' "Length caps"); the second reviews of W1a (L1) and W1b (L2). Extended by D-468.
+**Amended 2026-10-02 (phase 9 review F1).** An entry create's usage-rating policy caps its four quantity strings at a code's 64 characters: `usage_type_id`, `version`, `unit` and `accrual_policy_version`, each 400 `FIELD_TOO_LONG` on that field, before the meter provider is asked. A list's `q` (the plans list, the book list, and `GET /price-book-entries`) is at most a name's 200 characters, the same code on `q`, before it becomes a pattern.
+
+**Source:** Whole-branch review of 2026-09-29, PS-09, PS-10 and X-01 (fix run W1a; the dispositions' "Length caps"); the second reviews of W1a (L1) and W1b (L2). Extended by D-468. Amended 2026-10-02 (phase 9 review F1): the policy's quantity strings and a list's `q`.
 
 #### D-458 [M] The approval-unit list pages and reads its page set-based
 
@@ -1268,7 +1275,9 @@ The book page and the plan page showed a quorum the submit would need only by re
 - **The effective policy.** GET /bss-pricing/v1/approval-policy/{kind}/effective answers { kind, quorum_required }: the kind's override, or the tenant default. One statement, approval_repo::read_policy. kind is parsed through the closed set of kinds pricing records; an unknown kind is 400 QUERY_INVALID. prices is read under price_book_entry read, the grant the book page's entry and price lists need. plan_revision is read under plan read. The path keeps DELETE /approval-policy/{kind} as it is.
 - **Not price read.** The quorum is not money. Pricing serves no price read of its own (GET /prices/{id} is a price, D-440's list is price_book_entry read plus the money's second judgement), so price read is not this door's grant.
 
-**Source:** Phase 9 plan rev 4 (run 9.6, asks 54 and 55; A3). Amends D-435 and D-462.
+**Amended 2026-10-02 (phase 9 review F1).** The caller's grant stays the admission. `read_policy` then runs under `AccessScope::for_tenant`, as `stored_contexts` already does. `pricing_approval_policy` is scoped on `kind`, a text column. A grant constrained by `RESOURCE_ID` was compiled onto that column: Postgres answered 500 (`operator does not exist: text = uuid`) and SQLite matched no row, so quorum 3 or 0 was answered as the fail-safe 1. The checks door already read this policy under the tenant scope, so the two doors agree for this grant too.
+
+**Source:** Phase 9 plan rev 4 (run 9.6, asks 54 and 55; A3). Amends D-435 and D-462. Amended 2026-10-02 (phase 9 review F1): the effective read uses the tenant scope after the grant.
 
 #### D-482 [M] The checks read their context as a set, and many revisions in one read
 
@@ -1322,7 +1331,9 @@ A plan's list state depends on the day: a scheduled revision reads published fro
 
 GET /plans answered every plan of the tenant. A tenant of more than 500 plans needs a page, and the screen filters by whether a plan sells and by the change in hand.
 
-- **The page.** The toolkit pager over `pricing_plan`. `limit` (alias `$top`) defaults to 500 and is clamped at 500. `cursor` (alias `$skiptoken`). `$filter` over `code`, `name`, `book_id` (the current book), `currency` (the current currency) and `last_activity_at`. `$orderby` over `code` (the default), `name` and `last_activity_at`, with `id` breaking the tie in that direction. `PricingPlanList` gains `page_info`. Each plan serves `last_activity_at`, so the instant a page is ordered by is in the JSON. The plan's own `updated_at` stays the If-Match clock and is not a list field.
+- **The page.** The toolkit pager over `pricing_plan`. `limit` (alias `$top`) defaults to 500 and is clamped at 500. `cursor` (alias `$skiptoken`). `$filter` over `code`, `name`, `book_id` (the current book), `currency` (the current currency) and `last_activity_at`. `id` is not a filter field. `$orderby` over `code` (the default), `name` and `last_activity_at`, with `id` breaking the tie in that direction.
+
+**Amended 2026-10-02 (phase 9 review F1b).** The served `$filter` contract is `PlanFilterField`, those five fields. A `$filter` on `id` is invalid. `PricingPlanList` gains `page_info`. Each plan serves `last_activity_at`, so the instant a page is ordered by is in the JSON. The plan's own `updated_at` stays the If-Match clock and is not a list field.
 - **The plain keys**, each in the cursor hash (400 `FILTER_MISMATCH`): `q`, a case-insensitive literal substring of the code or the name; `selling=true|false`; `change=none,draft,pending,scheduled`, a comma list; the existing `sku_id` (D-434). Its stored-state EXISTS goes into the page query and the counts. It is not the effective state, and it is never an in-memory filter over a page.
 - **The hydration.** The page's plans then read their revision headers, the items of the current and in-effect revisions, the units and the current revisions' books, in four grouped statements. `current` gains `book: { code, name, currency }`. GET /plans is five statements per non-empty page, whatever the page size. GET /plans/{id} keeps its own reads and adds the book.
 - **The served axes.** Each plan gains `selling: bool` and `change` (`none`, `draft`, `pending`, `scheduled`). They are computed in Rust from the hydrated revisions with the D-447 code, and a test asserts they equal the SQL axes and that `current` and `in_effect` agree with them. The clock passing a scheduled date, with no write, flips them in the list and in the counts.
@@ -1369,6 +1380,14 @@ The approvals inbox (`bss-approvals`, AP-D-1 to AP-D-4) serves ONE paged list, O
 
 **Source:** Owner, 2026-10-01 (asked how to merge the two approval-unit methods into one, then "yes, A, agreed" for the read-and-route facade, then "write the plan"; Run 2 started before 9.5d-2 on the owner's word). Approvals inbox plan rev 2 (Run 2; design 1 and 3; plan review H1, H3, H4, M1, M5, L1). Amends D-470: its order is the inbox's merge key.
 
+#### D-491 [M] An entry op stores its policy reference as a named object
+
+**Status:** DECIDED 2026-10-02.
+
+An entry operation that keeps a policy without the declaration stores `usage_policy_reference` as `{ "policy_id", "version", "digest" }`. A row written earlier as the positional array `[policy_id, version, digest]` still reads. New rows write the named object.
+
+**Source:** Phase 9 review F1b.
+
 #### D-501 [H] Authorized SDK reads share the frozen preview snapshot and canonical JSON digests
 
 **Status:** DECIDED 2026-09-30.
@@ -1376,9 +1395,12 @@ The approvals inbox (`bss-approvals`, AP-D-1 to AP-D-4) serves ONE paged list, O
 Pricing provides `PricingReadV1::{resolve, price, current_revision}` through ClientHub. Queries name
 an explicit catalog tenant, authorized against PDP-derived constraints under plan:read or price:read;
 a subject name grants nothing. The existing REST matrix and approved-price shape remain frozen.
-A shared snapshot owns local loading, resolution and dated Products evidence outside the transaction;
-the SDK requires complete commercial inputs and reports `IncompleteCommercialInputs` when a priced
-cell cannot supply them, while REST preserves nullable historical previews. Missing legacy entry policy
+A shared snapshot owns local loading, resolution and dated Products evidence outside the transaction.
+The dated Products read is pricing's system actor on both paths (D-424, amended 2026-10-02).
+The SDK requires complete commercial inputs and reports `IncompleteCommercialInputs` when a priced
+cell cannot supply them, while REST preserves nullable historical previews. The refusal is a failed
+precondition: violation type `INCOMPLETE_COMMERCIAL_INPUTS`, subject the missing field, description
+`incomplete commercial inputs: <field>` (amended 2026-10-02, phase 9 review F1). Missing legacy entry policy
 remains `None`. Minimal invoice/policy projection types support the exact read signature, without
 publishing later acceptance, hold or meter-provider methods.
 
@@ -1398,6 +1420,7 @@ producer surface, not delivery of consumer integration or sale acceptance.
 **Source:** Pricing Seam Contracts plan, Task 1 (G1), revisions 2 and 3. Extends D-419–D-422 without
 changing their REST behavior; uses phase-8 promotion from D-450–D-451. Later tasks own policy storage,
 new-sale gates and receipts. Decision numbers D-470–D-499 remain reserved for concurrent phase-9 work.
+Amended 2026-10-02 (phase 9 review F1): the incomplete-input violation type is `INCOMPLETE_COMMERCIAL_INPUTS`.
 
 #### D-502 [H] Immutable usage policies belong to entries and their semantic key
 
@@ -1563,6 +1586,8 @@ D-504 defines the pure new-sale profile, narrower than the readable catalog:
 | Usage BillingCycle | PerUnit, Volume or Graduated; period null; immutable explicit policy | MissingRatingPolicy / MeterPolicyMismatch |
 | Usage CalendarHour | Same usage models; UTC, SUM, subscription_line or resource scope; no minimum fee, including zero | UnsupportedTerms |
 | BillingCycle minimum fee | SubscriptionLine only; any Resource-scoped floor is refused | UnsupportedTerms |
+
+**Amended 2026-10-02 (phase 9 review F1b).** `refuses_minimum_fee` is that predicate at price validation, at the plan-revision check, and at sale validation. A minimum fee with CalendarHour or a resource-scoped policy is unsupported at all three.
 | FX / cross-currency sale | Currency must equal the selected price currency | CURRENCY_MISMATCH |
 | Package, promotions, phases, allowances, quarter | Not part of new-sale terms; historical catalog reads remain intact | UnsupportedModel / UnsupportedTerms |
 

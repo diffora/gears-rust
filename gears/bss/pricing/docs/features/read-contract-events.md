@@ -153,7 +153,7 @@ Requirement: `cpt-cf-bss-pricing-fr-resolve`; PRD AC #18.
 
 - [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-binding-sku-version`
 
-Binding reads versions?as_of at period start, not the latest mutable SKU. Preserve version, unit/meter, descriptors, timing, rounding and currency scale in replay inputs (spec §2.2, §7.1).
+Binding reads versions?as_of at period start, not the latest mutable SKU, as pricing's system actor on both REST resolve and `PricingReadV1::resolve` after the caller passed plan read (D-424). Preserve version, unit/meter, descriptors, timing, rounding and currency scale in replay inputs (spec §2.2, §7.1). An SDK binding that cannot supply a commercial input is `INCOMPLETE_COMMERCIAL_INPUTS` on that field (D-501). REST keeps the descriptor nullable.
 
 Requirement: `cpt-cf-bss-pricing-fr-resolve`; PRD AC #18.
 

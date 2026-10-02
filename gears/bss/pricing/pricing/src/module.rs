@@ -93,27 +93,26 @@ impl Gear for BssPricingGear {
             Err(ConfigError::GearNotFound { .. }) => return Ok(()),
             Err(error) => return Err(error).context("bss-pricing: invalid config"),
         };
-        config
-            .seller_hold_policy
-            .validate()
-            .context("bss-pricing: invalid config")?;
         let db = ctx
             .db_required()
             .context("bss-pricing: database is required")?;
-        let authz_client = ctx
+        let authz_client = match ctx
             .client_hub()
             .get::<dyn authz_resolver_sdk::AuthZResolverApi>()
-            .map_err(|_| {
-                toolkit_canonical_errors::CanonicalError::from(
+        {
+            Ok(client) => client,
+            Err(hub) => {
+                return Err(toolkit_canonical_errors::CanonicalError::from(
                     crate::infra::commercial_terms::errors::UnconfiguredDependency {
                         dependency: "AuthZResolverApi",
                     },
-                )
-            })
-            .context(
-                "bss-pricing: AuthZResolverApi absent from ClientHub; \
-                 authz-resolver module must be registered",
-            )?;
+                ))
+                .context(format!(
+                    "bss-pricing: AuthZResolverApi absent from ClientHub ({hub}); \
+                     authz-resolver module must be registered"
+                ));
+            }
+        };
         let enforcer = Arc::new(authz_resolver_sdk::PolicyEnforcer::new(authz_client));
 
         // Register the authz-label stub schemas so RBAC role definitions
@@ -157,7 +156,7 @@ impl Gear for BssPricingGear {
         let commercial = Arc::new(crate::infra::commercial_terms::CommercialTermsService::new(
             state.clone(),
             enforcer.clone(),
-            Arc::new(crate::infra::clock::SystemClock),
+            Arc::new(crate::infra::clock::WallClock),
             config.seller_hold_policy,
         ));
         ctx.client_hub()

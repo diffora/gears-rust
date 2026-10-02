@@ -109,8 +109,32 @@ impl Capped for PricingPriceBookEntryCreate {
             .as_deref()
             .map_or(Ok(()), |line| {
                 field("invoice_line_override", line, TEMPLATE_MAX_CHARS)
-            })
+            })?;
+        let Some(policy) = &self.usage_rating_policy else {
+            return Ok(());
+        };
+        let quantity = &policy.quantity_semantics;
+        field(
+            "usage_rating_policy.usage_type_id",
+            &quantity.meter.usage_type_id,
+            CODE_MAX_CHARS,
+        )?;
+        field(
+            "usage_rating_policy.version",
+            &quantity.meter.version,
+            CODE_MAX_CHARS,
+        )?;
+        field("usage_rating_policy.unit", &quantity.unit, CODE_MAX_CHARS)?;
+        field(
+            "usage_rating_policy.accrual_policy_version",
+            &quantity.accrual_policy_version,
+            CODE_MAX_CHARS,
+        )
     }
+}
+/// A list's `q`, before it becomes a pattern. 400 `FIELD_TOO_LONG` on `q`.
+pub(super) fn search(text: &str) -> Result<(), CanonicalError> {
+    field("q", text, NAME_MAX_CHARS)
 }
 impl Capped for PricingPriceBookEntryPatch {
     fn caps(&self) -> Result<(), CanonicalError> {
@@ -179,5 +203,64 @@ pub(super) fn new_dimension_text(
 impl Capped for PricingDimensionKeyPatch {
     fn caps(&self) -> Result<(), CanonicalError> {
         each("add", &self.add, CODE_MAX_CHARS)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::infra::usage_policy_wire::{
+        AggregationScope, Fold, MeterRef, PartialWindow, QuantitySemantics, RatingWindow, Reset,
+        UsageRatingPolicyInput,
+    };
+    use uuid::Uuid;
+
+    fn policy(usage_type_id: &str) -> UsageRatingPolicyInput {
+        UsageRatingPolicyInput {
+            rating_window: RatingWindow::BillingCycle,
+            aggregation_scope: AggregationScope::SubscriptionLine,
+            reset: Reset::RatingWindowStart,
+            quantity_semantics: QuantitySemantics {
+                meter: MeterRef {
+                    usage_type_id: usage_type_id.to_owned(),
+                    version: "1".into(),
+                },
+                unit: "h".into(),
+                fold: Fold::Sum,
+                accrual_policy_version: "v1".into(),
+            },
+            partial_window: PartialWindow::ActualQuantityFullThresholds,
+        }
+    }
+    fn create(usage_type_id: &str) -> PricingPriceBookEntryCreate {
+        PricingPriceBookEntryCreate {
+            usage_rating_policy: Some(policy(usage_type_id)),
+            sku_id: Uuid::nil(),
+            model: "per_unit".into(),
+            period: None,
+            dimension_key: None,
+            invoice_line_override: None,
+        }
+    }
+
+    #[test]
+    fn a_meter_id_over_the_code_cap_is_field_too_long() {
+        let error = create(&"m".repeat(CODE_MAX_CHARS + 1)).caps().unwrap_err();
+        let body =
+            serde_json::to_string(&toolkit_canonical_errors::Problem::from_error(&error).unwrap())
+                .unwrap();
+        assert!(body.contains("FIELD_TOO_LONG"), "{body}");
+        assert!(body.contains("usage_rating_policy.usage_type_id"), "{body}");
+        assert!(create(&"m".repeat(CODE_MAX_CHARS)).caps().is_ok());
+    }
+
+    #[test]
+    fn a_search_over_the_name_cap_is_field_too_long() {
+        let error = search(&"q".repeat(NAME_MAX_CHARS + 1)).unwrap_err();
+        let body =
+            serde_json::to_string(&toolkit_canonical_errors::Problem::from_error(&error).unwrap())
+                .unwrap();
+        assert!(body.contains("FIELD_TOO_LONG"), "{body}");
+        assert!(search(&"q".repeat(NAME_MAX_CHARS)).is_ok());
     }
 }

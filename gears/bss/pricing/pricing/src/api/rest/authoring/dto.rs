@@ -69,12 +69,17 @@ pub struct PricingPriceBookEntryDto {
     #[serde(with = "time::serde::rfc3339")]
     pub updated_at: time::OffsetDateTime,
 }
-impl TryFrom<entity::price_book_entry::Model> for PricingPriceBookEntryDto {
-    type Error = RepoError;
-    fn try_from(m: entity::price_book_entry::Model) -> Result<Self, RepoError> {
+impl PricingPriceBookEntryDto {
+    /// The entry and its policy, together. A non-usage entry passes `None`.
+    /// # Errors
+    /// A stored token outside its closed set is a corrupt row (D-439).
+    pub fn from_stored(
+        m: entity::price_book_entry::Model,
+        usage_rating_policy: Option<crate::infra::usage_policy_wire::UsageRatingPolicy>,
+    ) -> Result<Self, RepoError> {
         let id = m.id;
         Ok(Self {
-            usage_rating_policy: None,
+            usage_rating_policy,
             id,
             tenant_id: m.tenant_id,
             book_id: m.book_id,
@@ -102,6 +107,12 @@ impl TryFrom<entity::price_book_entry::Model> for PricingPriceBookEntryDto {
         })
     }
 }
+impl TryFrom<entity::price_book_entry::Model> for PricingPriceBookEntryDto {
+    type Error = RepoError;
+    fn try_from(m: entity::price_book_entry::Model) -> Result<Self, RepoError> {
+        Self::from_stored(m, None)
+    }
+}
 impl PricingPriceBookEntryDto {
     /// Materialize immutable policy content along with an entry.
     /// # Errors
@@ -117,9 +128,7 @@ impl PricingPriceBookEntryDto {
         )
         .await?
         .remove(&m.id);
-        let mut dto = Self::try_from(m)?;
-        dto.usage_rating_policy = policy;
-        Ok(dto)
+        Self::from_stored(m, policy)
     }
 }
 /// An entry's prices by state; a rejected price is not counted (D-428). The approved ones are
@@ -187,9 +196,10 @@ impl PricingPriceBookEntryReadDto {
         usage: crate::infra::usage::EntryUsage,
         current_price: Option<PricingPriceDto>,
         next_price: Option<PricingPriceDto>,
+        policy: Option<crate::infra::usage_policy_wire::UsageRatingPolicy>,
     ) -> Result<Self, RepoError> {
         Ok(Self {
-            entry: m.try_into()?,
+            entry: PricingPriceBookEntryDto::from_stored(m, policy)?,
             usage: usage.into(),
             current_price,
             next_price,
@@ -873,7 +883,7 @@ impl PricingPlanDto {
             last_activity_at: summary.last_activity_at,
             selling: crate::infra::plan_summary::selling(&summary, today),
             change: PricingPlanChange::stored(
-                crate::infra::plan_summary::change(&summary, today),
+                crate::infra::plan_summary::change(&summary, today).as_str(),
                 &format_args!("plan {}", m.id),
             )?,
             revisions: revisions

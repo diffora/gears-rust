@@ -157,30 +157,16 @@ fn day_of(uri: &Uri, today: time::Date) -> Result<time::Date, CanonicalError> {
     let axum::extract::Query(pairs) =
         axum::extract::Query::<Vec<(String, String)>>::try_from_uri(uri)
             .map_err(|_| invalid_because("query", "QUERY_INVALID", "a malformed query string"))?;
-    let mut seen: Vec<&str> = Vec::new();
-    for (key, _) in &pairs {
-        let key = key.as_str();
-        if key.starts_with('$') {
-            continue;
-        }
-        if !PLAIN.contains(&key) {
-            return Err(invalid_because(
-                key,
-                "QUERY_INVALID",
-                &format!(
-                    "`{key}` is not a parameter of this read; it takes as_of, limit, cursor and $filter"
-                ),
-            ));
-        }
-        if seen.contains(&key) {
-            return Err(invalid_because(
-                key,
-                "QUERY_INVALID",
-                &format!("`{key}` is given more than once"),
-            ));
-        }
-        seen.push(key);
-    }
+    support::plain_keys(
+        &pairs,
+        PLAIN,
+        |key| key.starts_with('$'),
+        |key| {
+            format!(
+                "`{key}` is not a parameter of this read; it takes as_of, limit, cursor and $filter"
+            )
+        },
+    )?;
     let as_of = pairs
         .iter()
         .find(|(k, _)| k == "as_of")
@@ -207,20 +193,10 @@ fn checked_filter(odata: &ODataQuery) -> Result<(), CanonicalError> {
 /// `$filter` and the day — the first 8 bytes of the SHA-256 of their canonical JSON, as hex. The
 /// day is the one the page is judged on, so `as_of` of today and no `as_of` are one narrowing.
 fn page_hash(odata: &ODataQuery, day: time::Date) -> Result<String, CanonicalError> {
-    let digest = crate::api::rest::preconditions::request_digest(&serde_json::json!({
+    support::page_hash(&serde_json::json!({
         "filter": odata.filter_hash,
         "day": day.to_string(),
     }))
-    .map_err(CanonicalError::from)?;
-    Ok(digest
-        .iter()
-        .take(8)
-        .fold(String::with_capacity(16), |mut hex, b| {
-            const DIGITS: &[u8; 16] = b"0123456789abcdef";
-            hex.push(char::from(DIGITS[usize::from(b >> 4)]));
-            hex.push(char::from(DIGITS[usize::from(b & 0x0f)]));
-            hex
-        }))
 }
 
 async fn list_entries(

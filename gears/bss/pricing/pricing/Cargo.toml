@@ -50,6 +50,7 @@ toolkit-odata = { workspace = true, features = ["with-utoipa"] }
 sea-orm = { workspace = true, features = ["sqlx-postgres", "sqlx-sqlite"] }
 sea-orm-migration = { workspace = true }
 tokio = { workspace = true, features = ["time", "macros", "rt"] }
+tokio-retry = { workspace = true }
 tokio-util = { workspace = true }
 axum = { workspace = true }
 arc-swap = { workspace = true }
@@ -62,7 +63,12 @@ toolkit-gts = { workspace = true }
 toolkit-canonical-errors = { workspace = true }
 
 [dev-dependencies]
+# Integration tests call `plan_item_repo::insert_as_given`. Cargo unifies this edge with the
+# library under test, so that function is compiled in for `cargo test` and absent from a
+# production build.
+bss-pricing = { package = "cf-gears-bss-pricing", path = ".", features = ["test-support"] }
 parking_lot = { workspace = true }
+proptest = { workspace = true }
 # The usage reads prove a fixed statement count with toolkit-db's `QueryRecorder` (D-428).
 toolkit-db = { workspace = true, features = ["pg", "sqlite", "test-support"] }
 # The events suite decodes the interim envelope with the broker SDK's own decoder

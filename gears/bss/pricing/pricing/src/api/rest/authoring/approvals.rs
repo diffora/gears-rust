@@ -660,8 +660,7 @@ async fn proposals(
             .transpose()?;
         let price = PricingPriceDto::of(m.clone(), &entry.model)?;
         let policy = policies.get(&entry.id).cloned();
-        let mut entry = PricingPriceBookEntryDto::try_from(entry)?;
-        entry.usage_rating_policy = policy;
+        let entry = PricingPriceBookEntryDto::from_stored(entry, policy)?;
         out.push(PricingProposedPrice {
             price,
             entry,
@@ -742,18 +741,19 @@ pub async fn publish(
         .map_err(DoorError::from)?;
         let selected =
             crate::infra::meter_semantics::publish_selection(prices, input.price_ids.as_deref());
-        let mut observations = observe_entries(
+        let entry_ids = selected.iter().map(|p| p.price_book_entry_id).collect();
+        let observations = observe_entries(
             db,
             &cmd,
-            selected.iter().map(|p| p.price_book_entry_id).collect(),
+            entry_ids,
             Vec::new(),
+            crate::infra::meter_semantics::Selection::Publish {
+                book,
+                ids: input.price_ids.clone(),
+                rows: selected,
+            },
         )
         .await?;
-        observations.selection = crate::infra::meter_semantics::Selection::Publish {
-            book,
-            ids: input.price_ids.clone(),
-            rows: selected,
-        };
         let sink = cmd.outbox.clone();
         let cmd = cmd.clone();
         let input = input.clone();
@@ -1300,16 +1300,18 @@ pub async fn get_policy(
     )?)
 }
 /// `GET /approval-policy/{kind}/effective` (D-481): the quorum a submit of `kind` needs, the
-/// kind's override or the tenant default. One statement, under the caller's scope.
+/// kind's override or the tenant default. One statement. The door has already judged the
+/// caller's grant. The policy's resource column is `kind` (text), so this read is the
+/// tenant's, as `stored_contexts` is: a resource constraint must not compare `kind` to a uuid.
 /// # Errors
 /// Storage failures.
 pub async fn effective_quorum(
     tx: &impl DBRunner,
-    scope: &AccessScope,
     tenant: Uuid,
     kind: Kind,
 ) -> Result<Response, DoorError> {
-    let policy = approval_repo::read_policy(tx, scope, tenant).await?;
+    let scope = AccessScope::for_tenant(tenant);
+    let policy = approval_repo::read_policy(tx, &scope, tenant).await?;
     Ok(support::response(
         StatusCode::OK,
         &PricingEffectivePolicyDto {
@@ -1399,6 +1401,7 @@ async fn observe_entries(
     cmd: &Command,
     ids: Vec<Uuid>,
     extra_skus: Vec<Uuid>,
+    selection: crate::infra::meter_semantics::Selection,
 ) -> Result<crate::infra::meter_semantics::Observations, CanonicalError> {
     let conn = db.conn().map_err(DoorError::from)?;
     let entries = price_book_entry_repo::find_many(
@@ -1409,12 +1412,10 @@ async fn observe_entries(
     )
     .await
     .map_err(DoorError::from)?;
-    let mut observations = crate::infra::meter_semantics::Observations::capture(
-        &conn, &cmd.hub, &cmd.ctx, entries, extra_skus,
+    Ok(crate::infra::meter_semantics::Observations::capture(
+        &conn, &cmd.hub, &cmd.ctx, entries, extra_skus, selection,
     )
-    .await?;
-    observations.verify(&cmd.hub, &cmd.ctx).await;
-    Ok(observations)
+    .await?)
 }
 async fn observe_revision(
     db: &Db,
@@ -1434,15 +1435,16 @@ async fn observe_revision(
     )
     .await
     .map_err(DoorError::from)?;
-    let mut observations = observe_entries(
+    let entry_ids = items.iter().filter_map(|i| i.price_book_entry_id).collect();
+    let sku_ids = items.iter().map(|i| i.sku_id).collect();
+    observe_entries(
         db,
         cmd,
-        items.iter().filter_map(|i| i.price_book_entry_id).collect(),
-        items.iter().map(|i| i.sku_id).collect(),
+        entry_ids,
+        sku_ids,
+        crate::infra::meter_semantics::Selection::Revision { id, items },
     )
-    .await?;
-    observations.selection = crate::infra::meter_semantics::Selection::Revision { id, items };
-    Ok(observations)
+    .await
 }
 async fn observe_prices(
     db: &Db,
@@ -1453,21 +1455,21 @@ async fn observe_prices(
     let prices = price_repo::find_many(&conn, &cmd.scope, cmd.tenant(), ids)
         .await
         .map_err(DoorError::from)?;
-    let mut observations = observe_entries(
+    let entry_ids = prices
+        .iter()
+        .filter(|p| p.state == "draft" || p.state == "pending")
+        .map(|p| p.price_book_entry_id)
+        .collect();
+    observe_entries(
         db,
         cmd,
-        prices
-            .iter()
-            .filter(|p| p.state == "draft" || p.state == "pending")
-            .map(|p| p.price_book_entry_id)
-            .collect(),
+        entry_ids,
         Vec::new(),
+        crate::infra::meter_semantics::Selection::Prices {
+            ids: ids.to_vec(),
+            scope: cmd.scope.clone(),
+            rows: prices,
+        },
     )
-    .await?;
-    observations.selection = crate::infra::meter_semantics::Selection::Prices {
-        ids: ids.to_vec(),
-        scope: cmd.scope.clone(),
-        rows: prices,
-    };
-    Ok(observations)
+    .await
 }

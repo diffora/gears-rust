@@ -100,8 +100,9 @@ async fn review_m2_empty_activation_window_stores_nothing() {
             .check(&f.ctx, q, f.meta.clone())
             .await
             .unwrap_err();
-        assert!(
-            format!("{error:?}").contains("ActivationOutsideAcceptedWindow"),
+        assert_eq!(
+            bss_pricing::infra::commercial_terms::errors::commercial_reason(&error).as_deref(),
+            Some("ActivationOutsideAcceptedWindow"),
             "{error:?}"
         );
         assert_eq!(f.counts().await, (0, 0, 0));

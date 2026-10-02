@@ -4,8 +4,7 @@ use crate::infra::storage::{RepoError, entity::price_book as e};
 use sea_orm::sea_query::{Expr, ExprTrait};
 use sea_orm::{ColumnTrait, Condition, EntityTrait, Order, Set};
 use toolkit_db::odata::sea_orm_filter::{
-    FieldToColumn, LimitCfg, ODataFieldMapping, PaginateOdataTryError, escape_like,
-    paginate_odata_try,
+    FieldToColumn, LimitCfg, ODataFieldMapping, PaginateOdataTryError, paginate_odata_try,
 };
 use toolkit_db::secure::{
     AccessScope, DBRunner, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
@@ -281,41 +280,16 @@ pub struct BookListFilter {
 /// products' SKU list folds it (P-D-210). A deployment's Postgres must be built with ICU.
 pub const PG_FOLD_COLLATION: &str = "und-x-icu";
 
-/// `lower(expr)`, folded through [`PG_FOLD_COLLATION`] on Postgres and through the database's own
-/// `lower()` (ASCII only) on `SQLite`.
-//
-// Raw SQL, on purpose (whole-branch review PS-29): sea-query has no `COLLATE` on an expression,
-// and the fold must name the ICU collation, or a `C`-locale database folds ASCII only (products
-// P-D-210). The folded text stays a bound value.
-// Upstream gears use the same pattern in repository code: account-management
-// `infra/lease/manager.rs` (`Expr::cust("NOW()")`, `INTERVAL`) and
-// `infra/storage/repo_impl/retention.rs` (`make_interval`, `julianday`), and settings-service
-// `infra/storage/search_repo.rs` (`LIKE … ESCAPE`, the JSON null checks). A toolkit-db helper
-// would be a change to a foreign crate, proposed upstream on its own (owner, O3/O4).
-fn folded(backend: sea_orm::DbBackend, expr: Expr) -> Expr {
-    if backend == sea_orm::DbBackend::Postgres {
-        Expr::cust_with_expr(format!(r#"lower($1 COLLATE "{PG_FOLD_COLLATION}")"#), expr)
-    } else {
-        Expr::expr(sea_orm::sea_query::Func::lower(expr))
-    }
-}
-
-/// `q` over the code and the name: `lower(column) LIKE lower(pattern) ESCAPE '\'`, the caller's
-/// text matched literally (`%`, `_` and `\` escaped), both sides folded the same way.
+/// `q` over the code and the name, folded the same way on both sides.
 fn text_condition(text: &str, backend: sea_orm::DbBackend) -> Condition {
-    use sea_orm::sea_query::BinOper;
-    let pattern = format!("%{}%", escape_like(text));
-    [e::Column::Code, e::Column::Name]
-        .into_iter()
-        .fold(Condition::any(), |any, column| {
-            // `LikeExpr` binds its pattern as it is; this pattern goes through `lower()` too, so
-            // the `LIKE … ESCAPE` is spelled as the nested binary `LikeExpr` itself builds.
-            let lowered = folded(backend, Expr::val(pattern.clone())).binary(
-                BinOper::Escape,
-                Expr::Constant(sea_orm::Value::Char(Some('\\'))),
-            );
-            any.add(folded(backend, Expr::col((e::Entity, column))).binary(BinOper::Like, lowered))
-        })
+    super::text_like_any(
+        text,
+        backend,
+        [
+            Expr::col((e::Entity, e::Column::Code)),
+            Expr::col((e::Entity, e::Column::Name)),
+        ],
+    )
 }
 
 /// A list read refused or failed.

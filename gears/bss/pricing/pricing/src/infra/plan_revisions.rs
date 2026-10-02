@@ -516,27 +516,41 @@ impl PlanRevisionSubject {
         )
         .await
         .map_err(storage)?;
+        let policies = crate::infra::storage::repo::usage_policy_repo::for_entries(
+            tx,
+            self.tenant_id,
+            &entries,
+        )
+        .await
+        .map_err(storage)?;
+        let entry_ids: Vec<Uuid> = entries.iter().map(|e| e.id).collect();
+        let prices = crate::infra::storage::repo::price_repo::by_entry(
+            crate::infra::storage::repo::price_repo::for_entries(
+                tx,
+                &AccessScope::for_tenant(self.tenant_id),
+                self.tenant_id,
+                &entry_ids,
+            )
+            .await
+            .map_err(storage)?,
+        );
         for entry in entries {
             self.meter_observations.check(&entry).map_err(|error| {
                 self.refuse(error);
                 invalid("METER_POLICY_REFUSED", format!("entry {}", entry.id))
             })?;
-            let pc = crate::infra::prices::PriceBookEntryContext::load(tx, self.tenant_id, &entry)
-                .await
-                .map_err(storage)?;
-            if pc.policy.as_ref().is_some_and(|p| {
-                matches!(
-                    p.content.rating_window,
-                    crate::infra::usage_policy_wire::RatingWindow::CalendarHour { .. }
-                )
-            }) && pc
-                .prices
-                .iter()
-                .any(|p| p.state == "approved" && p.min_fee.is_some())
+            let refuses = policies.get(&entry.id).is_some_and(|p| {
+                crate::domain::usage_policy::refuses_minimum_fee(&(&p.content).into())
+            });
+            if refuses
+                && prices.get(&entry.id).is_some_and(|rows| {
+                    rows.iter()
+                        .any(|p| p.state == "approved" && p.min_fee.is_some())
+                })
             {
                 return Err(invalid(
                     "UNSUPPORTED_TERMS",
-                    "CalendarHour with minimum fee",
+                    "minimum fee on CalendarHour or a resource-scoped policy",
                 ));
             }
         }

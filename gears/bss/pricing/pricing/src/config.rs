@@ -1,4 +1,5 @@
 //! Default-tolerant deployment configuration and versioned seller hold policy.
+use std::num::{NonZeroU32, NonZeroU64};
 
 /// Retired deployment keys remain accepted; commercial policy is validated at startup.
 #[derive(Debug, Clone, Default, serde::Deserialize)]
@@ -13,31 +14,19 @@ pub struct BssPricingConfig {
 #[serde(deny_unknown_fields)]
 pub struct SellerHoldPolicy {
     /// Positive immutable policy version named by new-sale requests.
-    pub version: u64,
+    pub version: NonZeroU64,
     /// Positive duration from the server-issued acceptance instant.
-    pub duration_seconds: u32,
+    pub duration_seconds: NonZeroU32,
 }
 impl Default for SellerHoldPolicy {
     fn default() -> Self {
         Self {
-            version: 1,
-            duration_seconds: 86_400,
+            version: NonZeroU64::MIN,
+            duration_seconds: DAY,
         }
     }
 }
-impl SellerHoldPolicy {
-    /// Refuse invalid policy before registering any commercial provider.
-    /// # Errors
-    /// Zero version or duration is not a usable seller policy.
-    pub fn validate(&self) -> anyhow::Result<()> {
-        anyhow::ensure!(
-            self.version > 0,
-            "seller_hold_policy.version must be positive"
-        );
-        anyhow::ensure!(
-            self.duration_seconds > 0,
-            "seller_hold_policy.duration_seconds must be positive"
-        );
-        Ok(())
-    }
-}
+const DAY: NonZeroU32 = match NonZeroU32::new(86_400) {
+    Some(value) => value,
+    None => unreachable!(),
+};

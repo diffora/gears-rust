@@ -41,11 +41,11 @@ pub struct UnconfiguredMeterSemantics;
 #[toolkit_canonical_errors::resource_error("gts.cf.bss.pricing.plan.v1~")]
 struct PlanResource;
 impl From<UnconfiguredMeterSemantics> for CanonicalError {
-    fn from(error: UnconfiguredMeterSemantics) -> Self {
+    fn from(_error: UnconfiguredMeterSemantics) -> Self {
         PlanResource::failed_precondition()
             .with_precondition_violation(
                 "UsageMeterSemanticsV1",
-                error.to_string(),
+                "UsageMeterSemanticsV1 is unconfigured (external dependency E1)",
                 "UNCONFIGURED_DEPENDENCY",
             )
             .create()

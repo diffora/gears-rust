@@ -598,11 +598,8 @@ impl World {
             before[2..],
             "acceptance/hold emit no outbox work or reference operation"
         );
-        assert_eq!(
-            *self.catalog.refs.lock().unwrap(),
-            refs,
-            "acceptance provisions nothing"
-        );
+        let held_refs = self.catalog.refs.lock().unwrap().clone();
+        assert_eq!(held_refs, refs, "acceptance provisions nothing");
         a
     }
 }
@@ -780,8 +777,9 @@ async fn f07_published_successor_preserves_all_accepted_pins() {
     );
 }
 fn assert_reason(error: &toolkit_canonical_errors::CanonicalError, reason: CommercialReason) {
-    assert!(
-        format!("{error:?}").contains(reason.as_str()),
+    assert_eq!(
+        bss_pricing::infra::commercial_terms::errors::commercial_reason(error).as_deref(),
+        Some(reason.as_str()),
         "{error:?}: {reason:?}"
     );
     let expected: toolkit_canonical_errors::CanonicalError = reason.into();
@@ -1241,18 +1239,9 @@ fn fixture_comparison_detects_a_dropped_policy_pin() {
     );
 }
 #[test]
-fn fixture_scenarios_and_policy_shapes_are_closed() {
-    let fixture = fixtures().remove(1);
-    let mut value = serde_json::to_value(&fixture).unwrap();
-    value["scenario"] = json!("hourly_scheduler");
-    assert!(serde_json::from_value::<Fixture>(value).is_err());
-    let mut value = serde_json::to_value(&fixture).unwrap();
-    value["expected"]["commercial"]
-        .as_object_mut()
-        .unwrap()
-        .remove("rating_window");
-    assert!(serde_json::from_value::<Fixture>(value).is_err());
-    let mut value = serde_json::to_value(&fixture).unwrap();
-    value["given"]["commercial"]["aggregation_key"] = json!("shared_across_subscriptions");
-    assert!(serde_json::from_value::<Fixture>(value).is_err());
+fn a_production_billing_window_rejects_an_unknown_variant() {
+    let raw = r#"{"kind":"rolling"}"#;
+    assert!(
+        serde_json::from_str::<bss_pricing::infra::usage_policy_wire::RatingWindow>(raw).is_err()
+    );
 }

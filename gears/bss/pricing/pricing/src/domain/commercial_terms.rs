@@ -4,7 +4,7 @@ use bss_pricing_sdk::{
     acceptance::{CommercialReason as R, NewSaleQuery, Term},
     digest::{billing_terms_digest, money_digest, policy_digest, template_digest},
     read::{AcceptedBinding, ChargeKind, PriceModel},
-    terms::{AggregationScope, BillingAnchor, BillingCycle, RatingWindow, Rounding, TermsSource},
+    terms::{BillingAnchor, BillingCycle, RatingWindow, Rounding, TermsSource},
 };
 use rust_decimal::Decimal;
 use std::collections::BTreeSet;
@@ -13,7 +13,10 @@ use time::{Month, Time, UtcOffset};
 /// Verified live facts, constructed inside Pricing, never accepted from an SDK caller.
 #[toolkit_macros::domain_model]
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(clippy::struct_excessive_bools)] // Deliberately independent verified facts from the specified seam.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each verified fact is an independent seam input"
+)]
 pub struct SaleObservation {
     pub revision_is_current: bool,
     pub revision_available: bool,
@@ -200,9 +203,7 @@ fn validate_model_and_policy(q: &NewSaleQuery, b: &AcceptedBinding) -> Result<()
                 return Err(R::MeterPolicyMismatch.into());
             }
             let hourly = matches!(p.content.rating_window, RatingWindow::CalendarHour { .. });
-            if b.price.minimum_fee.is_some()
-                && (hourly || p.content.aggregation_scope == AggregationScope::Resource)
-            {
+            if b.price.minimum_fee.is_some() && usage_policy::refuses_minimum_fee(&p.content) {
                 return Err(R::UnsupportedTerms.into());
             }
             let at = q.billing_terms.anchor_at.to_offset(UtcOffset::UTC);

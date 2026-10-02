@@ -30,16 +30,17 @@ pub const SYSTEM_ACTOR_RESERVED: &str = "SYSTEM_ACTOR_RESERVED";
 /// (D-424, products P-D-222): Products' registry trusts it in-process, and a door hands the
 /// registry its caller's context, so no REST caller may act as it, whatever its token asserts.
 /// Another system subject (Rating's, Subscriptions') passes. Every door calls this first.
+/// A caller with a subject, a tenant and a subject type.
+#[must_use]
+pub fn authenticated(ctx: &SecurityContext) -> bool {
+    !ctx.subject_id().is_nil() && !ctx.subject_tenant_id().is_nil() && ctx.subject_type().is_some()
+}
 pub fn require_authenticated(
     ctx: Option<Extension<SecurityContext>>,
 ) -> Result<SecurityContext, CanonicalError> {
     let ctx = ctx
         .map(|Extension(c)| c)
-        .filter(|c| {
-            !c.subject_id().is_nil()
-                && !c.subject_tenant_id().is_nil()
-                && c.subject_type().is_some()
-        })
+        .filter(authenticated)
         .ok_or_else(|| {
             CanonicalError::unauthenticated()
                 .with_reason("AUTHENTICATION_REQUIRED")
@@ -79,6 +80,48 @@ pub fn invalid_because(field: &str, code: &str, description: &str) -> CanonicalE
     PricingResource::invalid_argument()
         .with_field_violation(field, description, code)
         .create()
+}
+/// Each plain key in `allowed` at most once. `skip` drops a key the extractor owns. An unknown
+/// key is 400 `QUERY_INVALID` with `unknown`'s detail. The keys that were judged come back in order.
+pub fn plain_keys<'a>(
+    pairs: &'a [(String, String)],
+    allowed: &[&str],
+    skip: impl Fn(&str) -> bool,
+    unknown: impl Fn(&str) -> String,
+) -> Result<Vec<&'a str>, CanonicalError> {
+    let mut seen = Vec::new();
+    for (key, _) in pairs {
+        let key = key.as_str();
+        if skip(key) {
+            continue;
+        }
+        if !allowed.contains(&key) {
+            return Err(invalid_because(key, "QUERY_INVALID", &unknown(key)));
+        }
+        if seen.contains(&key) {
+            return Err(invalid_because(
+                key,
+                "QUERY_INVALID",
+                &format!("`{key}` is given more than once"),
+            ));
+        }
+        seen.push(key);
+    }
+    Ok(seen)
+}
+/// The first 8 bytes of the SHA-256 of `payload`, as hex: a list cursor's narrowing hash.
+pub fn page_hash(payload: &serde_json::Value) -> Result<String, CanonicalError> {
+    let digest =
+        crate::api::rest::preconditions::request_digest(payload).map_err(CanonicalError::from)?;
+    Ok(digest
+        .iter()
+        .take(8)
+        .fold(String::with_capacity(16), |mut hex, byte| {
+            const DIGITS: &[u8; 16] = b"0123456789abcdef";
+            hex.push(char::from(DIGITS[usize::from(byte >> 4)]));
+            hex.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
+            hex
+        }))
 }
 /// A 403 with its own code: the caller may act on the resource type, not on this one.
 pub fn forbidden(code: &str) -> CanonicalError {
@@ -513,17 +556,44 @@ where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<T, DoorError>>,
 {
-    for _ in 0..toolkit_db::DEFAULT_TX_RETRY_ATTEMPTS {
+    let mut last = None;
+    for n in 1..=toolkit_db::DEFAULT_TX_RETRY_ATTEMPTS {
         match attempt().await {
-            Err(DoorError::SelectionMoved) => {}
+            Err(error @ DoorError::SelectionMoved) => last = Some(error),
             Err(error)
                 if driver_source(&error).is_some_and(|source| {
                     toolkit_db::contention::is_retryable_contention(db.backend(), source)
-                }) => {}
+                }) =>
+            {
+                last = Some(error);
+            }
             other => return other,
         }
+        if n < toolkit_db::DEFAULT_TX_RETRY_ATTEMPTS {
+            tokio::time::sleep(retry_backoff_delay(n + 1)).await;
+        }
+    }
+    if let Some(error) = last.as_ref() {
+        tracing::warn!(
+            error = %error,
+            attempts = toolkit_db::DEFAULT_TX_RETRY_ATTEMPTS,
+            "detached capture retry budget exhausted"
+        );
     }
     Err(conflict(UNIT_CONTENDED).into())
+}
+/// The same stagger toolkit-db uses before a contended transaction retry: a few milliseconds,
+/// grown per attempt and jittered, so two capturers do not restart in lockstep.
+fn retry_backoff_delay(next_attempt: u32) -> std::time::Duration {
+    use std::time::Duration;
+    use tokio_retry::strategy::{ExponentialBackoff, jitter};
+    let index = usize::try_from(next_attempt.saturating_sub(2)).unwrap_or(0);
+    let base = ExponentialBackoff::from_millis(2)
+        .factor(5)
+        .max_delay(Duration::from_millis(100))
+        .nth(index)
+        .unwrap_or(Duration::from_millis(100));
+    jitter(base)
 }
 
 /// One event-bearing transaction within [`retry_unit_capture`]. The outer loop owns the entire

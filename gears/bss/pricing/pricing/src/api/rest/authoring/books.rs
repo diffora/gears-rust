@@ -337,8 +337,7 @@ pub async fn export(
         // Every price echoes its entry's model (D-427).
         let model = p.model.clone();
         let policy = policies.remove(&p.id);
-        let mut entry = super::dto::PricingPriceBookEntryDto::try_from(p)?;
-        entry.usage_rating_policy = policy;
+        let entry = super::dto::PricingPriceBookEntryDto::from_stored(p, policy)?;
         result.push(PricingExportEntry {
             entry,
             prices: prices

@@ -66,19 +66,9 @@ pub fn decode_billing_terms(raw: &str) -> Result<BillingTerms, UnsupportedCommer
             }
         }
     };
-    if t.digest.len() != 64
-        || !t
-            .digest
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    {
+    let Some(digest) = crate::infra::usage_policy_wire::parse_digest_text(&t.digest) else {
         return Err(unsupported("digest", t.digest));
-    }
-    let mut digest = [0; 32];
-    for (i, byte) in digest.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&t.digest[i * 2..i * 2 + 2], 16)
-            .map_err(|_| unsupported("digest", &t.digest))?;
-    }
+    };
     Ok(BillingTerms {
         schema_version: 1,
         cycle: t.cycle.parse()?,

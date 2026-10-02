@@ -21,7 +21,11 @@ async fn accept(f: &AcceptanceFixture) -> bss_pricing_sdk::acceptance::Acceptanc
         .unwrap()
 }
 fn reason(e: &toolkit_canonical_errors::CanonicalError, expected: &str) {
-    assert!(format!("{e:?}").contains(expected), "{e:?}");
+    assert_eq!(
+        bss_pricing::infra::commercial_terms::errors::commercial_reason(e).as_deref(),
+        Some(expected),
+        "{e:?}"
+    );
 }
 
 #[tokio::test]
@@ -343,8 +347,8 @@ async fn seller_policy_change_preserves_issued_deadline_and_receipt_is_not_fulfi
     let f = AcceptanceFixture::new().await;
     let first = accept(&f).await;
     let service = f.service(SellerHoldPolicy {
-        version: 2,
-        duration_seconds: 3600,
+        version: std::num::NonZeroU64::new(2).unwrap(),
+        duration_seconds: std::num::NonZeroU32::new(3600).unwrap(),
     });
     let sell = SellabilityProvider::new(service.clone());
     assert_eq!(
