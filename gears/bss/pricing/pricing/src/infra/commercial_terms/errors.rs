@@ -32,7 +32,7 @@ pub(super) fn authorization(error: AuthzError) -> CanonicalError {
         AuthzError::Unavailable(reason) => {
             tracing::warn!(%reason, "commercial authorization unavailable");
             CanonicalError::service_unavailable()
-                .with_detail(format!("AuthZResolverApi: {reason}"))
+                .with_detail("AuthZResolverApi: authorization unavailable")
                 .create()
         }
     }
@@ -53,6 +53,24 @@ pub(super) fn storage(error: RepoError) -> CanonicalError {
                 .with_detail("PricingStorage: receipt storage unavailable")
                 .create()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_authorization_outage_does_not_echo_the_resolver_text() {
+        let error = authorization(crate::authz::AuthzError::Unavailable(
+            "secret policy text".into(),
+        ));
+        assert_eq!(error.status_code(), 503);
+        let body =
+            serde_json::to_string(&toolkit_canonical_errors::Problem::from_error(&error).unwrap())
+                .unwrap();
+        assert!(!body.contains("secret policy text"), "{body}");
+        assert!(body.contains("authorization unavailable"), "{body}");
     }
 }
 
