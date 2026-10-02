@@ -133,16 +133,7 @@ async fn plan_reading<'a>(
     let books = book_repo::find_many(tx, &children, tenant, &book_ids)
         .await?
         .into_iter()
-        .map(|book| {
-            (
-                book.id,
-                dto::PricingPlanBook {
-                    code: book.code,
-                    name: book.name,
-                    currency: book.currency,
-                },
-            )
-        })
+        .map(|book| (book.id, dto::PricingPlanBook::of(&book)))
         .collect();
     Ok(PlanReading {
         skus: plan_item_repo::skus_of_revisions(tx, &children, tenant, &wanted).await?,
@@ -423,14 +414,7 @@ pub(super) async fn create(
     let reading = PlanReading {
         skus: BTreeMap::new(),
         units: BTreeMap::new(),
-        books: BTreeMap::from([(
-            book.id,
-            dto::PricingPlanBook {
-                code: book.code,
-                name: book.name,
-                currency: book.currency,
-            },
-        )]),
+        books: BTreeMap::from([(book.id, dto::PricingPlanBook::of(&book))]),
     };
     let body = PricingPlanDto::of(p, &[r], today(), &reading)?;
     support::answer(
@@ -901,14 +885,7 @@ async fn clone_in(
     let reading = PlanReading {
         skus: BTreeMap::from([(r.id, skus)]),
         units: BTreeMap::new(),
-        books: BTreeMap::from([(
-            book.id,
-            dto::PricingPlanBook {
-                code: book.code,
-                name: book.name,
-                currency: book.currency,
-            },
-        )]),
+        books: BTreeMap::from([(book.id, dto::PricingPlanBook::of(&book))]),
     };
     let body = PricingPlanDto::of(p, &[r], today(), &reading)?;
     let response = support::answer(

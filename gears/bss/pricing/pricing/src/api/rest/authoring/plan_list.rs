@@ -86,8 +86,9 @@ pub(super) fn register(router: Router, openapi: &dyn OpenApiRegistry) -> Router 
             "One page of the tenant's plans (D-485). Each plan carries selling and change for \
              the request's day, derived from its stored summary (D-484), last_activity_at (the \
              instant a page ordered by it is ordered by), the headers of its revisions as they \
-             read today (D-447), its current revision with that revision's book (code, name, \
-             currency) and the published revision in effect (D-460). OData `$filter` over code, \
+             read today (D-447), its current revision with that revision's book (id, code, \
+             name, currency, valid_from and valid_until, D-515) and the published revision in \
+             effect (D-460). OData `$filter` over code, \
              name, book_id, currency and last_activity_at; `$orderby` over code (the default), \
              name and last_activity_at, with id breaking the tie in that direction; `$top` \
              (alias limit; default 500, clamped at 500) and cursor (alias $skiptoken). q is a \

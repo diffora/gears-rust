@@ -784,16 +784,35 @@ pub struct PricingPlanCurrent {
     pub sku_ids: Vec<Uuid>,
     /// Its author, who edits it while it is a draft (D-404); not the plan's.
     pub created_by: Uuid,
-    /// The book it prices on (D-485): that book's code, name and currency.
+    /// The book it prices on (D-485, D-515): that book's id, code, name, currency and validity.
     pub book: PricingPlanBook,
 }
-/// The book a plan's current revision prices on (D-485).
+/// The book a plan's current revision prices on (D-485, D-515).
 #[toolkit_macros::api_dto(response)]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PricingPlanBook {
+    pub id: Uuid,
     pub code: String,
     pub name: String,
     pub currency: String,
+    /// `YYYY-MM-DD`, or null when the book is open on that side.
+    pub valid_from: Option<String>,
+    /// `YYYY-MM-DD`, exclusive, or null when the book is open on that side.
+    pub valid_until: Option<String>,
+}
+impl PricingPlanBook {
+    /// The book a plan row names (D-515).
+    #[must_use]
+    pub fn of(m: &entity::price_book::Model) -> Self {
+        Self {
+            id: m.id,
+            code: m.code.clone(),
+            name: m.name.clone(),
+            currency: m.currency.clone(),
+            valid_from: m.valid_from.map(|d| d.to_string()),
+            valid_until: m.valid_until.map(|d| d.to_string()),
+        }
+    }
 }
 /// The revision a plan sells today (D-460): its published revision in effect (D-447).
 #[toolkit_macros::api_dto(response)]

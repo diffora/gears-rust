@@ -11510,7 +11510,7 @@
         "type": "object"
       },
       "PricingPlanBook": {
-        "description": "The book a plan's current revision prices on (D-485).",
+        "description": "The book a plan's current revision prices on (D-485, D-515).",
         "properties": {
           "code": {
             "type": "string"
@@ -11518,11 +11518,30 @@
           "currency": {
             "type": "string"
           },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
           "name": {
             "type": "string"
+          },
+          "valid_from": {
+            "description": "`YYYY-MM-DD`, or null when the book is open on that side.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "valid_until": {
+            "description": "`YYYY-MM-DD`, exclusive, or null when the book is open on that side.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
+          "id",
           "code",
           "name",
           "currency"
@@ -11787,7 +11806,7 @@
         "properties": {
           "book": {
             "$ref": "#/components/schemas/PricingPlanBook",
-            "description": "The book it prices on (D-485): that book's code, name and currency."
+            "description": "The book it prices on (D-485, D-515): that book's id, code, name, currency and validity."
           },
           "created_by": {
             "description": "Its author, who edits it while it is a draft (D-404); not the plan's.",
@@ -39656,7 +39675,7 @@
     },
     "/bss-pricing/v1/plans": {
       "get": {
-        "description": "One page of the tenant's plans (D-485). Each plan carries selling and change for the request's day, derived from its stored summary (D-484), last_activity_at (the instant a page ordered by it is ordered by), the headers of its revisions as they read today (D-447), its current revision with that revision's book (code, name, currency) and the published revision in effect (D-460). OData `$filter` over code, name, book_id, currency and last_activity_at; `$orderby` over code (the default), name and last_activity_at, with id breaking the tie in that direction; `$top` (alias limit; default 500, clamped at 500) and cursor (alias $skiptoken). q is a case-insensitive literal substring of the code or the name. selling is true or false. change is none, draft, pending or scheduled, one or several, comma-separated. sku_id keeps the plans whose draft, pending, scheduled or published revisions name the SKU through an entry (D-434), inside the page query. Five statements for a non-empty page, whatever its size. Refusals: 400 QUERY_INVALID for any other plain key, a repeated key, or a malformed value; 400 FILTER_MISMATCH for a cursor replayed under another narrowing; 400 for $select, $count and an order field it does not take.",
+        "description": "One page of the tenant's plans (D-485). Each plan carries selling and change for the request's day, derived from its stored summary (D-484), last_activity_at (the instant a page ordered by it is ordered by), the headers of its revisions as they read today (D-447), its current revision with that revision's book (id, code, name, currency, valid_from and valid_until, D-515) and the published revision in effect (D-460). OData `$filter` over code, name, book_id, currency and last_activity_at; `$orderby` over code (the default), name and last_activity_at, with id breaking the tie in that direction; `$top` (alias limit; default 500, clamped at 500) and cursor (alias $skiptoken). q is a case-insensitive literal substring of the code or the name. selling is true or false. change is none, draft, pending or scheduled, one or several, comma-separated. sku_id keeps the plans whose draft, pending, scheduled or published revisions name the SKU through an entry (D-434), inside the page query. Five statements for a non-empty page, whatever its size. Refusals: 400 QUERY_INVALID for any other plain key, a repeated key, or a malformed value; 400 FILTER_MISMATCH for a cursor replayed under another narrowing; 400 for $select, $count and an order field it does not take.",
         "operationId": "bss_pricing.list_plans",
         "parameters": [
           {

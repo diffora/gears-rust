@@ -115,7 +115,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-482 | M | The checks read their context as a set, and many revisions in one read | DECIDED 2026-10-01 · phase 9 plan rev 4 (run 9.7, ask 47); amends D-408, D-460 |
 | D-483 | M | A book's entries page on the toolkit's pager, in the order (sku_id, charge_kind, model, id) | DECIDED 2026-10-01 · Owner, 2026-10-01 (asks v4, 51); phase 9 plan rev 4 (run 9.8; review H3, A4); amends D-434, D-473 |
 | D-484 | M | A plan stores time-stable list facts; selling and change are derived from the day | DECIDED 2026-10-02 · Owner, 2026-10-01 (#31, form B); phase 9 plan rev 4 (run 9.8b; review N1, N2); amends D-453 |
-| D-485 | M | The plans list pages on the stored summary and counts the derived axes | DECIDED 2026-10-02 · Owner, 2026-10-01 (#31, form B); phase 9 plan rev 4 (run 9.8b; review N1, N7); amends D-434, D-460, D-453; amended 2026-10-02 (phase 9 review F1b) |
+| D-485 | M | The plans list pages on the stored summary and counts the derived axes | DECIDED 2026-10-02 · Owner, 2026-10-01 (#31, form B); phase 9 plan rev 4 (run 9.8b; review N1, N7); amends D-434, D-460, D-453; amended 2026-10-02 (phase 9 review F1b); amended by D-515 |
 | D-486 | M | A SKU's entries narrow, order and page in memory | DECIDED 2026-10-01 · Owner, 2026-10-01 (#25, form A); phase 9 plan rev 4 (run 9.8c; N5); amends D-434 |
 | D-490 | M | Pricing's approval units answer the approvals inbox through pricing's own doors | DECIDED 2026-10-01 · Owner, 2026-10-01 (option A, "yes, A, agreed", then "write the plan"; Run 2 started before 9.5d-2); approvals inbox plan rev 2 (Run 2; design 1 and 3; plan review H1, H3, H4, M1, M5, L1); amends D-470; amended by D-496 |
 | D-491 | M | An entry op stores its policy reference as a named object | DECIDED 2026-10-02 · phase 9 review F1b |
@@ -135,6 +135,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-512 | H | A plan item may wait for its entry in a draft | DECIDED 2026-10-02 · Owner, 2026-10-02; amends D-407, D-413, D-420, D-467, D-469 |
 | D-513 | M | A usage policy's single-valued fields default on input | DECIDED 2026-10-02 · Owner, 2026-10-02; amends D-502; amended by D-514 |
 | D-514 | H | A usage rating policy is its rating rules and the entry stores the SKU revision | DECIDED 2026-10-02 · Owner, 2026-10-02; amends D-502, D-503, D-504, D-513 |
+| D-515 | M | A plan row's book carries its id and validity | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 67); amends D-485 |
 
 ## Entries
 
@@ -1349,11 +1350,13 @@ GET /plans answered every plan of the tenant. A tenant of more than 500 plans ne
 **Amended 2026-10-02 (phase 9 review F1b).** The served `$filter` contract is `PlanFilterField`, those five fields. A `$filter` on `id` is invalid. `PricingPlanList` gains `page_info`. Each plan serves `last_activity_at`, so the instant a page is ordered by is in the JSON. The plan's own `updated_at` stays the If-Match clock and is not a list field.
 - **The plain keys**, each in the cursor hash (400 `FILTER_MISMATCH`): `q`, a case-insensitive literal substring of the code or the name; `selling=true|false`; `change=none,draft,pending,scheduled`, a comma list; the existing `sku_id` (D-434). Its stored-state EXISTS goes into the page query and the counts. It is not the effective state, and it is never an in-memory filter over a page.
 - **The hydration.** The page's plans then read their revision headers, the items of the current and in-effect revisions, the units and the current revisions' books, in four grouped statements. `current` gains `book: { code, name, currency }`. GET /plans is five statements per non-empty page, whatever the page size. GET /plans/{id} keeps its own reads and adds the book.
+
+D-515 amends this entry: that book also carries `id`, `valid_from` and `valid_until`. The same grouped read already loads the row. No new statement.
 - **The served axes.** Each plan gains `selling: bool` and `change` (`none`, `draft`, `pending`, `scheduled`). They are computed in Rust from the hydrated revisions with the D-447 code, and a test asserts they equal the SQL axes and that `current` and `in_effect` agree with them. The clock passing a scheduled date, with no write, flips them in the list and in the counts.
 - **The counts.** GET /plans/counts answers `{ by_selling: { true, false }, by_change: { none, draft, pending, scheduled }, total }`. It is one grouped statement under the list's whole narrowing minus the paging and the order. It is registered before GET /plans/{id}. `change` is in the response enum census.
 - **Breaking** for a tenant of more than 500 plans: a caller that does not follow `next_cursor` sees the first 500, in code order. The deploy notes name it, with the deployed database's plan count measured before the deploy.
 
-**Source:** Owner, 2026-10-01 (#31, form B); phase 9 plan rev 4 (run 9.8b; review N1, N7). Amends D-434, D-460 and D-453.
+**Source:** Owner, 2026-10-01 (#31, form B); phase 9 plan rev 4 (run 9.8b; review N1, N7). Amends D-434, D-460 and D-453. Amended by D-515.
 
 #### D-486 [M] A SKU's entries narrow, order and page in memory
 
@@ -2041,3 +2044,15 @@ The owner did not want the policy to copy the SKU's meter, unit and accrual vers
 - **Readers.** Resolve still serves `meter` and `sku_version`. `AcceptedBinding.meter` is the dated SKU's usage type, absent for a non-usage binding, and it is not part of the digest. The entry DTO serves `usage_sku_version`. A plan revision's fingerprint keeps the policy id, version and digest, and the SKU revision when one was recorded. The approval snapshot shows the rules and that revision. A unit pending before the digest moved answers 400 `UNIT_STALE` on its first vote and records no vote; the next generation applies.
 
 **Source:** Owner, 2026-10-02 ("не хочу дубликатов", "можем хранить ревизию SKU и не дублировать?", "да ок пишем"). Amends D-502, D-503, D-504 and D-513.
+
+#### D-515 [M] A plan row's book carries its id and validity
+
+**Status:** DECIDED 2026-10-02.
+
+`GET /plans` items carry `current.book` as `PricingPlanBook`. It named the book's code, name and currency (D-485) and not its id, so a row could not link to the book or draw its validity without a second index.
+
+- **The fields.** `id`, `code`, `name`, `currency`, `valid_from` and `valid_until`. The two dates are `YYYY-MM-DD` or null, the same pair a book read serves. `id` is the book's id.
+- **Where.** Every answer that builds `PricingPlanCurrent`: the list, `GET /plans/{id}`, and the create, clone and rename answers. The book row is the one the list already reads for `current`. The page stays five statements.
+- **The test.** `tests/plan_overview.rs`: a book with both dates, and a book open on both sides, on the create and on the list.
+
+**Source:** Owner, 2026-10-02 (ask 67). Amends D-485.
