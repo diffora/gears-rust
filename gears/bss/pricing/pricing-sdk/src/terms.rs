@@ -5,47 +5,60 @@ use uuid::Uuid;
 use crate::Digest;
 
 /// `BillingCycle` value in the versioned pricing read contract.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BillingCycle {
+    /// A calendar month.
     Month,
+    /// A calendar year.
     Year,
 }
 
 /// `Timezone` value in the versioned pricing read contract.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Timezone {
+    /// UTC. The only zone an hourly window may name.
     Utc,
 }
 
 /// `RatingWindow` value in the versioned pricing read contract.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RatingWindow {
+    /// The subscription billing cycle.
     BillingCycle,
-    CalendarHour { timezone: Timezone },
+    /// One clock hour in `timezone`.
+    CalendarHour {
+        /// The zone the hour is aligned to.
+        timezone: Timezone,
+    },
 }
 
 /// `AggregationScope` value in the versioned pricing read contract.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AggregationScope {
+    /// Quantities fold on the subscription line.
     SubscriptionLine,
+    /// Quantities fold on one resource.
     Resource,
 }
 
 /// `Reset` value in the versioned pricing read contract.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Reset {
+    /// The accumulator resets when the rating window starts.
     RatingWindowStart,
 }
 
 /// `Fold` value in the versioned pricing read contract.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Fold {
+    /// Sum the quantities in the window.
     Sum,
 }
 
 /// `PartialWindow` value in the versioned pricing read contract.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PartialWindow {
+    /// Rate the quantity that occurred; thresholds stay whole.
     ActualQuantityFullThresholds,
 }
 

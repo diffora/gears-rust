@@ -368,16 +368,10 @@ pub fn selected_bindings_digest(
         selected.push((s, b));
     }
     selected.sort_by(|(a, _), (b, _)| {
-        a.item_id.cmp(&b.item_id).then_with(|| {
-            a.dimension_value
-                .as_ref()
-                .map(|s| s.encode_utf16().collect::<Vec<_>>())
-                .cmp(
-                    &b.dimension_value
-                        .as_ref()
-                        .map(|s| s.encode_utf16().collect::<Vec<_>>()),
-                )
-        })
+        compare_cells(
+            (a.item_id, a.dimension_value.as_deref()),
+            (b.item_id, b.dimension_value.as_deref()),
+        )
     });
     let bindings = selected
         .into_iter()

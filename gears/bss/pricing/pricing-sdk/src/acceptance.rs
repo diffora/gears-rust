@@ -443,7 +443,7 @@ pub fn sellability_v1_ir() -> toolkit_contract::ir::contract::ContractIr {
         ],
     )
 }
-fn commercial_ir(
+pub(crate) fn commercial_ir(
     name: &str,
     methods: &[(&str, &str, &str, bool)],
 ) -> toolkit_contract::ir::contract::ContractIr {

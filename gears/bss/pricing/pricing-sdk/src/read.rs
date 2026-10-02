@@ -292,44 +292,12 @@ impl From<IncompleteCommercialInputs> for CanonicalError {
 /// Explicit IR preserves the established V1 name and classifies all methods as safe reads.
 #[must_use]
 pub fn pricing_read_v1_ir() -> toolkit_contract::ir::contract::ContractIr {
-    use toolkit_contract::ir::contract::{
-        ContractIr, FieldIr, FieldRole, Idempotency, InputShape, MethodIr, MethodKind, TypeRef,
-    };
-    let methods = [
-        ("resolve", "ResolveQuery", "ResolvedBindings"),
-        ("price", "PriceQuery", "ImmutablePrice"),
-        ("current_revision", "PlanQuery", "RevisionRef"),
-    ]
-    .into_iter()
-    .map(|(name, input, output)| MethodIr {
-        name: name.into(),
-        kind: MethodKind::Unary,
-        input: InputShape {
-            fields: vec![
-                FieldIr {
-                    name: "ctx".into(),
-                    ty: TypeRef::Named("SecurityContext".into()),
-                    optional: false,
-                    role: FieldRole::SecurityContext,
-                },
-                FieldIr {
-                    name: "query".into(),
-                    ty: TypeRef::Named(input.into()),
-                    optional: false,
-                    role: FieldRole::Wire,
-                },
-            ],
-        },
-        output: TypeRef::Named(output.into()),
-        error: Some(TypeRef::Named("CanonicalError".into())),
-        idempotency: Idempotency::SafeRead,
-        optional: false,
-    })
-    .collect();
-    ContractIr {
-        name: "PricingReadV1".into(),
-        gear: "bss-pricing".into(),
-        version: "v1".into(),
-        methods,
-    }
+    crate::acceptance::commercial_ir(
+        "PricingReadV1",
+        &[
+            ("resolve", "ResolveQuery", "ResolvedBindings", false),
+            ("price", "PriceQuery", "ImmutablePrice", false),
+            ("current_revision", "PlanQuery", "RevisionRef", false),
+        ],
+    )
 }
