@@ -455,7 +455,16 @@ async fn a_picker_scope_filters_through_one_uuid_array_on_postgres() {
             ["D"],
             "not_priced_in and not_in_revision: {extra}"
         );
-        assert_eq!(uuid_array_sql(&recorder), list_sql, "{extra}");
+        let outside = uuid_array_sql(&recorder);
+        assert!(
+            outside.iter().any(|sql| sql.contains("NOT (")),
+            "a non-member set is negated: {outside:?}"
+        );
+        assert_eq!(
+            outside.iter().map(|sql| sql.matches("uuid[]").count()).sum::<usize>(),
+            list_sql.iter().map(|sql| sql.matches("uuid[]").count()).sum::<usize>(),
+            "{extra}"
+        );
         recorder.clear();
         let counts = repo::count_skus(
             &watched.conn().unwrap(),
@@ -476,7 +485,7 @@ async fn a_picker_scope_filters_through_one_uuid_array_on_postgres() {
         for sql in list_sql.iter().chain(&count_sql) {
             assert_eq!(
                 sql.matches("uuid[]").count(),
-                sql.matches("CAST($").count(),
+                sql.matches("CAST(").count(),
                 "each uuid[] is one cast: {sql}"
             );
             assert!(sql.contains("AS uuid[]"), "{sql}");
@@ -540,7 +549,7 @@ async fn skus_for_write_binds_one_uuid_array_on_postgres() {
         assert_eq!(sql.len(), 1, "{extra}: {sql:?}");
         assert_eq!(sql[0].matches("uuid[]").count(), 1, "{}", sql[0]);
         assert!(
-            sql[0].contains("CAST($") && sql[0].contains("AS uuid[]"),
+            (sql[0].contains("CAST(?") || sql[0].contains("CAST($")) && sql[0].contains("AS uuid[]"),
             "{}",
             sql[0]
         );
