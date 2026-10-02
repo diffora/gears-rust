@@ -14414,8 +14414,12 @@
             "format": "uuid",
             "type": "string"
           },
+          "latest": {
+            "$ref": "#/components/schemas/ProductsDerivedUsageTypeVersion",
+            "description": "The latest version, in the version-read shape (P-D-257)."
+          },
           "latest_version": {
-            "description": "The highest version.",
+            "description": "The highest version number. Kept beside [`Self::latest`] (P-D-257).",
             "format": "int32",
             "minimum": 0,
             "type": "integer"
@@ -14429,6 +14433,7 @@
           "code",
           "name",
           "latest_version",
+          "latest",
           "created_by",
           "created_at"
         ],
@@ -45795,7 +45800,7 @@
     },
     "/bss-products/v1/derived-usage-types": {
       "get": {
-        "description": "One page of the tenant's derived usage types by code (tie-break id), each with its latest version: `$top` (alias `limit`; default 50, clamped at 200) and `cursor` (alias `$skiptoken`) from `page_info`, as the SKU list pages. Asks `sku:read` (O-3). Any other key, `$filter`, `$orderby` and `$select` are 400 UNSUPPORTED_QUERY_PARAM; a malformed cursor, or one another list cut, is 400.",
+        "description": "One page of the tenant's derived usage types by code (tie-break id). Each item carries `latest_version` and `latest`, the latest version in the version-read shape: `version`, `declaration` (inputs and formula), `digest`, `meter_ref`, `canonical_unit`, `accrual_policy_version`, `created_by` and `created_at`. `$top` (alias `limit`; default 50, clamped at 200) and `cursor` (alias `$skiptoken`) from `page_info`, as the SKU list pages. Asks `sku:read` (O-3). Any other key, `$filter`, `$orderby` and `$select` are 400 UNSUPPORTED_QUERY_PARAM; a malformed cursor, or one another list cut, is 400.",
         "operationId": "bss_products.list_derived_usage_types",
         "parameters": [
           {
