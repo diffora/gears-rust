@@ -132,6 +132,16 @@ impl AuthoringState {
         }
     }
 }
+/// The enforcer and the canonical error layer the served gear and the in-process vote share.
+#[must_use]
+pub fn with_caller_layers(router: Router, enforcer: PolicyEnforcer) -> Router {
+    router
+        .layer(Extension(enforcer))
+        .layer(axum::middleware::from_fn(
+            toolkit::api::canonical_error_middleware,
+        ))
+}
+
 /// Mount the complete authoring surface and establish one audit correlation per request.
 #[allow(
     clippy::too_many_lines,

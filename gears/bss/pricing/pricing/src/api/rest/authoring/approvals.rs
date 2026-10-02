@@ -888,6 +888,18 @@ pub async fn list_units(
     ctx: &SecurityContext,
     request: &UnitListRequest,
 ) -> Result<Response, DoorError> {
+    let listed = read_unit_page(tx, scope, ctx, request).await?;
+    Ok(support::response(StatusCode::OK, &listed, None)?)
+}
+
+/// The list door's page, as a value. The HTTP door wraps it; the inbox reads it without parsing
+/// the response body back out of JSON.
+pub async fn read_unit_page(
+    tx: &DbTx<'_>,
+    scope: &AccessScope,
+    ctx: &SecurityContext,
+    request: &UnitListRequest,
+) -> Result<PricingApprovalUnitList, DoorError> {
     let (tenant, reader) = (ctx.subject_tenant_id(), ctx.subject_id());
     let page = approval_repo::page_units(tx, scope, tenant, &request.filter, &request.page)
         .await
@@ -956,14 +968,10 @@ pub async fn list_units(
             .map(|reading| kind.impact_from(reading, &touched));
         items.push(dto);
     }
-    Ok(support::response(
-        StatusCode::OK,
-        &PricingApprovalUnitList {
-            items,
-            page_info: page.page_info,
-        },
-        None,
-    )?)
+    Ok(PricingApprovalUnitList {
+        items,
+        page_info: page.page_info,
+    })
 }
 /// `GET /approval-units/counts` (D-470): the units the list's narrowing keeps, by state and by
 /// kind, in ONE grouped statement, which the door reads outside any transaction: one statement is

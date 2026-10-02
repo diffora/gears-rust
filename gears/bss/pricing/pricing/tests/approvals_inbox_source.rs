@@ -667,7 +667,7 @@ async fn every_vote_refusal_is_the_vote_doors_byte_for_byte() {
             Some(("d1", "s1")),
             false,
             400,
-            "",
+            "generation",
         ),
         (
             &one,
@@ -676,7 +676,7 @@ async fn every_vote_refusal_is_the_vote_doors_byte_for_byte() {
             Some(("d2", "s2")),
             false,
             400,
-            "",
+            "expected",
         ),
         (
             &one,
@@ -748,7 +748,7 @@ async fn every_vote_refusal_is_the_vote_doors_byte_for_byte() {
             Some(("d9", "s9")),
             true,
             403,
-            "",
+            "PERMISSION_DENIED",
         ),
     ];
     for (who, action, body, keys, denied, status, code) in cases {
