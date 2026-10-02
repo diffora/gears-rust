@@ -3692,6 +3692,8 @@ async fn the_unit_counts_count_what_the_list_pages_under_each_narrowing() {
         let (status, b) = f.units(&format!("/counts?{extra}")).await;
         assert_eq!(status, 400, "{extra}: {b}");
     }
+    let (status, b) = f.units("?q=x").await;
+    assert_eq!(status, 400, "{b}");
 }
 
 /// The phase 9 review's R31: the counts' grouped statement reads the caller's tenant alone. Units of

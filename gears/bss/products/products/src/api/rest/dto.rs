@@ -574,9 +574,10 @@ pub struct UnitList {
     pub items: Vec<UnitDto>,
     pub page_info: toolkit_odata::PageInfo,
 }
-/// `GET /approval-units` (P-D-224, P-D-227): the narrowing, the page and the order. A key the list
-/// does not know is ignored, as before.
+/// `GET /approval-units` (P-D-224, P-D-227, P-D-254): the narrowing, the page and the order. A key
+/// the list does not know is 400, as the counts refuse one.
 #[toolkit_macros::api_dto(request)]
+#[serde(deny_unknown_fields)]
 pub struct UnitListQuery {
     pub state: Option<String>,
     pub kind: Option<String>,

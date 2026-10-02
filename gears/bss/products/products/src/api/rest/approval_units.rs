@@ -85,7 +85,7 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
              does not parse; 400 FILTER_MISMATCH for a cursor replayed with \
              another state, kind or SKU; 400 for a cursor that does not read; 400 \
              ORDER_WITH_CURSOR for `$orderby` beside a cursor; 400 INVALID_ORDERBY_FIELD for any \
-             other order.",
+             other order; 400 for any other query key (P-D-254).",
         )
         .tag("Approval units")
         .authenticated()

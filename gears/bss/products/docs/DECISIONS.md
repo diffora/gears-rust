@@ -75,6 +75,7 @@
 | P-D-251 | H | A derived usage type may wrap one raw meter, and a usage SKU may move onto that wrapper | DECIDED 2026-10-02 · Owner, 2026-10-02 ("let's convert the ones we have into derived form"); amends P-D-230, P-D-232 |
 | P-D-252 | M | The inbox source judges `state` before a foreign empty page | DECIDED 2026-10-02 · phase 9 review; amends P-D-250 |
 | P-D-253 | M | A products vote body is a closed set, and withdraw digests the body sent | DECIDED 2026-10-02 · phase 9 review |
+| P-D-254 | M | `GET /approval-units` refuses a query key it does not declare | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 62) |
 
 ## Entries
 
@@ -1912,3 +1913,11 @@ A kind products does not record, and any `book_id`, stay an empty page and zero 
 `VoteRequest` denies unknown fields. Approve and reject require `generation`. A missing `generation` is 400 `GENERATION_REQUIRED`. Any other key is 400 `BODY_UNEXPECTED` on that key. Withdraw accepts an empty body or `{}` and refuses anything else with 400 `BODY_UNEXPECTED`, and it does not withdraw. The idempotency digest is the body that was sent: an empty body digests as JSON null and `{}` digests as an empty object, so the two do not share a row.
 
 **Source:** Phase 9 review (products lens a).
+
+#### P-D-254 [M] `GET /approval-units` refuses a query key it does not declare
+
+**Status:** DECIDED 2026-10-02.
+
+The list takes `state`, `kind`, `ref_id`, `limit`, `cursor` and `$orderby`. Any other key is 400, the same refusal the counts already give. A census of this repository and of `vhp-core/tests/e2e/tests` found no caller that sends a key outside that set on the products list.
+
+**Source:** Owner, 2026-10-02 (ask 62, "все ок").
