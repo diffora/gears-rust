@@ -1888,13 +1888,13 @@ name = "cf-gears-bss-approval"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "aws-lc-rs",
  "cf-gears-toolkit-db",
  "parking_lot",
  "sea-orm",
  "sea-orm-migration",
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "thiserror 2.0.20",
  "time",
  "tokio",
@@ -2162,6 +2162,7 @@ dependencies = [
  "cf-gears-toolkit-canonical-errors",
  "cf-gears-toolkit-gts",
  "cf-gears-toolkit-security",
+ "proptest",
  "rust_decimal",
  "serde",
  "time",
