@@ -62,9 +62,10 @@ pub(super) fn routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .operation_id("bss_pricing.get_plan")
         .summary("Read a plan")
         .description(
-            "Returns one plan with the headers of its revisions as they read today (D-447) and \
-             when each was submitted and approved (D-461), its current revision and the one in \
-             effect (D-460), and its version as the ETag a following PATCH sends back as If-Match. \
+            "Returns one plan with the headers of its revisions as they read today (D-447), each \
+             header naming its book beside book_id (D-516), and when each was submitted and \
+             approved (D-461), its current revision and the one in effect (D-460), and its \
+             version as the ETag a following PATCH sends back as If-Match. \
              Refusals: 404 for a plan the tenant does not hold.",
         )
         .tag("Pricing")

@@ -202,12 +202,13 @@ async fn a_green_revision_submits_under_its_key_and_quorum_zero_publishes_it_at_
         snapshot["after"],
         json!({
             "book_id": revision(&f, g.revision).await["book_id"],
+            "book": {"id": revision(&f, g.revision).await["book_id"], "code": "pro", "name": "pro", "currency": "EUR"},
             "available_from": null,
             "items": [{"sku_id": g.sku, "price_book_entry_id": g.entry,
                 "usage_policy":{"policy_id":stored_entry.usage_policy_id,"version":stored_entry.usage_policy_version.map(|v| v.to_string()),"digest":stored_entry.usage_policy_digest}}],
         }),
-        "the fingerprinted content is the business content only, an item its SKU and its \
-         entry (D-467): {snapshot}"
+        "the served content is the fingerprinted business content plus the book's identity \
+         beside book_id (D-516); the fingerprint itself does not include book: {snapshot}"
     );
     assert_eq!(
         snapshot["before"],

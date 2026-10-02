@@ -10952,6 +10952,31 @@
         ],
         "type": "string"
       },
+      "PricingBookIdentity": {
+        "description": "A book named beside its id (D-516): id, code, name and currency. Validity stays on\n[`PricingPlanBook`].",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "name",
+          "currency"
+        ],
+        "type": "object"
+      },
       "PricingBookPriceCounts": {
         "description": "A book's prices by state — a rejected price included — and its approved prices by where their\nwindow stands today: `approved` = `scheduled + active + superseded` (D-441).",
         "properties": {
@@ -12383,6 +12408,10 @@
               "null"
             ]
           },
+          "book": {
+            "$ref": "#/components/schemas/PricingBookIdentity",
+            "description": "The book `book_id` names (D-516). `book_id` stays."
+          },
           "book_id": {
             "format": "uuid",
             "type": "string"
@@ -12429,6 +12458,7 @@
           "id",
           "rev_no",
           "book_id",
+          "book",
           "state",
           "created_by",
           "created_at"
@@ -39675,7 +39705,7 @@
     },
     "/bss-pricing/v1/plans": {
       "get": {
-        "description": "One page of the tenant's plans (D-485). Each plan carries selling and change for the request's day, derived from its stored summary (D-484), last_activity_at (the instant a page ordered by it is ordered by), the headers of its revisions as they read today (D-447), its current revision with that revision's book (id, code, name, currency, valid_from and valid_until, D-515) and the published revision in effect (D-460). OData `$filter` over code, name, book_id, currency and last_activity_at; `$orderby` over code (the default), name and last_activity_at, with id breaking the tie in that direction; `$top` (alias limit; default 500, clamped at 500) and cursor (alias $skiptoken). q is a case-insensitive literal substring of the code or the name. selling is true or false. change is none, draft, pending or scheduled, one or several, comma-separated. sku_id keeps the plans whose draft, pending, scheduled or published revisions name the SKU through an entry (D-434), inside the page query. Five statements for a non-empty page, whatever its size. Refusals: 400 QUERY_INVALID for any other plain key, a repeated key, or a malformed value; 400 FILTER_MISMATCH for a cursor replayed under another narrowing; 400 for $select, $count and an order field it does not take.",
+        "description": "One page of the tenant's plans (D-485). Each plan carries selling and change for the request's day, derived from its stored summary (D-484), last_activity_at (the instant a page ordered by it is ordered by), the headers of its revisions as they read today (D-447), each header with book { id, code, name, currency } beside book_id (D-516), its current revision with that revision's book (id, code, name, currency, valid_from and valid_until, D-515) and the published revision in effect (D-460). OData `$filter` over code, name, book_id, currency and last_activity_at; `$orderby` over code (the default), name and last_activity_at, with id breaking the tie in that direction; `$top` (alias limit; default 500, clamped at 500) and cursor (alias $skiptoken). q is a case-insensitive literal substring of the code or the name. selling is true or false. change is none, draft, pending or scheduled, one or several, comma-separated. sku_id keeps the plans whose draft, pending, scheduled or published revisions name the SKU through an entry (D-434), inside the page query. Five statements for a non-empty page, whatever its size. Refusals: 400 QUERY_INVALID for any other plain key, a repeated key, or a malformed value; 400 FILTER_MISMATCH for a cursor replayed under another narrowing; 400 for $select, $count and an order field it does not take.",
         "operationId": "bss_pricing.list_plans",
         "parameters": [
           {
@@ -40241,7 +40271,7 @@
     },
     "/bss-pricing/v1/plans/{id}": {
       "get": {
-        "description": "Returns one plan with the headers of its revisions as they read today (D-447) and when each was submitted and approved (D-461), its current revision and the one in effect (D-460), and its version as the ETag a following PATCH sends back as If-Match. Refusals: 404 for a plan the tenant does not hold.",
+        "description": "Returns one plan with the headers of its revisions as they read today (D-447), each header naming its book beside book_id (D-516), and when each was submitted and approved (D-461), its current revision and the one in effect (D-460), and its version as the ETag a following PATCH sends back as If-Match. Refusals: 404 for a plan the tenant does not hold.",
         "operationId": "bss_pricing.get_plan",
         "parameters": [
           {

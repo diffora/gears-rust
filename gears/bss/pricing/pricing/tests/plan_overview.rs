@@ -447,7 +447,8 @@ async fn seeded_plans(f: &Fixture, catalog: &Catalog, eur: Uuid, from: usize, n:
 // Probed in run 9.1: a per-plan read of the items or the units is red here.
 /// D-485 (amending D-434, D-460 and D-453): `GET /plans` makes five statements whatever the
 /// number of plans: the page, the revisions, the current and in-effect items, the units and the
-/// current revisions' books. The same statements for 10 and for 100 plans.
+/// revisions' books (D-516: every header's book, still that one statement). The same statements
+/// for 10 and for 100 plans.
 #[tokio::test]
 async fn the_plan_list_reads_in_four_statements_for_10_and_100_plans() {
     let (db, recorder, tenant, dsn) = entry_support::recorded_db().await;

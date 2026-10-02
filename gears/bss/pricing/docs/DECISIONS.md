@@ -44,7 +44,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-405 | M | Publish changes completes a selected pair | DECIDED 2026-09-25 · Phase 2 plan and reconciliation row 23; Phase 2 review (docs F4) |
 | D-406 | H | A temporary window is not crossed | DECIDED 2026-09-25 · Phase 2 second review (behaviour MEDIUM-2) |
 | D-407 | H | Plan items are reserved references; items are a sub-resource | DECIDED 2026-09-25 · Phase 3 plan rev 2; plan review HIGH 2; owner, 2026-09-25 (kind plan_item only); deviation from spec §7.2; amended by D-467, D-512 |
-| D-408 | H | Plan checks read every SKU fresh; descriptors are information, never content | DECIDED 2026-09-25 · Phase 3 plan rev 2; plan review MEDIUM 6; phase 2 "owed to phase 3"; amended by D-453, D-465, D-482; extended by D-466 |
+| D-408 | H | Plan checks read every SKU fresh; descriptors are information, never content | DECIDED 2026-09-25 · Phase 3 plan rev 2; plan review MEDIUM 6; phase 2 "owed to phase 3"; amended by D-453, D-465, D-482, D-516; extended by D-466 |
 | D-409 | H | Promotions are deferred (owner, 2026-09-25) | DECIDED 2026-09-25 · Owner, 2026-09-25, during Run 3.1; Phase 3 plan rev 3; spec §2.4 |
 | D-410 | H | Migration requests and plan retirement are deferred (owner, 2026-09-25) | DECIDED 2026-09-25 · Owner, 2026-09-25, during Run 3.1; spec §11 phase 3 |
 | D-411 | H | The sold-as bundle and plan grants are deferred (owner, 2026-09-25) | DECIDED 2026-09-25 · Owner, 2026-09-25, during Run 3.1; spec §5 plan_revision |
@@ -96,7 +96,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-457 | M | Every text a request writes has an explicit length cap | DECIDED 2026-09-29 · Whole-branch review PS-09, PS-10, X-01 (fix run W1a); twin of a products decision in W1b; extended by D-468; amended 2026-10-02 (phase 9 review F1) |
 | D-458 | M | The approval-unit list pages and reads its page set-based | DECIDED 2026-09-29 · Owner, 2026-09-29 (dispositions O2, "2"); whole-branch review PS-13 (fix run W1a); amended by D-470 |
 | D-459 | M | One approve-eligibility predicate for the engine and its readers | DECIDED 2026-09-30 · Phase 9 plan rev 2 (W2, binding; plan review W2, L5); extends D-393; amended by the phase 9 review (E, fix run 9.5d-1) |
-| D-460 | M | The plans list names each plan's current revision and the one in effect | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 1); phase 9 plan rev 2 (decision 1; plan review M6, M7, W3, L4); amends D-434, D-453; amended by D-461, D-480, D-482, D-485 |
+| D-460 | M | The plans list names each plan's current revision and the one in effect | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 1); phase 9 plan rev 2 (decision 1; plan review M6, M7, W3, L4); amends D-434, D-453; amended by D-461, D-480, D-482, D-485, D-516 |
 | D-461 | M | A revision says who made it and when it was submitted and approved | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 7); phase 9 plan rev 2 (decision 2; plan review M6, M7, L1, L9); amends D-434, D-453, D-460 |
 | D-462 | M | A pending revision shows its vote progress under plan read | DECIDED 2026-09-30 · Owner, 2026-09-30 (O-9a, "yes"); phase 9 plan rev 2 (decision 4; plan review M7, L5); amended by the phase 9 review (E, fix run 9.5d-1) |
 | D-463 | M | A plan's sale date on create and clone | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 7); phase 9 plan rev 2 (decision 3; plan review L10); amends D-451, extends D-456 |
@@ -136,6 +136,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-513 | M | A usage policy's single-valued fields default on input | DECIDED 2026-10-02 · Owner, 2026-10-02; amends D-502; amended by D-514 |
 | D-514 | H | A usage rating policy is its rating rules and the entry stores the SKU revision | DECIDED 2026-10-02 · Owner, 2026-10-02; amends D-502, D-503, D-504, D-513 |
 | D-515 | M | A plan row's book carries its id and validity | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 67); amends D-485 |
+| D-516 | M | A named book carries its identity beside its id | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 54); amends D-460, D-408 |
 
 ## Entries
 
@@ -996,7 +997,9 @@ D-480 amends this entry: in_effect gains sku_ids, the item SKUs of the revision 
 **Source:** Owner, 2026-09-30 (validation 3 item 1); phase 9 plan rev 2 (decision 1; plan review M6, M7, W3, L4). Amends D-434 and D-453. Amended by D-461, D-480, D-482.
 D-485 amends this entry: current gains book { code, name, currency }, the book of that revision. GET /plans reads those books in one grouped statement, so a non-empty page is five statements.
 
-**Source:** Owner, 2026-09-30 (validation 3 item 1); phase 9 plan rev 2 (decision 1; plan review M6, M7, W3, L4). Amends D-434 and D-453. Amended by D-461, D-480, D-485.
+D-516 amends this entry: each revision header gains book { id, code, name, currency } beside book_id. The book read is that same grouped statement, over every revision's book. A non-empty page stays five statements.
+
+**Source:** Owner, 2026-09-30 (validation 3 item 1); phase 9 plan rev 2 (decision 1; plan review M6, M7, W3, L4). Amends D-434 and D-453. Amended by D-461, D-480, D-485, D-516.
 
 #### D-461 [M] A revision says who made it and when it was submitted and approved
 
@@ -2056,3 +2059,16 @@ The owner did not want the policy to copy the SKU's meter, unit and accrual vers
 - **The test.** `tests/plan_overview.rs`: a book with both dates, and a book open on both sides, on the create and on the list.
 
 **Source:** Owner, 2026-10-02 (ask 67). Amends D-485.
+
+#### D-516 [M] A named book carries its identity beside its id
+
+**Status:** DECIDED 2026-10-02.
+
+A screen that shows a revision, or a price unit, had only the book's id. It could not name the book without a second index.
+
+- **Revision headers.** `PricingPlanRevisionHeader` keeps `book_id` and gains `book: { id, code, name, currency }`. Every header on a plan answer carries it, not only `current`. `GET /plans` still reads the books in the one grouped statement it already makes for `current`; the id list is every revision's book. A non-empty page stays five statements.
+- **Approval snapshots.** The snapshots the review reads — a pricing unit on the list, the card, a submit receipt, and the same units through the approvals inbox — gain `book: { id, code, name, currency }` beside each `book_id` whose value is an id. That is the prices snapshot's `book_id`, and `book_id` inside a plan revision's `before` and `after`. A `book_id` that is a diff object is left as it is. The stored snapshot and the fingerprint are unchanged, so a pending unit is not refreshed. The books are one grouped read for the page, and no read when no snapshot names a book.
+- **The book list.** `GET /price-books?$filter=id in (…)` already answers 200. It is not rebuilt. `tests/book_reads.rs` `the_book_list_filters_by_id` and `tests/postgres_book_reads.rs` pin `eq`, `in`, a malformed uuid and the cursor hash, on both backends.
+- **The tests.** `tests/book_identity.rs` for the header, including a header that is not current, and for both snapshot kinds on the receipt, the card and the list.
+
+**Source:** Owner, 2026-10-02 (ask 54). Amends D-460 and D-408.

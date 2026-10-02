@@ -117,11 +117,8 @@ async fn plan_reading<'a>(
     let children = AccessScope::for_tenant(tenant);
     let (mut wanted, mut units, mut book_ids) = (Vec::new(), Vec::new(), Vec::new());
     for own in revisions {
-        if let Some(current) = dto::current_revision(own, today)?
-            && let Some(row) = own.iter().find(|r| r.id == current)
-        {
-            book_ids.push(row.book_id);
-        }
+        // Every header names its book (D-516). The same grouped read still covers `current`.
+        book_ids.extend(own.iter().map(|r| r.book_id));
         wanted.extend(dto::current_revision(own, today)?);
         wanted.extend(dto::in_effect_revision(own, today)?);
         units.extend(dto::named_units(own));
@@ -430,7 +427,7 @@ pub(super) async fn create(
 }
 /// `GET /plans` (D-485): one page of the tenant's plans. The page query carries the narrowing,
 /// including `sku_id`'s stored-state `EXISTS` (D-434). Then four grouped reads: revision headers,
-/// the current and in-effect items, the units, and the current revisions' books. Five statements
+/// the current and in-effect items, the units, and the revisions' books (D-516). Five statements
 /// for a non-empty page, whatever its size.
 /// # Errors
 /// 400 for a query the pager refuses; storage failures.

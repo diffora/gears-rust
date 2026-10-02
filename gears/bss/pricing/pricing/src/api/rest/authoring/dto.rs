@@ -704,6 +704,8 @@ pub struct PricingPlanRevisionHeader {
     pub id: Uuid,
     pub rev_no: i32,
     pub book_id: Uuid,
+    /// The book `book_id` names (D-516). `book_id` stays.
+    pub book: PricingBookIdentity,
     /// The state as it reads today (D-447).
     pub state: PricingRevisionState,
     pub available_from: Option<String>,
@@ -726,20 +728,26 @@ pub struct PricingPlanRevisionHeader {
     pub approved_at: Option<time::OffsetDateTime>,
 }
 impl PricingPlanRevisionHeader {
-    /// The header of `m` with its effective state and `published_at` (D-447), and the instants of
-    /// the unit it names among `units` (D-461).
-    #[must_use]
+    /// The header of `m` with its effective state and `published_at` (D-447), the instants of
+    /// the unit it names among `units` (D-461), and the book `books` holds for `m.book_id` (D-516).
+    /// # Errors
+    /// `CorruptRow` when `books` does not hold that book.
     pub fn of(
         m: &entity::plan_revision::Model,
         effective: &EffectiveRevision,
         units: &BTreeMap<Uuid, UnitInstants>,
-    ) -> Self {
+        books: &BTreeMap<Uuid, PricingPlanBook>,
+    ) -> Result<Self, RepoError> {
         let (submitted_at, approved_at) =
             unit_instants(m.pending_unit_id, m.approved_by_unit_id, units);
-        Self {
+        let book = books.get(&m.book_id).ok_or_else(|| {
+            RepoError::CorruptRow(format!("revision {} names lost book {}", m.id, m.book_id))
+        })?;
+        Ok(Self {
             id: m.id,
             rev_no: m.rev_no,
             book_id: m.book_id,
+            book: PricingBookIdentity::from(book),
             state: effective.state.into(),
             available_from: m.available_from.map(|d| d.to_string()),
             published_at: effective.published_at,
@@ -747,6 +755,26 @@ impl PricingPlanRevisionHeader {
             created_at: m.created_at,
             submitted_at,
             approved_at,
+        })
+    }
+}
+/// A book named beside its id (D-516): id, code, name and currency. Validity stays on
+/// [`PricingPlanBook`].
+#[toolkit_macros::api_dto(response)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PricingBookIdentity {
+    pub id: Uuid,
+    pub code: String,
+    pub name: String,
+    pub currency: String,
+}
+impl From<&PricingPlanBook> for PricingBookIdentity {
+    fn from(book: &PricingPlanBook) -> Self {
+        Self {
+            id: book.id,
+            code: book.code.clone(),
+            name: book.name.clone(),
+            currency: book.currency.clone(),
         }
     }
 }
@@ -939,8 +967,8 @@ impl PricingPlanDto {
             revisions: revisions
                 .iter()
                 .zip(&effective)
-                .map(|(r, e)| PricingPlanRevisionHeader::of(r, e, &reading.units))
-                .collect(),
+                .map(|(r, e)| PricingPlanRevisionHeader::of(r, e, &reading.units, &reading.books))
+                .collect::<Result<Vec<_>, _>>()?,
             current,
             in_effect,
         })
