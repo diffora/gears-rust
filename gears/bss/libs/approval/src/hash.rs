@@ -1,7 +1,7 @@
 //! Fingerprints of proposed business content and the common effective date.
 
 use crate::model::ItemRef;
-use sha2::{Digest, Sha256};
+use aws_lc_rs::digest::{SHA256, digest};
 use time::Date;
 
 /// SHA-256 hex of canonical JSON (sorted keys, items sorted by type then id) of what
@@ -18,7 +18,8 @@ pub fn snapshot_hash(items: &[ItemRef], common_effective_date: Option<Date>) -> 
     // digest of the error text, which can equal nothing a healthy run produces.
     let bytes =
         serde_json::to_vec(&canonical(&canon)).unwrap_or_else(|e| e.to_string().into_bytes());
-    format!("{:x}", Sha256::digest(bytes))
+    let digested = digest(&SHA256, &bytes);
+    hex_encode(digested.as_ref())
 }
 
 fn canonical(v: &serde_json::Value) -> serde_json::Value {
@@ -35,6 +36,16 @@ fn canonical(v: &serde_json::Value) -> serde_json::Value {
         serde_json::Value::Array(a) => serde_json::Value::Array(a.iter().map(canonical).collect()),
         other => other.clone(),
     }
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut hex = String::with_capacity(bytes.len().saturating_mul(2));
+    for byte in bytes {
+        hex.push(char::from(DIGITS[usize::from(byte >> 4)]));
+        hex.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
+    }
+    hex
 }
 
 #[cfg(test)]

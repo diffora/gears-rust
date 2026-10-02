@@ -10,8 +10,8 @@ name = "bss_approval"
 [dependencies]
 async-trait = { workspace = true }                     # the two traits are async
 serde = { workspace = true }                           # ItemRef and Unit payloads
+aws-lc-rs = { workspace = true }                       # fingerprint digest (DE0708)
 serde_json = { workspace = true }                      # canonical JSON for the fingerprint
-sha2 = { workspace = true }                            # fingerprint digest
 thiserror = { workspace = true }                       # ApprovalError
 time = { workspace = true }                            # OffsetDateTime, Date
 uuid = { workspace = true }
