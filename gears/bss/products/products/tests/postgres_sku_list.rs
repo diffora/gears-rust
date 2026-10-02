@@ -13,7 +13,7 @@ use bss_products_sdk::models::{Lifecycle, SkuType};
 use pg_support::Pg;
 use sea_orm::DbBackend;
 use time::OffsetDateTime;
-use toolkit_db::{Db, secure::AccessScope};
+use toolkit_db::{ConnectOpts, Db, secure::AccessScope, test_support::connect_with_recorder};
 use toolkit_odata::{ODataOrderBy, ODataQuery, OrderKey, SortDir};
 use uuid::Uuid;
 
@@ -386,11 +386,22 @@ async fn a_usage_set_filters_through_one_uuid_array_on_postgres() {
 #[tokio::test]
 #[ignore = "requires Docker (testcontainers)"]
 async fn a_picker_scope_filters_through_one_uuid_array_on_postgres() {
-    let (_pg, f) = Fixture::new().await;
+    let (pg, f) = Fixture::new().await;
+    let (watched, recorder) = connect_with_recorder(
+        &pg.url(true),
+        ConnectOpts {
+            max_conns: Some(2),
+            min_conns: Some(0),
+            ..ConnectOpts::default()
+        },
+    )
+    .await
+    .unwrap();
     let mut ids = Vec::new();
     for code in ["A", "B", "C", "D"] {
         ids.push(f.sku(code, code, None, Lifecycle::Draft, None).await);
     }
+    let mut first_list = Vec::new();
     for extra in [0_usize, 5000] {
         let mut book = vec![ids[0], ids[1]];
         book.extend((0..extra).map(|_| Uuid::new_v4()));
@@ -405,18 +416,43 @@ async fn a_picker_scope_filters_through_one_uuid_array_on_postgres() {
             }),
             ..SkuListFilter::default()
         };
+        recorder.clear();
+        let page = repo::page_skus(
+            &watched.conn().unwrap(),
+            &f.scope,
+            f.tenant,
+            DbBackend::Postgres,
+            &filter(true),
+            &ODataQuery::default(),
+        )
+        .await
+        .unwrap();
         assert_eq!(
-            f.page(filter(true), &ODataQuery::default()).await,
+            page.items.into_iter().map(|sku| sku.code).collect::<Vec<_>>(),
             ["A"],
             "priced_in and not_in_revision: {extra}"
         );
+        let list_sql = uuid_array_sql(&recorder);
+        recorder.clear();
+        let page = repo::page_skus(
+            &watched.conn().unwrap(),
+            &f.scope,
+            f.tenant,
+            DbBackend::Postgres,
+            &filter(false),
+            &ODataQuery::default(),
+        )
+        .await
+        .unwrap();
         assert_eq!(
-            f.page(filter(false), &ODataQuery::default()).await,
+            page.items.into_iter().map(|sku| sku.code).collect::<Vec<_>>(),
             ["D"],
             "not_priced_in and not_in_revision: {extra}"
         );
+        assert_eq!(uuid_array_sql(&recorder), list_sql, "{extra}");
+        recorder.clear();
         let counts = repo::count_skus(
-            &f.db.conn().unwrap(),
+            &watched.conn().unwrap(),
             &f.scope,
             f.tenant,
             DbBackend::Postgres,
@@ -426,7 +462,34 @@ async fn a_picker_scope_filters_through_one_uuid_array_on_postgres() {
         .await
         .unwrap();
         assert_eq!((counts.all, counts.draft), (1, 1), "{extra}");
+        let count_sql = uuid_array_sql(&recorder);
+        assert!(
+            !list_sql.is_empty() && !count_sql.is_empty(),
+            "{extra}: list {list_sql:?} counts {count_sql:?}"
+        );
+        for sql in list_sql.iter().chain(&count_sql) {
+            assert_eq!(
+                sql.matches("uuid[]").count(),
+                sql.matches("CAST($").count(),
+                "each uuid[] is one cast: {sql}"
+            );
+            assert!(sql.contains("AS uuid[]"), "{sql}");
+        }
+        if extra == 5000 {
+            assert_eq!(list_sql, first_list, "the statement does not grow with the set");
+        } else {
+            first_list = list_sql;
+        }
     }
+}
+
+fn uuid_array_sql(recorder: &toolkit_db::test_support::QueryRecorder) -> Vec<String> {
+    recorder
+        .events()
+        .into_iter()
+        .filter(|event| event.sql.contains("uuid[]"))
+        .map(|event| event.sql)
+        .collect()
 }
 
 /// P-D-245 on Postgres: the batch SKU read binds the whole id set as one `uuid[]`, and a missing
@@ -434,15 +497,27 @@ async fn a_picker_scope_filters_through_one_uuid_array_on_postgres() {
 #[tokio::test]
 #[ignore = "requires Docker (testcontainers)"]
 async fn skus_for_write_binds_one_uuid_array_on_postgres() {
-    let (_pg, f) = Fixture::new().await;
+    let (pg, f) = Fixture::new().await;
     let mut ids = Vec::new();
     for code in ["A", "B", "C"] {
         ids.push(f.sku(code, code, None, Lifecycle::Draft, None).await);
     }
-    let conn = f.db.conn().unwrap();
+    let (watched, recorder) = connect_with_recorder(
+        &pg.url(true),
+        ConnectOpts {
+            max_conns: Some(2),
+            min_conns: Some(0),
+            ..ConnectOpts::default()
+        },
+    )
+    .await
+    .unwrap();
+    let conn = watched.conn().unwrap();
+    let mut first = Vec::new();
     for extra in [0_usize, 5000] {
         let mut asked = vec![ids[2], ids[0], Uuid::now_v7()];
         asked.extend((0..extra).map(|_| Uuid::new_v4()));
+        recorder.clear();
         let found = repo::find_skus(&conn, DbBackend::Postgres, &f.scope, f.tenant, &asked)
             .await
             .unwrap();
@@ -452,5 +527,14 @@ async fn skus_for_write_binds_one_uuid_array_on_postgres() {
             "{extra}: {got:?}"
         );
         assert_eq!(got.len(), 2, "{extra}");
+        let sql = uuid_array_sql(&recorder);
+        assert_eq!(sql.len(), 1, "{extra}: {sql:?}");
+        assert_eq!(sql[0].matches("uuid[]").count(), 1, "{}", sql[0]);
+        assert!(sql[0].contains("CAST($") && sql[0].contains("AS uuid[]"), "{}", sql[0]);
+        if extra == 5000 {
+            assert_eq!(sql, first, "the statement does not grow with the set");
+        } else {
+            first = sql;
+        }
     }
 }
