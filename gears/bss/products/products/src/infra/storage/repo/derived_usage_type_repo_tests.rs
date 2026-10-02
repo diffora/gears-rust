@@ -62,12 +62,14 @@ async fn a_type_and_its_versions_read_back_as_written() {
         find_version(&conn, &scope, tenant, t.id, 3).await.unwrap(),
         None
     );
-    assert_eq!(
-        latest_versions(&conn, &scope, tenant, &[t.id, Uuid::new_v4()])
-            .await
-            .unwrap(),
-        HashMap::from([(t.id, 2)])
-    );
+    let latest = latest_versions(&conn, &scope, tenant, &[t.id, Uuid::new_v4()])
+        .await
+        .unwrap();
+    assert_eq!(latest.len(), 1, "an unknown type adds no row");
+    let row = &latest[&t.id];
+    assert_eq!(row.version, 2);
+    assert_eq!(row.digest, "b".repeat(64));
+    assert_eq!(row.declaration_json, serde_json::json!({ "v": 2 }));
     assert!(matches!(
         insert_version(&conn, &scope, tenant, new_version(t.id, 2, &"c".repeat(64))).await,
         Err(RepoError::Refused(RepoRefusal::DerivedVersionTaken))

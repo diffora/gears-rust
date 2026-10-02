@@ -1143,3 +1143,150 @@ async fn writes_ask_derived_author_and_reads_ask_sku_read() {
         "sku:author is not derived_usage_type:author"
     );
 }
+
+/// A type with two versions lists `latest` equal to `GET …/versions/{latest_version}`,
+/// including the formula, and keeps `latest_version` (P-D-257).
+#[tokio::test]
+async fn the_list_carries_the_latest_version_equal_to_the_version_read() {
+    let tenant = Uuid::new_v4();
+    let (app, _) = rest_app(tenant, router).await;
+    let (status, one) = send(
+        &app,
+        tenant,
+        Method::POST,
+        BASE,
+        Some(create("cloudlets", cloudlet())),
+        &[],
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{one}");
+    let mut second = cloudlet();
+    second["formula"]["args"][0]["arg"]["divisor"] = json!("64");
+    let (status, two) = send(
+        &app,
+        tenant,
+        Method::POST,
+        &format!("{BASE}/cloudlets/versions"),
+        Some(json!({"declaration": second})),
+        &[],
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{two}");
+    assert_eq!(two["version"], 2);
+    let page = body_json(get(&app, tenant, BASE).await).await;
+    let item = &page["items"][0];
+    assert_eq!(item["code"], "cloudlets", "{page}");
+    assert_eq!(item["latest_version"], 2, "{item}");
+    let version = body_json(get(&app, tenant, &format!("{BASE}/cloudlets/versions/2")).await).await;
+    assert_eq!(
+        item["latest"], version,
+        "latest is the version read, byte for byte"
+    );
+    assert_eq!(item["latest"]["declaration"]["formula"]["op"], "max");
+    assert_eq!(
+        item["latest"]["declaration"]["formula"]["args"][0]["arg"]["divisor"],
+        "64"
+    );
+}
+
+/// The list makes the same number of statements for 10 types and for 100: one page read and one
+/// grouped read of the latest version rows (P-D-257). The pin is 2.
+#[tokio::test]
+async fn the_list_reads_the_latest_version_in_the_same_statements_for_10_and_100_types() {
+    use crate::domain::derived::{NewDerivedType, NewDerivedVersion};
+    use crate::infra::storage::repo::derived_usage_type_repo as store;
+    use crate::test_support::{
+        products_statements, recorded_test_db, resolved_usage_types, rest_app_on_db,
+    };
+
+    async fn recorded(n: usize) -> (axum::Router, Uuid, toolkit_db::test_support::QueryRecorder) {
+        let (db, scope, tenant, _dsn, recorder) = recorded_test_db().await;
+        let conn = db.conn().unwrap();
+        let now = time::OffsetDateTime::now_utc();
+        for i in 0..n {
+            let code = format!("t{i:03}");
+            let t = store::create_type(
+                &conn,
+                &scope,
+                tenant,
+                NewDerivedType {
+                    code,
+                    name: format!("T{i}"),
+                },
+                Uuid::from_u128(7),
+                now,
+            )
+            .await
+            .unwrap();
+            let versions = if i % 2 == 0 { 2 } else { 1 };
+            for version in 1..=versions {
+                store::insert_version(
+                    &conn,
+                    &scope,
+                    tenant,
+                    NewDerivedVersion {
+                        type_id: t.id,
+                        version,
+                        declaration_json: cloudlet(),
+                        digest: "a".repeat(64),
+                        created_by: Uuid::from_u128(7),
+                        created_at: now,
+                    },
+                )
+                .await
+                .unwrap();
+            }
+        }
+        let (app, _) = rest_app_on_db(tenant, router, resolved_usage_types(), "test", db).await;
+        recorder.clear();
+        (app, tenant, recorder)
+    }
+    async fn listed(
+        app: &axum::Router,
+        tenant: Uuid,
+        recorder: &toolkit_db::test_support::QueryRecorder,
+        n: usize,
+    ) -> Vec<String> {
+        recorder.clear();
+        let (status, body) = send(
+            app,
+            tenant,
+            Method::GET,
+            &format!("{BASE}?limit=200"),
+            None,
+            &[],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["items"].as_array().unwrap().len(), n, "{body}");
+        products_statements(recorder)
+    }
+    let (ten_app, ten_tenant, ten_rec) = recorded(10).await;
+    let (hundred_app, hundred_tenant, hundred_rec) = recorded(100).await;
+    let ten = listed(&ten_app, ten_tenant, &ten_rec, 10).await;
+    let hundred = listed(&hundred_app, hundred_tenant, &hundred_rec, 100).await;
+    let version_reads = |sqls: &[String]| {
+        sqls.iter()
+            .filter(|sql| sql.contains("products_derived_usage_type_version"))
+            .count()
+    };
+    for (i, sql) in hundred.iter().enumerate() {
+        eprintln!("statement {i}: {sql}");
+    }
+    assert_eq!(
+        ten.len(),
+        hundred.len(),
+        "10 types {ten:#?}\n100 types {hundred:#?}"
+    );
+    assert_eq!(version_reads(&ten), 1, "one version read for 10: {ten:#?}");
+    assert_eq!(
+        version_reads(&hundred),
+        1,
+        "one version read for 100: {hundred:#?}"
+    );
+    assert_eq!(
+        ten.len(),
+        2,
+        "pin: one page read and one grouped latest-version read: {ten:#?}"
+    );
+}

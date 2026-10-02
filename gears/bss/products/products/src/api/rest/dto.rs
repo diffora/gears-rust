@@ -894,8 +894,10 @@ pub struct ProductsDerivedUsageTypeItem {
     pub id: Uuid,
     pub code: String,
     pub name: String,
-    /// The highest version.
+    /// The highest version number. Kept beside [`Self::latest`] (P-D-257).
     pub latest_version: u32,
+    /// The latest version, in the version-read shape (P-D-257).
+    pub latest: ProductsDerivedUsageTypeVersion,
     pub created_by: Uuid,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,

@@ -63,7 +63,7 @@
 | P-D-228 | M | A unit says whether its reader may approve it (twin of pricing D-471) | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 4, "ok"); pricing phase 9 plan rev 2 (decision 11; W2; plan review H1, M2); amends P-D-224; amended by the phase 9 review (E, fix run 9.5d-1) |
 | P-D-229 | H | A derived usage meter is a catalog declaration that Rating evaluates | DECIDED 2026-10-01 · Owner, 2026-10-01 (who computes a cloudlet from RAM and CPU); supersedes the PriceBook spec §3 item 11 disposition for derived meters; rating T-D-39 |
 | P-D-230 | H | A derived usage type is versioned data with one evaluator, in the SDK | DECIDED 2026-10-01 · Derived usage types plan rev 3 (design decisions 1–4, run 1); implements P-D-229 and its amendment; amended by P-D-251 |
-| P-D-231 | H | Derived usage types are stored append-only and served by five doors | DECIDED 2026-10-01 · Owner, 2026-10-01 (O-1, O-2, O-3); derived usage types plan rev 3 (design decisions 4, 8, 9, run 2); implements P-D-229 and P-D-230 |
+| P-D-231 | H | Derived usage types are stored append-only and served by five doors | DECIDED 2026-10-01 · Owner, 2026-10-01 (O-1, O-2, O-3); derived usage types plan rev 3 (design decisions 4, 8, 9, run 2); implements P-D-229 and P-D-230; amended by P-D-257 |
 | P-D-232 | H | A usage SKU pins a derived usage type at its first publish | DECIDED 2026-10-01 · Owner, 2026-10-01 (M1, O-2); derived usage types plan rev 3 (design decision 7, run 3); implements P-D-229's pin; amends P-D-184, P-D-207, P-D-231; amended by P-D-251 |
 | P-D-233 | H | Products answers pricing's meter semantics for its derived usage types (E1b) | DECIDED 2026-10-01 · Derived usage types plan rev 3 (design decisions 5 and 6, run 4); implements P-D-229's pricing reference; amends P-D-229, P-D-230, P-D-231, P-D-232; pricing D-503 and D-510 amended |
 | P-D-245 | M | The reference registry reads many SKUs in one call | DECIDED 2026-10-01 · phase 9 plan rev 4 (run 9.7); amends P-D-222 |
@@ -77,6 +77,7 @@
 | P-D-253 | M | A products vote body is a closed set, and withdraw digests the body sent | DECIDED 2026-10-02 · phase 9 review |
 | P-D-254 | M | `GET /approval-units` refuses a query key it does not declare | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 62) |
 | P-D-255 | M | A unit says whether its reader may reject or withdraw it, and approve includes the grant | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 63); amends P-D-228 |
+| P-D-257 | M | The derived type list carries each type's latest version | DECIDED 2026-10-02 · Owner, 2026-10-02; run 9.12; amends P-D-231 |
 
 ## Entries
 
@@ -1489,9 +1490,9 @@ and what the doors answer. Migration `m20261001_000012_derived_usage_type`, the 
   - `POST /derived-usage-types` `{code, name, declaration}` → 201, version 1;
   - `POST /derived-usage-types/{code}/versions` `{declaration}` → 201, version n + 1; 404 when the tenant has no type with
     the code, asked before the catalog; 409 `CONTENDED` when a concurrent write took the number;
-  - `GET /derived-usage-types`: the tenant's types by code (tie-break id), each with its `latest_version`; `$top`/`limit`
-    50, clamped at 200, and a `cursor`, as the SKU list pages (P-D-210). `$filter`, `$orderby`, `$select` and any other key
-    are 400; a cursor another list cut is 400;
+  - `GET /derived-usage-types`: the tenant's types by code (tie-break id), each with its `latest_version` and `latest`
+    (P-D-257); `$top`/`limit` 50, clamped at 200, and a `cursor`, as the SKU list pages (P-D-210). `$filter`,
+    `$orderby`, `$select` and any other key are 400; a cursor another list cut is 400;
   - `GET /derived-usage-types/{code}`: the type with its versions' headers, oldest first;
   - `GET /derived-usage-types/{code}/versions/{n}`: the declaration, the stored `digest`, and what a pricing author copies
     into a usage policy: `meter_ref`, `canonical_unit` (the output unit) and `accrual_policy_version`
@@ -1515,7 +1516,7 @@ and what the doors answer. Migration `m20261001_000012_derived_usage_type`, the 
 - **The caps.** The SDK's caps are tied to `domain/caps.rs` by const asserts: the unit cap is `LABEL_MAX_CHARS`, the input
   ref cap `USAGE_TYPE_REF_MAX_CHARS`, and the code cap `CODE_MAX_CHARS`.
 - **Beyond the plan's text.** The repository has two reads the plan does not list: `list_versions` (the type read's
-  headers) and `latest_versions` (the list's `latest_version` and the next version number, in one grouped read). A lost
+  headers) and `latest_versions` (the list's latest version row and the next version number, in one grouped read). A lost
   version-number race is 409 `CONTENDED`, the gear's answer to contention it cannot retry away.
 - **Not built yet.** A usage SKU cannot name a derived type yet (the plan's run 3), and Products does not yet answer
   pricing's meter semantics (run 4). Until then no derived meter can be sold (P-D-229).
@@ -1540,6 +1541,9 @@ answers of 2026-10-01 (O-1: versions are append-only, with no approval of their 
 
 **Amended by P-D-233 (2026-10-01).** The meter-semantics half of the "Not built yet" line above is done: Products answers
 pricing's meter semantics from this store (P-D-233), so a derived meter can be sold.
+
+**Amended by P-D-257 (2026-10-02).** Each list item also carries `latest`, the latest version in the version-read shape,
+from that same grouped read. `latest_version` stays.
 
 #### P-D-232 [H] A usage SKU pins a derived usage type at its first publish
 
@@ -1942,3 +1946,13 @@ Every unit DTO carries `caller_can_reject` and `caller_can_withdraw` beside `cal
 The list, the card, a receipt and the inbox source compile each grant once per request and test each unit against that scope. A denial is an empty scope, so the page still answers. An unreachable PDP is 503.
 
 **Source:** Owner, 2026-10-02 (ask 63, "все ок"). Amends P-D-228. Twin of pricing D-497 and approvals AP-D-7.
+
+#### P-D-257 [M] The derived type list carries each type's latest version
+
+**Status:** DECIDED 2026-10-02.
+
+`GET /derived-usage-types` keeps `latest_version` and adds `latest` on each item. `latest` is that type's latest version in the shape `GET /derived-usage-types/{code}/versions/{n}` serves: `id`, `code`, `name`, `version`, `declaration` (inputs and formula), `digest`, `meter_ref`, `canonical_unit`, `accrual_policy_version`, `created_by` and `created_at`. For a type with two versions it equals the version read of `latest_version`.
+
+The list reads the page, then one grouped read of those types: the rows whose `(type_id, version)` is the grouped maximum version. It does not read once per item. The version-create door takes the next number from the same read. The list door's text names what the item carries.
+
+**Source:** Owner, 2026-10-02 ("да нужно включить"). Run 9.12, Task 8. Amends P-D-231.
