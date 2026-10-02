@@ -461,8 +461,14 @@ async fn a_picker_scope_filters_through_one_uuid_array_on_postgres() {
             "a non-member set is negated: {outside:?}"
         );
         assert_eq!(
-            outside.iter().map(|sql| sql.matches("uuid[]").count()).sum::<usize>(),
-            list_sql.iter().map(|sql| sql.matches("uuid[]").count()).sum::<usize>(),
+            outside
+                .iter()
+                .map(|sql| sql.matches("uuid[]").count())
+                .sum::<usize>(),
+            list_sql
+                .iter()
+                .map(|sql| sql.matches("uuid[]").count())
+                .sum::<usize>(),
             "{extra}"
         );
         recorder.clear();
@@ -549,7 +555,8 @@ async fn skus_for_write_binds_one_uuid_array_on_postgres() {
         assert_eq!(sql.len(), 1, "{extra}: {sql:?}");
         assert_eq!(sql[0].matches("uuid[]").count(), 1, "{}", sql[0]);
         assert!(
-            (sql[0].contains("CAST(?") || sql[0].contains("CAST($")) && sql[0].contains("AS uuid[]"),
+            (sql[0].contains("CAST(?") || sql[0].contains("CAST($"))
+                && sql[0].contains("AS uuid[]"),
             "{}",
             sql[0]
         );

@@ -50,6 +50,7 @@ pub async fn dump(dsn: &str) -> String {
 /// Both arguments are separate databases: the first empty, the second freshly fully migrated.
 #[expect(
     clippy::cognitive_complexity,
+    clippy::too_many_lines,
     reason = "ordered migration proof retains before/after state in one scenario"
 )]
 pub async fn upgrade(

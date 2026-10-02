@@ -27,7 +27,7 @@ use bss_pricing::api::pricing_read::PricingReadProvider;
 use bss_pricing::api::rest::authoring::AuthoringState;
 use bss_pricing::api::sellability::SellabilityProvider;
 use bss_pricing::config::SellerHoldPolicy;
-use bss_pricing::infra::clock::SystemClock;
+use bss_pricing::infra::clock::WallClock;
 use bss_pricing::infra::commercial_terms::CommercialTermsService;
 use bss_pricing_sdk::acceptance::{
     CommandMeta, Market, NewSaleQuery, SellabilityV1, TenantAxes, Term,
@@ -742,7 +742,7 @@ async fn a_cloudlet_sells_through_pricing_on_products_meter_semantics() {
     let sellability = SellabilityProvider::new(Arc::new(CommercialTermsService::new(
         s.state.clone(),
         s.enforcer.clone(),
-        Arc::new(SystemClock),
+        Arc::new(WallClock),
         SellerHoldPolicy::default(),
     )));
     let receipt = sellability
