@@ -756,13 +756,15 @@ async fn a_cloudlet_sells_through_pricing_on_products_meter_semantics() {
         .await
         .unwrap();
     assert_eq!(receipt.query, query);
-    let policy = receipt.bindings[0].usage_rating_policy.as_ref().unwrap();
-    assert_eq!(policy.content.quantity_semantics.meter.usage_type_id, METER);
-    assert_eq!(policy.content.quantity_semantics.unit, CLOUDLET_UNIT);
+    // D-514: the policy holds the rating rules; the meter and the unit are the SKU revision's.
+    let binding = &receipt.bindings[0];
+    let policy = binding.usage_rating_policy.as_ref().unwrap();
+    assert_eq!(policy.content.fold, bss_pricing_sdk::terms::Fold::Sum);
     assert_eq!(
-        policy.content.quantity_semantics.accrual_policy_version,
-        accrual
+        binding.meter.as_ref().map(|m| m.usage_type_id.as_str()),
+        Some(METER)
     );
+    assert_eq!(binding.unit.as_deref(), Some(CLOUDLET_UNIT));
 
     // 6b. The derived store failing at entry create is 503 at pricing.
     let probe_book = s.book("probe").await;
@@ -779,11 +781,14 @@ async fn a_cloudlet_sells_through_pricing_on_products_meter_semantics() {
         .await;
     assert_eq!(status, 503, "{failed}");
     assert!(
-        !failed.to_string().contains("REGISTRY_UNAVAILABLE"),
-        "the meter's 503, not the registry's: {failed}"
+        failed.to_string().contains("REGISTRY_UNAVAILABLE"),
+        "the served unit is read with the SKU, so the dropped version table fails the registry: {failed}"
     );
     let (status, card) = s.products(Method::GET, &format!("/skus/{sku}"), None).await;
-    assert_eq!(status, 200, "the SKU still reads: {card}");
+    assert_eq!(
+        status, 500,
+        "a dropped version table fails the SKU read (P-D-259): {card}"
+    );
 
     // Every meter answer above was Products': the hub's one provider is its dispatcher.
     assert!(s.hub.get::<dyn UsageMeterSemanticsV1>().is_ok());

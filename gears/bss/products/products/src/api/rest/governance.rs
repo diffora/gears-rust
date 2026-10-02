@@ -6,10 +6,7 @@ use super::{ApiState, TxError, authz_error_to_canonical, contention_db_err, tx_t
 use crate::{
     authz::{access_scope, actions, labels, resource_types},
     domain::{
-        derived,
-        error::DomainError,
-        recognized::{UsageRefAnswer, UsageTypeAnswer},
-        validation::ValidationReport,
+        derived, error::DomainError, recognized::UsageRefAnswer, validation::ValidationReport,
     },
     infra::{broker, events, storage::repo},
 };
@@ -156,7 +153,7 @@ pub(super) fn recorded_lifecycle(
 }
 pub(super) async fn resolve(
     state: &ApiState,
-    enforcer: &PolicyEnforcer,
+    _enforcer: &PolicyEnforcer,
     ctx: &SecurityContext,
     content: &SkuContent,
 ) -> Result<Option<UsageRefAnswer>, CanonicalError> {
@@ -166,22 +163,32 @@ pub(super) async fn resolve(
     // P-D-232: a derived ref comes first, from this gear's own store, and the catalog is never
     // asked for it, configured or not.
     if derived::is_derived_ref(reference) {
-        let pin = super::derived_usage_types::pin(state, enforcer, ctx, reference).await?;
-        return Ok(Some(
-            pin.map_or(UsageRefAnswer::DerivedUnknown, UsageRefAnswer::Derived),
-        ));
+        // The door already authorized this act. The version is the tenant's data; a second
+        // `sku:read` check would refuse an approver whose grant is the unit alone (P-D-259).
+        let Ok(meter) = bss_products_sdk::derived::MeterId::parse(reference) else {
+            return Ok(Some(UsageRefAnswer::DerivedUnknown));
+        };
+        let scope = AccessScope::for_tenant(ctx.subject_tenant_id());
+        let conn = state.db.conn().map_err(|e| tx_to_canonical(e.into()))?;
+        let stored = super::derived_usage_types::stored_version(
+            &conn,
+            &scope,
+            ctx.subject_tenant_id(),
+            &meter,
+        )
+        .await
+        .map_err(|e| super::derived_usage_types::stored_row_error(&e))?;
+        return Ok(Some(match stored {
+            Some((_, declaration)) => UsageRefAnswer::Derived(derived::DerivedPin {
+                meter: meter.format(),
+                output_unit: declaration.output_unit,
+            }),
+            None => UsageRefAnswer::DerivedUnknown,
+        }));
     }
-    let answer = state.usage_type_catalog.resolve(ctx, reference).await;
-    match answer {
-        UsageTypeAnswer::Unavailable => {
-            Err(DomainError::UsageTypeUnavailable(reference.into()).into())
-        }
-        // P-D-207: read as the caller; a denial is the caller's 403, not an outage.
-        UsageTypeAnswer::Forbidden => Err(DomainError::UsageTypeForbidden(reference.into()).into()),
-        UsageTypeAnswer::Resolved(_) | UsageTypeAnswer::Unresolved => {
-            Ok(Some(UsageRefAnswer::Catalog(answer)))
-        }
-    }
+    // P-D-259: a raw ref is refused before the catalog is asked. A published raw SKU may still
+    // move onto its identity wrapper (that proposal's ref is derived) or retire (no resolve).
+    Err(derived::usage_type_required().into())
 }
 /// Maintenance never releases a pending unit's fence and compares the observed operation; a fence
 /// it lifts is the system's act, with its audit row (P-D-213).

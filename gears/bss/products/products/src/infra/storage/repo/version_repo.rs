@@ -1,8 +1,9 @@
 //! Append-only published content and deterministic date resolution.
 //! @cpt-dod:cpt-cf-bss-products-dod-versions-as-of:p1
 use super::{driver_failure, map_unique};
+use crate::domain::derived;
 use crate::infra::storage::{RepoError, RepoRefusal, entity::sku_version};
-use bss_products_sdk::models::{SkuContent, SkuVersion};
+use bss_products_sdk::models::{SkuContent, SkuType, SkuVersion};
 use sea_orm::{ColumnTrait, Condition, EntityTrait, Order, Set};
 use time::{Date, OffsetDateTime};
 use toolkit_db::secure::{AccessScope, DBRunner, SecureEntityExt, SecureInsertExt};
@@ -51,12 +52,14 @@ pub async fn append_version(
     if latest.is_some_and(|v| effective_from < v.effective_from) {
         return Err(RepoError::Refused(RepoRefusal::VersionOrder));
     }
+    let mut stored = content.clone();
+    stored.unit = derived::persisted_unit(stored.usage_type_ref.as_deref(), stored.unit);
     let model = sku_version::ActiveModel {
         sku_id: Set(sku_id),
         tenant_id: Set(tenant_id),
         published_version: Set(published_version),
         effective_from: Set(effective_from),
-        content: Set(serde_json::to_value(content)
+        content: Set(serde_json::to_value(&stored)
             .map_err(|e| RepoError::Db(format!("serialize version: {e}")))?),
         created_at: Set(now),
     };
@@ -67,7 +70,10 @@ pub async fn append_version(
         .exec_with_returning(runner)
         .await
         .map_err(|e| map_unique("append version".into(), e))?;
-    version_of(row)
+    let mut version = version_of(row)?;
+    let rows = std::slice::from_mut(&mut version);
+    fill_version_units(runner, scope, tenant_id, rows).await?;
+    Ok(version)
 }
 /// All versions in effective-date and version order.
 /// # Errors
@@ -78,7 +84,7 @@ pub async fn versions(
     tenant_id: Uuid,
     sku_id: Uuid,
 ) -> Result<Vec<SkuVersion>, RepoError> {
-    sku_version::Entity::find()
+    let mut found = sku_version::Entity::find()
         .secure()
         .scope_with(scope)
         .filter(key(tenant_id, sku_id))
@@ -89,7 +95,9 @@ pub async fn versions(
         .map_err(|e| driver_failure("versions".into(), e))?
         .into_iter()
         .map(version_of)
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    fill_version_units(runner, scope, tenant_id, &mut found).await?;
+    Ok(found)
 }
 /// Resolve the highest version on the latest date at or before `as_of`.
 /// # Errors
@@ -101,7 +109,7 @@ pub async fn version_as_of(
     sku_id: Uuid,
     as_of: Date,
 ) -> Result<Option<SkuVersion>, RepoError> {
-    sku_version::Entity::find()
+    let mut found = sku_version::Entity::find()
         .secure()
         .scope_with(scope)
         .filter(key(tenant_id, sku_id).add(sku_version::Column::EffectiveFrom.lte(as_of)))
@@ -112,5 +120,56 @@ pub async fn version_as_of(
         .await
         .map_err(|e| driver_failure("version as of".into(), e))?
         .map(version_of)
-        .transpose()
+        .transpose()?;
+    if let Some(version) = found.as_mut() {
+        let rows = std::slice::from_mut(version);
+        fill_version_units(runner, scope, tenant_id, rows).await?;
+    }
+    Ok(found)
+}
+
+async fn fill_version_units(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    versions: &mut [SkuVersion],
+) -> Result<(), RepoError> {
+    let mut meters = Vec::new();
+    for version in versions.iter() {
+        if version.content.r#type != SkuType::Usage {
+            continue;
+        }
+        if let Some(reference) = version
+            .content
+            .usage_type_ref
+            .as_ref()
+            .filter(|reference| derived::is_derived_ref(reference))
+        {
+            meters.push(reference.clone());
+        }
+    }
+    meters.sort();
+    meters.dedup();
+    let units = super::derived_usage_type_repo::output_units(
+        runner,
+        &scope.tenant_only(),
+        tenant_id,
+        &meters,
+    )
+    .await?;
+    for version in versions.iter_mut() {
+        if version.content.r#type != SkuType::Usage {
+            version.content.unit = None;
+            continue;
+        }
+        if let Some(reference) = version
+            .content
+            .usage_type_ref
+            .as_deref()
+            .filter(|reference| derived::is_derived_ref(reference))
+        {
+            version.content.unit = units.get(reference).cloned();
+        }
+    }
+    Ok(())
 }

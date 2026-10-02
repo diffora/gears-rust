@@ -375,8 +375,7 @@ async fn a_door_wakes_the_sequencer_once_its_transaction_commits() {
         &author,
         "POST",
         "/skus",
-        json!({"code":"SKU","name":"SKU","type":"usage","category_id":category["id"],
-               "usage_type_ref":"storage","unit":"GB"}),
+        json!({"code":"SKU","name":"SKU","type":"recurring","category_id":category["id"]}),
         None,
     )
     .await;

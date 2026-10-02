@@ -74,11 +74,41 @@ def _usage_type_or_skip(api) -> None:
         )
 
 
-# D-427: the model is the entry's; a price carries only its money, in that model.
-VARIANTS = {
-    "usage": {
-        "sku": {"type": "usage", "usage_type_ref": USAGE_TYPE, "unit": "GB"},
-        # E1 must register this exact immutable meter declaration on the real binary.
+def _derived_usage(api) -> dict:
+    """A usage SKU sells the identity wrapper of the collector's storage type (P-D-259).
+
+    The raw type stays the wrapper's input. The entry names the derived meter, its
+    output unit and the stored digest.
+    """
+    _usage_type_or_skip(api)
+    code = "e2estorage"
+    declaration = {
+        "output_unit": "GB",
+        "granularity": "hour",
+        "inputs": [
+            {
+                "name": "disk",
+                "usage_type_ref": USAGE_TYPE,
+                "granule_fold": "sum",
+                "unit": "GB",
+            }
+        ],
+        "formula": {"op": "input", "name": "disk"},
+        "output_scale": 0,
+        "output_round": "half_even",
+    }
+    created = api.post(
+        f"{PRODUCTS}/derived-usage-types",
+        json={"code": code, "name": "E2E storage", "declaration": declaration},
+    )
+    if created.status_code == 409:
+        created = api.get(f"{PRODUCTS}/derived-usage-types/{code}/versions/1")
+    assert created.status_code in (200, 201), created.text
+    body = created.json()
+    meter = f"products.derived/{code}@1"
+    digest = body["digest"]
+    return {
+        "sku": {"type": "usage", "usage_type_ref": meter, "unit": "GB"},
         "entry": {
             "model": "per_unit",
             # D-514: the create sends the two choices. The server fills fold, reset and partial_window.
@@ -88,7 +118,11 @@ VARIANTS = {
             },
         },
         "price": {"price": {"rate": "0.10"}},
-    },
+    }
+
+
+# D-427: the model is the entry's; a price carries only its money, in that model.
+VARIANTS = {
     "recurring": {
         "sku": {"type": "recurring"},
         "entry": {"period": "month", "model": "flat"},
@@ -100,9 +134,7 @@ VARIANTS = {
 @pytest.mark.timeout(120)
 @pytest.mark.parametrize("variant", ["usage", "recurring"])
 def test_a_priced_sku_publishes_its_price_and_blocks_retirement(api, variant):
-    shape = VARIANTS[variant]
-    if variant == "usage":
-        _usage_type_or_skip(api)
+    shape = _derived_usage(api) if variant == "usage" else VARIANTS[variant]
     run = uuid.uuid4().hex[:8]
 
     # Products: quorum 0, a category and a SKU, published at submit.

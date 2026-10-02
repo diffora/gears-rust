@@ -14,7 +14,7 @@ use crate::{
     infra::{broker, events, storage::repo},
 };
 use bss_approval::{ApprovalError, ApprovalSubject, ItemRef, Unit};
-use bss_products_sdk::models::{Lifecycle, SkuContent};
+use bss_products_sdk::models::{Lifecycle, SkuContent, SkuType};
 use time::Date;
 use toolkit_db::DbTx;
 use uuid::Uuid;
@@ -236,10 +236,10 @@ impl SkuChange {
                     "use the fenced retire operation to retire",
                 ));
             }
-            // P-D-232 (M1), amended by P-D-251: a published usage SKU keeps its derived pin, except
-            // a raw meter moving onto the identity wrapper of that meter, in the same unit. Judged
-            // against the head as it is now, at submit and again at apply, before the fence and
-            // type checks. The version is the same tenant-scoped read the change door uses.
+            // P-D-258, the one exception P-D-251: a published usage SKU keeps its ref and its unit,
+            // except a raw meter moving onto the identity wrapper of that meter, in the same unit.
+            // Judged against the head as it is now, at submit and again at apply, before the fence
+            // and type checks. The version is the same tenant-scoped read the change door uses.
             let current_ref = s.usage_type_ref.as_deref();
             let proposed_ref = proposed.content.usage_type_ref.as_deref();
             let stored = match proposed_ref {
@@ -256,21 +256,23 @@ impl SkuChange {
                 }
                 _ => None,
             };
-            if derived::pin_check(
-                derived::RefUnit {
+            if let Some(field) = derived::metering_moves(
+                derived::Metering {
+                    usage: s.r#type == SkuType::Usage,
                     usage_type_ref: current_ref,
                     unit: s.unit.as_deref(),
                 },
-                derived::RefUnit {
+                derived::Metering {
+                    usage: proposed.content.r#type == SkuType::Usage,
                     usage_type_ref: proposed_ref,
                     unit: proposed.content.unit.as_deref(),
                 },
                 stored.as_ref(),
             ) {
                 return Err(invalid(
-                    derived::PIN_IMMUTABLE,
-                    "usage_type_ref",
-                    derived::PIN_DETAIL,
+                    derived::METERING_IMMUTABLE,
+                    field,
+                    derived::METERING_DETAIL,
                 ));
             }
             if proposed.content.r#type != s.r#type || self.fence_op_id.is_some() {

@@ -486,16 +486,14 @@ async fn filtered_code_cursor_never_skips_the_first_row_of_the_next_page() {
     assert_eq!(page["page_info"]["next_cursor"], Value::Null);
 }
 
+/// P-D-259: a raw ref is 400 `DERIVED_USAGE_TYPE_REQUIRED` before the catalog is asked, whether
+/// the catalog would resolve it, refuse it, or is unconfigured.
 #[tokio::test]
-async fn draft_usage_resolution_allows_silence_but_refuses_definite_unknowns() {
-    for (answer, source, expected) in [
-        (UsageTypeAnswer::Unavailable, "test", StatusCode::CREATED),
-        (UsageTypeAnswer::Unresolved, "test", StatusCode::BAD_REQUEST),
-        (
-            UsageTypeAnswer::Unresolved,
-            "unconfigured",
-            StatusCode::CREATED,
-        ),
+async fn a_raw_usage_ref_is_refused_before_the_catalog() {
+    for (answer, source) in [
+        (UsageTypeAnswer::Unavailable, "test"),
+        (UsageTypeAnswer::Unresolved, "test"),
+        (UsageTypeAnswer::Unresolved, "unconfigured"),
     ] {
         let tenant = Uuid::new_v4();
         let catalog = Arc::new(StubUsageTypes::always(answer));
@@ -504,12 +502,10 @@ async fn draft_usage_resolution_allows_silence_but_refuses_definite_unknowns() {
         let mut body = new(cat, "A", "A");
         body["usage_type_ref"] = json!("usage:new");
         let r = post(&app, tenant, "/bss-products/v1/skus", body).await;
-        assert_eq!(r.status(), expected);
-        if expected == StatusCode::BAD_REQUEST {
-            let body = body_json(r).await;
-            assert_eq!(problem_code(&body), "USAGE_TYPE_UNRESOLVED");
-            assert!(violation_for(&body, "usage_type_ref").is_some());
-        }
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+        let body = body_json(r).await;
+        assert_eq!(problem_code(&body), "DERIVED_USAGE_TYPE_REQUIRED");
+        assert!(violation_for(&body, "usage_type_ref").is_some());
         let s =
             body_json(post(&app, tenant, "/bss-products/v1/skus", new(cat, "B", "B")).await).await;
         let url = format!("/bss-products/v1/skus/{}", s["id"].as_str().unwrap());
@@ -521,25 +517,16 @@ async fn draft_usage_resolution_allows_silence_but_refuses_definite_unknowns() {
             Some("\"1\""),
         )
         .await;
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST);
         assert_eq!(
-            r.status(),
-            if expected == StatusCode::BAD_REQUEST {
-                StatusCode::BAD_REQUEST
-            } else {
-                StatusCode::OK
-            }
+            problem_code(&body_json(r).await),
+            "DERIVED_USAGE_TYPE_REQUIRED"
         );
         assert_eq!(
             raw_i64(&dsn, "SELECT COUNT(*) AS v FROM products_sku").await,
-            if expected == StatusCode::BAD_REQUEST {
-                1
-            } else {
-                2
-            }
+            1
         );
-        if source == "unconfigured" {
-            assert_eq!(catalog.asked.load(std::sync::atomic::Ordering::SeqCst), 0);
-        }
+        assert_eq!(catalog.asked.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 }
 
@@ -600,7 +587,7 @@ async fn invalid_enum_fields_and_lifecycle_edits_are_400_and_audit_failure_rolls
 }
 
 #[tokio::test]
-async fn unchanged_meter_is_not_resolved_again_and_clearing_it_does_not_resolve() {
+async fn a_raw_ref_on_a_draft_patch_is_refused_without_asking_the_catalog() {
     let tenant = Uuid::new_v4();
     let catalog = Arc::new(StubUsageTypes::scripted([
         UsageTypeAnswer::Resolved(crate::test_support::probe_binding()),
@@ -608,32 +595,31 @@ async fn unchanged_meter_is_not_resolved_again_and_clearing_it_does_not_resolve(
     ]));
     let (app, _) = rest_app_with_catalog(tenant, doors, catalog.clone(), "test").await;
     let cat = category(&app, tenant).await;
-    let mut body = new(cat, "A", "A");
-    body["usage_type_ref"] = json!("usage:storage");
-    let r = post(&app, tenant, "/bss-products/v1/skus", body).await;
-    assert_eq!(r.status(), StatusCode::CREATED);
-    let s = body_json(r).await;
+    let s = body_json(post(&app, tenant, "/bss-products/v1/skus", new(cat, "A", "A")).await).await;
     let url = format!("/bss-products/v1/skus/{}", s["id"].as_str().unwrap());
-    for (version, body) in [
-        (1, json!({"usage_type_ref":"usage:storage"})),
-        (2, json!({"description":"changed"})),
-        (3, json!({"usage_type_ref":null})),
-    ] {
-        let r = patch(&app, tenant, &url, body, Some(&format!("\"{version}\""))).await;
-        assert_eq!(r.status(), StatusCode::OK);
-    }
-    assert_eq!(catalog.asked.load(std::sync::atomic::Ordering::SeqCst), 1);
+    let r = patch(
+        &app,
+        tenant,
+        &url,
+        json!({"description":"changed"}),
+        Some("\"1\""),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
     let r = patch(
         &app,
         tenant,
         &url,
         json!({"usage_type_ref":"usage:new"}),
-        Some("\"4\""),
+        Some("\"2\""),
     )
     .await;
     assert_eq!(r.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(problem_code(&body_json(r).await), "USAGE_TYPE_UNRESOLVED");
-    assert_eq!(catalog.asked.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(
+        problem_code(&body_json(r).await),
+        "DERIVED_USAGE_TYPE_REQUIRED"
+    );
+    assert_eq!(catalog.asked.load(std::sync::atomic::Ordering::SeqCst), 0);
 }
 
 #[tokio::test]

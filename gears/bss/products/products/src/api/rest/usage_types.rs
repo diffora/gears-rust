@@ -1,10 +1,11 @@
 //! The usage-type picker (P-D-207): `GET /bss-products/v1/usage-types?q&kind&limit&cursor`.
 //!
-//! Products serves the authoring pick-list itself, from the one `UsageTypeCatalog` its publish
-//! gate resolves against (P-D-184), so the screen offers exactly what the gate accepts. The
+//! Products serves the raw usage types a derived usage type names as its inputs (P-D-259). The
+//! picker no longer feeds the SKU form: a usage SKU names a derived usage type. The list is the
+//! one `UsageTypeCatalog` the publish gate used to resolve a raw SKU against (P-D-184). The
 //! 09-22 catalog design named the path `/bss-products/v1/catalog/usage-types` and gated it on
 //! `recognized_set × read`; the route is `/usage-types` under the products SKU-author grant,
-//! because picking a usage type is authoring a SKU and no `recognized_set` resource exists.
+//! because naming an input is authoring a derived usage type and no `recognized_set` resource exists.
 //!
 //! The catalog is read **as the caller** (owner option b): a collector that refuses the caller answers
 //! 403, an unconfigured catalog 501, an unreachable one 503, and an empty configured one 200 with
@@ -90,10 +91,11 @@ pub struct ProductsUsageTypeList {
 pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Router {
     OperationBuilder::get(PICKER)
         .operation_id("bss_products.list_usage_types")
-        .summary("List usage types for SKU authoring")
+        .summary("List raw usage types for derived-type authoring")
         .description(
-            "The usage-type catalog the publish gate resolves against, read as the caller \
-             (P-D-207). `q` narrows by case-insensitive substring of the id, `kind` by equality; \
+            "The raw usage types a derived usage type names as its inputs, read as the caller \
+             (P-D-207, P-D-259). It does not feed the SKU form: a usage SKU names a derived usage \
+             type. `q` narrows by case-insensitive substring of the id, `kind` by equality; \
              `limit` defaults to 50 and is clamped at 200; `kind` is counter or gauge. Over the usage collector, `q` searches \
              at most 1000 types of the asked kind, in id order, and its cursor is bound to `q` \
              and `kind`. Refusals: 403 without products SKU author, or when the catalog refuses \

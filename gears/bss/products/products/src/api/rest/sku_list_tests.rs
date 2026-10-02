@@ -1403,3 +1403,126 @@ async fn a_due_lifecycle_is_filtered_through_the_case_or_refused() {
         }
     }
 }
+
+/// P-D-259: a page serves each derived SKU's unit from one read of the referenced versions,
+/// the same statements for 10 SKUs and for 100.
+#[tokio::test]
+async fn a_page_reads_derived_units_once_for_10_and_for_100_skus() {
+    use crate::domain::derived::{self as rules, NewDerivedType, NewDerivedVersion};
+    use crate::infra::storage::repo::derived_usage_type_repo as store;
+    use crate::test_support::{products_statements, recorded_test_db, repo_connection};
+    use bss_products_sdk::derived::{
+        DerivedInput, DerivedUsageDeclaration, Expr, Granularity, GranuleFold, RoundMode,
+    };
+    let (db, _, _, dsn, recorder) = recorded_test_db().await;
+    let tenant = Uuid::new_v4();
+    let (app, _) = rest_app_on_db(tenant, doors, resolved_usage_types(), "test", db).await;
+    let (repo_db, scope) = repo_connection(&dsn, tenant).await;
+    let conn = repo_db.conn().unwrap();
+    let now = OffsetDateTime::now_utc();
+    let created = store::create_type(
+        &conn,
+        &scope,
+        tenant,
+        NewDerivedType {
+            code: "meter".into(),
+            name: "Meter".into(),
+        },
+        Uuid::from_u128(7),
+        now,
+    )
+    .await
+    .unwrap();
+    let declaration = DerivedUsageDeclaration {
+        output_unit: "GB".into(),
+        granularity: Granularity::Hour,
+        inputs: vec![DerivedInput {
+            name: "disk".into(),
+            usage_type_ref: "usage:storage".into(),
+            granule_fold: GranuleFold::Sum,
+            max_hold_seconds: None,
+            unit: "GB".into(),
+        }],
+        formula: Expr::Input("disk".into()),
+        output_scale: 0,
+        output_round: RoundMode::HalfEven,
+    };
+    store::insert_version(
+        &conn,
+        &scope,
+        tenant,
+        NewDerivedVersion {
+            type_id: created.id,
+            version: 1,
+            declaration_json: serde_json::to_value(
+                crate::api::rest::dto::ProductsDerivedDeclaration::from(&declaration),
+            )
+            .unwrap(),
+            digest: rules::digest_hex(&declaration),
+            created_by: Uuid::from_u128(7),
+            created_at: now,
+        },
+    )
+    .await
+    .unwrap();
+    for i in 0..100 {
+        repo::insert_sku(
+            &conn,
+            &scope,
+            tenant,
+            NewSku {
+                code: format!("U{i:03}"),
+                name: format!("U{i:03}"),
+                r#type: SkuType::Usage,
+                category_id: None,
+                description: String::new(),
+                sellable: true,
+                gl_code: None,
+                tax_category: None,
+                invoice_line_template: None,
+                billing_timing: None,
+                usage_type_ref: Some("products.derived/meter@1".into()),
+                unit: Some("GB".into()),
+            },
+            tenant,
+            now,
+        )
+        .await
+        .unwrap();
+    }
+    let page = |limit: u32| {
+        let app = app.clone();
+        let recorder = &recorder;
+        async move {
+            recorder.clear();
+            let response = get(
+                &app,
+                tenant,
+                &format!("/bss-products/v1/skus?limit={limit}"),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = body_json(response).await;
+            let statements = products_statements(recorder);
+            let version_reads = statements
+                .iter()
+                .filter(|sql| sql.contains("products_derived_usage_type_version"))
+                .count();
+            (body, statements.len(), version_reads)
+        }
+    };
+    let (ten, ten_statements, ten_reads) = page(10).await;
+    let (hundred, hundred_statements, hundred_reads) = page(100).await;
+    assert_eq!(ten["items"].as_array().unwrap().len(), 10);
+    assert_eq!(hundred["items"].as_array().unwrap().len(), 100);
+    assert!(
+        ten["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["unit"] == "GB")
+    );
+    assert_eq!(ten_statements, hundred_statements);
+    assert_eq!(ten_reads, 1);
+    assert_eq!(hundred_reads, 1);
+}

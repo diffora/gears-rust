@@ -429,27 +429,32 @@ pub async fn page_skus(
         .scope_with(scope)
         .filter(list_condition(tenant, filter, backend))
         .filter(lifecycle_filter);
-    paginate_odata_try::<SkuListField, SkuListMapping, sku::Entity, Sku, _, RepoError, _>(
-        select,
-        runner,
-        &query,
-        (SkuListField::Id.name(), SortDir::Asc),
-        SKU_PAGE,
-        sku_of,
-    )
-    .await
-    .map_err(|e| match e {
-        // The pager renders the driver's error as text; kept as a driver failure so the
-        // door's retry still sees a serialization failure or a busy database by its message.
-        PaginateOdataTryError::OData(toolkit_odata::Error::Db(message)) => {
-            SkuListError::Repo(RepoError::Driver {
-                context: "list SKUs".into(),
-                source: DbErr::Custom(message),
-            })
-        }
-        PaginateOdataTryError::OData(other) => SkuListError::Query(other),
-        PaginateOdataTryError::MapError(e) => SkuListError::Repo(e),
-    })
+    let mut page =
+        paginate_odata_try::<SkuListField, SkuListMapping, sku::Entity, Sku, _, RepoError, _>(
+            select,
+            runner,
+            &query,
+            (SkuListField::Id.name(), SortDir::Asc),
+            SKU_PAGE,
+            sku_of,
+        )
+        .await
+        .map_err(|e| match e {
+            // The pager renders the driver's error as text; kept as a driver failure so the
+            // door's retry still sees a serialization failure or a busy database by its message.
+            PaginateOdataTryError::OData(toolkit_odata::Error::Db(message)) => {
+                SkuListError::Repo(RepoError::Driver {
+                    context: "list SKUs".into(),
+                    source: DbErr::Custom(message),
+                })
+            }
+            PaginateOdataTryError::OData(other) => SkuListError::Query(other),
+            PaginateOdataTryError::MapError(e) => SkuListError::Repo(e),
+        })?;
+    super::sku_repo::fill_served_units(runner, scope, tenant, &mut page.items)
+        .await
+        .map_err(SkuListError::Repo)?;
+    Ok(page)
 }
 
 /// The tab counts of the list: every SKU, those in each lifecycle, and those in review.

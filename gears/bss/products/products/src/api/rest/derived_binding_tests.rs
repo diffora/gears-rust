@@ -300,6 +300,53 @@ impl F {
             .await
     }
 
+    /// A legacy raw usage SKU, written through the repository: the doors no longer accept a raw
+    /// ref (P-D-259). `published` sets the lifecycle without a version snapshot.
+    async fn legacy_raw(&self, code: &str, reference: &str, unit: &str, published: bool) -> Uuid {
+        use crate::domain::sku::NewSku;
+        use bss_products_sdk::models::{Lifecycle, SkuType};
+        let (db, scope) = repo_connection(&self.dsn, self.tenant).await;
+        let conn = db.conn().unwrap();
+        let now = OffsetDateTime::now_utc();
+        let sku = repo::insert_sku(
+            &conn,
+            &scope,
+            self.tenant,
+            NewSku {
+                code: code.to_owned(),
+                name: code.to_owned(),
+                r#type: SkuType::Usage,
+                category_id: None,
+                description: String::new(),
+                sellable: true,
+                gl_code: None,
+                tax_category: None,
+                invoice_line_template: None,
+                billing_timing: None,
+                usage_type_ref: Some(reference.to_owned()),
+                unit: Some(unit.to_owned()),
+            },
+            self.author.subject_id(),
+            now,
+        )
+        .await
+        .unwrap();
+        if published {
+            repo::set_lifecycle(
+                &conn,
+                &scope,
+                self.tenant,
+                sku.id,
+                &[Lifecycle::Draft],
+                Lifecycle::Published,
+                now,
+            )
+            .await
+            .unwrap();
+        }
+        sku.id
+    }
+
     /// [`F::create`] that must succeed; the SKU's id.
     async fn draft(&self, app: &Router, code: &str, reference: &str, unit: &str) -> Uuid {
         let (status, s) = self.create(app, code, Some(reference), Some(unit)).await;
@@ -575,8 +622,8 @@ async fn an_unknown_derived_version_is_refused_at_draft_save() {
 }
 
 /// A unit other than the version's output unit is 400 `DERIVED_UNIT_MISMATCH`, at the create and
-/// at a draft PATCH that changes the unit or the ref. A draft may leave its unit for later; its
-/// publish then needs one (`USAGE_NEEDS_METER`).
+/// at a draft PATCH. A draft may omit its unit: the publish serves the version's output unit, and
+/// the row stores none (P-D-259). A legacy raw draft cannot move onto that version with another unit.
 #[tokio::test]
 async fn a_unit_other_than_the_output_unit_is_refused() {
     for leg in LEGS {
@@ -585,23 +632,27 @@ async fn a_unit_other_than_the_output_unit_is_refused() {
         refused(status, &b, "DERIVED_UNIT_MISMATCH", "unit", leg);
         assert_eq!(f.skus().await, 0);
         let (status, s) = f.create(&f.app, "M", Some(AT_1), None).await;
-        assert_eq!(status, 201, "{leg:?}: a draft names its unit later: {s}");
+        assert_eq!(status, 201, "{leg:?}: a draft omits its unit: {s}");
         let id = Uuid::parse_str(s["id"].as_str().unwrap()).unwrap();
+        assert_eq!(s["unit"], CLOUDLET_UNIT, "{s}");
         let (status, b) = f.patch(id, json!({"unit":"GB"})).await;
         refused(status, &b, "DERIVED_UNIT_MISMATCH", "unit", leg);
-        f.policy(0).await;
-        let (status, b) = f.post(&f.app, id, "/submit", json!({})).await;
-        refused(status, &b, "USAGE_NEEDS_METER", "unit", leg);
-        let (status, b) = f.patch(id, json!({"unit":CLOUDLET_UNIT})).await;
-        assert_eq!(status, 200, "{leg:?}: {b}");
-        // A GTS draft selling `GB` cannot move onto the derived version with its unit.
-        let (status, s) = f.create(&f.setup, "G", Some(GTS), Some("GB")).await;
-        assert_eq!(status, 201, "{s}");
-        let gts = Uuid::parse_str(s["id"].as_str().unwrap()).unwrap();
+        f.publish(&f.app, id).await;
+        let card = f.card(id).await;
+        assert_eq!(card["lifecycle"], "published");
+        assert_eq!(card["unit"], CLOUDLET_UNIT);
+        assert_eq!(
+            raw_i64(
+                &f.dsn,
+                "SELECT COUNT(*) AS v FROM products_sku WHERE unit IS NULL"
+            )
+            .await,
+            1,
+            "a derived SKU stores no unit"
+        );
+        let gts = f.legacy_raw("G", GTS, "GB", false).await;
         let (status, b) = f.patch(gts, json!({ "usage_type_ref": AT_1 })).await;
         refused(status, &b, "DERIVED_UNIT_MISMATCH", "unit", leg);
-        f.publish(&f.app, id).await;
-        assert_eq!(f.card(id).await["lifecycle"], "published");
         f.assert_never_asked();
     }
 }
@@ -624,10 +675,10 @@ async fn a_draft_moves_its_derived_pin_until_its_first_publish() {
     }
 }
 
-/// After its first publish a usage SKU keeps its derived pin: a change to `@2`, to a GTS ref, or
-/// one that drops the ref (with a type change, or alone) is 400 `DERIVED_PIN_IMMUTABLE` at submit;
-/// no unit is recorded and no fence is left. A unit other than the pinned version's output unit is
-/// 400 `DERIVED_UNIT_MISMATCH`. A change that leaves the ref alone still applies.
+/// After its first publish a usage SKU keeps its metering: a change to `@2`, to a GTS ref, a unit
+/// change, or one that drops the ref (with a type change, or alone) is 400 `METERING_IMMUTABLE`
+/// at submit; no unit is recorded and no fence is left. A change that leaves the ref and the unit
+/// alone still applies.
 #[tokio::test]
 async fn after_its_first_publish_a_usage_sku_keeps_its_derived_pin() {
     for leg in LEGS {
@@ -642,7 +693,7 @@ async fn after_its_first_publish_a_usage_sku_keeps_its_derived_pin() {
             json!({ "usage_type_ref": null }),
         ] {
             let (status, b) = f.post(&f.app, id, "/changes", patch.clone()).await;
-            refused(status, &b, "DERIVED_PIN_IMMUTABLE", "usage_type_ref", leg);
+            refused(status, &b, "METERING_IMMUTABLE", "usage_type_ref", leg);
             let s = f.card(id).await;
             assert_eq!(s["usage_type_ref"], AT_1, "{patch}");
             assert_eq!(s["type"], "usage", "{patch}");
@@ -651,7 +702,7 @@ async fn after_its_first_publish_a_usage_sku_keeps_its_derived_pin() {
             assert_eq!(s["published_version"], 1, "{patch}");
         }
         let (status, b) = f.post(&f.app, id, "/changes", json!({"unit":"GB"})).await;
-        refused(status, &b, "DERIVED_UNIT_MISMATCH", "unit", leg);
+        refused(status, &b, "METERING_IMMUTABLE", "unit", leg);
         assert_eq!(f.card(id).await["unit"], CLOUDLET_UNIT);
         assert_eq!(f.units().await, units, "{leg:?}: no unit was recorded");
         let (status, b) = f
@@ -665,14 +716,13 @@ async fn after_its_first_publish_a_usage_sku_keeps_its_derived_pin() {
     }
 }
 
-/// A published GTS usage SKU cannot take a derived pin by a change: 400 `DERIVED_PIN_IMMUTABLE`,
-/// with the unit made to match. A GTS → GTS change still applies, as before.
+/// A published GTS usage SKU cannot take a derived pin, and cannot move to another GTS ref:
+/// both are 400 `METERING_IMMUTABLE` on `usage_type_ref` (P-D-258).
 #[tokio::test]
 async fn a_published_gts_usage_sku_cannot_take_a_derived_pin() {
     for leg in LEGS {
         let f = F::new(leg).await;
-        let id = f.draft(&f.setup, "G", GTS, "GB").await;
-        f.publish(&f.setup, id).await;
+        let id = f.legacy_raw("G", GTS, "GB", true).await;
         let (status, b) = f
             .post(
                 &f.app,
@@ -681,88 +731,67 @@ async fn a_published_gts_usage_sku_cannot_take_a_derived_pin() {
                 json!({ "usage_type_ref": AT_1, "unit": CLOUDLET_UNIT }),
             )
             .await;
-        refused(status, &b, "DERIVED_PIN_IMMUTABLE", "usage_type_ref", leg);
+        refused(status, &b, "METERING_IMMUTABLE", "usage_type_ref", leg);
         let s = f.card(id).await;
         assert_eq!(s["usage_type_ref"], GTS);
-        assert_eq!(s["published_version"], 1);
+        assert_eq!(s["published_version"], 0);
         f.assert_never_asked();
         let (status, b) = f
-            .post(
-                &f.setup,
-                id,
-                "/changes",
-                json!({"usage_type_ref":"usage:other"}),
-            )
-            .await;
-        assert_eq!(status, 200, "{leg:?}: GTS to GTS: {b}");
-        assert_eq!(f.card(id).await["usage_type_ref"], "usage:other");
-    }
-}
-
-/// A change that was legal when submitted is judged again at apply. A GTS usage SKU's type change
-/// that drops its ref waits for review; a concurrent writer then pins the head to
-/// `products.derived/cloudlets@1`. The unit's fingerprint covers only what it proposes, which the
-/// writer did not change, so the approve is not refreshed: it applies, and the apply refuses it,
-/// 409 `DERIVED_PIN_IMMUTABLE`, the head as the writer left it and the unit still pending. The
-/// catalog is asked nothing on the way.
-///
-/// With the catalog configured, a GTS → GTS change met by the same writer (its unit moved too, so
-/// the proposal changes) is refreshed first, and the approve of the refreshed generation is refused
-/// at apply too. With the catalog unconfigured, that approve is 503, since the proposed GTS ref is
-/// the catalog's (P-D-184).
-#[tokio::test]
-async fn a_stale_change_is_refused_at_apply_when_a_concurrent_write_pinned_a_derived_type() {
-    for leg in LEGS {
-        let f = F::new(leg).await;
-        let id = f.draft(&f.setup, "S", GTS, "GB").await;
-        f.publish(&f.setup, id).await;
-        f.policy(1).await;
-        let (status, unit) = f
             .post(
                 &f.app,
                 id,
                 "/changes",
-                json!({ "type": "recurring", "usage_type_ref": null, "unit": null }),
-            )
-            .await;
-        assert_eq!(status, 200, "{leg:?}: {unit}");
-        assert_eq!(unit["applied"], false, "{unit}");
-        f.drift(id, AT_1, CLOUDLET_UNIT).await;
-        let left = f.card(id).await;
-        let (status, b) = f.approve(&unit, 1).await;
-        assert_eq!(status, 409, "{leg:?}: {b}");
-        assert_eq!(problem_code(&b), "DERIVED_PIN_IMMUTABLE", "{leg:?}: {b}");
-        let s = f.card(id).await;
-        assert_eq!(s, left, "the head as the writer left it");
-        assert_eq!(s["type"], "usage", "{s}");
-        assert_eq!(s["usage_type_ref"], AT_1, "{s}");
-        assert_eq!(s["pending_unit_id"], unit["unit"]["id"], "still pending");
-        f.assert_never_asked();
-
-        let other = f.draft(&f.setup, "T", GTS, "GB").await;
-        f.publish(&f.setup, other).await;
-        f.policy(1).await;
-        let (status, unit) = f
-            .post(
-                &f.setup,
-                other,
-                "/changes",
                 json!({"usage_type_ref":"usage:other"}),
             )
             .await;
-        assert_eq!(status, 200, "{unit}");
-        f.drift(other, AT_1, CLOUDLET_UNIT).await;
+        refused(status, &b, "METERING_IMMUTABLE", "usage_type_ref", leg);
+        assert_eq!(f.card(id).await["usage_type_ref"], GTS);
+        f.assert_never_asked();
+    }
+}
+
+/// A change that was legal when submitted is judged again at apply. The change is the identity
+/// wrap, so its `after` names the wrapper. A concurrent writer then moves the head onto another
+/// raw meter, keeping the unit. The rebuilt patch still sets the wrapper, so the proposal's
+/// `after` is unchanged and the approve is not refreshed: it applies, and the apply refuses it,
+/// 409 `METERING_IMMUTABLE`, the head as the writer left it and the unit still pending. The
+/// catalog is asked nothing: the proposal's ref is derived.
+#[tokio::test]
+async fn a_stale_change_is_refused_at_apply_when_a_concurrent_write_pinned_a_derived_type() {
+    const RAW: &str = "usage:storage";
+    const GB: &str = "GB";
+    const WRAP: &str = "products.derived/wrap@1";
+    for leg in LEGS {
+        let f = F::new(leg).await;
+        seed(
+            &f.dsn,
+            f.tenant,
+            "wrap",
+            &[declaration(
+                GB,
+                &[named_input("disk", RAW, GB)],
+                &identity_formula(),
+            )],
+        )
+        .await;
+        let id = f.legacy_raw("S", RAW, GB, true).await;
+        f.policy(1).await;
+        let (status, unit) = f
+            .post(&f.app, id, "/changes", json!({"usage_type_ref": WRAP}))
+            .await;
+        assert_eq!(status, 200, "{leg:?}: {unit}");
+        assert_eq!(unit["applied"], false, "{unit}");
+        f.drift(id, "usage:other", GB).await;
+        let left = f.card(id).await;
         let (status, b) = f.approve(&unit, 1).await;
-        if leg == Leg::Unconfigured {
-            assert_eq!(status, 503, "the GTS proposal is the catalog's: {b}");
-            continue;
-        }
-        assert_eq!(status, 400, "the refresh: {b}");
-        assert_eq!(problem_code(&b), "UNIT_STALE", "{b}");
-        let (status, b) = f.approve(&unit, 2).await;
-        assert_eq!(status, 409, "{b}");
-        assert_eq!(problem_code(&b), "DERIVED_PIN_IMMUTABLE", "{b}");
-        assert_eq!(f.card(other).await["usage_type_ref"], AT_1);
+        assert_eq!(status, 409, "{leg:?}: {b}");
+        assert_eq!(problem_code(&b), "METERING_IMMUTABLE", "{leg:?}: {b}");
+        let s = f.card(id).await;
+        assert_eq!(s, left, "the head as the writer left it");
+        assert_eq!(s["usage_type_ref"], "usage:other", "{s}");
+        assert_eq!(s["unit"], GB, "{s}");
+        assert_eq!(s["pending_unit_id"], unit["unit"]["id"], "still pending");
+        f.assert_never_asked();
     }
 }
 
@@ -789,7 +818,7 @@ fn identity_formula() -> Value {
 }
 
 /// A published raw meter may move onto the one-input identity wrapper of that meter, in the same
-/// unit (P-D-251). Every other move stays `DERIVED_PIN_IMMUTABLE` at the change door and in
+/// unit (P-D-251). Every other move stays `METERING_IMMUTABLE` at the change door and in
 /// `validate_change`.
 ///
 /// A version cannot stop wrapping between submit and apply: versions are append-only (P-D-231).
@@ -880,10 +909,10 @@ async fn a_published_raw_usage_sku_moves_onto_the_identity_wrapper_of_its_meter(
             json!({"type": "recurring", "usage_type_ref": null, "unit": null}),
         ] {
             let (status, b) = f.post(&f.app, pinned, "/changes", body.clone()).await;
-            refused(status, &b, "DERIVED_PIN_IMMUTABLE", "usage_type_ref", leg);
+            refused(status, &b, "METERING_IMMUTABLE", "usage_type_ref", leg);
             match f.at_apply(pinned, body).await {
                 Err(bss_approval::ApprovalError::InvalidSubmit { code, field, .. }) => {
-                    assert_eq!(code, "DERIVED_PIN_IMMUTABLE", "{leg:?}");
+                    assert_eq!(code, "METERING_IMMUTABLE", "{leg:?}");
                     assert_eq!(field, "usage_type_ref");
                 }
                 other => panic!("{leg:?}: apply judged {other:?}"),
@@ -891,8 +920,7 @@ async fn a_published_raw_usage_sku_moves_onto_the_identity_wrapper_of_its_meter(
             assert_eq!(f.card(pinned).await["usage_type_ref"], AT_1);
         }
 
-        let id = f.draft(&f.setup, "R", RAW, GB).await;
-        f.publish(&f.setup, id).await;
+        let id = f.legacy_raw("R", RAW, GB, true).await;
         for body in [
             json!({"usage_type_ref": TWO}),
             json!({"usage_type_ref": CEIL_WRAP}),
@@ -902,10 +930,10 @@ async fn a_published_raw_usage_sku_moves_onto_the_identity_wrapper_of_its_meter(
             json!({"usage_type_ref": "products.derived/missing@1"}),
         ] {
             let (status, b) = f.post(&f.app, id, "/changes", body.clone()).await;
-            refused(status, &b, "DERIVED_PIN_IMMUTABLE", "usage_type_ref", leg);
+            refused(status, &b, "METERING_IMMUTABLE", "usage_type_ref", leg);
             match f.at_apply(id, body).await {
                 Err(bss_approval::ApprovalError::InvalidSubmit { code, field, .. }) => {
-                    assert_eq!(code, "DERIVED_PIN_IMMUTABLE", "{leg:?}");
+                    assert_eq!(code, "METERING_IMMUTABLE", "{leg:?}");
                     assert_eq!(field, "usage_type_ref");
                 }
                 other => panic!("{leg:?}: apply judged {other:?}"),
@@ -927,7 +955,103 @@ async fn a_published_raw_usage_sku_moves_onto_the_identity_wrapper_of_its_meter(
         let card = f.card(id).await;
         assert_eq!(card["usage_type_ref"], WRAP);
         assert_eq!(card["unit"], GB);
-        assert_eq!(card["published_version"], 2);
+        assert_eq!(card["published_version"], 1);
+        f.assert_never_asked();
+    }
+}
+
+/// P-D-258: a published usage SKU, raw or derived, keeps its ref and its unit. A ref change is
+/// 400 `METERING_IMMUTABLE` on `usage_type_ref`; a unit change is the same code on `unit`; a type
+/// change away from usage is refused. The identity wrap still applies. A draft still edits both.
+/// Apply's own `validate_change` refuses a raw ref change that carries the stored unit.
+#[tokio::test]
+async fn a_published_usage_sku_keeps_its_metering() {
+    const RAW: &str = "usage:storage";
+    const OTHER: &str = "usage:other";
+    const GB: &str = "GB";
+    const WRAP: &str = "products.derived/wrap@1";
+    for leg in LEGS {
+        let f = F::new(leg).await;
+        seed(
+            &f.dsn,
+            f.tenant,
+            "wrap",
+            &[declaration(
+                GB,
+                &[named_input("disk", RAW, GB)],
+                &identity_formula(),
+            )],
+        )
+        .await;
+
+        let raw = f.legacy_raw("RAW", RAW, GB, true).await;
+        let (status, b) = f
+            .post(&f.app, raw, "/changes", json!({"usage_type_ref": OTHER}))
+            .await;
+        refused(status, &b, "METERING_IMMUTABLE", "usage_type_ref", leg);
+        assert_eq!(f.card(raw).await["usage_type_ref"], RAW);
+        let (status, b) = f.post(&f.app, raw, "/changes", json!({"unit": "MB"})).await;
+        refused(status, &b, "METERING_IMMUTABLE", "unit", leg);
+        assert_eq!(f.card(raw).await["unit"], GB);
+        let (status, b) = f
+            .post(
+                &f.app,
+                raw,
+                "/changes",
+                json!({"type": "recurring", "usage_type_ref": null, "unit": null}),
+            )
+            .await;
+        refused(status, &b, "METERING_IMMUTABLE", "usage_type_ref", leg);
+        assert_eq!(f.card(raw).await["type"], "usage");
+        match f
+            .at_apply(raw, json!({"usage_type_ref": OTHER, "unit": GB}))
+            .await
+        {
+            Err(bss_approval::ApprovalError::InvalidSubmit { code, field, .. }) => {
+                assert_eq!(code, "METERING_IMMUTABLE", "{leg:?}");
+                assert_eq!(field, "usage_type_ref");
+            }
+            other => panic!("{leg:?}: apply judged a raw ref change {other:?}"),
+        }
+
+        let derived = f.draft(&f.app, "DRV", AT_1, CLOUDLET_UNIT).await;
+        f.publish(&f.app, derived).await;
+        let (status, b) = f
+            .post(&f.app, derived, "/changes", json!({"usage_type_ref": AT_2}))
+            .await;
+        refused(status, &b, "METERING_IMMUTABLE", "usage_type_ref", leg);
+        let (status, b) = f
+            .post(&f.app, derived, "/changes", json!({"unit": "GB"}))
+            .await;
+        refused(status, &b, "METERING_IMMUTABLE", "unit", leg);
+        assert_eq!(f.card(derived).await["usage_type_ref"], AT_1);
+        assert_eq!(f.card(derived).await["unit"], CLOUDLET_UNIT);
+
+        assert_eq!(
+            f.catalog.asked(),
+            0,
+            "{leg:?}: a published metering change asks no catalog"
+        );
+        let draft = f.legacy_raw("DFT", RAW, GB, false).await;
+        let (status, b) = f
+            .patch(draft, json!({"usage_type_ref": WRAP, "unit": GB}))
+            .await;
+        assert_eq!(
+            status, 200,
+            "{leg:?}: a raw draft moves onto a derived ref: {b}"
+        );
+        assert_eq!(b["usage_type_ref"], WRAP);
+        assert_eq!(b["unit"], GB);
+
+        let moving = f.legacy_raw("WRP", RAW, GB, true).await;
+        let (status, b) = f
+            .post(&f.app, moving, "/changes", json!({"usage_type_ref": WRAP}))
+            .await;
+        assert_eq!(status, 200, "{leg:?}: the wrap still applies: {b}");
+        assert_eq!(b["applied"], true, "{b}");
+        let card = f.card(moving).await;
+        assert_eq!(card["usage_type_ref"], WRAP);
+        assert_eq!(card["unit"], GB);
         f.assert_never_asked();
     }
 }

@@ -16,10 +16,10 @@ async fn configured_gear_registers_implemented_routes() -> anyhow::Result<()> {
     assert!(gear.runtime.load_full().is_some());
     assert_eq!(
         crate::infra::storage::migrations::Migrator::migrations().len(),
-        14,
-        "the schema guard, coordination and the twelve PriceBook migrations (000009: the unit's \
+        15,
+        "the schema guard, coordination and the thirteen PriceBook migrations (000009: the unit's \
          note, P-D-219; 000010: no retired default, P-D-220; 000011: retire_pending, P-D-248; \
-         000012: the derived usage types, P-D-231)"
+         000012: the derived usage types, P-D-231; 000013: a derived SKU stores no unit, P-D-259)"
     );
     let openapi = OpenApiRegistryImpl::new();
     let router = gear.register_rest(&ctx, Router::new(), &openapi)?;
