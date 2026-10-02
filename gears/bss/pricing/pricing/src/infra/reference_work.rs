@@ -126,7 +126,7 @@ impl From<PricingPriceBookEntryCreate> for EntryInput {
     fn from(input: PricingPriceBookEntryCreate) -> Self {
         Self {
             meter_evidence: None,
-            schema_version: Some(2),
+            schema_version: Some(3),
             usage_rating_policy: input.usage_rating_policy.map(|policy| {
                 Box::new(crate::infra::usage_policy_wire::UsageRatingPolicyInput::from(policy))
             }),
@@ -1472,7 +1472,7 @@ async fn entry_written(
     };
     if op.kind == OpKind::Create.as_str() {
         let refusal = match (input.schema_version, &input.usage_rating_policy, kind) {
-            (Some(1 | 2), Some(policy), crate::domain::price_book_entry::ChargeKind::Usage) => {
+            (Some(1 | 2 | 3), Some(policy), crate::domain::price_book_entry::ChargeKind::Usage) => {
                 match &input.meter_evidence {
                     Some(evidence) => crate::infra::meter_semantics::validate(
                         &policy.as_ref().into(),
@@ -1489,11 +1489,11 @@ async fn entry_written(
                     None => Some("METER_EVIDENCE_MISSING"),
                 }
             }
-            (Some(1 | 2), None, crate::domain::price_book_entry::ChargeKind::Usage) => {
+            (Some(1 | 2 | 3), None, crate::domain::price_book_entry::ChargeKind::Usage) => {
                 Some("MISSING_RATING_POLICY")
             }
-            (Some(1 | 2), Some(_), _) => Some("UNEXPECTED_RATING_POLICY"),
-            (None | Some(1 | 2), None, _) => None,
+            (Some(1 | 2 | 3), Some(_), _) => Some("UNEXPECTED_RATING_POLICY"),
+            (None | Some(1 | 2 | 3), None, _) => None,
             _ => return Err(corrupt()),
         };
         if let Some(code) = refusal {
@@ -1515,7 +1515,12 @@ async fn entry_written(
         usage_policy_id: None,
         usage_policy_version: None,
         usage_policy_digest: None,
-        usage_sku_version: None,
+        usage_sku_version: match (kind, input.usage_rating_policy.is_some()) {
+            (crate::domain::price_book_entry::ChargeKind::Usage, true) => {
+                Some(sku.published_version)
+            }
+            _ => None,
+        },
         dimension_key: input.dimension_key,
         invoice_line_override: input.invoice_line_override,
         reservation_id: op.reservation_id.ok_or_else(corrupt)?,

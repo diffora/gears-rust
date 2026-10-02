@@ -65,7 +65,10 @@ pub async fn upgrade(
         .into_iter()
         .filter(|m| {
             let name = m.name();
-            !(name.contains("000018") || name.contains("000019") || name.contains("000020"))
+            !(name.contains("000018")
+                || name.contains("000019")
+                || name.contains("000020")
+                || name.contains("000021"))
         })
         .collect();
     let applied = run_migrations_for_testing(&db.db(), prior).await.unwrap();
@@ -75,12 +78,9 @@ pub async fn upgrade(
             .iter()
             .any(|s| s == "m20260929_000017_revision_scheduled")
     );
-    assert!(
-        !applied
-            .applied_names
-            .iter()
-            .any(|s| s.contains("000018") || s.contains("000019") || s.contains("000020"))
-    );
+    assert!(!applied.applied_names.iter().any(|s| {
+        s.contains("000018") || s.contains("000019") || s.contains("000020") || s.contains("000021")
+    }));
     let catalog = Arc::new(p::Catalog::default());
     let sku = catalog.sku(bss_products_sdk::models::SkuType::Usage);
     let tenant = Uuid::now_v7();
@@ -147,7 +147,8 @@ pub async fn upgrade(
         [
             "m20260930_000018_usage_rating_policy",
             "m20260930_000019_commercial_receipts",
-            "m20261002_000020_plan_summary"
+            "m20261002_000020_plan_summary",
+            "m20261002_000021_policy_references_sku"
         ]
     );
     let f = p::Fixture::on(db, tenant, dsn, catalog).await;

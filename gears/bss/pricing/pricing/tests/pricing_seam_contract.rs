@@ -788,8 +788,24 @@ async fn entry_policy_mismatch_is_refused_and_book_remap_requires_exact_policy()
     let original = w.author(&f).await;
     let mut bad = f.given.commercial.clone();
     bad.quantity_semantics.unit = "second".into();
-    let result = w.f.call("POST", &format!("/price-books/{}/entries",w.book),
-        json!({"sku_id":original.sku_id,"model":"volume","usage_rating_policy":wire::UsageRatingPolicyInput::from(&bad.policy())}),None,Some("mismatch")).await;
+    let mut policy =
+        serde_json::to_value(wire::UsageRatingPolicyInput::from(&bad.policy())).unwrap();
+    let q = &bad.quantity_semantics;
+    policy["quantity_semantics"] = json!({
+        "meter": {"usage_type_id": q.usage_type_id, "version": q.usage_type_version},
+        "unit": q.unit,
+        "fold": "SUM",
+        "accrual_policy_version": q.accrual_policy_version
+    });
+    let result =
+        w.f.call(
+            "POST",
+            &format!("/price-books/{}/entries", w.book),
+            json!({"sku_id":original.sku_id,"model":"volume","usage_rating_policy":policy}),
+            None,
+            Some("mismatch"),
+        )
+        .await;
     assert_eq!(result.0, 400, "{result:?}");
     let problem: Problem = serde_json::from_value(result.1).unwrap();
     assert!(
@@ -974,7 +990,7 @@ async fn f22_f31_unsupported_inputs_fail_before_acceptance() {
                 // Legacy/corrupt catalog rows cannot be authored through the modern gates.
                 // Inject them after publication to prove the actual sellability provider fails closed.
                 match refusal {
-                    Refusal::MissingPolicy => execute(&w,"UPDATE pricing_price_book_entry SET usage_policy_id=NULL,usage_policy_version=NULL,usage_policy_digest=NULL").await,
+                    Refusal::MissingPolicy => execute(&w,"UPDATE pricing_price_book_entry SET usage_policy_id=NULL,usage_policy_version=NULL,usage_policy_digest=NULL,usage_sku_version=NULL").await,
                     Refusal::MinimumFee => execute(&w,"UPDATE pricing_price SET min_fee='0'").await,
                     Refusal::Package => {
                         execute(&w,"UPDATE pricing_price_book_entry SET model='package'").await;

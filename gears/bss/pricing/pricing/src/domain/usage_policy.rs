@@ -62,6 +62,36 @@ pub fn validate_meter_policy(
     Ok(())
 }
 
+/// A deploy-3 `quantity_semantics` object, verified against the SKU and the provider, then dropped.
+/// # Errors
+/// `METER_POLICY_MISMATCH` when the copy does not equal the SKU and the provider's answer.
+pub fn legacy_quantity_matches(
+    meter_id: &str,
+    meter_version: &str,
+    unit: &str,
+    accrual: &str,
+    fold: bss_pricing_sdk::terms::Fold,
+    sku_ref: &str,
+    sku_unit: &str,
+    semantics: &bss_pricing_sdk::meter_semantics::MeterSemantics,
+) -> Result<(), RuleError> {
+    let asked = meter_ref(sku_ref);
+    if meter_id.trim().is_empty()
+        || meter_version.trim().is_empty()
+        || unit.trim().is_empty()
+        || accrual.trim().is_empty()
+        || meter_id != asked.usage_type_id
+        || meter_version != asked.version
+        || unit != sku_unit
+        || unit != semantics.canonical_unit
+        || fold != semantics.fold
+        || accrual != semantics.accrual_policy_version
+    {
+        return Err(RuleError::new("METER_POLICY_MISMATCH"));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, reason = "the assertion is the refusal")]
