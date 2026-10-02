@@ -409,6 +409,12 @@ async fn attach(tx: &impl DBRunner, r: &Request, row: &acceptance::Model) -> Res
     .await?;
     Ok(())
 }
+fn contended(error: &CanonicalError) -> bool {
+    matches!(
+        error,
+        CanonicalError::Aborted { ctx, .. } if ctx.reason == support::UNIT_CONTENDED
+    )
+}
 pub(super) fn failure(e: DoorError) -> CanonicalError {
     match e {
         DoorError::Repo(RepoError::Conflict {
@@ -418,13 +424,40 @@ pub(super) fn failure(e: DoorError) -> CanonicalError {
             code: "IDEMPOTENCY_CONFLICT",
         }) => R::IdempotencyConflict.into(),
         DoorError::Repo(e) => errors::storage(e),
-        other => {
-            let e: CanonicalError = other.into();
-            if e.to_string().contains(support::UNIT_CONTENDED) {
-                R::ResolutionChanged.into()
-            } else {
-                e
-            }
+        DoorError::SelectionMoved => R::ResolutionChanged.into(),
+        DoorError::Api(error) if contended(&error) => R::ResolutionChanged.into(),
+        other => other.into(),
+    }
+}
+
+#[cfg(test)]
+mod failure_classify {
+    use super::*;
+    use crate::api::rest::authoring::support::{self, DoorError};
+
+    fn reason(error: &CanonicalError) -> Option<String> {
+        match error {
+            CanonicalError::Aborted { ctx, .. } => Some(ctx.reason.clone()),
+            _ => None,
         }
+    }
+
+    #[test]
+    fn selection_moved_is_resolution_changed() {
+        let error = failure(DoorError::SelectionMoved);
+        assert_eq!(reason(&error).as_deref(), Some("ResolutionChanged"));
+    }
+
+    #[test]
+    fn exhausted_unit_capture_is_resolution_changed() {
+        let error = failure(DoorError::Api(support::conflict(support::UNIT_CONTENDED)));
+        assert_eq!(reason(&error).as_deref(), Some("ResolutionChanged"));
+    }
+
+    #[test]
+    fn a_detail_that_mentions_the_code_is_not_reclassified() {
+        let misleading = support::conflict_because("PRICE_CLOSED", "note mentions UNIT_CONTENDED");
+        let error = failure(DoorError::Api(misleading));
+        assert_eq!(reason(&error).as_deref(), Some("PRICE_CLOSED"));
     }
 }
