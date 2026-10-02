@@ -572,7 +572,8 @@ pub async fn count(
 ) -> Result<PlanCounts, PlanListError> {
     #[derive(Debug, sea_orm::FromQueryResult)]
     struct Bucket {
-        selling: i64,
+        /// The `selling_flag` CASE of two integer literals: INT4 on Postgres, INTEGER on SQLite.
+        selling: i32,
         change: String,
         n: i64,
     }
@@ -598,8 +599,10 @@ pub async fn count(
                 .expr_as(selling.clone(), "selling")
                 .expr_as(change.clone(), "change")
                 .column_as(e::Column::Id.count(), "n")
-                .group_by(selling.clone())
-                .group_by(change.clone())
+                // By position: each expression binds `today`, and Postgres does not match a
+                // SELECT expression to a GROUP BY one whose parameters are separate binds (42803).
+                .group_by(Expr::cust("1"))
+                .group_by(Expr::cust("2"))
                 .into_model::<Bucket>()
         })
         .await
@@ -615,17 +618,19 @@ pub async fn count(
         } else {
             counts.selling_true = counts.selling_true.saturating_add(n);
         }
-        match row.change.as_str() {
-            "none" => counts.none = n,
-            "draft" => counts.draft = n,
-            "pending" => counts.pending = n,
-            "scheduled" => counts.scheduled = n,
+        // One change comes back once per selling value, so each bucket adds its rows.
+        let bucket = match row.change.as_str() {
+            "none" => &mut counts.none,
+            "draft" => &mut counts.draft,
+            "pending" => &mut counts.pending,
+            "scheduled" => &mut counts.scheduled,
             other => {
                 return Err(PlanListError::Repo(RepoError::CorruptRow(format!(
                     "plan change {other:?}"
                 ))));
             }
-        }
+        };
+        *bucket = bucket.saturating_add(n);
     }
     Ok(counts)
 }

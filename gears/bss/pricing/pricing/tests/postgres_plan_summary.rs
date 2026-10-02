@@ -12,6 +12,9 @@ use uuid::Uuid;
 
 const MIGRATION: &str = "m20261002_000020_plan_summary";
 
+/// A seeded plan: its id, its code, and its revisions as `(rev_no, state)`.
+type Shape = (u128, &'static str, &'static [(i32, &'static str)]);
+
 async fn exec(pg: &Pg, sql: &str) {
     pg.raw()
         .await
@@ -273,5 +276,114 @@ async fn postgres_the_backfill_fills_every_seeded_shape_and_the_checks_pair_the_
     assert!(
         down.contains(MIGRATION) && down.contains("irreversible"),
         "{down}"
+    );
+}
+
+/// D-485 on Postgres: the counts are one grouped read. Each grouped expression binds `today`, so the
+/// statement groups by position (42803 otherwise), and a `change` that comes back once per `selling`
+/// value adds both rows: a draft-only plan (not selling) and a published plan with a draft (selling)
+/// are two drafts.
+#[tokio::test]
+#[ignore = "needs the Postgres harness"]
+async fn postgres_the_plan_counts_group_by_position_and_add_each_change_across_selling() {
+    use bss_pricing::infra::storage::repo::plan_repo::{self, PlanListFilter};
+    use toolkit_db::{DBProvider, DbError};
+    use toolkit_security::AccessScope;
+
+    let pg = Pg::empty().await;
+    let prior = BssPricingGear::default()
+        .migrations()
+        .into_iter()
+        .filter(|m| m.name() != MIGRATION)
+        .collect();
+    toolkit_db::migration_runner::run_migrations_for_testing(&pg.db().await, prior)
+        .await
+        .unwrap();
+    let tenant = Uuid::from_u128(0x50);
+    let author = Uuid::from_u128(0x51);
+    let eur = Uuid::from_u128(0x52);
+    exec(
+        &pg,
+        &format!(
+            "INSERT INTO bss.pricing_price_book (id,tenant_id,code,name,currency,version,created_at,updated_at) \
+             VALUES ({},{},'eur','eur','EUR',1,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
+            q(eur),
+            q(tenant)
+        ),
+    )
+    .await;
+    // (plan, code, its revisions as (rev_no, state)).
+    let shapes: [Shape; 3] = [
+        (0x60, "DRAFT_ONLY", &[(1, "draft")]),
+        (
+            0x61,
+            "PUBLISHED_WITH_DRAFT",
+            &[(1, "published"), (2, "draft")],
+        ),
+        (0x62, "PUBLISHED", &[(1, "published")]),
+    ];
+    for (n, (plan, code, revisions)) in shapes.into_iter().enumerate() {
+        exec(
+            &pg,
+            &format!(
+                "INSERT INTO bss.pricing_plan (id,tenant_id,code,name,published_rev,version,created_by,created_at,updated_at) \
+                 VALUES ({},{},'{code}','{code}',NULL,1,{},'2026-01-01T00:00:00Z','2026-01-02T00:00:00Z')",
+                q(Uuid::from_u128(plan)),
+                q(tenant),
+                q(author)
+            ),
+        )
+        .await;
+        for (rev_no, state) in revisions {
+            exec(
+                &pg,
+                &format!(
+                    "INSERT INTO bss.pricing_plan_revision (id,tenant_id,plan_id,rev_no,book_id,state,available_from,version,created_by,created_at,updated_at) \
+                     VALUES ({},{},{},{rev_no},{},'{state}',NULL,1,{},'2026-01-01T00:00:00Z','2026-02-0{}T00:00:00Z')",
+                    q(Uuid::from_u128(0x70 + (n as u128) * 4 + u128::try_from(*rev_no).unwrap())),
+                    q(tenant),
+                    q(Uuid::from_u128(plan)),
+                    q(eur),
+                    q(author),
+                    rev_no
+                ),
+            )
+            .await;
+        }
+    }
+    toolkit_db::migration_runner::run_migrations_for_testing(
+        &pg.db().await,
+        BssPricingGear::default().migrations(),
+    )
+    .await
+    .unwrap();
+    let provider = DBProvider::<DbError>::new(pg.db().await);
+    let conn = provider.conn().unwrap();
+    let filter = PlanListFilter {
+        text: None,
+        sku: None,
+        selling: None,
+        change: Vec::new(),
+        today: time::OffsetDateTime::now_utc().date(),
+    };
+    let counts = plan_repo::count(
+        &conn,
+        &AccessScope::for_tenant(tenant),
+        tenant,
+        sea_orm::DbBackend::Postgres,
+        &filter,
+        &toolkit_odata::ODataQuery::default(),
+    )
+    .await
+    .unwrap_or_else(|e| panic!("the counts read on Postgres: {e:?}"));
+    assert_eq!(
+        (counts.total, counts.selling_true, counts.selling_false),
+        (3, 2, 1),
+        "{counts:?}"
+    );
+    assert_eq!(
+        (counts.none, counts.draft, counts.pending, counts.scheduled),
+        (1, 2, 0, 0),
+        "a draft on either side of selling is counted: {counts:?}"
     );
 }
