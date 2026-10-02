@@ -220,3 +220,28 @@ async fn the_keys_are_typed_refusals_and_the_checks_hold() {
     }
     raw.close().await.unwrap();
 }
+
+/// The list's grouped read returns the latest version row on Postgres, not only its number
+/// (P-D-257). Another tenant reads none of it.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn the_latest_version_read_returns_the_latest_row() {
+    let f = Fixture::new().await;
+    let id = f.seeded().await;
+    let conn = f.db.conn().unwrap();
+    let latest = store::latest_versions(&conn, &f.scope, f.tenant, &[id])
+        .await
+        .unwrap();
+    assert_eq!(latest.len(), 1);
+    let row = &latest[&id];
+    assert_eq!(row.version, 2);
+    assert_eq!(row.digest, "2".repeat(64));
+    assert_eq!(row.declaration_json, serde_json::json!({ "v": 2 }));
+    let other = Uuid::new_v4();
+    assert!(
+        store::latest_versions(&conn, &AccessScope::for_tenant(other), other, &[id])
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
