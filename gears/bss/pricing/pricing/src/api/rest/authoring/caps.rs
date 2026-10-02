@@ -13,7 +13,8 @@ use super::dto::{
 };
 use super::support::invalid_because;
 use crate::domain::caps::{
-    CODE_MAX_CHARS, LABEL_MAX_CHARS, NAME_MAX_CHARS, NOTE_MAX_CHARS, TEMPLATE_MAX_CHARS, over,
+    CODE_MAX_CHARS, LABEL_MAX_CHARS, METER_REF_MAX_CHARS, NAME_MAX_CHARS, NOTE_MAX_CHARS,
+    TEMPLATE_MAX_CHARS, over,
 };
 use toolkit_canonical_errors::CanonicalError;
 
@@ -117,7 +118,7 @@ impl Capped for PricingPriceBookEntryCreate {
         field(
             "usage_rating_policy.usage_type_id",
             &quantity.meter.usage_type_id,
-            CODE_MAX_CHARS,
+            METER_REF_MAX_CHARS,
         )?;
         field(
             "usage_rating_policy.version",
@@ -128,7 +129,7 @@ impl Capped for PricingPriceBookEntryCreate {
         field(
             "usage_rating_policy.accrual_policy_version",
             &quantity.accrual_policy_version,
-            CODE_MAX_CHARS,
+            METER_REF_MAX_CHARS,
         )
     }
 }
@@ -244,14 +245,28 @@ mod tests {
     }
 
     #[test]
-    fn a_meter_id_over_the_code_cap_is_field_too_long() {
-        let error = create(&"m".repeat(CODE_MAX_CHARS + 1)).caps().unwrap_err();
+    fn a_meter_id_over_the_meter_ref_cap_is_field_too_long() {
+        let error = create(&"m".repeat(METER_REF_MAX_CHARS + 1))
+            .caps()
+            .unwrap_err();
         let body =
             serde_json::to_string(&toolkit_canonical_errors::Problem::from_error(&error).unwrap())
                 .unwrap();
         assert!(body.contains("FIELD_TOO_LONG"), "{body}");
         assert!(body.contains("usage_rating_policy.usage_type_id"), "{body}");
-        assert!(create(&"m".repeat(CODE_MAX_CHARS)).caps().is_ok());
+        assert!(create(&"m".repeat(METER_REF_MAX_CHARS)).caps().is_ok());
+    }
+
+    /// A derived meter's real strings pass: its accrual version is `derived-v1:` plus 64 hex
+    /// digits (75 characters), over a code's 64, and a raw GTS id may pass 64 too.
+    #[test]
+    fn a_derived_accrual_version_and_a_long_gts_id_fit() {
+        let mut entry = create("gts.cf.core.uc.usage_record.v1~cf.bss.usage_type.memorygbhours.v1");
+        if let Some(policy) = entry.usage_rating_policy.as_mut() {
+            policy.quantity_semantics.accrual_policy_version =
+                format!("derived-v1:{}", "a".repeat(64));
+        }
+        assert!(entry.caps().is_ok());
     }
 
     #[test]

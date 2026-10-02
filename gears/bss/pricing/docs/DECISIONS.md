@@ -937,7 +937,7 @@ D-468 extends this entry: a new plan's code off the rule is 400 PLAN_CODE_INVALI
 
 D-468 extends this entry: a new plan's code also follows a rule of at most 32 characters; the 64-character cap is judged first.
 
-**Amended 2026-10-02 (phase 9 review F1).** An entry create's usage-rating policy caps its four quantity strings at a code's 64 characters: `usage_type_id`, `version`, `unit` and `accrual_policy_version`, each 400 `FIELD_TOO_LONG` on that field, before the meter provider is asked. A list's `q` (the plans list, the book list, and `GET /price-book-entries`) is at most a name's 200 characters, the same code on `q`, before it becomes a pattern.
+**Amended 2026-10-02 (phase 9 review F1).** An entry create's usage-rating policy caps its quantity strings, each 400 `FIELD_TOO_LONG` on that field, before the meter provider is asked: `usage_type_id` and `accrual_policy_version` at 512 characters (Products' cap on a SKU's `usage_type_ref`, which the meter must equal; a derived accrual version is `derived-v1:` plus 64 hex digits, 75 characters), `version` and `unit` at a code's 64. A list's `q` (the plans list, the book list, and `GET /price-book-entries`) is at most a name's 200 characters, the same code on `q`, before it becomes a pattern.
 
 **Source:** Whole-branch review of 2026-09-29, PS-09, PS-10 and X-01 (fix run W1a; the dispositions' "Length caps"); the second reviews of W1a (L1) and W1b (L2). Extended by D-468. Amended 2026-10-02 (phase 9 review F1): the policy's quantity strings and a list's `q`.
 
