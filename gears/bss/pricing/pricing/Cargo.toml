@@ -50,6 +50,7 @@ toolkit-odata = { workspace = true, features = ["with-utoipa"] }
 sea-orm = { workspace = true, features = ["sqlx-postgres", "sqlx-sqlite"] }
 sea-orm-migration = { workspace = true }
 tokio = { workspace = true, features = ["time", "macros", "rt"] }
+tokio-retry = { workspace = true }
 tokio-util = { workspace = true }
 axum = { workspace = true }
 arc-swap = { workspace = true }

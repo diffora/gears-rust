@@ -513,17 +513,44 @@ where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<T, DoorError>>,
 {
-    for _ in 0..toolkit_db::DEFAULT_TX_RETRY_ATTEMPTS {
+    let mut last = None;
+    for n in 1..=toolkit_db::DEFAULT_TX_RETRY_ATTEMPTS {
         match attempt().await {
-            Err(DoorError::SelectionMoved) => {}
+            Err(error @ DoorError::SelectionMoved) => last = Some(error),
             Err(error)
                 if driver_source(&error).is_some_and(|source| {
                     toolkit_db::contention::is_retryable_contention(db.backend(), source)
-                }) => {}
+                }) =>
+            {
+                last = Some(error);
+            }
             other => return other,
         }
+        if n < toolkit_db::DEFAULT_TX_RETRY_ATTEMPTS {
+            tokio::time::sleep(retry_backoff_delay(n + 1)).await;
+        }
+    }
+    if let Some(error) = last.as_ref() {
+        tracing::warn!(
+            error = %error,
+            attempts = toolkit_db::DEFAULT_TX_RETRY_ATTEMPTS,
+            "detached capture retry budget exhausted"
+        );
     }
     Err(conflict(UNIT_CONTENDED).into())
+}
+/// The same stagger toolkit-db uses before a contended transaction retry: a few milliseconds,
+/// grown per attempt and jittered, so two capturers do not restart in lockstep.
+fn retry_backoff_delay(next_attempt: u32) -> std::time::Duration {
+    use std::time::Duration;
+    use tokio_retry::strategy::{ExponentialBackoff, jitter};
+    let index = usize::try_from(next_attempt.saturating_sub(2)).unwrap_or(0);
+    let base = ExponentialBackoff::from_millis(2)
+        .factor(5)
+        .max_delay(Duration::from_millis(100))
+        .nth(index)
+        .unwrap_or(Duration::from_millis(100));
+    jitter(base)
 }
 
 /// One event-bearing transaction within [`retry_unit_capture`]. The outer loop owns the entire
