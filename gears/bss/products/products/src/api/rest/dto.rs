@@ -599,6 +599,7 @@ pub struct UnitCountsQuery {
     pub ref_id: Option<Uuid>,
 }
 #[toolkit_macros::api_dto(request)]
+#[serde(deny_unknown_fields)]
 pub struct VoteRequest {
     pub generation: i32,
     pub note: Option<String>,

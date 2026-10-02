@@ -117,7 +117,7 @@ async fn each_submit_door_stores_its_note_on_the_unit_and_on_its_history_row() {
             "/approval-units/{}/withdraw",
             retire["unit"]["id"].as_str().unwrap()
         ),
-        json!({"generation":1}),
+        json!({}),
         None,
     )
     .await;
@@ -251,7 +251,7 @@ async fn two_submits_that_differ_only_by_their_note_fingerprint_alike() {
                 "/approval-units/{}/withdraw",
                 u["unit"]["id"].as_str().unwrap()
             ),
-            json!({"generation":1}),
+            json!({}),
             None,
         )
         .await;

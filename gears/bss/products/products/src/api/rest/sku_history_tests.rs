@@ -45,7 +45,11 @@ async fn decide(f: &Fixture, ctx: &SecurityContext, unit: &Value, action: &str) 
             "/approval-units/{}/{action}",
             unit["unit"]["id"].as_str().unwrap()
         ),
-        json!({"generation":unit["unit"]["generation"],"note":format!("{action} note")}),
+        if action == "withdraw" {
+            json!({})
+        } else {
+            json!({"generation":unit["unit"]["generation"],"note":format!("{action} note")})
+        },
         None,
     )
     .await;

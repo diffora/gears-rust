@@ -24,6 +24,7 @@ use crate::{
         error::DomainError,
         recognized::UsageRefAnswer,
         sku::SkuPatch,
+        validation::ValidationReport,
     },
     infra::{
         events::{self, TxOutbox},
@@ -33,6 +34,7 @@ use crate::{
 use authz_resolver_sdk::PolicyEnforcer;
 use axum::{
     Extension, Json, Router,
+    body::Bytes,
     extract::{
         Path, Query,
         rejection::{JsonRejection, QueryRejection},
@@ -179,10 +181,14 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .operation_id("bss_products.approve_unit")
         .summary("approve_unit")
         .description(
-            "Approves the unit at the generation its reviewer saw. The note is at most 2000 \
+            "Approves the unit at the generation its reviewer saw. The body is generation and an \
+             optional note; a missing generation is 400 GENERATION_REQUIRED and any other key is \
+             400 BODY_UNEXPECTED (P-D-253). The note is at most 2000 \
              characters (the approval engine's cap). The apply judges the SKU as it is then: a \
-             change that would move a derived pin, or leave a unit other than the pinned \
-             version's output unit, is refused (P-D-232). Refusals include 400 NOTE_TOO_LONG on \
+             change that would move a derived pin is refused, except a raw meter moving onto the \
+             identity wrapper of that meter in the same unit (P-D-251); every other pin move, or \
+             a unit other than the pinned version's output unit, is refused (P-D-232). Refusals \
+             include 400 NOTE_TOO_LONG on \
              a longer note, 400 GENERATION_MISMATCH, 400 UNIT_STALE after a refresh, 403 \
              SOD_VIOLATION, 409 DUPLICATE_VOTE, and the apply's 409 DERIVED_PIN_IMMUTABLE, \
              DERIVED_UNIT_MISMATCH or DERIVED_USAGE_TYPE_UNKNOWN.",
@@ -233,6 +239,11 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
     let router = OperationBuilder::post("/bss-products/v1/approval-units/{id}/withdraw")
         .operation_id("bss_products.withdraw_unit")
         .summary("withdraw_unit")
+        .description(
+            "The submitter withdraws a pending unit. The body is empty or {}. Any other body is \
+             400 BODY_UNEXPECTED and the unit stays pending. The idempotency digest is the body \
+             sent, so an empty body and {} do not share a row (P-D-253).",
+        )
         .tag("Approval units")
         .authenticated()
         .no_license_required()
@@ -267,6 +278,7 @@ async fn approve(
     )
     .await?;
     let body = json_body(body)?;
+    let request = parse_vote(&body)?;
     vote(
         &enforcer,
         state,
@@ -274,7 +286,8 @@ async fn approve(
         ctx,
         id,
         Vote::Approve,
-        Some(body),
+        Some(request),
+        body,
         headers,
     )
     .await
@@ -296,6 +309,7 @@ async fn reject(
     )
     .await?;
     let body = json_body(body)?;
+    let request = parse_vote(&body)?;
     vote(
         &enforcer,
         state,
@@ -303,7 +317,8 @@ async fn reject(
         ctx,
         id,
         Vote::Reject,
-        Some(body),
+        Some(request),
+        body,
         headers,
     )
     .await
@@ -314,6 +329,7 @@ async fn withdraw(
     ctx: Option<Extension<SecurityContext>>,
     Path(id): Path<Uuid>,
     headers: HeaderMap,
+    body: Bytes,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(ctx)?;
     let scope = g::scope(
@@ -323,6 +339,7 @@ async fn withdraw(
         actions::SUBMIT,
     )
     .await?;
+    let digest = withdraw_body(&body)?;
     vote(
         &enforcer,
         state,
@@ -331,6 +348,7 @@ async fn withdraw(
         id,
         Vote::Withdraw,
         None,
+        digest,
         headers,
     )
     .await
@@ -808,6 +826,62 @@ async fn proposed(subject: &Subject, tx: &DbTx<'_>, unit: &Unit) -> Result<SkuCo
             .map_err(|e| TxError::from(ApprovalError::Store(e.to_string())))
     }
 }
+/// Approve and reject take `generation` and an optional `note`. A missing generation is 400
+/// `GENERATION_REQUIRED`. Any other key is 400 `BODY_UNEXPECTED` on that key (P-D-253).
+fn parse_vote(value: &serde_json::Value) -> Result<VoteRequest, CanonicalError> {
+    let Some(fields) = value.as_object() else {
+        return Err(vote_violation(
+            "body",
+            "VALIDATION",
+            "the body is a JSON object",
+        ));
+    };
+    if let Some(key) = fields
+        .keys()
+        .find(|key| key.as_str() != "generation" && key.as_str() != "note")
+    {
+        return Err(vote_violation(
+            key,
+            "BODY_UNEXPECTED",
+            "this field is not part of the vote",
+        ));
+    }
+    if !fields.contains_key("generation") {
+        return Err(vote_violation(
+            "generation",
+            "GENERATION_REQUIRED",
+            "generation is required",
+        ));
+    }
+    serde_json::from_value(value.clone())
+        .map_err(|error| vote_violation("body", "VALIDATION", &error.to_string()))
+}
+
+/// Withdraw accepts an empty body or `{}` and nothing else. The two digest as different payloads,
+/// so they do not share an idempotency row (P-D-253).
+fn withdraw_body(body: &[u8]) -> Result<serde_json::Value, CanonicalError> {
+    if body.iter().all(u8::is_ascii_whitespace) {
+        return Ok(serde_json::Value::Null);
+    }
+    let value: serde_json::Value = serde_json::from_slice(body)
+        .map_err(|error| vote_violation("body", "VALIDATION", &error.to_string()))?;
+    if value.as_object().is_some_and(serde_json::Map::is_empty) {
+        Ok(value)
+    } else {
+        Err(vote_violation(
+            "body",
+            "BODY_UNEXPECTED",
+            "withdraw takes an empty body or {}",
+        ))
+    }
+}
+
+fn vote_violation(field: &str, code: &'static str, detail: &str) -> CanonicalError {
+    let mut report = ValidationReport::new();
+    report.violate(code, field, detail);
+    DomainError::Validation(report).into()
+}
+
 /// @cpt-cf-bss-products-fr-concurrency-idempotency
 #[expect(
     clippy::too_many_arguments,
@@ -820,7 +894,8 @@ async fn vote(
     ctx: SecurityContext,
     id: Uuid,
     action: Vote,
-    body: Option<serde_json::Value>,
+    body: Option<VoteRequest>,
+    digest: serde_json::Value,
     headers: HeaderMap,
 ) -> Result<Response, CanonicalError> {
     let suffix = match action {
@@ -832,12 +907,8 @@ async fn vote(
         &state,
         &headers,
         format!("/bss-products/v1/approval-units/{id}/{suffix}"),
-        &body.clone().unwrap_or_else(|| serde_json::json!({})),
+        &digest,
     )?;
-    let body: Option<VoteRequest> = body
-        .map(serde_json::from_value)
-        .transpose()
-        .map_err(|e| CanonicalError::from(g::validation("body", e.to_string())))?;
     // Check resource authorization even for a receipt replay, without requiring Pending.
     let conn = state.db.conn().map_err(|e| tx_to_canonical(e.into()))?;
     if repo::find_unit(&conn, &scope, ctx.subject_tenant_id(), id)

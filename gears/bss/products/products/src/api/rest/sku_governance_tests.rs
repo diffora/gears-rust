@@ -7,7 +7,7 @@ use crate::test_support::*;
 use axum::{
     Router,
     body::Body,
-    http::{Method, Request},
+    http::{Method, Request, StatusCode},
 };
 use event_broker_sdk::TypedEvent;
 use serde_json::{Value, json};
@@ -217,6 +217,11 @@ impl Fixture {
         .await
     }
     async fn vote(&self, unit: &Value, action: &str, generation: i32) -> (u16, Value) {
+        let body = if action == "withdraw" {
+            json!({})
+        } else {
+            json!({"generation":generation,"note":"reviewed"})
+        };
         call(
             &self.app,
             &self.reviewer,
@@ -225,7 +230,7 @@ impl Fixture {
                 "/approval-units/{}/{action}",
                 unit["unit"]["id"].as_str().unwrap()
             ),
-            json!({"generation":generation,"note":"reviewed"}),
+            body,
             None,
         )
         .await
@@ -703,7 +708,11 @@ async fn a_rejected_or_withdrawn_retire_lifts_the_fence_and_the_lock_together_an
                 "/approval-units/{}/{action}",
                 u["unit"]["id"].as_str().unwrap()
             ),
-            json!({"generation":1,"note":"no"}),
+            if action == "withdraw" {
+                json!({})
+            } else {
+                json!({"generation":1,"note":"no"})
+            },
             None,
         )
         .await;
@@ -758,6 +767,86 @@ async fn reject_needs_a_note_unlocks_and_withdraw_is_the_submitters() {
     assert_eq!(f.vote(&u, "withdraw", 1).await.0, 403);
     assert_eq!(f.vote(&u, "reject", 1).await.0, 200);
     assert!(f.card().await["pending_unit_id"].is_null());
+}
+
+#[tokio::test]
+async fn a_vote_refuses_an_unknown_field_a_missing_generation_and_a_withdraw_body() {
+    let f = Fixture::new(1).await;
+    let (_, u) = f.post("/submit", json!({})).await;
+    let id = u["unit"]["id"].as_str().unwrap();
+    let approve = format!("/approval-units/{id}/approve");
+    let (status, b) = call(
+        &f.app,
+        &f.reviewer,
+        Method::POST,
+        &approve,
+        json!({"generation": 1, "extra": 1}),
+        Some("extra"),
+    )
+    .await;
+    assert_eq!(status, 400, "{b}");
+    assert_eq!(problem_code(&b), "BODY_UNEXPECTED");
+    let (status, b) = call(
+        &f.app,
+        &f.reviewer,
+        Method::POST,
+        &approve,
+        json!({}),
+        Some("empty"),
+    )
+    .await;
+    assert_eq!(status, 400, "{b}");
+    assert_eq!(problem_code(&b), "GENERATION_REQUIRED");
+    let (status, b) = call(
+        &f.app,
+        &f.author,
+        Method::POST,
+        &format!("/approval-units/{id}/withdraw"),
+        json!({"x": 1}),
+        Some("stray"),
+    )
+    .await;
+    assert_eq!(status, 400, "{b}");
+    assert_eq!(problem_code(&b), "BODY_UNEXPECTED");
+    assert_eq!(f.card().await["pending_unit_id"], u["unit"]["id"]);
+    let (status, b) = call(
+        &f.app,
+        &f.author,
+        Method::POST,
+        &format!("/approval-units/{id}/withdraw"),
+        json!({}),
+        Some("ok"),
+    )
+    .await;
+    assert_eq!(status, 200, "{b}");
+    let (_, again) = f.post("/submit", json!({})).await;
+    let again_id = again["unit"]["id"].as_str().unwrap();
+    let path = format!("/approval-units/{again_id}/withdraw");
+    let (status, b) = call(
+        &f.app,
+        &f.author,
+        Method::POST,
+        &path,
+        json!({}),
+        Some("shape"),
+    )
+    .await;
+    assert_eq!(status, 200, "{b}");
+    let response = f
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/bss-products/v1{path}"))
+                .extension(f.author.clone())
+                .header("Idempotency-Key", "shape")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
 }
 #[tokio::test]
 async fn an_idempotent_replay_returns_the_stored_receipt_and_a_different_body_conflicts() {
@@ -2164,7 +2253,11 @@ async fn all_other_posts_replay_with_endpoint_scoped_keys() {
         } else {
             &f.author
         };
-        let body = json!({"generation":1,"note":"reviewed"});
+        let body = if action == "withdraw" {
+            json!({})
+        } else {
+            json!({"generation":1,"note":"reviewed"})
+        };
         let first = call(
             &f.app,
             actor,
@@ -3095,7 +3188,7 @@ async fn a_change_to_an_unknown_category_is_refused_at_submit_and_at_approve_at_
             "/approval-units/{}/withdraw",
             unit["unit"]["id"].as_str().unwrap()
         ),
-        json!({"generation":1,"note":"its category is gone"}),
+        json!({}),
         None,
     )
     .await;

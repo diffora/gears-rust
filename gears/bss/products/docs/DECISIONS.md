@@ -74,6 +74,7 @@
 | P-D-250 | M | The approval units answer the approvals inbox through this gear's own doors (twin of pricing D-490) | DECIDED 2026-10-01 · Owner, 2026-10-01 (option A, "yes, A, agreed", then "write the plan"; Run 2 started before 9.5d-2); approvals inbox plan rev 2 (Run 2; design 1 and 3; plan review H1, H3, H4, M1, M2, M5, L1); amends P-D-227; amended by P-D-252 |
 | P-D-251 | H | A derived usage type may wrap one raw meter, and a usage SKU may move onto that wrapper | DECIDED 2026-10-02 · Owner, 2026-10-02 ("let's convert the ones we have into derived form"); amends P-D-230, P-D-232 |
 | P-D-252 | M | The inbox source judges `state` before a foreign empty page | DECIDED 2026-10-02 · phase 9 review; amends P-D-250 |
+| P-D-253 | M | A products vote body is a closed set, and withdraw digests the body sent | DECIDED 2026-10-02 · phase 9 review |
 
 ## Entries
 
@@ -1894,6 +1895,8 @@ of that meter.
 
 **Source:** Owner, 2026-10-02 ("let's convert the ones we have into derived form"). Amends P-D-230 and P-D-232.
 
+**Amended 2026-10-02.** The approve door's text names the same exception as the change door: a raw meter moving onto the identity wrapper of that meter, in the same unit, is applied; every other pin move is 409 `DERIVED_PIN_IMMUTABLE`.
+
 #### P-D-252 [M] The inbox source judges `state` before a foreign empty page
 
 **Status:** DECIDED 2026-10-02.
@@ -1901,3 +1904,11 @@ of that meter.
 A kind products does not record, and any `book_id`, stay an empty page and zero counts (P-D-250). The source judges `state` with the list door's rule first. An unknown state is 400 on `state` for the page and the counts, including when the kind is foreign or a book is set. A known state, or no state, then takes the foreign empty set.
 
 **Source:** Phase 9 review (products lens a). Amends P-D-250. Twin of pricing D-496.
+
+#### P-D-253 [M] A products vote body is a closed set, and withdraw digests the body sent
+
+**Status:** DECIDED 2026-10-02.
+
+`VoteRequest` denies unknown fields. Approve and reject require `generation`. A missing `generation` is 400 `GENERATION_REQUIRED`. Any other key is 400 `BODY_UNEXPECTED` on that key. Withdraw accepts an empty body or `{}` and refuses anything else with 400 `BODY_UNEXPECTED`, and it does not withdraw. The idempotency digest is the body that was sent: an empty body digests as JSON null and `{}` digests as an empty object, so the two do not share a row.
+
+**Source:** Phase 9 review (products lens a).
