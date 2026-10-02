@@ -13,8 +13,8 @@ use bss_pricing::infra::{
 };
 use bss_products_sdk::models::{Lifecycle, SkuType};
 use plan_support::{
-    Catalog, Fixture, book, entry, entry_support, entry_support::outbox_events, holding, id_of,
-    item, items, plan, scope, setup, text,
+    Catalog, Fixture, book, entry_support, entry_support::outbox_events, holding, id_of, item,
+    items, plan, policy_entry as entry, scope, setup, text,
 };
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -1131,6 +1131,10 @@ async fn the_plan_list_derives_in_its_four_statements() {
         let pro = live(&f, &catalog, code).await;
         seeded(&f, &pro, today(), &format!("copy-{code}")).await;
     }
+    // A draft beside a published revision, so in_effect is not the current revision (D-480).
+    let mixed = live(&f, &catalog, "mix").await;
+    let draft = copy(&f, mixed.plan, "mix-draft").await;
+    item(&f, draft, catalog.sku(SkuType::Usage), None, "included").await;
     recorder.clear();
     let listed = get(&f, "/plans").await;
     let statements: Vec<_> = recorder
@@ -1143,12 +1147,26 @@ async fn the_plan_list_derives_in_its_four_statements() {
         })
         .map(|q| q.sql)
         .collect();
-    assert_eq!(statements.len(), 4, "{statements:#?}");
+    assert_eq!(statements.len(), 5, "{statements:#?}");
     let items = listed["items"].as_array().unwrap();
-    assert_eq!(items.len(), 3);
+    assert_eq!(items.len(), 4);
     for p in items {
-        assert_eq!(states(p), ["superseded", "published"], "{p}");
-        assert_eq!(p["published_rev"], 2);
+        if p["current"]["state"] == "draft" {
+            assert_eq!(
+                p["in_effect"]["sku_ids"],
+                json!([mixed.sku.to_string()]),
+                "the published revision's SKU, not the draft's: {p}"
+            );
+            assert_eq!(p["current"]["sku_ids"].as_array().unwrap().len(), 2, "{p}");
+        } else {
+            assert_eq!(states(p), ["superseded", "published"], "{p}");
+            assert_eq!(p["published_rev"], 2);
+            assert_eq!(
+                p["in_effect"]["sku_ids"].as_array().unwrap().len(),
+                1,
+                "{p}"
+            );
+        }
     }
 }
 

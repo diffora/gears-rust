@@ -99,6 +99,9 @@ fn entry(
         charge_kind: charge_kind.into(),
         period: period.map(str::to_owned),
         model: model.into(),
+        usage_policy_id: None,
+        usage_policy_version: None,
+        usage_policy_digest: None,
         dimension_key: None,
         invoice_line_override: Some("{name} per month".into()),
         reservation_id: Uuid::new_v4(),
@@ -119,6 +122,14 @@ fn plan(tenant: Uuid, code: &str) -> plan_e::Model {
         created_by: Uuid::new_v4(),
         created_at: at(9),
         updated_at: at(9),
+        work_revision_id: None,
+        work_state: None,
+        scheduled_revision_id: None,
+        scheduled_from: None,
+        published_revision_id: None,
+        current_book_id: None,
+        current_currency: None,
+        last_activity_at: at(9),
     }
 }
 fn revision(

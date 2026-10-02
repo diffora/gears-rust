@@ -9,8 +9,8 @@ mod plan_support;
 use bss_pricing::infra::storage::repo::{plan_item_repo, price_book_entry_repo, price_repo};
 use bss_products_sdk::models::{Lifecycle, SkuType};
 use plan_support::{
-    Catalog, Fixture, book, entry, entry_support::outbox_events, id_of, item, items, plan, raw,
-    scope, setup, text,
+    Catalog, Fixture, book, entry_support::outbox_events, id_of, item, items, plan,
+    policy_entry as entry, raw, scope, setup, text,
 };
 use serde_json::{Value, json};
 use toolkit_security::SecurityContext;
@@ -189,12 +189,22 @@ async fn a_green_revision_submits_under_its_key_and_quorum_zero_publishes_it_at_
     assert_eq!(unit["quorum_required"], 0);
     assert_eq!(unit["decisions"], json!([]));
     let snapshot = &unit["snapshot"];
+    let stored_entry = price_book_entry_repo::find(
+        &f.db.conn().unwrap(),
+        &scope(&f),
+        f.ctx.subject_tenant_id(),
+        g.entry,
+    )
+    .await
+    .unwrap()
+    .unwrap();
     assert_eq!(
         snapshot["after"],
         json!({
             "book_id": revision(&f, g.revision).await["book_id"],
             "available_from": null,
-            "items": [{"sku_id": g.sku, "price_book_entry_id": g.entry}],
+            "items": [{"sku_id": g.sku, "price_book_entry_id": g.entry,
+                "usage_policy":{"policy_id":stored_entry.usage_policy_id,"version":stored_entry.usage_policy_version.map(|v| v.to_string()),"digest":stored_entry.usage_policy_digest}}],
         }),
         "the fingerprinted content is the business content only, an item its SKU and its \
          entry (D-467): {snapshot}"
@@ -989,9 +999,13 @@ async fn an_approved_repricing_reaches_the_published_revision_and_a_rejected_one
         .await;
     assert_eq!(s, 201, "{receipt}");
     assert_eq!(receipt["applied"], true, "{receipt}");
-    // The published revision did not move: it still names the entry whose chain now carries the
-    // new money from today.
-    assert_eq!(revision(&f, g.revision).await, published);
+    // The published revision did not move: its items and version stay, and the sale-date price
+    // is the new money from today (D-480).
+    let after = revision(&f, g.revision).await;
+    assert_eq!(after["version"], published["version"]);
+    assert_eq!(after["state"], published["state"]);
+    assert_eq!(after["items"], published["items"]);
+    assert_eq!(after["entries"][0]["price_on_sale_date"]["id"], price);
     let (s, export, _) = f
         .call(
             "GET",
@@ -1154,6 +1168,131 @@ async fn a_plan_submit_carries_the_submitters_note() {
         "draft",
         "nothing written"
     );
+}
+
+#[tokio::test]
+async fn new_publication_refuses_a_legacy_usage_entry_without_policy() {
+    let (f, catalog) = setup().await;
+    let book = book(&f, "NO_POLICY").await;
+    let (_, revision) = plan(&f, "NO_POLICY", book).await;
+    let sku = catalog.sku(SkuType::Usage);
+    let entry = plan_support::entry(&f, book, sku, "usage", None).await;
+    approved(&f, entry, "2020-01-01").await;
+    item(&f, revision, sku, Some(entry), "paid").await;
+    let answer = submit(&f, &f.ctx, revision, "missing-policy").await;
+    assert_eq!(answer.0, 400, "{answer:?}");
+    assert!(answer.1.to_string().contains("MISSING_RATING_POLICY"));
+}
+
+#[tokio::test]
+async fn revision_fingerprint_commits_policy_digest_and_stale_selection_cannot_publish() {
+    use bss_pricing::infra::{plan_revisions::content, storage::repo::plan_revision_repo};
+    use sea_orm::{ConnectionTrait, Database, DbBackend, Statement};
+    let (f, catalog) = setup().await;
+    let g = green(&f, &catalog, "POLICY_DRIFT").await;
+    let tenant = f.ctx.subject_tenant_id();
+    let row = plan_revision_repo::find(&f.db.conn().unwrap(), &scope(&f), tenant, g.revision)
+        .await
+        .unwrap()
+        .unwrap();
+    let selected = items(&f, g.revision).await;
+    let original = price_book_entry_repo::find(&f.db.conn().unwrap(), &scope(&f), tenant, g.entry)
+        .await
+        .unwrap()
+        .unwrap();
+    let before = content(&row, &selected, std::slice::from_ref(&original));
+    for field in ["digest", "version", "id"] {
+        let mut different = original.clone();
+        match field {
+            "digest" => different.usage_policy_digest = Some("00".repeat(32)),
+            "version" => different.usage_policy_version = Some(2),
+            _ => different.usage_policy_id = Some(Uuid::new_v4()),
+        }
+        assert_ne!(
+            before,
+            content(&row, &selected, &[different]),
+            "fingerprint ignores policy {field}"
+        );
+    }
+    let mut hourly = plan_support::entry_support::policy_support::input();
+    hourly["rating_window"] = json!({"kind":"calendar_hour","timezone":"UTC"});
+    let other = f
+        .call(
+            "POST",
+            &format!("/price-books/{}/entries", row.book_id),
+            json!({"sku_id":g.sku,"model":"per_unit","usage_rating_policy":hourly}),
+            None,
+            Some("hourly"),
+        )
+        .await;
+    assert_eq!(other.0, 201, "{other:?}");
+    let other_id = id_of(&other.1["id"]);
+    let e = price_book_entry_repo::find(&f.db.conn().unwrap(), &scope(&f), tenant, other_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut p = plan_support::entry_support::price(&e);
+    p.state = "approved".into();
+    p.min_fee = None;
+    p.effective_from = time::Date::from_calendar_date(2020, time::Month::January, 1).unwrap();
+    price_repo::insert(&f.db.conn().unwrap(), &scope(&f), p)
+        .await
+        .unwrap();
+    let pending = submit(&f, &f.ctx, g.revision, "policy-submit").await;
+    assert_eq!(pending.0, 201, "{pending:?}");
+    // Fault injection simulates content drift after the unit was approved by an earlier reader.
+    let raw = Database::connect(&f.dsn).await.unwrap();
+    raw.execute_raw(Statement::from_sql_and_values(
+        DbBackend::Sqlite,
+        "UPDATE pricing_plan_item SET price_book_entry_id = ? WHERE id = ?",
+        [other_id.into(), selected[0].id.into()],
+    ))
+    .await
+    .unwrap();
+    let reviewer = plan_support::entry_support::user_of(tenant);
+    let stale = vote(
+        &f,
+        &reviewer,
+        &pending.1["unit"]["id"],
+        "approve",
+        json!({"generation":1}),
+        "policy-stale",
+    )
+    .await;
+    assert_eq!(stale.0, 400, "{stale:?}");
+    assert!(stale.1.to_string().contains("UNIT_STALE"));
+    assert_eq!(revision(&f, g.revision).await["state"], "pending");
+    let refreshed = f
+        .call(
+            "GET",
+            &format!(
+                "/approval-units/{}",
+                pending.1["unit"]["id"].as_str().unwrap()
+            ),
+            json!({}),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(
+        refreshed.1["snapshot"]["after"]["items"][0]["price_book_entry_id"],
+        other_id.to_string()
+    );
+    assert_ne!(
+        refreshed.1["snapshot"]["after"],
+        pending.1["unit"]["snapshot"]["after"]
+    );
+    let old = vote(
+        &f,
+        &reviewer,
+        &pending.1["unit"]["id"],
+        "approve",
+        json!({"generation":1}),
+        "policy-old-generation",
+    )
+    .await;
+    assert_eq!(old.0, 400, "{old:?}");
+    assert!(old.1.to_string().contains("GENERATION_MISMATCH"));
 }
 
 /// D-464 and the phase 9 review's R5: the plan submit's Idempotency-Key digests the body as sent

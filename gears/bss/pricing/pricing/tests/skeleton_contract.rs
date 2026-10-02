@@ -9,10 +9,11 @@ fn runtime_chain_contains_coord_pricing_and_toolkit_delivery() {
     let chain = BssPricingGear::default().migrations();
     assert_eq!(
         chain.len(),
-        21,
-        "the schema guard, coordination, seventeen pricing migrations (000013, D-427; 000014, \
+        24,
+        "the schema guard, coordination, twenty pricing migrations (000013, D-427; 000014, \
          D-438; 000015, the book's description; 000016, the unit's note, D-445; 000017, the \
-         scheduled revision, D-446) and two toolkit migrations"
+         scheduled revision, D-446; 000018, entry policies, D-502; 000019, commercial receipts, D-505; \
+         000020, the plan summary, D-484) and two toolkit migrations"
     );
     assert_eq!(
         chain[0].name(),
@@ -50,7 +51,8 @@ async fn pricing_alone_initializes_serves_authoring_routes_and_stops() {
     );
     let (empty, openapi) = harness.router(Router::new()).unwrap();
     assert!(empty.has_routes());
-    assert_eq!(openapi.operation_specs.len(), 52);
+    // 56: run 9.7's batch checks read and run 9.8b's plans counts, one each.
+    assert_eq!(openapi.operation_specs.len(), 56);
     let (router, _) = harness
         .router(Router::new().route("/host", get(|| async { "host" })))
         .unwrap();

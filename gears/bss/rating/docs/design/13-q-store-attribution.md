@@ -284,7 +284,7 @@ Unrelated shards materialize fully in parallel — zero cross-partition locks (P
 
 - A composite (derived) meter reads its ≥ 2 input-meter `Q`s from **different** partitions; the store assembles them as a **version-consistent frozen tuple** — each input `Q` pinned at a specific `qVersion`, captured at one assembly watermark — so the core reads frozen values, never live counters, and no cross-partition lock is taken (core slice [`03`](./03-metering-models.md) §3.6).
 - A later change to **any** input `Q` (new `qVersion`) re-assembles the tuple and re-resolves the composite line under the slice-[`08`](./08-retroactivity-corrections.md) correction keys; the composite line partitions on `(subscription, outputUnit, dimensionKey, window)`.
-- **Open**: the input-join rule when composite inputs carry dimension values (join on the matching `dimensionKey` tuple vs a formula-declared join) MUST be pinned jointly with the pricing gear before composite and dimensional pricing co-occur — tracked in core slice [`03`](./03-metering-models.md) §3.6 / [`../SEAMS.md`](../SEAMS.md); at launch they do not co-occur (`dimensionKey` empty until OSS emission).
+- **Open** (a Rating open item): the input-join rule when composite inputs carry dimension values (join on the matching `dimensionKey` tuple vs a formula-declared join) MUST be pinned jointly with the pricing gear before composite and dimensional pricing co-occur — tracked in core slice [`03`](./03-metering-models.md) §3.6 / [`../SEAMS.md`](../SEAMS.md) and in DECISIONS open items; at launch they do not co-occur (`dimensionKey` empty until OSS emission).
 
 ## 5. Traceability
 

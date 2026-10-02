@@ -11,7 +11,8 @@ use bss_products_sdk::{
     ReferenceRegistryV1,
     models::{ReferenceKind, ReferenceState, ReservationReceipt, Sku, SkuType, SkuVersion},
 };
-use plan_support::{Catalog, Fixture, book, entry, id_of, plan, scope};
+use plan_support::entry_support::policy_support;
+use plan_support::{Catalog, Fixture, book, id_of, plan, policy_entry as entry, scope};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use toolkit_canonical_errors::CanonicalError;
@@ -147,7 +148,7 @@ async fn a_prices_unit_is_recorded_and_applied_through_an_in_process_registry() 
         .call(
             "POST",
             &format!("/price-books/{book}/entries"),
-            json!({"sku_id":sku,"model":"per_unit"}),
+            json!({"usage_rating_policy":policy_support::input(),"sku_id":sku,"model":"per_unit"}),
             None,
             Some("entry"),
         )

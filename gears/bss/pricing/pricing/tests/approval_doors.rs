@@ -5,6 +5,7 @@ use bss_pricing::infra::storage::{
     entity::{approval_unit, price},
     repo::{price_book_entry_repo, price_repo},
 };
+use entry_support::policy_support;
 use entry_support::{Fixture, Script};
 use sea_orm::EntityTrait;
 use serde_json::{Value, json};
@@ -32,7 +33,7 @@ async fn gov_on(quorum: u32, script: Arc<Script>) -> Gov {
     let entry = if recurring {
         json!({"sku_id":Uuid::new_v4(),"period":"month","model":"per_unit"})
     } else {
-        json!({"sku_id":Uuid::new_v4(),"model":"per_unit"})
+        json!({"usage_rating_policy":policy_support::input(),"sku_id":Uuid::new_v4(),"model":"per_unit"})
     };
     let (status, entry, _) = f
         .call(

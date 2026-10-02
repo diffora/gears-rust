@@ -6,6 +6,7 @@ use toolkit_db::secure::ScopeError;
 pub mod approval_repo;
 pub mod audit_repo;
 pub mod category_repo;
+pub mod derived_usage_type_repo;
 pub mod history_repo;
 pub mod idempotency_repo;
 pub mod reference_repo;

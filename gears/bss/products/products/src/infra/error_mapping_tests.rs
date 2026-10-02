@@ -302,6 +302,43 @@ fn a_refusal_names_the_resource_it_refuses() {
             },
             labels::SKU,
         ),
+        (
+            DomainError::Conflict {
+                code: "DERIVED_CODE_TAKEN",
+                detail: "taken".into(),
+            },
+            labels::DERIVED_USAGE_TYPE,
+        ),
+        (
+            crate::domain::derived::declaration_invalid("too_few_inputs", "one input"),
+            labels::DERIVED_USAGE_TYPE,
+        ),
+        // P-D-232: the binding's refusals refuse the SKU's write, at submit (a report) and at
+        // apply (a conflict); only the derived doors' own codes name the derived usage type.
+        (
+            DomainError::Validation({
+                let mut r = ValidationReport::new();
+                r.violate("DERIVED_USAGE_TYPE_UNKNOWN", "usage_type_ref", "unknown");
+                r
+            }),
+            labels::SKU,
+        ),
+        (
+            DomainError::Validation({
+                let mut r = ValidationReport::new();
+                r.violate("DERIVED_UNIT_MISMATCH", "unit", "mismatch");
+                r
+            }),
+            labels::SKU,
+        ),
+        (crate::domain::derived::pin_immutable(), labels::SKU),
+        (
+            DomainError::Conflict {
+                code: "DERIVED_PIN_IMMUTABLE",
+                detail: "pinned".into(),
+            },
+            labels::SKU,
+        ),
     ] {
         let name = format!("{err:?}");
         let canonical = CanonicalError::from(err);

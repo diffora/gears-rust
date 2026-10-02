@@ -112,10 +112,10 @@ impl FieldToColumn<SkuListField> for SkuListMapping {
     }
     /// `updated_at` orders only: on `SQLite` a `$filter` would bind chrono's `+00:00` against
     /// the stored RFC 3339 `Z`, and a text comparison lies at the boundary. `lifecycle` and
-    /// `type` compare (`eq`, `ne`, `in`) with one of their closed values only; the text
-    /// functions take any text there, as on every text field, since the served contract
-    /// publishes them for every text field. `null` reaches here only on a nullable field: the
-    /// toolkit's parser refuses it on the others ([`FilterField::nullable`]).
+    /// `type` compare (`eq`, `ne`, `in`) with one of their closed values only. A text function
+    /// on `type` still reaches here; one on `lifecycle` is refused before the pager, because
+    /// the `CASE` does not serve it (P-D-249). `null` reaches here only on a nullable field:
+    /// the toolkit's parser refuses it on the others ([`FilterField::nullable`]).
     fn map_value(
         field: SkuListField,
         op: FilterOp,
@@ -171,6 +171,10 @@ pub struct SkuListFilter {
     pub priced: Option<SetFilter>,
     /// `in_plan`: in or out of pricing's in-plan set (P-D-212).
     pub in_plan: Option<SetFilter>,
+    /// `priced_in` (in) or `not_priced_in` (out): pricing's set of one book's SKUs (P-D-246).
+    pub book: Option<SetFilter>,
+    /// `not_in_revision` (out): pricing's set of one revision's SKUs (P-D-246).
+    pub revision: Option<SetFilter>,
 }
 /// Keep the SKUs in `ids` (`member`), or the SKUs outside it.
 #[derive(Debug, Clone)]
@@ -276,7 +280,15 @@ pub fn list_condition(tenant: Uuid, filter: &SkuListFilter, backend: DbBackend) 
     if let Some(text) = filter.text.as_deref() {
         c = c.add(text_condition(text, backend));
     }
-    for set in [&filter.priced, &filter.in_plan].into_iter().flatten() {
+    for set in [
+        &filter.priced,
+        &filter.in_plan,
+        &filter.book,
+        &filter.revision,
+    ]
+    .into_iter()
+    .flatten()
+    {
         c = c.add(set_condition(backend, set));
     }
     c
@@ -291,8 +303,26 @@ pub enum SkuListError {
     Repo(RepoError),
 }
 
+/// A lifecycle term the `CASE` does not serve. The list and the counts both answer 400 with this
+/// text (P-D-249).
+pub(crate) const LIFECYCLE_FILTER_REFUSED: &str = "the counts drop `lifecycle` only from top-level `and` terms; a `lifecycle` term \
+     under `or` or `not` is not counted";
+
 fn is_lifecycle(expr: &toolkit_odata::ast::Expr) -> bool {
     matches!(expr, toolkit_odata::ast::Expr::Identifier(name) if name == "lifecycle")
+}
+fn names_lifecycle(expr: &toolkit_odata::ast::Expr) -> bool {
+    use toolkit_odata::ast::Expr;
+    match expr {
+        Expr::Identifier(name) => name == "lifecycle",
+        Expr::Value(_) => false,
+        Expr::And(a, b) | Expr::Or(a, b) | Expr::Compare(a, _, b) => {
+            names_lifecycle(a) || names_lifecycle(b)
+        }
+        Expr::Not(inner) => names_lifecycle(inner),
+        Expr::In(inner, list) => names_lifecycle(inner) || list.iter().any(names_lifecycle),
+        Expr::Function(_, args) => args.iter().any(names_lifecycle),
+    }
 }
 fn lifecycle_token(expr: &toolkit_odata::ast::Expr) -> Result<String, String> {
     match expr {
@@ -308,7 +338,9 @@ fn lifecycle_token(expr: &toolkit_odata::ast::Expr) -> Result<String, String> {
     }
 }
 /// Pull top-level `lifecycle` comparisons out of `expr` so they compare the effective lifecycle.
-fn take_lifecycle(
+/// A lifecycle term that is not pulled out — under `or` or `not`, or a text function — is
+/// [`LIFECYCLE_FILTER_REFUSED`]. The stored column is never the comparison.
+pub(crate) fn take_lifecycle(
     expr: toolkit_odata::ast::Expr,
 ) -> Result<(Option<toolkit_odata::ast::Expr>, Condition), String> {
     use toolkit_odata::ast::{CompareOperator, Expr};
@@ -347,7 +379,12 @@ fn take_lifecycle(
             );
             Ok((None, Condition::all().add(effective.is_in(tokens))))
         }
-        other => Ok((Some(other), Condition::all())),
+        other => {
+            if names_lifecycle(&other) {
+                return Err(LIFECYCLE_FILTER_REFUSED.to_owned());
+            }
+            Ok((Some(other), Condition::all()))
+        }
     }
 }
 /// One page of the tenant's SKUs: `filter`'s narrowing, then the query's `$filter`, cursor and
@@ -366,9 +403,9 @@ pub async fn page_skus(
 ) -> Result<Page<Sku>, SkuListError> {
     let mut query = query.clone();
     // The toolkit maps a field to a column, so it cannot express the effective-lifecycle CASE.
-    // Top-level `lifecycle` comparisons (and those joined by `and`) are applied as that CASE
-    // before the pager sees the rest (P-D-249). A `lifecycle` term under `or` or `not` stays on
-    // the stored column.
+    // Top-level `lifecycle` comparisons (`eq`, `ne`, `in`, and those joined by `and`) are applied
+    // as that CASE before the pager sees the rest (P-D-249). Any other lifecycle term is refused,
+    // so the pager never compares the stored column.
     let lifecycle_filter = match query.filter.take() {
         Some(filter) => {
             let (rest, cond) = take_lifecycle(*filter).map_err(|message| {

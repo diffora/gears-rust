@@ -10,6 +10,10 @@
 //! 403, an unconfigured catalog 501, an unreachable one 503, and an empty configured one 200 with
 //! `items: []` — never one of these as another. Over the usage collector, `q` is products' own
 //! search (`infra::usage_types`): the collector's plugin takes no `contains`.
+//!
+//! A page answers `Cache-Control: private, max-age=60` (P-D-247): the picker is read as the
+//! caller, so only the caller's own cache may keep it, and the catalog changes rarely enough that
+//! a minute is safe. A refusal carries no cache header.
 use super::{ApiState, authz_error_to_canonical, require_authenticated};
 use crate::{
     authz::{access_scope, actions, resource_types},
@@ -19,14 +23,15 @@ use authz_resolver_sdk::PolicyEnforcer;
 use axum::{
     Extension, Json, Router,
     extract::{Query, rejection::QueryRejection},
-    http::StatusCode,
+    http::{StatusCode, header},
+    response::{IntoResponse, Response},
 };
 use bss_products_sdk::usage_types::{UsageTypeBinding, UsageTypePage};
 use std::sync::Arc;
 use toolkit::api::{
     OpenApiRegistry,
     canonical_prelude::{CanonicalError, resource_error},
-    operation_builder::OperationBuilder,
+    operation_builder::{OperationBuilder, ResponseHeaderSpec, ResponseHeaderType},
 };
 use toolkit_security::SecurityContext;
 
@@ -35,6 +40,8 @@ const PICKER: &str = "/bss-products/v1/usage-types";
 const DEFAULT_LIMIT: u32 = 50;
 /// The largest page asked for; a larger `limit` is clamped, never refused.
 const MAX_LIMIT: u32 = 200;
+/// What a page may be kept for (P-D-247): by the caller's own cache only, for a minute.
+const CACHE_CONTROL: &str = "private, max-age=60";
 
 #[resource_error(gts_id!("cf.bss.products.sku.v1~"))]
 struct SkuResource;
@@ -95,7 +102,9 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
              `q` replayed under any `q` (without `q`, such a cursor passes to the collector \
              unchecked); 501 when no catalog is configured; 503 when the configured one does not \
              answer, or `USAGE_TYPE_CATALOG_TOO_LARGE` when `q` would search more than 1000 \
-             types. A configured catalog with no types answers 200 with no items.",
+             types. A configured catalog with no types answers 200 with no items. A page \
+             answers Cache-Control: private, max-age=60 (P-D-247): it is read as the caller, so \
+             only the caller's own cache may keep it, for a minute.",
         )
         .tag("SKUs")
         .authenticated()
@@ -121,6 +130,12 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         )
         .handler(list_usage_types)
         .json_response_with_schema::<ProductsUsageTypeList>(openapi, StatusCode::OK, "Usage types")
+        .response_header(ResponseHeaderSpec::new(
+            "Cache-Control",
+            "private, max-age=60: the page is read as the caller, so only the caller's own cache \
+             may keep it, for a minute (P-D-247)",
+            ResponseHeaderType::String,
+        ))
         .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
@@ -143,7 +158,7 @@ async fn list_usage_types(
     Extension(enforcer): Extension<PolicyEnforcer>,
     ctx: Option<Extension<SecurityContext>>,
     query: Result<Query<PickerQuery>, QueryRejection>,
-) -> Result<Json<ProductsUsageTypeList>, CanonicalError> {
+) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(ctx)?;
     // The products SKU-author grant: picking a usage type is authoring a SKU.
     access_scope(
@@ -183,7 +198,7 @@ async fn list_usage_types(
             q.cursor.as_deref(),
         )
         .await?;
-    Ok(Json(ProductsUsageTypeList {
+    let body = ProductsUsageTypeList {
         source: state.usage_type_catalog_source.to_owned(),
         items: page.items.into_iter().map(Into::into).collect(),
         page_info: ProductsUsageTypePageInfo {
@@ -191,7 +206,8 @@ async fn list_usage_types(
             prev_cursor: page.prev_cursor,
             limit: page.limit,
         },
-    }))
+    };
+    Ok(([(header::CACHE_CONTROL, CACHE_CONTROL)], Json(body)).into_response())
 }
 
 #[cfg(test)]

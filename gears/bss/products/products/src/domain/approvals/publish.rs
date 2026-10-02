@@ -2,7 +2,7 @@
 //! Publishing a draft with a business-only review fingerprint.
 use super::{KIND_SKU_PUBLISH, apply_error, invalid, json, sku, store_err};
 use crate::{
-    domain::{recognized::UsageTypeAnswer, sku::validate_publish},
+    domain::{recognized::UsageRefAnswer, sku::validate_publish},
     infra::{
         broker,
         events::{self, TxOutbox},
@@ -25,7 +25,9 @@ pub struct SkuPublish {
     pub outbox: TxOutbox,
     pub actor: Uuid,
     pub now: OffsetDateTime,
-    pub usage_type: Option<UsageTypeAnswer>,
+    /// What the door resolved the content's `usage_type_ref` to before the transaction: the
+    /// catalog's answer for a GTS ref, the tenant's stored version for a derived one (P-D-232).
+    pub usage_type: Option<UsageRefAnswer>,
 }
 impl SkuPublish {
     pub(super) async fn lock_items(

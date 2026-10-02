@@ -33,6 +33,9 @@
   - [Typed transactional domain events](#typed-transactional-domain-events)
   - [Frozen consumer golden responses](#frozen-consumer-golden-responses)
 - [6. Acceptance Criteria](#6-acceptance-criteria)
+  - [Durable accepted terms (D-507)](#durable-accepted-terms-d-507)
+  - [Frozen fulfilment (D-508)](#frozen-fulfilment-d-508)
+  - [Executable Pricing consumer fixtures (D-509)](#executable-pricing-consumer-fixtures-d-509)
 
 <!-- /toc -->
 
@@ -66,6 +69,13 @@ Holding multiple permissions never bypasses separation of duties.
 - [Slice 07](../design/07-read-contract-events.md), including API, data and event obligations.
 - [DECISIONS](../DECISIONS.md), D-384–D-433; spec means `docs/superpowers/specs/2026-09-24-pricebook-model-design.md` in the main checkout.
 - Source: spec §2 decisions 4–8, 13–17, §2.2, §5–§8, §10, §12–§13; the phase 2 plan supplies delivery boundaries and D-399/D-400.
+
+D-503 projects the entry's optional typed `usage_rating_policy` on each REST resolve item
+and each SDK binding. The materialized identity/content is loaded from local policy storage alongside
+the selected entry; historical reads never call the meter provider. SDK bindings retain the same
+`price_book_entry_id` as their price. Entry reads and exports retain D-502's optional projection.
+A BillingCycle VM entry beside a CalendarHour cloudlet entry keeps two independent policies;
+there is no plan-wide window or aggregation across subscription lines. Missing legacy policy is null.
 
 ## 2. Actor Flows (CDSL)
 
@@ -187,6 +197,11 @@ Requirement: `cpt-cf-bss-pricing-fr-events`; PRD AC #14.
 
 - [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-consumer-golden-contracts`
 
+D-501 adds real SDK provider tests for explicit catalog/PDP authorization, typed complete matrices,
+permanent approved money and scheduled-revision catch-up without a ticker. Rust and Node verify the
+same frozen canonical JSON/digest fixture; a deliberate encoder key-order mutation proves the digest
+assertions fail. Existing REST fixture bytes remain unchanged.
+
 Golden responses cover resolve matrix, renewal eligibility, descriptor dates and forever-readable prices; promotion versions are deferred with promotions (D-409) and are not part of this DoD until they return. Rating and Subscriptions consume these in separate plans; fixtures-crate deletion occurs in phase 4 (spec §10–§12).
 
 Requirement: `cpt-cf-bss-pricing-fr-price-read`; PRD AC #19.
@@ -205,3 +220,47 @@ Requirement: `cpt-cf-bss-pricing-fr-price-read`; PRD AC #19.
 | `cpt-cf-bss-pricing-dod-consumer-golden-contracts` | AC #19; `cpt-cf-bss-pricing-fr-price-read` | Given stored contract fixtures including negative tenant/uncovered cases, when either backend serves the public paths then responses match; a shape drift fails the contract gate. |
 
 Verification uses domain tests, scoped repository tests on both backends and REST positive/denial/precondition probes as applicable. Phase 2 checks must not mark later-phase behavior implemented. Golden consumer contracts belong to phase 4.
+
+### Durable accepted terms (D-507)
+
+The SDK acceptance command now uses the real read projection and pure compatibility validators,
+with detached live Products/meter observations and bounded local-generation recapture. Acceptance,
+authenticated command receipt and local audit commit atomically. Authorized retries keep the exact
+original terms and deadline; another key on the same order line/version shares that receipt, while
+changed intent conflicts. The acceptance fixture obtains its query from a real SDK resolve and
+covers concurrency, provider failure, transaction rollback/restart, price/revision races and frozen
+history. Receipt schema 1 remains stable. D-508 supplies hold and fresh fulfilment eligibility;
+acceptance alone never grants activation, and the public release awaits the complete G3 gate.
+
+### Frozen fulfilment (D-508)
+
+The production SDK providers retain the accepted entry, policy, price, SKU descriptors and invoice
+inputs through successor publication, deprecation and off-sale. Every fresh eligibility check
+compares the exact receipt axes, digest and current market, checks live retirement and original
+price closing metadata, and applies server-time expiry. Successor effective_to never ends the
+accepted binding; explicit and temporary ends do, at their UTC boundary. A delayed first activation
+inside [start_at, hold_until) is allowed and pinned by the hold. Hold and command insert atomically;
+exact replay remains available after expiry, and another key cannot renew the deadline.
+
+The fulfilment_holds suite exercises these rules, provider failure, generation/clock races,
+concurrent holds, rollback/restart, and successor revisions selecting another policy window.
+Subscriptions keeps its own committed order and attempt fencing. Eligibility observations are
+never reusable admission tokens, and Pricing does not implement downstream activation.
+
+### Executable Pricing consumer fixtures (D-509)
+
+The schema-1 fixtures vm-hour, cloudlets-hourly-volume, cloudlets-hourly-graduated, frozen-acceptance
+and unsupported-terms execute in `pricing_seam_contract`. Typed round trips and complete pin
+comparisons cover real entry creation, price approval, plan publication, all seven ClientHub methods,
+REST reads, authorization, mixed windows, shared-entry policy reuse and exact-policy book remapping.
+Mutation probes must fail when expected money changes or a fixture policy pin escapes comparison.
+
+F02/F23/F24 money checks are catalog representation checks using domain::money, with no Rating
+scheduler, invoice calculation, VM provisioning or hourly event claim. Those atlas consumer obligations
+remain specified/unexecuted here. The one provider behind `UsageMeterSemanticsV1` is Products'
+(products P-D-233): it answers derived meters from Products' derived usage type at its exact version
+(E1b), and raw meters stay unconfigured until Types Registry declarations answer through the Usage
+Collector (E1a); E1a remains a test declaration in these tests until that provider is delivered.
+E1 = E1a (raw meters, the usage collector / types registry; external) + E1b (derived meters, provided by Products since P-D-233).
+Commands stay SDK-only; later remote transport binds these exact ports. Task 8
+and the shared G4 controller gate complete the implementation handoff after this provider fixture slice.

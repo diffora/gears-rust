@@ -258,6 +258,16 @@ fn history_condition(tenant: Uuid, sku: Uuid) -> Condition {
                 ),
         )
 }
+/// Every audit row of the SKU whose stored lifecycle is the legacy `retiring` token: the SKU's
+/// own rows and its units' rows. One statement, so an enter on an earlier unit is in hand when
+/// the page that holds a later retire does not (P-D-248).
+fn retiring_moves(tenant: Uuid, sku: Uuid) -> Condition {
+    history_condition(tenant, sku).add(
+        Condition::any()
+            .add(audit_log::Column::FromLifecycle.eq("retiring"))
+            .add(audit_log::Column::ToLifecycle.eq("retiring")),
+    )
+}
 
 /// One page of the SKU's history in `audit_id` order — the order the acts wrote (the query names
 /// no order; a cursor carries its own), `$top` 50 by default and clamped at 200, each unit row
@@ -265,7 +275,8 @@ fn history_condition(tenant: Uuid, sku: Uuid) -> Condition {
 /// scope.
 /// # Errors
 /// [`SkuListError::Query`] for a cursor the pager refuses; [`SkuListError::Repo`] for storage.
-/// A stored `retiring` is mapped before it is parsed (P-D-248), so it is never a 500.
+/// A stored `retiring` is mapped before it is parsed (P-D-248), so it is never a 500. A page
+/// that still holds one loads every `retiring` row of the SKU first, not only the page's units.
 pub async fn page_sku_history(
     runner: &impl DBRunner,
     tenant: Uuid,
@@ -382,6 +393,32 @@ pub async fn page_sku_history(
             })
             .collect::<Result<_, _>>()?
     };
+    if page.items.iter().any(|row| {
+        row.from_raw.as_deref() == Some("retiring") || row.to_raw.as_deref() == Some("retiring")
+    }) {
+        let retiring = audit_log::Entity::find()
+            .secure()
+            .scope_with(&scope)
+            .filter(retiring_moves(tenant, sku))
+            .all(runner)
+            .await
+            .map_err(|e| SkuListError::Repo(driver_failure("read retiring history".into(), e)))?;
+        for row in retiring {
+            if context.iter().any(|seen| seen.audit_id == row.audit_id) {
+                continue;
+            }
+            let unit_id = (row.subject_kind == "approval_unit")
+                .then_some(row.subject_id)
+                .flatten();
+            context.push(MoveRow {
+                audit_id: row.audit_id,
+                action: row.action,
+                from: row.from_lifecycle,
+                to: row.to_lifecycle,
+                unit_id,
+            });
+        }
+    }
     let items = page
         .items
         .iter()

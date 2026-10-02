@@ -319,6 +319,13 @@
         ],
         "type": "object"
       },
+      "AggregationScope": {
+        "enum": [
+          "subscription_line",
+          "resource"
+        ],
+        "type": "string"
+      },
       "AgingBucketDto": {
         "description": "One aged AR grain in the `GET /balances/ar-aging` response: the outstanding\nreceivable for a `(payer, currency, bucket)`.",
         "properties": {
@@ -5355,6 +5362,12 @@
         ],
         "type": "object"
       },
+      "Fold": {
+        "enum": [
+          "SUM"
+        ],
+        "type": "string"
+      },
       "FreezeDto": {
         "description": "One scope-freeze row in a tamper-status read.",
         "properties": {
@@ -7678,6 +7691,22 @@
         ],
         "type": "object"
       },
+      "MeterRef": {
+        "additionalProperties": false,
+        "properties": {
+          "usage_type_id": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "usage_type_id",
+          "version"
+        ],
+        "type": "object"
+      },
       "MigrateBackendReq": {
         "description": "Request to migrate a file's content to a different storage backend.\n\n@cpt-cf-file-storage-fr-backend-migration",
         "properties": {
@@ -9236,6 +9265,24 @@
         ],
         "type": "object"
       },
+      "Page_ProductsDerivedUsageTypeItem": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ProductsDerivedUsageTypeItem"
+            },
+            "type": "array"
+          },
+          "page_info": {
+            "$ref": "#/components/schemas/PageInfo"
+          }
+        },
+        "required": [
+          "items",
+          "page_info"
+        ],
+        "type": "object"
+      },
       "Page_ProductsSkuHistoryEntry": {
         "properties": {
           "items": {
@@ -9882,6 +9929,12 @@
           "blocks"
         ],
         "type": "object"
+      },
+      "PartialWindow": {
+        "enum": [
+          "actual_quantity_full_thresholds"
+        ],
+        "type": "string"
       },
       "PassthroughMode": {
         "enum": [
@@ -11087,6 +11140,24 @@
         ],
         "type": "object"
       },
+      "PricingEffectivePolicyDto": {
+        "description": "`GET /approval-policy/{kind}/effective` (D-481): the quorum a submit of `kind` needs now.",
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/PricingApprovalKind"
+          },
+          "quorum_required": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind",
+          "quorum_required"
+        ],
+        "type": "object"
+      },
       "PricingEligibility": {
         "description": "Who may take a price: every subscription, or new ones only.",
         "enum": [
@@ -11397,6 +11468,68 @@
         ],
         "type": "object"
       },
+      "PricingPlanBook": {
+        "description": "The book a plan's current revision prices on (D-485).",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "name",
+          "currency"
+        ],
+        "type": "object"
+      },
+      "PricingPlanChange": {
+        "description": "How a plan's list row is changing (D-485): a draft or pending revision, a scheduled one\nstill waiting for its date, or none.",
+        "enum": [
+          "none",
+          "draft",
+          "pending",
+          "scheduled"
+        ],
+        "type": "string"
+      },
+      "PricingPlanChangeCounts": {
+        "description": "Every change the list can name, 0 when none.",
+        "properties": {
+          "draft": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "none": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pending": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "scheduled": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "none",
+          "draft",
+          "pending",
+          "scheduled"
+        ],
+        "type": "object"
+      },
       "PricingPlanCheckBlockingPrice": {
         "description": "A pending price that blocks a check row (D-466): its approval unit, the price and its entry.",
         "properties": {
@@ -11508,6 +11641,12 @@
             },
             "type": "array"
           },
+          "quorum_required": {
+            "description": "The `plan_revision` quorum a submit of this revision needs (D-481): the tenant's effective\npolicy, the number the APPROVAL info row already shows. The revision itself has no quorum.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
           "ready": {
             "description": "Every check is ok: the revision may be submitted.",
             "type": "boolean"
@@ -11520,7 +11659,8 @@
         "required": [
           "checks",
           "ready",
-          "sale_date"
+          "sale_date",
+          "quorum_required"
         ],
         "type": "object"
       },
@@ -11546,6 +11686,28 @@
         "required": [
           "code",
           "name"
+        ],
+        "type": "object"
+      },
+      "PricingPlanCounts": {
+        "description": "`GET /plans/counts` (D-485): every plan the list's narrowing keeps, by the derived axes.",
+        "properties": {
+          "by_change": {
+            "$ref": "#/components/schemas/PricingPlanChangeCounts"
+          },
+          "by_selling": {
+            "$ref": "#/components/schemas/PricingPlanSellingCounts"
+          },
+          "total": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "by_selling",
+          "by_change",
+          "total"
         ],
         "type": "object"
       },
@@ -11582,6 +11744,10 @@
       "PricingPlanCurrent": {
         "description": "A plan's current revision as its list row names it (D-460): the draft or pending one, else\nthe scheduled one, else the published one in effect, chosen over the states the revisions read\ntoday (D-447).",
         "properties": {
+          "book": {
+            "$ref": "#/components/schemas/PricingPlanBook",
+            "description": "The book it prices on (D-485): that book's code, name and currency."
+          },
           "created_by": {
             "description": "Its author, who edits it while it is a draft (D-404); not the plan's.",
             "format": "uuid",
@@ -11620,13 +11786,18 @@
           "state",
           "item_count",
           "sku_ids",
-          "created_by"
+          "created_by",
+          "book"
         ],
         "type": "object"
       },
       "PricingPlanDto": {
         "description": "A plan with the headers of its revisions in revision order.",
         "properties": {
+          "change": {
+            "$ref": "#/components/schemas/PricingPlanChange",
+            "description": "The change on that day: `draft`, `pending`, `scheduled` or `none` (D-484)."
+          },
           "code": {
             "type": "string"
           },
@@ -11664,6 +11835,11 @@
               }
             ]
           },
+          "last_activity_at": {
+            "description": "The latest `updated_at` of the plan and its revisions (D-484). A page ordered by it carries\nthe same instant. Not the If-Match clock (`updated_at`).",
+            "format": "date-time",
+            "type": "string"
+          },
           "name": {
             "type": "string"
           },
@@ -11680,6 +11856,10 @@
               "$ref": "#/components/schemas/PricingPlanRevisionHeader"
             },
             "type": "array"
+          },
+          "selling": {
+            "description": "Whether the plan sells on the request's day (D-484). Never null.",
+            "type": "boolean"
           },
           "tenant_id": {
             "format": "uuid",
@@ -11703,7 +11883,63 @@
           "created_by",
           "created_at",
           "updated_at",
+          "last_activity_at",
+          "selling",
+          "change",
           "revisions"
+        ],
+        "type": "object"
+      },
+      "PricingPlanEntrySummary": {
+        "description": "One distinct entry a revision's items name, with the default chain's price in force on the\nrevision's sale date (D-480).",
+        "properties": {
+          "book_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "charge_kind": {
+            "$ref": "#/components/schemas/PricingChargeKind"
+          },
+          "dimension_key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "$ref": "#/components/schemas/PricingModel"
+          },
+          "period": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PricingPeriod"
+              }
+            ]
+          },
+          "price_book_entry_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "price_on_sale_date": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PricingPriceDto",
+                "description": "The default chain's approved price in force on the revision's sale date, chosen by\n`price_book_entries::headline` (D-440, D-472). Null when only value chains price the\nentry, when none is in force, or when the caller's `price_book` read does not admit the\nentry's book (D-434)."
+              }
+            ]
+          }
+        },
+        "required": [
+          "price_book_entry_id",
+          "book_id",
+          "charge_kind",
+          "model"
         ],
         "type": "object"
       },
@@ -11717,11 +11953,20 @@
           "revision_id": {
             "format": "uuid",
             "type": "string"
+          },
+          "sku_ids": {
+            "description": "The SKUs of that revision's items, one per item, in ascending order (D-480). The same set\na draft or pending revision reports as `carried_sku_ids`.",
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
           }
         },
         "required": [
           "revision_id",
-          "rev_no"
+          "rev_no",
+          "sku_ids"
         ],
         "type": "object"
       },
@@ -11863,10 +12108,15 @@
               "$ref": "#/components/schemas/PricingPlanDto"
             },
             "type": "array"
+          },
+          "page_info": {
+            "$ref": "#/components/schemas/PageInfo",
+            "description": "The toolkit pager's page (D-485). `limit` is the page size, 500 by default and at most 500."
           }
         },
         "required": [
-          "items"
+          "items",
+          "page_info"
         ],
         "type": "object"
       },
@@ -11880,6 +12130,50 @@
         },
         "required": [
           "name"
+        ],
+        "type": "object"
+      },
+      "PricingPlanReservationItemDto": {
+        "description": "One item on the reservations read (D-480).",
+        "properties": {
+          "item_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "reference_state": {
+            "$ref": "#/components/schemas/PricingItemReferenceState"
+          },
+          "reservation_id": {
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "item_id",
+          "reference_state"
+        ],
+        "type": "object"
+      },
+      "PricingPlanReservationsDto": {
+        "description": "`GET /plan-revisions/{id}/reservations` (D-480): each item's reference, and whether they have\nall settled.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PricingPlanReservationItemDto"
+            },
+            "type": "array"
+          },
+          "settled": {
+            "description": "The same rule as the revision's `reservations_settled`: `lost` counts as settled.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "items",
+          "settled"
         ],
         "type": "object"
       },
@@ -11961,6 +12255,10 @@
               "null"
             ]
           },
+          "reservations_settled": {
+            "description": "True when no item is `unreserved` or `confirmation_pending` (D-480). `lost` counts as\nsettled, so settled is not a green check. Computed from the items in hand, on every answer.",
+            "type": "boolean"
+          },
           "rev_no": {
             "format": "int32",
             "type": "integer"
@@ -12001,6 +12299,7 @@
           "created_by",
           "created_at",
           "updated_at",
+          "reservations_settled",
           "items"
         ],
         "type": "object"
@@ -12076,7 +12375,7 @@
       },
       "PricingPlanRevisionPatch": {
         "additionalProperties": false,
-        "description": "`PATCH /plan-revisions/{id}`, draft only: the book and the sale date, never an item list\n(D-407). A book change remaps each item to the new book's entry of the same (SKU, charge kind,\nperiod); an unmatched item keeps its entry and the checks show it foreign.",
+        "description": "`PATCH /plan-revisions/{id}`, draft only: the book and the sale date, never an item list\n(D-407). A book change remaps each item to the new book's entry of the same (SKU, charge kind,\nperiod, model, policy digest) and equal dimension key (D-502); an unmatched item keeps its\nentry and the checks show it foreign.",
         "properties": {
           "available_from": {
             "type": [
@@ -12093,6 +12392,45 @@
           }
         },
         "type": "object"
+      },
+      "PricingPlanRevisionReadDto": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/PricingPlanRevisionDto"
+          },
+          {
+            "properties": {
+              "carried_sku_ids": {
+                "description": "Draft or pending only (null otherwise): the SKU ids of the plan's published revision in\neffect today (D-447), `[]` when none is in effect. The set a re-add of a deprecated SKU\njudges (D-465).",
+                "items": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "entries": {
+                "description": "One per distinct entry the items name, in entry id order.",
+                "items": {
+                  "$ref": "#/components/schemas/PricingPlanEntrySummary"
+                },
+                "type": "array"
+              },
+              "sale_date": {
+                "description": "The checks' sale date (`domain::plan::sale_date`): `available_from`, or today for \"at\npublish\". A past `available_from` answers that past date, as the checks do.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "sale_date",
+              "entries"
+            ],
+            "type": "object"
+          }
+        ],
+        "description": "`GET /plan-revisions/{id}` (D-480): the revision, its sale date, one summary per distinct\nentry its items name, and, while it is draft or pending, the SKUs the plan sells today.\nWrite answers keep [`PricingPlanRevisionDto`]."
       },
       "PricingPlanRevisionSubmitReceipt": {
         "description": "The `plan_revision` unit a submission recorded and the revision after the transaction:\npending under the unit, or published when quorum zero applied it at once.",
@@ -12128,6 +12466,26 @@
         },
         "type": "object"
       },
+      "PricingPlanSellingCounts": {
+        "description": "`selling` is never null, so the two buckets add up to `total`.",
+        "properties": {
+          "false": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "true": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "true",
+          "false"
+        ],
+        "type": "object"
+      },
       "PricingPriceBookEntryCreate": {
         "additionalProperties": false,
         "properties": {
@@ -12156,6 +12514,17 @@
           "sku_id": {
             "format": "uuid",
             "type": "string"
+          },
+          "usage_rating_policy": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/UsageRatingPolicyInput",
+                "description": "Required for usage entries; immutable after creation. Identity is server assigned."
+              }
+            ]
           }
         },
         "required": [
@@ -12226,6 +12595,17 @@
             "format": "date-time",
             "type": "string"
           },
+          "usage_rating_policy": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/UsageRatingPolicy",
+                "description": "Immutable policy materialized from the entry; null for legacy/non-usage entries."
+              }
+            ]
+          },
           "version": {
             "format": "int64",
             "type": "integer"
@@ -12247,16 +12627,22 @@
         "type": "object"
       },
       "PricingPriceBookEntryList": {
+        "description": "One page of a book's entries (D-483), ordered `(sku_id, charge_kind, model, id)`.",
         "properties": {
           "items": {
             "items": {
               "$ref": "#/components/schemas/PricingPriceBookEntryReadDto"
             },
             "type": "array"
+          },
+          "page_info": {
+            "$ref": "#/components/schemas/PageInfo",
+            "description": "`limit` is the page size (500 by default and at most); `next_cursor` continues the page and\ncarries the list's `$filter` and day."
           }
         },
         "required": [
-          "items"
+          "items",
+          "page_info"
         ],
         "type": "object"
       },
@@ -13128,6 +13514,17 @@
           "tax_category": {
             "$ref": "#/components/schemas/PricingResolveInputDto",
             "description": "The SKU version's, else the tenant `default_tax_category`."
+          },
+          "usage_rating_policy": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/UsageRatingPolicy",
+                "description": "Immutable policy projected from the selected entry; null for legacy entries."
+              }
+            ]
           }
         },
         "required": [
@@ -13195,6 +13592,47 @@
           "scheduled"
         ],
         "type": "string"
+      },
+      "PricingRevisionChecksBatchDto": {
+        "description": "`GET /plan-revisions/checks` (D-482): the checks of the revisions the caller may read, and\nthe ids the tenant does not hold or the plan-read scope does not admit.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PricingRevisionChecksDto"
+            },
+            "type": "array"
+          },
+          "missing": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "items",
+          "missing"
+        ],
+        "type": "object"
+      },
+      "PricingRevisionChecksDto": {
+        "description": "`GET /plan-revisions/checks` (D-482): one revision's checks, the single read's answer.",
+        "properties": {
+          "checks": {
+            "$ref": "#/components/schemas/PricingPlanChecksDto",
+            "description": "Byte-identical to `GET /plan-revisions/{id}/checks` for this revision."
+          },
+          "revision_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "revision_id",
+          "checks"
+        ],
+        "type": "object"
       },
       "PricingRevisionState": {
         "description": "A plan revision's state.",
@@ -13709,6 +14147,390 @@
           "reject"
         ],
         "type": "string"
+      },
+      "ProductsDerivedDeclaration": {
+        "description": "A derived usage type's declaration (P-D-229, P-D-230): its inputs, the formula applied to one\ngranule's folded inputs, and the output's unit, scale and rounding.",
+        "properties": {
+          "formula": {
+            "$ref": "#/components/schemas/ProductsDerivedExpr"
+          },
+          "granularity": {
+            "description": "`hour`, the one granularity of v1.",
+            "type": "string"
+          },
+          "inputs": {
+            "items": {
+              "$ref": "#/components/schemas/ProductsDerivedInput"
+            },
+            "type": "array"
+          },
+          "output_round": {
+            "description": "`half_even`, `half_up`, `up` or `down`.",
+            "type": "string"
+          },
+          "output_scale": {
+            "description": "0 to 12.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "output_unit": {
+            "description": "The selling SKU's unit, e.g. `cloudlet·hour`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "output_unit",
+          "granularity",
+          "inputs",
+          "formula",
+          "output_scale",
+          "output_round"
+        ],
+        "type": "object"
+      },
+      "ProductsDerivedExpr": {
+        "description": "One node of a derived usage type's formula, in the shape the SDK's canonical bytes encode it.\n`op` names the node, and each operator carries its own fields and no other:\n- `input`: `name`, an input's name;\n- `const`: `value`, a decimal string;\n- `add`, `sub`, `mul`: `left` and `right`;\n- `div_const`: `arg`, and `divisor`, a non-zero decimal string;\n- `max`, `min`: `args`, at least two;\n- `ceil`, `floor`: `arg`;\n- `round`: `arg`, `scale` (0 to 12) and `mode` (`half_even`, `half_up`, `up`, `down`).\n\nEvery token is a plain string (P-D-217), so the door refuses an unknown one with its own code.",
+        "properties": {
+          "arg": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ProductsDerivedExpr"
+              }
+            ]
+          },
+          "args": {
+            "items": {
+              "$ref": "#/components/schemas/ProductsDerivedExpr"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "divisor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "left": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ProductsDerivedExpr"
+              }
+            ]
+          },
+          "mode": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "op": {
+            "type": "string"
+          },
+          "right": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ProductsDerivedExpr"
+              }
+            ]
+          },
+          "scale": {
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "value": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "op"
+        ],
+        "type": "object"
+      },
+      "ProductsDerivedInput": {
+        "description": "One input of a derived usage type: a raw GTS usage type, folded over one granule.",
+        "properties": {
+          "granule_fold": {
+            "description": "`sum`, `peak` or `time_weighted`.",
+            "type": "string"
+          },
+          "max_hold_seconds": {
+            "description": "Required for `time_weighted` (1 to 86 400 seconds) and refused otherwise; absent when none.",
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "`^[a-z][a-z0-9_]{0,31}$`, what the formula's `input` nodes name.",
+            "type": "string"
+          },
+          "unit": {
+            "type": "string"
+          },
+          "usage_type_ref": {
+            "description": "A GTS usage type id; never a `products.derived/` id.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "usage_type_ref",
+          "granule_fold",
+          "unit"
+        ],
+        "type": "object"
+      },
+      "ProductsDerivedMeterRef": {
+        "description": "What a pricing usage policy names as its meter (O-2, H1).",
+        "properties": {
+          "usage_type_id": {
+            "description": "`products.derived/<code>@<n>`.",
+            "type": "string"
+          },
+          "version": {
+            "description": "`<n>`, a canonical decimal.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "usage_type_id",
+          "version"
+        ],
+        "type": "object"
+      },
+      "ProductsDerivedUsageType": {
+        "description": "A derived usage type with its versions' headers, oldest first.",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "created_by": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "versions": {
+            "items": {
+              "$ref": "#/components/schemas/ProductsDerivedVersionHeader"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "name",
+          "created_by",
+          "created_at",
+          "versions"
+        ],
+        "type": "object"
+      },
+      "ProductsDerivedUsageTypeItem": {
+        "description": "A derived usage type as the list pages it.",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "created_by": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "latest_version": {
+            "description": "The highest version.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "name",
+          "latest_version",
+          "created_by",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "ProductsDerivedUsageTypeRequest": {
+        "description": "`POST /derived-usage-types`: a new type and its version 1.",
+        "properties": {
+          "code": {
+            "description": "`^[a-z0-9][a-z0-9._-]{0,63}$`, unique in the tenant.",
+            "type": "string"
+          },
+          "declaration": {
+            "$ref": "#/components/schemas/ProductsDerivedDeclaration"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "name",
+          "declaration"
+        ],
+        "type": "object"
+      },
+      "ProductsDerivedUsageTypeVersion": {
+        "description": "One version of a derived usage type, with what a pricing author copies into a usage policy.",
+        "properties": {
+          "accrual_policy_version": {
+            "description": "`derived-v1:<digest>`.",
+            "type": "string"
+          },
+          "canonical_unit": {
+            "description": "The declaration's `output_unit`.",
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "created_by": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "declaration": {
+            "$ref": "#/components/schemas/ProductsDerivedDeclaration"
+          },
+          "digest": {
+            "description": "The stored SHA-256 of the declaration's canonical bytes, 64 lowercase hex digits.",
+            "type": "string"
+          },
+          "id": {
+            "description": "The type's id.",
+            "format": "uuid",
+            "type": "string"
+          },
+          "meter_ref": {
+            "$ref": "#/components/schemas/ProductsDerivedMeterRef"
+          },
+          "name": {
+            "type": "string"
+          },
+          "version": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "name",
+          "version",
+          "declaration",
+          "digest",
+          "meter_ref",
+          "canonical_unit",
+          "accrual_policy_version",
+          "created_by",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "ProductsDerivedUsageTypeVersionRequest": {
+        "description": "`POST /derived-usage-types/{code}/versions`: the next version.",
+        "properties": {
+          "declaration": {
+            "$ref": "#/components/schemas/ProductsDerivedDeclaration"
+          }
+        },
+        "required": [
+          "declaration"
+        ],
+        "type": "object"
+      },
+      "ProductsDerivedVersionHeader": {
+        "description": "A version as the type read lists it.",
+        "properties": {
+          "accrual_policy_version": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "created_by": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "digest": {
+            "type": "string"
+          },
+          "meter_ref": {
+            "$ref": "#/components/schemas/ProductsDerivedMeterRef"
+          },
+          "version": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "digest",
+          "meter_ref",
+          "accrual_policy_version",
+          "created_by",
+          "created_at"
+        ],
+        "type": "object"
       },
       "ProductsLifecycle": {
         "description": "A SKU's lifecycle. A retire under review is `retire_pending`, not a lifecycle (P-D-248).",
@@ -14350,6 +15172,30 @@
         ],
         "type": "object"
       },
+      "QuantitySemantics": {
+        "additionalProperties": false,
+        "properties": {
+          "accrual_policy_version": {
+            "type": "string"
+          },
+          "fold": {
+            "$ref": "#/components/schemas/Fold"
+          },
+          "meter": {
+            "$ref": "#/components/schemas/MeterRef"
+          },
+          "unit": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "meter",
+          "unit",
+          "fold",
+          "accrual_policy_version"
+        ],
+        "type": "object"
+      },
       "QueryAggregatedUsageRecordsRequest": {
         "additionalProperties": false,
         "description": "Aggregated-query request body for\n`POST /usage-collector/v1/records/aggregate`. The typed `gts_id`, the\n`OData` `$filter`, and the `metadata.<key>` side-channel remain query\nparameters (mirroring `GET /usage-collector/v1/records`); only the\naggregation spec (operator + group-by dimensions) ships in the body.",
@@ -14589,6 +15435,42 @@
           "degrade"
         ],
         "type": "string"
+      },
+      "RatingWindow": {
+        "oneOf": [
+          {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "billing_cycle"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "calendar_hour"
+                ],
+                "type": "string"
+              },
+              "timezone": {
+                "$ref": "#/components/schemas/Timezone"
+              }
+            },
+            "required": [
+              "timezone",
+              "kind"
+            ],
+            "type": "object"
+          }
+        ]
       },
       "ReactionKindDto": {
         "description": "Reaction value.",
@@ -16046,6 +16928,12 @@
           "ref_id"
         ],
         "type": "object"
+      },
+      "Reset": {
+        "enum": [
+          "rating_window_start"
+        ],
+        "type": "string"
       },
       "ResolveExceptionRequest": {
         "description": "Resolve-exception request body.",
@@ -19061,6 +19949,12 @@
         ],
         "type": "object"
       },
+      "Timezone": {
+        "enum": [
+          "UTC"
+        ],
+        "type": "string"
+      },
       "ToolData": {
         "description": "Tool lifecycle event.",
         "properties": {
@@ -19981,6 +20875,61 @@
         "required": [
           "input_tokens",
           "output_tokens"
+        ],
+        "type": "object"
+      },
+      "UsageRatingPolicy": {
+        "additionalProperties": false,
+        "description": "Materialized immutable policy. Version is an exact decimal string on the wire.",
+        "properties": {
+          "content": {
+            "$ref": "#/components/schemas/UsageRatingPolicyInput"
+          },
+          "digest": {
+            "type": "string"
+          },
+          "policy_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "policy_id",
+          "version",
+          "digest",
+          "content"
+        ],
+        "type": "object"
+      },
+      "UsageRatingPolicyInput": {
+        "additionalProperties": false,
+        "description": "Author input contains no server-assigned policy identity.",
+        "properties": {
+          "aggregation_scope": {
+            "$ref": "#/components/schemas/AggregationScope"
+          },
+          "partial_window": {
+            "$ref": "#/components/schemas/PartialWindow"
+          },
+          "quantity_semantics": {
+            "$ref": "#/components/schemas/QuantitySemantics"
+          },
+          "rating_window": {
+            "$ref": "#/components/schemas/RatingWindow"
+          },
+          "reset": {
+            "$ref": "#/components/schemas/Reset"
+          }
+        },
+        "required": [
+          "rating_window",
+          "aggregation_scope",
+          "reset",
+          "quantity_semantics",
+          "partial_window"
         ],
         "type": "object"
       },
@@ -35587,6 +36536,124 @@
         ]
       }
     },
+    "/bss-pricing/v1/approval-policy/{kind}/effective": {
+      "get": {
+        "description": "Returns kind and quorum_required, the quorum a submit of that kind needs now (D-481): the kind's override, or the tenant default. kind is prices or plan_revision. prices is read under price_book_entry read; plan_revision under plan read. The quorum is not money, and pricing serves no price read of its own, so price read is not the grant. One statement. Refusals: 400 QUERY_INVALID for a kind outside that set; 403 without the kind's grant; 503 when the policy cannot judge.",
+        "operationId": "bss_pricing.get_effective_approval_policy",
+        "parameters": [
+          {
+            "description": "Approval kind: prices or plan_revision",
+            "in": "path",
+            "name": "kind",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PricingEffectivePolicyDto"
+                }
+              }
+            },
+            "description": "Response"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Read the quorum a submit needs",
+        "tags": [
+          "Pricing"
+        ]
+      }
+    },
     "/bss-pricing/v1/approval-units": {
       "get": {
         "description": "One page of the tenant's approval units in submission order (D-458), filtered by state, kind and referenced aggregate, each with its stored snapshot, its decisions, its live impact and caller_can_approve, whether the caller may approve it now (the approval engine's rule, D-471). `$orderby=submitted_at desc` pages it newest first, and `submitted_at asc`, the default, oldest first; the unit id breaks a tie in the same direction (D-470). A client merging pages of several gears compares submitted_at as an instant, never as text, then the id as lower-case hex. `impact=false` skips the live impact read: every unit answers impact null. `limit` (default 200, clamped at 500) and `cursor` from `page_info` page it; a cursor carries its order, so a continuation sends no `$orderby`. Refusals: 400 UNIT_STATE_INVALID for an unknown state; 400 QUERY_INVALID on kind for a kind other than prices or plan_revision, and for a query that does not parse; 400 FILTER_MISMATCH for a cursor replayed with another state, kind or referenced aggregate; 400 for a cursor that does not read; 400 ORDER_WITH_CURSOR for `$orderby` beside a cursor; 400 INVALID_ORDERBY_FIELD for any other order.",
@@ -37204,6 +38271,124 @@
         ]
       }
     },
+    "/bss-pricing/v1/plan-revisions/checks": {
+      "get": {
+        "description": "Returns the checks of 1 to 50 revisions, each byte-identical to GET /plan-revisions/{id}/checks, and missing: the ids the tenant does not hold or the caller's plan-read scope does not admit (that door's 404). One stored read and one Products call over the union of SKUs. An answer that is all missing makes no Products call. The plans list gains no ready flag (D-460). Refusals: 400 QUERY_INVALID for an empty list, more than 50 ids, a repeated id, a repeated revision_ids key, a malformed id, or any other key; Products' own refusal; 503 REGISTRY_UNAVAILABLE.",
+        "operationId": "bss_pricing.get_plan_revision_checks_batch",
+        "parameters": [
+          {
+            "description": "1 to 50 distinct plan revision ids, comma-separated. Required: an empty or missing list is 400 QUERY_INVALID.",
+            "in": "query",
+            "name": "revision_ids",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PricingRevisionChecksBatchDto"
+                }
+              }
+            },
+            "description": "Response"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Check many plan revisions",
+        "tags": [
+          "Pricing"
+        ]
+      }
+    },
     "/bss-pricing/v1/plan-revisions/{id}": {
       "delete": {
         "description": "Deletes a draft revision of the caller with every item, releasing their SKU references; the last revision of a never-published plan takes the plan with it. Refusals: 403 NOT_DRAFT_AUTHOR; 404; 409 REVISION_NOT_DRAFT, ITEM_CONFIRMATION_PENDING, or STALE_REVISION when a concurrent write changed the revision or one of its items first.",
@@ -37315,7 +38500,7 @@
         ]
       },
       "get": {
-        "description": "Returns one plan revision with its items and its state as it reads today (D-447), when it was submitted and approved (D-461) and, while it is pending, its vote progress: the approve votes counted toward the quorum and the quorum, counts only, under plan read (D-462). Its version is the ETag a following PATCH sends back as If-Match. Refusals: 404 for a revision the tenant does not hold.",
+        "description": "Returns one plan revision with its items and its state as it reads today (D-447), when it was submitted and approved (D-461), its vote progress while pending (D-462) and, beside those, its sale_date, one entry summary per distinct entry its items name and, while it is draft or pending, carried_sku_ids (D-480). Each summary's price_on_sale_date is the default chain's approved price in force on sale_date, or null when the caller's price_book read does not admit that entry's book, when only a value chain prices it, or when none is in force. reservations_settled is true when no item is unreserved or confirmation_pending; lost counts as settled. Its version is the ETag a following PATCH sends back as If-Match. Refusals: 403 without plan read; 503 when the policy cannot judge the money; 404 for a revision the tenant does not hold.",
         "operationId": "bss_pricing.get_plan_revision",
         "parameters": [
           {
@@ -37333,7 +38518,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PricingPlanRevisionDto"
+                  "$ref": "#/components/schemas/PricingPlanRevisionReadDto"
                 }
               }
             },
@@ -37439,7 +38624,7 @@
         ]
       },
       "patch": {
-        "description": "Changes a draft revision's book or its sale date, by its author at the version the author read (If-Match). A new book remaps each item to the new book's entry of the same SKU, charge kind, period and model (D-427), and an item with no such entry keeps its own, so its checks show ITEM_BOOK_FOREIGN; book_id omitted or null leaves the book unchanged. A named book needs the caller's price_book read on it (D-456). Refusals: 400 DATE_INVALID; 403 NOT_DRAFT_AUTHOR; 404; 409 REVISION_NOT_DRAFT or STALE_REVISION; 403 PRICE_BOOK_READ_REQUIRED for a book the caller may not read; 503 when that grant cannot be judged.",
+        "description": "Changes a draft revision's book or its sale date, by its author at the version the author read (If-Match). A new book remaps each item to the new book's entry of the same SKU, charge kind, period, model and policy digest with an equal dimension key (D-502), and an item with no such entry keeps its own, so its checks show ITEM_BOOK_FOREIGN; book_id omitted or null leaves the book unchanged. A named book needs the caller's price_book read on it (D-456). Refusals: 400 DATE_INVALID; 403 NOT_DRAFT_AUTHOR; 404; 409 REVISION_NOT_DRAFT or STALE_REVISION; 403 PRICE_BOOK_READ_REQUIRED for a book the caller may not read; 503 when that grant cannot be judged.",
         "operationId": "bss_pricing.patch_plan_revision",
         "parameters": [
           {
@@ -37585,7 +38770,7 @@
     },
     "/bss-pricing/v1/plan-revisions/{id}/checks": {
       "get": {
-        "description": "Returns every check of the revision on its sale date (coverage, SKUs, references, book) and whether it may be submitted, from fresh SKU reads. Refusals: 404 for a revision the tenant does not hold; Products' own refusal; 503 REGISTRY_UNAVAILABLE.",
+        "description": "Returns every check of the revision on its sale date (coverage, SKUs, references, book), whether it may be submitted, and quorum_required, the plan_revision quorum a submit will need (D-481), from fresh SKU reads. Refusals: 404 for a revision the tenant does not hold; Products' own refusal; 503 REGISTRY_UNAVAILABLE.",
         "operationId": "bss_pricing.get_plan_revision_checks",
         "parameters": [
           {
@@ -37842,6 +39027,124 @@
           }
         ],
         "summary": "Add an item to a draft revision",
+        "tags": [
+          "Pricing"
+        ]
+      }
+    },
+    "/bss-pricing/v1/plan-revisions/{id}/reservations": {
+      "get": {
+        "description": "Returns each item of the revision with its item_id, reference_state and reservation_id, and settled: true when no item is unreserved or confirmation_pending. lost counts as settled, so settled is not a green check (D-480). Two statements under plan read. Refusals: 404 for a revision the tenant does not hold; 503 when the policy cannot judge.",
+        "operationId": "bss_pricing.get_plan_revision_reservations",
+        "parameters": [
+          {
+            "description": "Plan revision id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PricingPlanReservationsDto"
+                }
+              }
+            },
+            "description": "Response"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Read a revision's item reservations",
         "tags": [
           "Pricing"
         ]
@@ -38121,13 +39424,76 @@
     },
     "/bss-pricing/v1/plans": {
       "get": {
-        "description": "Lists the tenant's plans by code, each with the headers of its revisions as they read today (a scheduled revision whose date has come reads published, D-447), each header with its author and when it was submitted and approved (D-461). Each plan names its current revision (the draft or pending one, else the scheduled one, else the published one in effect) with its item count, item SKUs and author, and the published revision in effect (D-460). With sku_id, only the plans that have a draft, pending, scheduled or published revision whose items name the SKU through a price book entry (D-434; an included item without an entry does not count), in the same shape: so a plan's current sku_ids, which name every item, may differ from what the filter keeps. Four statements whatever the number of plans. Refusals: 400 QUERY_INVALID for a malformed sku_id or any other key.",
+        "description": "One page of the tenant's plans (D-485). Each plan carries selling and change for the request's day, derived from its stored summary (D-484), last_activity_at (the instant a page ordered by it is ordered by), the headers of its revisions as they read today (D-447), its current revision with that revision's book (code, name, currency) and the published revision in effect (D-460). OData `$filter` over code, name, book_id, currency and last_activity_at; `$orderby` over code (the default), name and last_activity_at, with id breaking the tie in that direction; `$top` (alias limit; default 500, clamped at 500) and cursor (alias $skiptoken). q is a case-insensitive literal substring of the code or the name. selling is true or false. change is none, draft, pending or scheduled, one or several, comma-separated. sku_id keeps the plans whose draft, pending, scheduled or published revisions name the SKU through an entry (D-434), inside the page query. Five statements for a non-empty page, whatever its size. Refusals: 400 QUERY_INVALID for any other plain key, a repeated key, or a malformed value; 400 FILTER_MISMATCH for a cursor replayed under another narrowing; 400 for $select, $count and an order field it does not take.",
         "operationId": "bss_pricing.list_plans",
         "parameters": [
           {
-            "description": "Only the plans selling this SKU through an entry",
+            "description": "Page size, alias of $top (default 500, clamped at 500)",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Continuation from page_info (alias $skiptoken)",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Case-insensitive substring of the code or the name",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "true or false",
+            "in": "query",
+            "name": "selling",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "none, draft, pending, scheduled: one or several, comma-separated",
+            "in": "query",
+            "name": "change",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only the plans naming this SKU through an entry",
             "in": "query",
             "name": "sku_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OData v4 filter expression\n- id: eq|ne|in\n- code: eq|ne|contains|startswith|endswith|in\n- name: eq|ne|contains|startswith|endswith|in\n- book_id: eq|ne|in\n- currency: eq|ne|contains|startswith|endswith|in\n- last_activity_at: eq|ne|gt|ge|lt|le|in",
+            "in": "query",
+            "name": "$filter",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OData v4 orderby expression\n- id asc\n- id desc\n- code asc\n- code desc\n- name asc\n- name desc\n- last_activity_at asc\n- last_activity_at desc",
+            "in": "query",
+            "name": "$orderby",
             "required": false,
             "schema": {
               "type": "string"
@@ -38234,7 +39600,66 @@
         "summary": "List the plans",
         "tags": [
           "Pricing"
-        ]
+        ],
+        "x-odata-filter": {
+          "allowedFields": {
+            "book_id": [
+              "eq",
+              "ne",
+              "in"
+            ],
+            "code": [
+              "eq",
+              "ne",
+              "contains",
+              "startswith",
+              "endswith",
+              "in"
+            ],
+            "currency": [
+              "eq",
+              "ne",
+              "contains",
+              "startswith",
+              "endswith",
+              "in"
+            ],
+            "id": [
+              "eq",
+              "ne",
+              "in"
+            ],
+            "last_activity_at": [
+              "eq",
+              "ne",
+              "gt",
+              "ge",
+              "lt",
+              "le",
+              "in"
+            ],
+            "name": [
+              "eq",
+              "ne",
+              "contains",
+              "startswith",
+              "endswith",
+              "in"
+            ]
+          }
+        },
+        "x-odata-orderby": {
+          "allowedFields": [
+            "id asc",
+            "id desc",
+            "code asc",
+            "code desc",
+            "name asc",
+            "name desc",
+            "last_activity_at asc",
+            "last_activity_at desc"
+          ]
+        }
       },
       "post": {
         "description": "Creates a plan with a code and a name and its draft revision 1 on a book of the tenant, with an optional sale date, available_from (YYYY-MM-DD; omitted or null is \"at publish\", D-463); the Idempotency-Key replays the answer. The caller also needs price_book read on that book (D-456). The name is at most 200 characters and the code 64 (D-457), and the code follows a rule: 1 to 32 characters of A-Z, 0-9, - and _, starting with a letter or a digit, judged as sent with no trim or case folding (D-468); a code stored before the rule keeps reading. Refusals: 400 FIELD_TOO_LONG on a code or a name over its cap, PLAN_CODE_REQUIRED for a blank code, PLAN_CODE_INVALID for a code off the rule, or DATE_INVALID; 404 for a book the tenant does not hold; 403 PRICE_BOOK_READ_REQUIRED for one the caller may not read; 503 when that grant cannot be judged; 409 PLAN_CODE_TAKEN.",
@@ -38370,6 +39795,207 @@
         "tags": [
           "Pricing"
         ]
+      }
+    },
+    "/bss-pricing/v1/plans/counts": {
+      "get": {
+        "description": "Counts the tenant's plans that the list's narrowing keeps (D-485): by_selling (true and false; they add up to total), by_change (none, draft, pending, scheduled; each 0 when none) and total. The same plain keys and $filter as the list, and not limit, cursor or $orderby. One grouped statement. Refusals: the list's.",
+        "operationId": "bss_pricing.count_plans",
+        "parameters": [
+          {
+            "description": "Case-insensitive substring of the code or the name",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "true or false",
+            "in": "query",
+            "name": "selling",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "none, draft, pending, scheduled: one or several, comma-separated",
+            "in": "query",
+            "name": "change",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only the plans naming this SKU through an entry",
+            "in": "query",
+            "name": "sku_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OData v4 filter expression\n- id: eq|ne|in\n- code: eq|ne|contains|startswith|endswith|in\n- name: eq|ne|contains|startswith|endswith|in\n- book_id: eq|ne|in\n- currency: eq|ne|contains|startswith|endswith|in\n- last_activity_at: eq|ne|gt|ge|lt|le|in",
+            "in": "query",
+            "name": "$filter",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PricingPlanCounts"
+                }
+              }
+            },
+            "description": "Response"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Count the plans",
+        "tags": [
+          "Pricing"
+        ],
+        "x-odata-filter": {
+          "allowedFields": {
+            "book_id": [
+              "eq",
+              "ne",
+              "in"
+            ],
+            "code": [
+              "eq",
+              "ne",
+              "contains",
+              "startswith",
+              "endswith",
+              "in"
+            ],
+            "currency": [
+              "eq",
+              "ne",
+              "contains",
+              "startswith",
+              "endswith",
+              "in"
+            ],
+            "id": [
+              "eq",
+              "ne",
+              "in"
+            ],
+            "last_activity_at": [
+              "eq",
+              "ne",
+              "gt",
+              "ge",
+              "lt",
+              "le",
+              "in"
+            ],
+            "name": [
+              "eq",
+              "ne",
+              "contains",
+              "startswith",
+              "endswith",
+              "in"
+            ]
+          }
+        }
       }
     },
     "/bss-pricing/v1/plans/{id}": {
@@ -39773,7 +41399,7 @@
     },
     "/bss-pricing/v1/price-books": {
       "get": {
-        "description": "One page of the tenant's price books (D-442), each with its stats (D-441): its entries and their distinct SKUs, the distinct plans with a draft, pending, scheduled or published revision on it and those that name it only through superseded revisions, its prices by state (the approved ones also as scheduled, active and superseded today), its prices units in review and its last change. OData `$filter` over code, name, currency, valid_from and valid_until (`eq null`: open on that side); `$orderby` over code and name (tie-break id; default code); `$top` (alias `limit`; default 200, clamped at 500) and `cursor` (alias `$skiptoken`) from `page_info`. `q` is a case-insensitive substring of the code or the name, matched literally; `sku_id` keeps the books with an entry of that SKU. Refusals: 400 QUERY_INVALID for any other key, a repeated key or a malformed sku_id; 400 FILTER_MISMATCH for a cursor replayed with another `$filter`, `q` or `sku_id`; 400 for `$select`, `$count` and the other OData options it does not take.",
+        "description": "One page of the tenant's price books (D-442), each with its stats (D-441): its entries and their distinct SKUs, the distinct plans with a draft, pending, scheduled or published revision on it and those that name it only through superseded revisions, its prices by state (the approved ones also as scheduled, active and superseded today), its prices units in review and its last change. OData `$filter` over id, code, name, currency, valid_from and valid_until (`eq null`: open on that side); `$orderby` over code and name (tie-break id; default code); `$top` (alias `limit`; default 200, clamped at 500) and `cursor` (alias `$skiptoken`) from `page_info`. `q` is a case-insensitive substring of the code or the name, matched literally; `sku_id` keeps the books with an entry of that SKU. Refusals: 400 QUERY_INVALID for any other key, a repeated key or a malformed sku_id; 400 FILTER_MISMATCH for a cursor replayed with another `$filter`, `q` or `sku_id`; 400 for `$select`, `$count` and the other OData options it does not take.",
         "operationId": "bss_pricing.list_books",
         "parameters": [
           {
@@ -39813,7 +41439,7 @@
             }
           },
           {
-            "description": "OData v4 filter expression\n- code: eq|ne|contains|startswith|endswith|in\n- name: eq|ne|contains|startswith|endswith|in\n- currency: eq|ne|contains|startswith|endswith|in\n- valid_from: eq|ne|gt|ge|lt|le|in\n- valid_until: eq|ne|gt|ge|lt|le|in",
+            "description": "OData v4 filter expression\n- id: eq|ne|in\n- code: eq|ne|contains|startswith|endswith|in\n- name: eq|ne|contains|startswith|endswith|in\n- currency: eq|ne|contains|startswith|endswith|in\n- valid_from: eq|ne|gt|ge|lt|le|in\n- valid_until: eq|ne|gt|ge|lt|le|in",
             "in": "query",
             "name": "$filter",
             "required": false,
@@ -39948,6 +41574,11 @@
               "contains",
               "startswith",
               "endswith",
+              "in"
+            ],
+            "id": [
+              "eq",
+              "ne",
               "in"
             ],
             "name": [
@@ -40515,7 +42146,7 @@
     },
     "/bss-pricing/v1/price-books/{id}/entries": {
       "get": {
-        "description": "Lists the price book entries of one book of the tenant, ordered by SKU, charge kind and period, each with its usage (D-428): its prices by state (a rejected price is not counted; the approved ones also as scheduled, active and superseded on the day, D-440), the distinct plans whose draft, pending, scheduled or published revisions name it, and the distinct plans that name it only through superseded revisions; its current_price, the default chain's approved price in force on the day; and its next_price, the default chain's earliest price scheduled after the day, else its newest draft or pending price (the highest version_no), else null (D-472). Both prices are shown to a caller who also holds price_book read on the book and are null otherwise (D-434, D-440). The day is as_of, a YYYY-MM-DD date, else today (UTC): every price's status, the usage split and both prices are judged on that one day (D-473). A day before the book's valid_from, or on or after its valid_until, still answers with the prices in force on it, but a price outside the book's validity is not sellable: the book allows no sale on that day. Refusals, in order: 403 without price_book_entry read; 503 when the policy cannot judge the money; 400 QUERY_INVALID for any key but as_of, or as_of twice, then 400 DATE_INVALID for an as_of that is not a YYYY-MM-DD date; 404 for a book the tenant does not hold; then 403 PRICE_BOOK_READ_REQUIRED for an as_of other than today when the caller's price_book read does not admit the book: the usage split on another day dates every approved price, so it is money, and a caller without it reads today only.",
+        "description": "One page of the price book entries of one book of the tenant (D-483), ordered by sku_id, charge_kind, model and id, all ascending: month and year entries of one model follow their id. Each entry carries its usage (D-428): its prices by state (a rejected price is not counted; the approved ones also as scheduled, active and superseded on the day, D-440), the distinct plans whose draft, pending, scheduled or published revisions name it, and the distinct plans that name it only through superseded revisions; its current_price, the default chain's approved price in force on the day; and its next_price, the default chain's earliest price scheduled after the day, else its newest draft or pending price (the highest version_no), else null (D-472). Both prices are shown to a caller who also holds price_book read on the book and are null otherwise (D-434, D-440). The day is as_of, a YYYY-MM-DD date, else today (UTC): every price's status, the usage split and both prices are judged on that one day, on every page (D-473). A day before the book's valid_from, or on or after its valid_until, still answers with the prices in force on it, but a price outside the book's validity is not sellable: the book allows no sale on that day. limit (alias $top) is 500 by default and clamped at 500, and cursor (alias $skiptoken) continues from page_info.next_cursor: a caller that does not follow next_cursor reads the first 500. OData $filter takes sku_id (eq, ne, in), charge_kind, model and reference_state, each compared with one of its closed values. There is no q: SKU names live in Products, so a search asks GET /bss-products/v1/skus?q= and narrows this list with $filter=sku_id in (...). The cursor carries a hash of $filter and of the day, so a cursor replayed under another $filter or another as_of is 400 FILTER_MISMATCH. Refusals, in order: 403 without price_book_entry read; 503 when the policy cannot judge the money; 400 QUERY_INVALID for a plain key other than as_of, limit and cursor, or one given twice, then 400 DATE_INVALID for an as_of that is not a YYYY-MM-DD date; 400 for $orderby (the order is fixed), $select, $count, a $filter the list does not take, a limit of 0 or a cursor that does not read; 400 FILTER_MISMATCH; 404 for a book the tenant does not hold; then 403 PRICE_BOOK_READ_REQUIRED for an as_of other than today when the caller's price_book read does not admit the book, judged before any entry is read: the usage split on another day dates every approved price, so it is money, and a caller without it reads today only.",
         "operationId": "bss_pricing.list_entries",
         "parameters": [
           {
@@ -40531,6 +42162,33 @@
             "description": "The day the prices are judged on, YYYY-MM-DD; today (UTC) by default",
             "in": "query",
             "name": "as_of",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page size, alias of $top (default 500, clamped at 500)",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Continuation from page_info (alias $skiptoken)",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OData v4 filter expression\n- sku_id: eq|ne|in\n- charge_kind: eq|ne|contains|startswith|endswith|in\n- model: eq|ne|contains|startswith|endswith|in\n- reference_state: eq|ne|contains|startswith|endswith|in",
+            "in": "query",
+            "name": "$filter",
             "required": false,
             "schema": {
               "type": "string"
@@ -40637,10 +42295,43 @@
         "summary": "List a book's entries",
         "tags": [
           "Pricing"
-        ]
+        ],
+        "x-odata-filter": {
+          "allowedFields": {
+            "charge_kind": [
+              "eq",
+              "ne",
+              "contains",
+              "startswith",
+              "endswith",
+              "in"
+            ],
+            "model": [
+              "eq",
+              "ne",
+              "contains",
+              "startswith",
+              "endswith",
+              "in"
+            ],
+            "reference_state": [
+              "eq",
+              "ne",
+              "contains",
+              "startswith",
+              "endswith",
+              "in"
+            ],
+            "sku_id": [
+              "eq",
+              "ne",
+              "in"
+            ]
+          }
+        }
       },
       "post": {
-        "description": "Adds an entry for a SKU to a book in a model fixed for the entry's life (D-427), reserving the SKU reference in Products before the write and confirming it after; the Idempotency-Key replays the receipt. The invoice-line override is at most 2000 characters (D-457). Refusals: 400 MODEL_INVALID, MODEL_KIND_CHARGEKIND_MISMATCH (judged at the door and again after the reservation), ENTRY_PERIOD_INVALID, DIM_NOT_DECLARED, or FIELD_TOO_LONG on an override over its cap; 409 ENTRY_KEY_TAKEN (the SKU, charge kind, period and model are taken in the book), SKU_DRAFT, SKU_DEPRECATED, SKU_RETIRING, SKU_FENCED, BUNDLE_SKU_NOT_PRICEABLE or CHARGE_KIND_SKU_TYPE; 503 REGISTRY_UNAVAILABLE.",
+        "description": "Adds an entry for a SKU to a book in a model fixed for the entry's life (D-427), reserving the SKU reference in Products before the write and confirming it after; the Idempotency-Key replays the receipt. The invoice-line override is at most 2000 characters (D-457). Usage entries require an immutable usage_rating_policy; other charge kinds refuse one. Policy identity is server-issued (D-502). Refusals: 400 MISSING_RATING_POLICY, UNEXPECTED_RATING_POLICY, METER_POLICY_MISMATCH, MODEL_INVALID, MODEL_KIND_CHARGEKIND_MISMATCH (judged at the door and again after the reservation), ENTRY_PERIOD_INVALID, DIM_NOT_DECLARED, or FIELD_TOO_LONG on an override over its cap; 409 ENTRY_KEY_TAKEN (the SKU, charge kind, normalized period, model and policy digest are taken in the book), SKU_DRAFT, SKU_DEPRECATED, SKU_RETIRING, SKU_FENCED, BUNDLE_SKU_NOT_PRICEABLE or CHARGE_KIND_SKU_TYPE; 503 REGISTRY_UNAVAILABLE.",
         "operationId": "bss_pricing.create_entry",
         "parameters": [
           {
@@ -42903,7 +44594,7 @@
     },
     "/bss-products/v1/approval-units/{id}/approve": {
       "post": {
-        "description": "Approves the unit at the generation its reviewer saw. The note is at most 2000 characters (the approval engine's cap). Refusals include 400 NOTE_TOO_LONG on a longer note, 400 GENERATION_MISMATCH, 400 UNIT_STALE after a refresh, 403 SOD_VIOLATION and 409 DUPLICATE_VOTE.",
+        "description": "Approves the unit at the generation its reviewer saw. The note is at most 2000 characters (the approval engine's cap). The apply judges the SKU as it is then: a change that would move a derived pin, or leave a unit other than the pinned version's output unit, is refused (P-D-232). Refusals include 400 NOTE_TOO_LONG on a longer note, 400 GENERATION_MISMATCH, 400 UNIT_STALE after a refresh, 403 SOD_VIOLATION, 409 DUPLICATE_VOTE, and the apply's 409 DERIVED_PIN_IMMUTABLE, DERIVED_UNIT_MISMATCH or DERIVED_USAGE_TYPE_UNKNOWN.",
         "operationId": "bss_products.approve_unit",
         "parameters": [
           {
@@ -43998,6 +45689,523 @@
         ]
       }
     },
+    "/bss-products/v1/derived-usage-types": {
+      "get": {
+        "description": "One page of the tenant's derived usage types by code (tie-break id), each with its latest version: `$top` (alias `limit`; default 50, clamped at 200) and `cursor` (alias `$skiptoken`) from `page_info`, as the SKU list pages. Asks `sku:read` (O-3). Any other key, `$filter`, `$orderby` and `$select` are 400 UNSUPPORTED_QUERY_PARAM; a malformed cursor, or one another list cut, is 400.",
+        "operationId": "bss_products.list_derived_usage_types",
+        "parameters": [
+          {
+            "description": "Page size, alias of $top (default 50, clamped at 200)",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Continuation from page_info (alias $skiptoken)",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_ProductsDerivedUsageTypeItem"
+                }
+              }
+            },
+            "description": "One page of derived usage types, by code."
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "List derived usage types",
+        "tags": [
+          "Derived usage types"
+        ]
+      },
+      "post": {
+        "description": "A derived usage type and its version 1 (P-D-229, P-D-231): a `code` unique in the tenant (`^[a-z0-9][a-z0-9._-]{0,63}$`), a `name`, and a `declaration` — at least two raw GTS usage-type inputs, the formula one granule's folded inputs give, and the output's unit, scale and rounding. Each input resolves through the usage-type catalog. The version is append-only and needs no approval (O-1); pricing names it as `products.derived/<code>@1`. Asks `author` on `derived_usage_type`. Refusals: 400 VALIDATION on a code off its pattern or a blank name, FIELD_TOO_LONG on a code over 64 or a name over 200 characters (P-D-225); 400 DERIVED_DECLARATION_INVALID when the declaration breaks a rule, its detail led by the rule's name (`empty_unit`, `unit_too_long`, `scale_too_large`, `too_few_inputs`, `invalid_input_name`, `duplicate_input`, `empty_input_ref`, `input_ref_too_long`, `derived_input`, `hold_missing`, `hold_not_allowed`, `hold_out_of_range`, `unknown_input`, `unused_input`, `division_by_zero`, `too_few_operands`, `too_deep`, `too_many_nodes`, and the shape's `unknown_granularity`, `unknown_fold`, `unknown_round_mode`, `unknown_operator`, `invalid_decimal`, `malformed_expression`); 400 USAGE_TYPE_UNRESOLVED on each input the usage-type catalog does not know; 403 USAGE_TYPE_FORBIDDEN when the catalog refuses the caller (it is read as the caller, P-D-207); 409 IDEMPOTENCY_CONFLICT for a key replayed with another body, IDEMPOTENCY_KEY_IN_FLIGHT while its first request runs; 503 USAGE_TYPE_UNAVAILABLE when the catalog does not answer or none is configured; 409 DERIVED_CODE_TAKEN when the tenant has the code.",
+        "operationId": "bss_products.create_derived_usage_type",
+        "parameters": [
+          {
+            "description": "Replay this endpoint's original receipt within the retention period",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProductsDerivedUsageTypeRequest"
+              }
+            }
+          },
+          "description": "code, name, declaration",
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductsDerivedUsageTypeVersion"
+                }
+              }
+            },
+            "description": "The type's version 1, with its meter reference and accrual policy version."
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Create a derived usage type",
+        "tags": [
+          "Derived usage types"
+        ]
+      }
+    },
+    "/bss-products/v1/derived-usage-types/{code}": {
+      "get": {
+        "description": "The type with its versions' headers, oldest first: each version's digest, meter reference and accrual policy version. Asks `sku:read` (O-3). 404 when the tenant has no type with the code.",
+        "operationId": "bss_products.get_derived_usage_type",
+        "parameters": [
+          {
+            "description": "The derived usage type's code",
+            "in": "path",
+            "name": "code",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductsDerivedUsageType"
+                }
+              }
+            },
+            "description": "The type and its versions."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Read a derived usage type",
+        "tags": [
+          "Derived usage types"
+        ]
+      }
+    },
+    "/bss-products/v1/derived-usage-types/{code}/versions": {
+      "post": {
+        "description": "The type's next version, n + 1, with its own declaration; every earlier version stays as it was (P-D-231). A published usage SKU keeps the version it was published on: a new version is sold through a new SKU (M1). Asks `author` on `derived_usage_type`. Refusals: 404 when the tenant has no type with the code; 400 DERIVED_DECLARATION_INVALID when the declaration breaks a rule, its detail led by the rule's name (`empty_unit`, `unit_too_long`, `scale_too_large`, `too_few_inputs`, `invalid_input_name`, `duplicate_input`, `empty_input_ref`, `input_ref_too_long`, `derived_input`, `hold_missing`, `hold_not_allowed`, `hold_out_of_range`, `unknown_input`, `unused_input`, `division_by_zero`, `too_few_operands`, `too_deep`, `too_many_nodes`, and the shape's `unknown_granularity`, `unknown_fold`, `unknown_round_mode`, `unknown_operator`, `invalid_decimal`, `malformed_expression`); 400 USAGE_TYPE_UNRESOLVED on each input the usage-type catalog does not know; 403 USAGE_TYPE_FORBIDDEN when the catalog refuses the caller (it is read as the caller, P-D-207); 409 IDEMPOTENCY_CONFLICT for a key replayed with another body, IDEMPOTENCY_KEY_IN_FLIGHT while its first request runs; 503 USAGE_TYPE_UNAVAILABLE when the catalog does not answer or none is configured; 409 CONTENDED when a concurrent write took the number first.",
+        "operationId": "bss_products.create_derived_usage_type_version",
+        "parameters": [
+          {
+            "description": "The derived usage type's code",
+            "in": "path",
+            "name": "code",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Replay this endpoint's original receipt within the retention period",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProductsDerivedUsageTypeVersionRequest"
+              }
+            }
+          },
+          "description": "declaration",
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductsDerivedUsageTypeVersion"
+                }
+              }
+            },
+            "description": "The new version, with its meter reference and accrual policy version."
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Add a version to a derived usage type",
+        "tags": [
+          "Derived usage types"
+        ]
+      }
+    },
+    "/bss-products/v1/derived-usage-types/{code}/versions/{n}": {
+      "get": {
+        "description": "The version's declaration, its stored digest, and what a pricing usage policy names (O-2): `meter_ref` `{usage_type_id: \"products.derived/<code>@<n>\", version: \"<n>\"}`, `canonical_unit` (the declaration's output unit) and `accrual_policy_version` (`derived-v1:<digest>`). Asks `sku:read` (O-3). 404 when the tenant has no type with the code, or the type no such version; an `n` that is not a canonical decimal names no version.",
+        "operationId": "bss_products.get_derived_usage_type_version",
+        "parameters": [
+          {
+            "description": "The derived usage type's code",
+            "in": "path",
+            "name": "code",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The version, a canonical decimal from 1",
+            "in": "path",
+            "name": "n",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductsDerivedUsageTypeVersion"
+                }
+              }
+            },
+            "description": "The version."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Read one version of a derived usage type",
+        "tags": [
+          "Derived usage types"
+        ]
+      }
+    },
     "/bss-products/v1/references/{id}": {
       "delete": {
         "description": "Releases a reference: its owner gear releases its own, and an operator forces the release with `force: true` and a reason of at most 2000 characters (P-D-225), which the audit row and the `ReferenceForceReleased` event carry. Refusals: 400 for a forced release without a reason, 400 FIELD_TOO_LONG on a reason over its cap; 403 REFERENCE_OWNER_MISMATCH; 404.",
@@ -44235,7 +46443,7 @@
     },
     "/bss-products/v1/skus": {
       "get": {
-        "description": "One page of the tenant's SKUs (P-D-210). OData `$filter` over id, code, name, lifecycle, retire_pending, type, category_id (`eq null`: no category) and pending_unit_id (`ne null`: in review); `$orderby` over code, name, updated_at (tie-break id; default code); `$top` (alias `limit`; default 50, clamped at 200) and `cursor` (alias `$skiptoken`) from `page_info`. `q` is a case-insensitive substring of the code, name, unit, usage type or GL code, matched literally (ASCII case folding on SQLite). `priced` and `in_plan` (true or false) keep the SKUs pricing prices or a plan names, or the others (P-D-212): 403 USAGE_FORBIDDEN when pricing refuses the caller, 503 USAGE_UNAVAILABLE when it cannot answer. Any other key, `$select` and `$count` are 400; a cursor replayed with another `$filter`, `q`, `priced` or `in_plan` is 400. Each item carries pricing's `usage`, or null (P-D-197).",
+        "description": "One page of the tenant's SKUs (P-D-210). OData `$filter` over id, code, name, lifecycle, retire_pending, type, category_id (`eq null`: no category) and pending_unit_id (`ne null`: in review). `lifecycle` compares with `eq`, `ne` or `in`, and with those joined by `and` (the effective lifecycle); a `lifecycle` term under `or` or `not`, or `contains`, `startswith` or `endswith` on it, is 400. `$orderby` over code, name, updated_at (tie-break id; default code); `$top` (alias `limit`; default 50, clamped at 200) and `cursor` (alias `$skiptoken`) from `page_info`. `q` is a case-insensitive substring of the code, name, unit, usage type or GL code, matched literally (ASCII case folding on SQLite). `priced` and `in_plan` (true or false) keep the SKUs pricing prices or a plan names, or the others (P-D-212): 403 USAGE_FORBIDDEN when pricing refuses the caller, 503 USAGE_UNAVAILABLE when it cannot answer. Any other key, `$select` and `$count` are 400; a cursor replayed with another `$filter`, `q`, `priced` or `in_plan` is 400. Each item carries pricing's `usage`, or null (P-D-197). The pickers (P-D-246): `priced_in` or `not_priced_in`, a price book id (at most one of the two), keeps the SKUs with an entry in that book, in any reference state, or the others; `not_in_revision`, a plan revision id, keeps the SKUs its items do not name. Each key is one call to pricing, under pricing price_book_entry read, and the revision's also under plan read: 403 USAGE_FORBIDDEN when pricing refuses the caller, 503 USAGE_UNAVAILABLE when it cannot answer. A book or a revision the tenant does not hold is an empty set. The cursor carries the picker keys too. The multi-id read is `$filter=id in (...)`, one page of at most `$top` 200, within the 8 KiB filter.",
         "operationId": "bss_products.list_skus",
         "parameters": [
           {
@@ -44284,7 +46492,34 @@
             }
           },
           {
-            "description": "OData v4 filter expression\n- id: eq|ne|in\n- code: eq|ne|contains|startswith|endswith|in\n- name: eq|ne|contains|startswith|endswith|in\n- lifecycle: eq|ne|contains|startswith|endswith|in\n- type: eq|ne|contains|startswith|endswith|in\n- category_id: eq|ne|in\n- pending_unit_id: eq|ne|in\n- retire_pending: eq|ne",
+            "description": "A price book id: only the SKUs with an entry in it (P-D-246)",
+            "in": "query",
+            "name": "priced_in",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "A price book id: only the SKUs without an entry in it (P-D-246)",
+            "in": "query",
+            "name": "not_priced_in",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "A plan revision id: only the SKUs its items do not name (P-D-246)",
+            "in": "query",
+            "name": "not_in_revision",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OData v4 filter expression\n- id: eq|ne|in\n- code: eq|ne|contains|startswith|endswith|in\n- name: eq|ne|contains|startswith|endswith|in\n- lifecycle: eq|ne|in\n- type: eq|ne|contains|startswith|endswith|in\n- category_id: eq|ne|in\n- pending_unit_id: eq|ne|in\n- retire_pending: eq|ne",
             "in": "query",
             "name": "$filter",
             "required": false,
@@ -44396,9 +46631,6 @@
             "lifecycle": [
               "eq",
               "ne",
-              "contains",
-              "startswith",
-              "endswith",
               "in"
             ],
             "name": [
@@ -44442,7 +46674,7 @@
         }
       },
       "post": {
-        "description": "Creates a draft SKU of the tenant. Its texts have explicit caps, in characters (P-D-225): code 64, name 200, description 2000, gl_code, tax_category and unit 64, invoice_line_template 2000, usage_type_ref 512. Refusals: 400 VALIDATION, or 400 FIELD_TOO_LONG on a text over its cap; 404 for a category the tenant does not hold; 409 SKU_CODE_TAKEN, SKU_NAME_TAKEN or CATEGORY_RETIRED.",
+        "description": "Creates a draft SKU of the tenant. Its texts have explicit caps, in characters (P-D-225): code 64, name 200, description 2000, gl_code, tax_category and unit 64, invoice_line_template 2000, usage_type_ref 512. A usage_type_ref of the form `products.derived/<code>@<n>` names one version of the tenant's derived usage type, read from this gear's store; the usage-type catalog is never asked for it (P-D-232). Refusals: 400 VALIDATION, or 400 FIELD_TOO_LONG on a text over its cap; 400 USAGE_TYPE_UNRESOLVED for a GTS ref the configured catalog does not know; 400 DERIVED_USAGE_TYPE_UNKNOWN for a derived ref the tenant does not hold, or one not in that form; 400 DERIVED_UNIT_MISMATCH for a unit other than that version's output unit; 404 for a category the tenant does not hold; 409 SKU_CODE_TAKEN, SKU_NAME_TAKEN or CATEGORY_RETIRED.",
         "operationId": "bss_products.create_sku",
         "parameters": [
           {
@@ -44561,7 +46793,7 @@
     },
     "/bss-products/v1/skus/counts": {
       "get": {
-        "description": "The list's tab counts (P-D-211): every SKU, each lifecycle, and those in review (`pending_unit_id` set), narrowed like the list by `q`, `priced`, `in_plan` and `$filter`, whose top-level `lifecycle` terms are dropped (a `lifecycle` term under `or` or `not` is 400). `$orderby`, `$top`/`limit`, `cursor`/`$skiptoken` and `$select` are 400.",
+        "description": "The list's tab counts (P-D-211): every SKU, each lifecycle, and those in review (`pending_unit_id` set), narrowed like the list by `q`, `priced`, `in_plan` and `$filter`. Top-level `lifecycle` comparisons (`eq`, `ne`, `in`, and those joined by `and`) are dropped. A `lifecycle` term under `or` or `not`, or `contains`, `startswith` or `endswith` on `lifecycle`, is 400. `$orderby`, `$top`/`limit`, `cursor`/`$skiptoken` and `$select` are 400. The picker keys `priced_in`, `not_priced_in` (at most one of the two) and `not_in_revision` narrow the counts as they narrow the list (P-D-246): 403 USAGE_FORBIDDEN when pricing refuses the caller (a revision takes plan read beside price_book_entry read), 503 USAGE_UNAVAILABLE when it cannot answer.",
         "operationId": "bss_products.count_skus",
         "parameters": [
           {
@@ -44592,7 +46824,34 @@
             }
           },
           {
-            "description": "OData v4 filter expression\n- id: eq|ne|in\n- code: eq|ne|contains|startswith|endswith|in\n- name: eq|ne|contains|startswith|endswith|in\n- lifecycle: eq|ne|contains|startswith|endswith|in\n- type: eq|ne|contains|startswith|endswith|in\n- category_id: eq|ne|in\n- pending_unit_id: eq|ne|in\n- retire_pending: eq|ne",
+            "description": "A price book id: only the SKUs with an entry in it (P-D-246)",
+            "in": "query",
+            "name": "priced_in",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "A price book id: only the SKUs without an entry in it (P-D-246)",
+            "in": "query",
+            "name": "not_priced_in",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "A plan revision id: only the SKUs its items do not name (P-D-246)",
+            "in": "query",
+            "name": "not_in_revision",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OData v4 filter expression\n- id: eq|ne|in\n- code: eq|ne|contains|startswith|endswith|in\n- name: eq|ne|contains|startswith|endswith|in\n- lifecycle: eq|ne|in\n- type: eq|ne|contains|startswith|endswith|in\n- category_id: eq|ne|in\n- pending_unit_id: eq|ne|in\n- retire_pending: eq|ne",
             "in": "query",
             "name": "$filter",
             "required": false,
@@ -44695,9 +46954,6 @@
             "lifecycle": [
               "eq",
               "ne",
-              "contains",
-              "startswith",
-              "endswith",
               "in"
             ],
             "name": [
@@ -44934,7 +47190,7 @@
         ]
       },
       "patch": {
-        "description": "Edits a draft SKU under If-Match; a field the body leaves out is unchanged. The texts it carries have the caps of the create (P-D-225). Refusals include 400 VALIDATION, 400 FIELD_TOO_LONG on a text over its cap, 404, and 409 NOT_A_DRAFT, ROW_LOCKED_PENDING, STALE_REVISION, SKU_NAME_TAKEN or CATEGORY_RETIRED.",
+        "description": "Edits a draft SKU under If-Match; a field the body leaves out is unchanged. The texts it carries have the caps of the create (P-D-225). A draft never published may move its derived usage type to another version (P-D-232). Refusals include 400 VALIDATION, 400 FIELD_TOO_LONG on a text over its cap, 400 USAGE_TYPE_UNRESOLVED, 400 DERIVED_USAGE_TYPE_UNKNOWN and DERIVED_UNIT_MISMATCH as at the create, 404, and 409 NOT_A_DRAFT, ROW_LOCKED_PENDING, STALE_REVISION, SKU_NAME_TAKEN or CATEGORY_RETIRED.",
         "operationId": "bss_products.update_sku_draft",
         "parameters": [
           {
@@ -45062,7 +47318,7 @@
     },
     "/bss-products/v1/skus/{id}/changes": {
       "post": {
-        "description": "Submits a change of a published SKU for approval, effective from `effective_from`. The texts it carries have the caps of the create (P-D-225), and the note at most 2000 characters. Refusals include 400 FIELD_TOO_LONG on a text over its cap and 400 NOTE_TOO_LONG on the note.",
+        "description": "Submits a change of a published SKU for approval, effective from `effective_from`. The texts it carries have the caps of the create (P-D-225), and the note at most 2000 characters. A usage SKU keeps the derived usage type it was first published on (P-D-232): a change that moves it to another version, to a GTS ref, from a GTS ref, or drops it (a type change included) is refused before any catalog is asked. Refusals include 400 FIELD_TOO_LONG on a text over its cap, 400 NOTE_TOO_LONG on the note, 400 DERIVED_PIN_IMMUTABLE, and 400 DERIVED_UNIT_MISMATCH for a unit other than the pinned version's output unit.",
         "operationId": "bss_products.change_sku",
         "parameters": [
           {
@@ -45675,6 +47931,7 @@
     },
     "/bss-products/v1/skus/{id}/submit": {
       "post": {
+        "description": "Submits a draft SKU for publication; at quorum 0 the submit is the publish. A usage SKU's GTS ref is resolved through the usage-type catalog (P-D-184); a derived ref (`products.derived/<code>@<n>`) is read from this gear's store, never from the catalog, and the first publish pins it (P-D-232). Refusals include 400 USAGE_NEEDS_METER, USAGE_TYPE_UNRESOLVED, DERIVED_USAGE_TYPE_UNKNOWN and DERIVED_UNIT_MISMATCH, 400 NOTE_TOO_LONG, 403 USAGE_TYPE_FORBIDDEN, 409 NOT_A_DRAFT and 503 USAGE_TYPE_UNAVAILABLE.",
         "operationId": "bss_products.submit_sku",
         "parameters": [
           {
@@ -46125,7 +48382,7 @@
     },
     "/bss-products/v1/usage-types": {
       "get": {
-        "description": "The usage-type catalog the publish gate resolves against, read as the caller (P-D-207). `q` narrows by case-insensitive substring of the id, `kind` by equality; `limit` defaults to 50 and is clamped at 200; `kind` is counter or gauge. Over the usage collector, `q` searches at most 1000 types of the asked kind, in id order, and its cursor is bound to `q` and `kind`. Refusals: 403 without products SKU author, or when the catalog refuses the caller; 400 for a malformed query, a `kind` outside counter and gauge, for a search cursor (one cut with `q`) replayed with another `q` or `kind` or without `q`, and for a cursor cut without `q` replayed under any `q` (without `q`, such a cursor passes to the collector unchecked); 501 when no catalog is configured; 503 when the configured one does not answer, or `USAGE_TYPE_CATALOG_TOO_LARGE` when `q` would search more than 1000 types. A configured catalog with no types answers 200 with no items.",
+        "description": "The usage-type catalog the publish gate resolves against, read as the caller (P-D-207). `q` narrows by case-insensitive substring of the id, `kind` by equality; `limit` defaults to 50 and is clamped at 200; `kind` is counter or gauge. Over the usage collector, `q` searches at most 1000 types of the asked kind, in id order, and its cursor is bound to `q` and `kind`. Refusals: 403 without products SKU author, or when the catalog refuses the caller; 400 for a malformed query, a `kind` outside counter and gauge, for a search cursor (one cut with `q`) replayed with another `q` or `kind` or without `q`, and for a cursor cut without `q` replayed under any `q` (without `q`, such a cursor passes to the collector unchecked); 501 when no catalog is configured; 503 when the configured one does not answer, or `USAGE_TYPE_CATALOG_TOO_LARGE` when `q` would search more than 1000 types. A configured catalog with no types answers 200 with no items. A page answers Cache-Control: private, max-age=60 (P-D-247): it is read as the caller, so only the caller's own cache may keep it, for a minute.",
         "operationId": "bss_products.list_usage_types",
         "parameters": [
           {
@@ -46174,7 +48431,15 @@
                 }
               }
             },
-            "description": "Usage types"
+            "description": "Usage types",
+            "headers": {
+              "Cache-Control": {
+                "description": "private, max-age=60: the page is read as the caller, so only the caller's own cache may keep it, for a minute (P-D-247)",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {

@@ -10,6 +10,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 mod book_support;
 mod plan_support;
+use plan_support::entry_support::policy_support;
 mod schema_dump;
 use book_support::{bare_revision, code_of, get, ok};
 use entry_support::Script;
@@ -59,7 +60,7 @@ async fn door_entry(f: &Fixture, book: &Value) -> Value {
         .call(
             "POST",
             &format!("/price-books/{}/entries", book["id"].as_str().unwrap()),
-            json!({"sku_id":Uuid::new_v4(),"model":"per_unit"}),
+            json!({"usage_rating_policy":policy_support::input(),"sku_id":Uuid::new_v4(),"model":"per_unit"}),
             None,
             Some(&Uuid::new_v4().to_string()),
         )
@@ -679,7 +680,7 @@ async fn an_entry_create_in_flight_loses_to_the_books_delete() {
             &ctx,
             "POST",
             &path,
-            json!({"sku_id":Uuid::new_v4(),"model":"per_unit"}),
+            json!({"usage_rating_policy":policy_support::input(),"sku_id":Uuid::new_v4(),"model":"per_unit"}),
             None,
             Some("in-flight"),
         )
@@ -1063,7 +1064,8 @@ async fn over_the_caps(f: &Fixture, named: &Named) -> Vec<Capped> {
         body
     };
     let entry_body = |extra: (&str, Value)| {
-        let mut body = json!({"sku_id":sku,"model":"per_unit"});
+        let mut body =
+            json!({"usage_rating_policy":policy_support::input(),"sku_id":sku,"model":"per_unit"});
         body[extra.0] = extra.1;
         body
     };

@@ -3,9 +3,9 @@
 use crate::api::rest::closed_sets::{
     PricingApprovalKind, PricingBillingTiming, PricingChargeKind, PricingDecisionKind,
     PricingEligibility, PricingEntryReferenceState, PricingItemReferenceState, PricingModel,
-    PricingPeriod, PricingPriceState, PricingPriceStatus, PricingReferenceOpKind,
-    PricingReferenceOpRefKind, PricingReferenceOpState, PricingRevisionState,
-    PricingSkuEntryStatus, PricingUnitState, PricingVoteOutcome,
+    PricingPeriod, PricingPlanChange, PricingPriceState, PricingPriceStatus,
+    PricingReferenceOpKind, PricingReferenceOpRefKind, PricingReferenceOpState,
+    PricingRevisionState, PricingSkuEntryStatus, PricingUnitState, PricingVoteOutcome,
 };
 use crate::domain::plan::{self, EffectiveRevision};
 use crate::infra::plan_revisions::{effective_revisions, stored_revisions};
@@ -49,6 +49,8 @@ impl From<entity::price_book::Model> for PriceBookDto {
 }
 #[toolkit_macros::api_dto(response)]
 pub struct PricingPriceBookEntryDto {
+    /// Immutable policy materialized from the entry; null for legacy/non-usage entries.
+    pub usage_rating_policy: Option<crate::infra::usage_policy_wire::UsageRatingPolicy>,
     pub id: Uuid,
     pub tenant_id: Uuid,
     pub book_id: Uuid,
@@ -72,6 +74,7 @@ impl TryFrom<entity::price_book_entry::Model> for PricingPriceBookEntryDto {
     fn try_from(m: entity::price_book_entry::Model) -> Result<Self, RepoError> {
         let id = m.id;
         Ok(Self {
+            usage_rating_policy: None,
             id,
             tenant_id: m.tenant_id,
             book_id: m.book_id,
@@ -97,6 +100,26 @@ impl TryFrom<entity::price_book_entry::Model> for PricingPriceBookEntryDto {
             created_at: m.created_at,
             updated_at: m.updated_at,
         })
+    }
+}
+impl PricingPriceBookEntryDto {
+    /// Materialize immutable policy content along with an entry.
+    /// # Errors
+    /// Refuses corrupt or dangling policy references and storage failures.
+    pub async fn load(
+        tx: &impl toolkit_db::secure::DBRunner,
+        m: entity::price_book_entry::Model,
+    ) -> Result<Self, RepoError> {
+        let policy = crate::infra::storage::repo::usage_policy_repo::for_entries(
+            tx,
+            m.tenant_id,
+            std::slice::from_ref(&m),
+        )
+        .await?
+        .remove(&m.id);
+        let mut dto = Self::try_from(m)?;
+        dto.usage_rating_policy = policy;
+        Ok(dto)
     }
 }
 /// An entry's prices by state; a rejected price is not counted (D-428). The approved ones are
@@ -179,13 +202,6 @@ impl PricingPriceBookEntryReadDto {
 #[toolkit_macros::api_dto(response)]
 pub struct PricingEntryPriceList {
     pub items: Vec<PricingPriceDto>,
-}
-/// The query of `GET /price-books/{id}/entries` (D-473): an optional `as_of`, the day its prices
-/// are judged on.
-#[derive(Default, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct PricingEntryListQuery {
-    pub as_of: Option<String>,
 }
 /// The query of `GET /price-book-entries/{id}/prices`: an optional `status`, one display status
 /// or several comma-separated.
@@ -409,9 +425,13 @@ fn nullable_date<'de, D: serde::Deserializer<'de>>(
 ) -> Result<Option<Option<String>>, D::Error> {
     <Option<String> as serde::Deserialize>::deserialize(d).map(Some)
 }
+/// One page of a book's entries (D-483), ordered `(sku_id, charge_kind, model, id)`.
 #[toolkit_macros::api_dto(response)]
 pub struct PricingPriceBookEntryList {
     pub items: Vec<PricingPriceBookEntryReadDto>,
+    /// `limit` is the page size (500 by default and at most); `next_cursor` continues the page and
+    /// carries the list's `$filter` and day.
+    pub page_info: toolkit_odata::PageInfo,
 }
 #[toolkit_macros::api_dto(response)]
 pub struct PricingExportEntry {
@@ -509,6 +529,8 @@ pub struct PricingSettingsDto {
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PricingPriceBookEntryCreate {
+    /// Required for usage entries; immutable after creation. Identity is server assigned.
+    pub usage_rating_policy: Option<crate::infra::usage_policy_wire::UsageRatingPolicyInput>,
     pub sku_id: Uuid,
     /// Required and fixed for the entry's life (D-427): `flat`, `per_unit`, `graduated`,
     /// `volume` or `package`, one the SKU's charge kind allows.
@@ -593,12 +615,6 @@ pub struct PricingPlanItemReadDto {
     /// The revision's state as it reads today (D-447): a scheduled revision whose date has come
     /// reads `published`, and the one it replaces `superseded`, before the switch is persisted.
     pub state: PricingRevisionState,
-}
-/// The query of `GET /plans`: an optional `sku_id` (D-434).
-#[derive(Default, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct PricingPlanQuery {
-    pub sku_id: Option<Uuid>,
 }
 /// `POST /plans`: a plan and its draft rev 1 on `book_id`.
 #[toolkit_macros::api_dto(request)]
@@ -727,21 +743,36 @@ pub struct PricingPlanCurrent {
     pub sku_ids: Vec<Uuid>,
     /// Its author, who edits it while it is a draft (D-404); not the plan's.
     pub created_by: Uuid,
+    /// The book it prices on (D-485): that book's code, name and currency.
+    pub book: PricingPlanBook,
+}
+/// The book a plan's current revision prices on (D-485).
+#[toolkit_macros::api_dto(response)]
+#[derive(Debug, Clone)]
+pub struct PricingPlanBook {
+    pub code: String,
+    pub name: String,
+    pub currency: String,
 }
 /// The revision a plan sells today (D-460): its published revision in effect (D-447).
 #[toolkit_macros::api_dto(response)]
 pub struct PricingPlanInEffect {
     pub revision_id: Uuid,
     pub rev_no: i32,
+    /// The SKUs of that revision's items, one per item, in ascending order (D-480). The same set
+    /// a draft or pending revision reports as `carried_sku_ids`.
+    pub sku_ids: Vec<Uuid>,
 }
-/// What the plan DTO shows beside its own rows (D-460, D-461): the item SKUs of the current
-/// revisions, by revision id, and the instants of the units the revisions name, by unit id. A
-/// read fills it from its two grouped reads; a write from the rows it holds (D-453: a write
-/// answers what it wrote).
+/// What the plan DTO shows beside its own rows (D-460, D-461, D-480): the item SKUs of the
+/// current revisions and of the revisions in effect, by revision id, and the instants of the
+/// units the revisions name, by unit id. A read fills it from its two grouped reads; a write from
+/// the rows it holds (D-453: a write answers what it wrote).
 #[derive(Debug, Default, Clone)]
 pub struct PlanReading {
     pub skus: BTreeMap<Uuid, Vec<Uuid>>,
     pub units: BTreeMap<Uuid, UnitInstants>,
+    /// The current revisions' books, by book id (D-485).
+    pub books: BTreeMap<Uuid, PricingPlanBook>,
 }
 /// A plan with the headers of its revisions in revision order.
 #[toolkit_macros::api_dto(response)]
@@ -760,6 +791,14 @@ pub struct PricingPlanDto {
     pub created_at: time::OffsetDateTime,
     #[serde(with = "time::serde::rfc3339")]
     pub updated_at: time::OffsetDateTime,
+    /// The latest `updated_at` of the plan and its revisions (D-484). A page ordered by it carries
+    /// the same instant. Not the If-Match clock (`updated_at`).
+    #[serde(with = "time::serde::rfc3339")]
+    pub last_activity_at: time::OffsetDateTime,
+    /// Whether the plan sells on the request's day (D-484). Never null.
+    pub selling: bool,
+    /// The change on that day: `draft`, `pending`, `scheduled` or `none` (D-484).
+    pub change: PricingPlanChange,
     pub revisions: Vec<PricingPlanRevisionHeader>,
     /// The revision being changed or waiting, else the one in effect (D-460); null without
     /// revisions.
@@ -781,8 +820,28 @@ impl PricingPlanDto {
     ) -> Result<Self, RepoError> {
         let stored = stored_revisions(revisions)?;
         let effective = plan::effective(&stored, today);
-        let current = plan::current(&effective).and_then(|chosen| {
-            let row = revisions.iter().find(|r| r.id == chosen.id)?;
+        let facts: Vec<crate::infra::plan_summary::RevisionFact> = revisions
+            .iter()
+            .map(|r| crate::infra::plan_summary::RevisionFact {
+                id: r.id,
+                state: r.state.clone(),
+                available_from: r.available_from,
+                updated_at: r.updated_at,
+                book_id: r.book_id,
+                currency: None,
+            })
+            .collect();
+        let summary = crate::infra::plan_summary::summarize(m.updated_at, &facts)?;
+        let current = if let Some(chosen) = plan::current(&effective) {
+            let row = revisions
+                .iter()
+                .find(|r| r.id == chosen.id)
+                .ok_or_else(|| {
+                    RepoError::CorruptRow(format!("plan {} current revision {}", m.id, chosen.id))
+                })?;
+            let book = reading.books.get(&row.book_id).cloned().ok_or_else(|| {
+                RepoError::CorruptRow(format!("plan {} current book {}", m.id, row.book_id))
+            })?;
             let sku_ids = reading.skus.get(&chosen.id).cloned().unwrap_or_default();
             Some(PricingPlanCurrent {
                 revision_id: chosen.id,
@@ -791,11 +850,15 @@ impl PricingPlanDto {
                 item_count: u32::try_from(sku_ids.len()).unwrap_or(u32::MAX),
                 sku_ids,
                 created_by: row.created_by,
+                book,
             })
-        });
+        } else {
+            None
+        };
         let in_effect = plan::in_effect(&effective).map(|r| PricingPlanInEffect {
             revision_id: r.id,
             rev_no: r.rev_no,
+            sku_ids: reading.skus.get(&r.id).cloned().unwrap_or_default(),
         });
         Ok(Self {
             id: m.id,
@@ -807,6 +870,12 @@ impl PricingPlanDto {
             created_by: m.created_by,
             created_at: m.created_at,
             updated_at: m.updated_at,
+            last_activity_at: summary.last_activity_at,
+            selling: crate::infra::plan_summary::selling(&summary, today),
+            change: PricingPlanChange::stored(
+                crate::infra::plan_summary::change(&summary, today),
+                &format_args!("plan {}", m.id),
+            )?,
             revisions: revisions
                 .iter()
                 .zip(&effective)
@@ -827,6 +896,16 @@ pub fn current_revision(
 ) -> Result<Option<Uuid>, RepoError> {
     Ok(plan::current(&effective_revisions(revisions, today)?).map(|r| r.id))
 }
+/// The published revision in effect among one plan's revisions as they read on `today` (D-447,
+/// D-480): the revision whose SKUs `in_effect.sku_ids` and a draft's `carried_sku_ids` name.
+/// # Errors
+/// `CorruptRow` for a state outside the closed set.
+pub fn in_effect_revision(
+    revisions: &[entity::plan_revision::Model],
+    today: time::Date,
+) -> Result<Option<Uuid>, RepoError> {
+    Ok(plan::in_effect(&effective_revisions(revisions, today)?).map(|r| r.id))
+}
 /// The units `revisions` name (D-461): each one's pending or approving unit.
 #[must_use]
 pub fn named_units(revisions: &[entity::plan_revision::Model]) -> Vec<Uuid> {
@@ -838,6 +917,33 @@ pub fn named_units(revisions: &[entity::plan_revision::Model]) -> Vec<Uuid> {
 #[toolkit_macros::api_dto(response)]
 pub struct PricingPlanList {
     pub items: Vec<PricingPlanDto>,
+    /// The toolkit pager's page (D-485). `limit` is the page size, 500 by default and at most 500.
+    pub page_info: toolkit_odata::PageInfo,
+}
+/// `GET /plans/counts` (D-485): every plan the list's narrowing keeps, by the derived axes.
+#[toolkit_macros::api_dto(response)]
+pub struct PricingPlanCounts {
+    pub by_selling: PricingPlanSellingCounts,
+    pub by_change: PricingPlanChangeCounts,
+    pub total: u64,
+}
+/// `selling` is never null, so the two buckets add up to `total`.
+#[toolkit_macros::api_dto(response)]
+#[derive(Default)]
+pub struct PricingPlanSellingCounts {
+    #[serde(rename = "true")]
+    pub r#true: u64,
+    #[serde(rename = "false")]
+    pub r#false: u64,
+}
+/// Every change the list can name, 0 when none.
+#[toolkit_macros::api_dto(response)]
+#[derive(Default)]
+pub struct PricingPlanChangeCounts {
+    pub none: u64,
+    pub draft: u64,
+    pub pending: u64,
+    pub scheduled: u64,
 }
 /// A pending revision's vote progress (D-462), counts only: its unit, the approve votes the quorum
 /// counts (the current generation's, not stale: the approval library's `counted_approvals`, the
@@ -883,6 +989,9 @@ pub struct PricingPlanRevisionDto {
     /// The vote progress of a pending revision (D-462), readable under plan read; null for any
     /// other state.
     pub approval: Option<PricingPlanApprovalProgress>,
+    /// True when no item is `unreserved` or `confirmation_pending` (D-480). `lost` counts as
+    /// settled, so settled is not a green check. Computed from the items in hand, on every answer.
+    pub reservations_settled: bool,
     pub items: Vec<PricingPlanItemDto>,
 }
 impl PricingPlanRevisionDto {
@@ -915,6 +1024,11 @@ impl PricingPlanRevisionDto {
         m: &entity::plan_revision::Model,
         items: Vec<entity::plan_item::Model>,
     ) -> Result<Self, RepoError> {
+        let items = items
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect::<Result<Vec<_>, _>>()?;
+        let reservations_settled = reservations_settled(&items);
         Ok(Self {
             id: m.id,
             tenant_id: m.tenant_id,
@@ -936,10 +1050,8 @@ impl PricingPlanRevisionDto {
             submitted_at: None,
             approved_at: None,
             approval: None,
-            items: items
-                .into_iter()
-                .map(TryInto::try_into)
-                .collect::<Result<_, _>>()?,
+            reservations_settled,
+            items,
         })
     }
     /// The instants of the unit the revision names among `units` (D-461), and the vote progress
@@ -958,9 +1070,114 @@ impl PricingPlanRevisionDto {
         self
     }
 }
+/// True when no item is `unreserved` or `confirmation_pending` (D-480). `confirmed` and `lost`
+/// are settled, so settled is not a green check. An empty item list is settled.
+fn reservations_settled(items: &[PricingPlanItemDto]) -> bool {
+    items.iter().all(|item| {
+        !matches!(
+            item.reference_state,
+            PricingItemReferenceState::Unreserved | PricingItemReferenceState::ConfirmationPending
+        )
+    })
+}
+/// One distinct entry a revision's items name, with the default chain's price in force on the
+/// revision's sale date (D-480).
+#[toolkit_macros::api_dto(response)]
+pub struct PricingPlanEntrySummary {
+    pub price_book_entry_id: Uuid,
+    pub book_id: Uuid,
+    pub charge_kind: PricingChargeKind,
+    pub period: Option<PricingPeriod>,
+    pub model: PricingModel,
+    pub dimension_key: Option<String>,
+    /// The default chain's approved price in force on the revision's sale date, chosen by
+    /// `price_book_entries::headline` (D-440, D-472). Null when only value chains price the
+    /// entry, when none is in force, or when the caller's `price_book` read does not admit the
+    /// entry's book (D-434).
+    pub price_on_sale_date: Option<PricingPriceDto>,
+}
+impl PricingPlanEntrySummary {
+    /// The entry as the revision read shows it, with `price` already judged for the book.
+    /// # Errors
+    /// `CorruptRow` for a stored token outside its closed set.
+    pub fn of(
+        m: entity::price_book_entry::Model,
+        price: Option<PricingPriceDto>,
+    ) -> Result<Self, RepoError> {
+        let id = m.id;
+        Ok(Self {
+            price_book_entry_id: id,
+            book_id: m.book_id,
+            charge_kind: PricingChargeKind::stored(
+                &m.charge_kind,
+                &format_args!("entry {id} charge_kind"),
+            )?,
+            period: m
+                .period
+                .as_deref()
+                .map(|p| PricingPeriod::stored(p, &format_args!("entry {id} period")))
+                .transpose()?,
+            model: PricingModel::stored(&m.model, &format_args!("entry {id} model"))?,
+            dimension_key: m.dimension_key,
+            price_on_sale_date: price,
+        })
+    }
+}
+/// `GET /plan-revisions/{id}` (D-480): the revision, its sale date, one summary per distinct
+/// entry its items name, and, while it is draft or pending, the SKUs the plan sells today.
+/// Write answers keep [`PricingPlanRevisionDto`].
+#[toolkit_macros::api_dto(response)]
+pub struct PricingPlanRevisionReadDto {
+    #[serde(flatten)]
+    pub revision: PricingPlanRevisionDto,
+    /// The checks' sale date (`domain::plan::sale_date`): `available_from`, or today for "at
+    /// publish". A past `available_from` answers that past date, as the checks do.
+    pub sale_date: String,
+    /// One per distinct entry the items name, in entry id order.
+    pub entries: Vec<PricingPlanEntrySummary>,
+    /// Draft or pending only (null otherwise): the SKU ids of the plan's published revision in
+    /// effect today (D-447), `[]` when none is in effect. The set a re-add of a deprecated SKU
+    /// judges (D-465).
+    pub carried_sku_ids: Option<Vec<Uuid>>,
+}
+/// `GET /plan-revisions/{id}/reservations` (D-480): each item's reference, and whether they have
+/// all settled.
+#[toolkit_macros::api_dto(response)]
+pub struct PricingPlanReservationsDto {
+    pub items: Vec<PricingPlanReservationItemDto>,
+    /// The same rule as the revision's `reservations_settled`: `lost` counts as settled.
+    pub settled: bool,
+}
+/// One item on the reservations read (D-480).
+#[toolkit_macros::api_dto(response)]
+pub struct PricingPlanReservationItemDto {
+    pub item_id: Uuid,
+    pub reference_state: PricingItemReferenceState,
+    pub reservation_id: Option<Uuid>,
+}
+impl TryFrom<&entity::plan_item::Model> for PricingPlanReservationItemDto {
+    type Error = RepoError;
+    fn try_from(m: &entity::plan_item::Model) -> Result<Self, RepoError> {
+        Ok(Self {
+            item_id: m.id,
+            reference_state: PricingItemReferenceState::stored(
+                &m.reference_state,
+                &format_args!("plan item {} reference_state", m.id),
+            )?,
+            reservation_id: m.reservation_id,
+        })
+    }
+}
+/// `GET /approval-policy/{kind}/effective` (D-481): the quorum a submit of `kind` needs now.
+#[toolkit_macros::api_dto(response)]
+pub struct PricingEffectivePolicyDto {
+    pub kind: PricingApprovalKind,
+    pub quorum_required: u32,
+}
 /// `PATCH /plan-revisions/{id}`, draft only: the book and the sale date, never an item list
 /// (D-407). A book change remaps each item to the new book's entry of the same (SKU, charge kind,
-/// period); an unmatched item keeps its entry and the checks show it foreign.
+/// period, model, policy digest) and equal dimension key (D-502); an unmatched item keeps its
+/// entry and the checks show it foreign.
 #[toolkit_macros::api_dto(request)]
 #[derive(Clone)]
 #[serde(deny_unknown_fields)]
@@ -1077,6 +1294,23 @@ pub struct PricingPlanChecksDto {
     pub ready: bool,
     /// `available_from`, or today for a revision sold from its publication.
     pub sale_date: String,
+    /// The `plan_revision` quorum a submit of this revision needs (D-481): the tenant's effective
+    /// policy, the number the APPROVAL info row already shows. The revision itself has no quorum.
+    pub quorum_required: u32,
+}
+/// `GET /plan-revisions/checks` (D-482): one revision's checks, the single read's answer.
+#[toolkit_macros::api_dto(response)]
+pub struct PricingRevisionChecksDto {
+    pub revision_id: Uuid,
+    /// Byte-identical to `GET /plan-revisions/{id}/checks` for this revision.
+    pub checks: PricingPlanChecksDto,
+}
+/// `GET /plan-revisions/checks` (D-482): the checks of the revisions the caller may read, and
+/// the ids the tenant does not hold or the plan-read scope does not admit.
+#[toolkit_macros::api_dto(response)]
+pub struct PricingRevisionChecksBatchDto {
+    pub items: Vec<PricingRevisionChecksDto>,
+    pub missing: Vec<Uuid>,
 }
 #[toolkit_macros::api_dto(response)]
 pub struct PricingReferenceOpDto {

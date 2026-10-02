@@ -133,15 +133,34 @@ impl Harness {
     /// # Errors
     /// Propagates migration and initialization failures.
     pub async fn new() -> anyhow::Result<Self> {
+        Self::with_config(serde_json::json!({})).await
+    }
+
+    /// Boot with explicit deployment policy.
+    /// # Errors
+    /// Invalid policy or runtime initialization failure.
+    pub async fn with_config(config: serde_json::Value) -> anyhow::Result<Self> {
+        Self::with_dependencies(config, true).await
+    }
+
+    /// Boot with an optional PDP to test missing-dependency failures.
+    /// # Errors
+    /// Missing PDP, invalid config or runtime initialization failure.
+    pub async fn with_dependencies(
+        config: serde_json::Value,
+        with_pdp: bool,
+    ) -> anyhow::Result<Self> {
         let db = common::migrated_db().await?;
         let hub = Arc::new(toolkit::ClientHub::new());
-        hub.register::<dyn authz_resolver_sdk::AuthZResolverApi>(Arc::new(DenyingResolver));
+        if with_pdp {
+            hub.register::<dyn authz_resolver_sdk::AuthZResolverApi>(Arc::new(DenyingResolver));
+        }
         let registry = Arc::new(Registry::default());
         hub.register::<dyn TypesRegistryClient>(registry.clone());
         let ctx = GearCtx::new(
             "bss-pricing",
             Uuid::new_v4(),
-            Arc::new(Config(serde_json::json!({"config": {}}))),
+            Arc::new(Config(serde_json::json!({"config": config}))),
             hub,
             tokio_util::sync::CancellationToken::new(),
         )
@@ -205,6 +224,7 @@ impl Harness {
             ("PUT", "/bss-pricing/v1/approval-policy"),
             ("POST", "/bss-pricing/v1/plans"),
             ("GET", "/bss-pricing/v1/plans"),
+            ("GET", "/bss-pricing/v1/plans/counts"),
             ("GET", "/bss-pricing/v1/plans/{id}"),
             ("PATCH", "/bss-pricing/v1/plans/{id}"),
             ("POST", "/bss-pricing/v1/plans/{id}/revisions"),
@@ -214,6 +234,7 @@ impl Harness {
             ("POST", "/bss-pricing/v1/plan-revisions/{id}/items"),
             ("PATCH", "/bss-pricing/v1/plan-items/{id}"),
             ("DELETE", "/bss-pricing/v1/plan-items/{id}"),
+            ("GET", "/bss-pricing/v1/plan-revisions/checks"),
             ("GET", "/bss-pricing/v1/plan-revisions/{id}/checks"),
             ("POST", "/bss-pricing/v1/plan-revisions/{id}/submit"),
             ("POST", "/bss-pricing/v1/plans/{id}/clone"),
@@ -225,6 +246,8 @@ impl Harness {
             ("PATCH", "/bss-pricing/v1/dimension-keys"),
             ("GET", "/bss-pricing/v1/price-book-entries/{id}/prices"),
             ("POST", "/bss-pricing/v1/plan-revisions/{id}/unschedule"),
+            ("GET", "/bss-pricing/v1/plan-revisions/{id}/reservations"),
+            ("GET", "/bss-pricing/v1/approval-policy/{kind}/effective"),
         ]
         .into_iter()
         .map(|(m, p)| (m.to_owned(), p.to_owned()))
@@ -274,10 +297,11 @@ impl Harness {
 // Run 3.3 plans: method | path | resource:action | If-Match | Idempotency-Key
 // POST /plans plan:author (then price_book:read, D-456) false true
 // GET /plans plan:read false false
+// GET /plans/counts plan:read false false (D-485)
 // GET /plans/{id} plan:read false false
 // PATCH /plans/{id} plan:author true false
 // POST /plans/{id}/revisions plan:author false true
-// GET /plan-revisions/{id} plan:read false false
+// GET /plan-revisions/{id} plan:read (then price_book:read for the sale-date price, D-480) false false
 // PATCH /plan-revisions/{id} plan:author (then price_book:read when it names a book, D-456) true false
 // DELETE /plan-revisions/{id} plan:author false false
 
@@ -285,6 +309,7 @@ impl Harness {
 // POST /plan-revisions/{id}/items plan:author false true
 // PATCH /plan-items/{id} plan:author true false
 // DELETE /plan-items/{id} plan:author false false
+// GET /plan-revisions/checks plan:read false false
 // GET /plan-revisions/{id}/checks plan:read false false
 
 // Run 3.4 plan approvals: method | path | resource:action | If-Match | Idempotency-Key
@@ -297,3 +322,7 @@ impl Harness {
 
 // Run 8.2 (D-452): method | path | resource:action | If-Match | Idempotency-Key
 // POST /plan-revisions/{id}/unschedule plan:submit false true
+
+// Run 9.6 (D-480, D-481): method | path | resource:action | If-Match | Idempotency-Key
+// GET /plan-revisions/{id}/reservations plan:read false false
+// GET /approval-policy/{kind}/effective price_book_entry:read for prices, plan:read for plan_revision false false

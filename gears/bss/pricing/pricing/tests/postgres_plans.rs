@@ -140,6 +140,9 @@ async fn seed_on(pg: &pg_support::Pg) -> Seed {
             charge_kind: "usage".into(),
             period: None,
             model: "per_unit".into(),
+            usage_policy_id: None,
+            usage_policy_version: None,
+            usage_policy_digest: None,
             dimension_key: None,
             invoice_line_override: None,
             reservation_id: Uuid::new_v4(),
@@ -178,6 +181,14 @@ fn plan(tenant: Uuid, code: &str) -> plan_e::Model {
         created_by: Uuid::new_v4(),
         created_at: now(),
         updated_at: now(),
+        work_revision_id: None,
+        work_state: None,
+        scheduled_revision_id: None,
+        scheduled_from: None,
+        published_revision_id: None,
+        current_book_id: None,
+        current_currency: None,
+        last_activity_at: now(),
     }
 }
 fn revision(p: &plan_e::Model, b: &price_book::Model, rev_no: i32) -> plan_revision::Model {
@@ -250,7 +261,14 @@ async fn postgres_pricing_plan_keys_and_projection() {
         plan_repo::find(&conn, &s.scope, s.tenant, s.plan.id)
             .await
             .unwrap(),
-        Some(s.plan.clone())
+        // D-484: the seeded draft's insert refreshed the stored summary.
+        Some(plan_e::Model {
+            work_revision_id: Some(s.revision.id),
+            work_state: Some("draft".into()),
+            current_book_id: Some(s.book.id),
+            current_currency: Some(s.book.currency.clone()),
+            ..s.plan.clone()
+        })
     );
     conflict(
         plan_repo::insert(&conn, &s.scope, plan(s.tenant, "pro")).await,
@@ -884,8 +902,37 @@ async fn pools() -> Pools {
 /// tail: an item on it is green.
 async fn priced(f: &Fixture, catalog: &Catalog, book: Uuid) -> (Uuid, Uuid) {
     let sku = catalog.sku(SkuType::Usage);
-    let entry = plan_support::entry(f, book, sku, "usage", None).await;
+    // Publication requires an immutable policy. Seed it without a reservation so the
+    // assertions below continue to count only the plan-item reference work under test.
     let conn = f.db.conn().unwrap();
+    let mut input = plan_support::entry_support::policy_support::input();
+    if !price_book_entry_repo::for_book(&conn, &scope(f), f.ctx.subject_tenant_id(), book)
+        .await
+        .unwrap()
+        .is_empty()
+    {
+        // These races add a second usage item. Distinct declared meters keep the existing
+        // duplicate-meter rule green without changing the race or its assertions.
+        let mut skus = catalog.skus.lock().unwrap();
+        let second = skus.get_mut(&sku).unwrap();
+        second.meter = Some("cloudlet-hours".into());
+        second.unit = Some("cloudlet\u{b7}hour".into());
+        input["quantity_semantics"]["meter"]["usage_type_id"] = json!("cloudlet-hours");
+        input["quantity_semantics"]["unit"] = json!("cloudlet\u{b7}hour");
+    }
+    let policy = bss_pricing::infra::storage::repo::usage_policy_repo::intern(
+        &conn,
+        &scope(f),
+        f.ctx.subject_tenant_id(),
+        f.ctx.subject_id(),
+        &serde_json::from_value(input).unwrap(),
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+    .unwrap();
+    let entry =
+        plan_support::entry_with_policy(f, book, sku, "usage", None, "per_unit", Some(policy))
+            .await;
     let e = price_book_entry_repo::find(&conn, &scope(f), f.ctx.subject_tenant_id(), entry)
         .await
         .unwrap()
@@ -1029,9 +1076,9 @@ async fn postgres_an_item_add_reaching_its_write_after_the_lock_is_refused() {
     assert_eq!(p.catalog.releases(), 1, "and released what it reserved");
 }
 
-/// An add that commits while a submit on another pool has read the revision's items but not yet
-/// locked it: SSI fails the submit's transaction, its retry reads the new item, and the unit
-/// carries it — the published revision is exactly the unit's content.
+/// An add that commits while a submit on another pool has captured the revision's items but not
+/// yet locked it: the transaction detects the moved selection, a detached retry reads the new
+/// item, and the unit carries it — the published revision is exactly the unit's content.
 #[tokio::test]
 #[ignore = "needs the Postgres harness"]
 async fn postgres_an_item_add_committed_inside_a_submit_is_carried_by_the_unit() {
@@ -1475,6 +1522,9 @@ async fn postgres_the_sku_reads_and_the_value_counts_read_set_based() {
         price_book_entry::Model {
             id: Uuid::new_v4(),
             sku_id: Uuid::new_v4(),
+            usage_policy_id: None,
+            usage_policy_version: None,
+            usage_policy_digest: None,
             dimension_key: Some("region".into()),
             reservation_id: Uuid::new_v4(),
             ..s.entry.clone()
@@ -1741,4 +1791,22 @@ async fn postgres_a_write_answers_the_instants_its_reads_return() {
         3,
         "the plan submit, the price submit and the approve each read the clock once"
     );
+}
+
+/// D-482 on Postgres: one read of many revisions' items matches reading each revision, and a long
+/// id list does not drop the revision that is there.
+#[tokio::test]
+#[ignore = "needs the Postgres harness"]
+async fn revisions_items_are_one_read_on_postgres() {
+    let s = seed().await;
+    let conn = s.provider.conn().unwrap();
+    let one = plan_item_repo::for_revision(&conn, &s.scope, s.tenant, s.revision.id)
+        .await
+        .unwrap();
+    let mut asked = vec![s.revision.id];
+    asked.extend((0..1000).map(|_| Uuid::new_v4()));
+    let wide = plan_item_repo::for_revisions(&conn, &s.scope, s.tenant, &asked)
+        .await
+        .unwrap();
+    assert_eq!(wide, one);
 }

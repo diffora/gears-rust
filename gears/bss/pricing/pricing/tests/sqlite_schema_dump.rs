@@ -15,8 +15,8 @@ mod schema_dump;
 
 use schema_dump::{migrate_and_dump_sqlite, normalise_sql, tables_in};
 
-/// Fifteen pricing tables plus coordination and toolkit delivery tables.
-const PRICING_TABLES: usize = 15;
+/// Nineteen pricing tables plus coordination and toolkit delivery tables.
+const PRICING_TABLES: usize = 19;
 
 async fn migrated_dump() -> String {
     let conn = Database::connect("sqlite::memory:")
@@ -79,12 +79,15 @@ async fn the_dump_names_every_table_the_chain_creates() {
             "bss_pricing_outbox_vacuum_counter".to_owned(),
             "coord_leases".to_owned(),
             "event_broker_producer_registrations".to_owned(),
+            "pricing_acceptance".to_owned(),
             "pricing_approval_decision".to_owned(),
             "pricing_approval_policy".to_owned(),
             "pricing_approval_unit".to_owned(),
             "pricing_approval_unit_item".to_owned(),
             "pricing_audit".to_owned(),
+            "pricing_commercial_command".to_owned(),
             "pricing_dimension_key".to_owned(),
+            "pricing_hold".to_owned(),
             "pricing_idempotency".to_owned(),
             "pricing_plan".to_owned(),
             "pricing_plan_item".to_owned(),
@@ -93,7 +96,8 @@ async fn the_dump_names_every_table_the_chain_creates() {
             "pricing_price_book".to_owned(),
             "pricing_price_book_entry".to_owned(),
             "pricing_reference_op".to_owned(),
-            "pricing_settings".to_owned()
+            "pricing_settings".to_owned(),
+            "pricing_usage_rating_policy".to_owned()
         ]
     );
 
@@ -168,6 +172,11 @@ async fn the_chain_still_produces_the_frozen_schema() {
         "/tests/schema_golden/sqlite.txt"
     );
     let fresh = migrated_dump().await;
+
+    // Capture a candidate for DDL review before explicitly updating the frozen oracle.
+    if let Ok(path) = std::env::var("SCHEMA_REVIEW_PATH") {
+        std::fs::write(path, &fresh).expect("write schema review candidate");
+    }
 
     if std::env::var("UPDATE_SCHEMA_GOLDEN").is_ok() {
         let dir = std::path::Path::new(golden_path)

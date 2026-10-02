@@ -1,7 +1,7 @@
 //! `GET /price-books` on the toolkit's `OData` pager (D-442), each book with its stats (D-441).
 //!
-//! The list takes `$filter` over [`BookFilterField`] (`code`, `name`, `currency`, `valid_from`,
-//! `valid_until`; the two dates compare with `null`), `$orderby` over [`BookOrderField`] (`code`,
+//! The list takes `$filter` over [`BookFilterField`] (`id`, `code`, `name`, `currency`,
+//! `valid_from`, `valid_until`; the two dates compare with `null`), `$orderby` over [`BookOrderField`] (`code`,
 //! `name`; tie-break `id`), `$top` (alias `limit`; default 200, clamped at 500) and `cursor`
 //! (alias `$skiptoken`), plus `q` (a case-insensitive substring of the code or the name) and
 //! `sku_id` (the books with an entry of that SKU). The cursor carries a hash of `$filter`, `q` and
@@ -38,9 +38,10 @@ use toolkit_odata::{
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
-/// The fields a list `$filter` names: the pager's fields without `id`.
+/// The fields a list `$filter` names, `id` included (D-480).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BookFilterField {
+    Id,
     Code,
     Name,
     Currency,
@@ -50,6 +51,7 @@ pub enum BookFilterField {
 impl BookFilterField {
     const fn field(self) -> BookListField {
         match self {
+            Self::Id => BookListField::Id,
             Self::Code => BookListField::Code,
             Self::Name => BookListField::Name,
             Self::Currency => BookListField::Currency,
@@ -60,6 +62,7 @@ impl BookFilterField {
 }
 impl FilterField for BookFilterField {
     const FIELDS: &'static [Self] = &[
+        Self::Id,
         Self::Code,
         Self::Name,
         Self::Currency,
@@ -119,8 +122,9 @@ pub(super) fn register(router: Router, openapi: &dyn OpenApiRegistry) -> Router 
              entries and their distinct SKUs, the distinct plans with a draft, pending, scheduled \
              or published revision on it and those that name it only through superseded revisions, \
              its prices by state (the approved ones also as scheduled, active and superseded \
-             today), its prices units in review and its last change. OData `$filter` over code, \
-             name, currency, valid_from and valid_until (`eq null`: open on that side); `$orderby` \
+             today), its prices units in review and its last change. OData `$filter` over id, \
+             code, name, currency, valid_from and valid_until (`eq null`: open on that side); \
+             `$orderby` \
              over code and name (tie-break id; default code); `$top` (alias `limit`; default 200, \
              clamped at 500) and `cursor` (alias `$skiptoken`) from `page_info`. `q` is a \
              case-insensitive substring of the code or the name, matched literally; `sku_id` keeps \

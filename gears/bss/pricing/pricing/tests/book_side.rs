@@ -6,7 +6,9 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 mod plan_support;
 use bss_products_sdk::models::SkuType;
-use plan_support::{Fixture, book, entry, id_of, item, items, lock, plan, publish, setup, text};
+use plan_support::{
+    Fixture, book, id_of, item, items, lock, plan, policy_entry as entry, publish, setup, text,
+};
 use serde_json::{Value, json};
 use uuid::Uuid;
 

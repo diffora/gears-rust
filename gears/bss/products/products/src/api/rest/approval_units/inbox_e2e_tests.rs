@@ -215,7 +215,7 @@ async fn priced(pricing: &Router, who: &SecurityContext, sku: Uuid) -> (Uuid, Uu
         who,
         "POST",
         &format!("/price-books/{book}/entries"),
-        &json!({"sku_id":sku,"model":"per_unit"}),
+        &json!({"sku_id":sku,"model":"per_unit","usage_rating_policy":pricing_policy_support::storage_input()}),
         Some("entry"),
     )
     .await;
@@ -300,6 +300,9 @@ async fn inbox_on(
         fresh_pricing_db().await
     };
     let hub = Arc::new(toolkit::ClientHub::default());
+    hub.register::<dyn bss_pricing_sdk::meter_semantics::UsageMeterSemanticsV1>(Arc::new(
+        pricing_policy_support::MeterProvider::default(),
+    ));
     hub.register::<bss_products_sdk::PricingReferenceRegistry>(Arc::new(
         bss_products_sdk::PricingReferenceRegistry(Arc::new(
             crate::infra::reference_registry::LocalReferenceRegistry::for_owner("pricing")

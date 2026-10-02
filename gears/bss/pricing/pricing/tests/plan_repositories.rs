@@ -47,6 +47,9 @@ fn entry(b: &price_book::Model, sku: Uuid) -> price_book_entry::Model {
         charge_kind: "usage".into(),
         period: None,
         model: "per_unit".into(),
+        usage_policy_id: None,
+        usage_policy_version: None,
+        usage_policy_digest: None,
         dimension_key: None,
         invoice_line_override: None,
         reservation_id: Uuid::new_v4(),
@@ -67,6 +70,14 @@ fn plan(tenant: Uuid, code: &str) -> plan_e::Model {
         created_by: Uuid::new_v4(),
         created_at: at(9),
         updated_at: at(9),
+        work_revision_id: None,
+        work_state: None,
+        scheduled_revision_id: None,
+        scheduled_from: None,
+        published_revision_id: None,
+        current_book_id: None,
+        current_currency: None,
+        last_activity_at: at(9),
     }
 }
 fn revision(p: &plan_e::Model, b: &price_book::Model, rev_no: i32) -> plan_revision::Model {
@@ -250,6 +261,11 @@ async fn world() -> World {
         .unwrap();
     let r = plan_revision_repo::insert(&conn, &scope, revision(&p, &b, 1))
         .await
+        .unwrap();
+    // The revision insert refreshes the plan summary (D-484).
+    let p = plan_repo::find(&conn, &scope, tenant, p.id)
+        .await
+        .unwrap()
         .unwrap();
     World {
         db,

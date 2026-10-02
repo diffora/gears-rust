@@ -40,6 +40,7 @@ fn declared_paths() -> Routes {
         ("PUT", "/bss-pricing/v1/approval-policy"),
         ("POST", "/bss-pricing/v1/plans"),
         ("GET", "/bss-pricing/v1/plans"),
+        ("GET", "/bss-pricing/v1/plans/counts"),
         ("GET", "/bss-pricing/v1/plans/{id}"),
         ("PATCH", "/bss-pricing/v1/plans/{id}"),
         ("POST", "/bss-pricing/v1/plans/{id}/revisions"),
@@ -49,6 +50,7 @@ fn declared_paths() -> Routes {
         ("POST", "/bss-pricing/v1/plan-revisions/{id}/items"),
         ("PATCH", "/bss-pricing/v1/plan-items/{id}"),
         ("DELETE", "/bss-pricing/v1/plan-items/{id}"),
+        ("GET", "/bss-pricing/v1/plan-revisions/checks"),
         ("GET", "/bss-pricing/v1/plan-revisions/{id}/checks"),
         ("POST", "/bss-pricing/v1/plan-revisions/{id}/submit"),
         ("POST", "/bss-pricing/v1/plans/{id}/clone"),
@@ -60,6 +62,8 @@ fn declared_paths() -> Routes {
         ("PATCH", "/bss-pricing/v1/dimension-keys"),
         ("GET", "/bss-pricing/v1/price-book-entries/{id}/prices"),
         ("POST", "/bss-pricing/v1/plan-revisions/{id}/unschedule"),
+        ("GET", "/bss-pricing/v1/plan-revisions/{id}/reservations"),
+        ("GET", "/bss-pricing/v1/approval-policy/{kind}/effective"),
     ]
     .into_iter()
     .map(|(m, p)| (m.to_owned(), p.to_owned()))
@@ -121,7 +125,7 @@ async fn the_registered_route_set_is_exactly_the_declared_paths() {
         .collect();
     assert_eq!(registered, declared_paths());
     assert_eq!(census::source_routes(), registered);
-    assert_eq!(registered.len(), 52);
+    assert_eq!(registered.len(), 56);
     assert!(router.has_routes());
 }
 
@@ -199,8 +203,11 @@ fn every_precondition_reading_route_is_in_the_precondition_census() {
         // the problem's own response, which carries its status (whole-branch review PS-07); - 1:
         // a claimed key's stored status is read back by one function (`support::stored_status`,
         // PS-43), where the claim and the book create each read it; + 2: run 9.3's counts door
-        // (D-470), its registration and its 200 answer.
-        ("StatusCode::", 2, 104),
+        // (D-470), its registration and its 200 answer; + 4: run 9.6's reservations read and
+        // effective-policy read (D-480, D-481), each registration and its 200 answer; + 2: run
+        // 9.7's batch checks read (D-482), its registration and its 200 answer; + 2: run 9.8b's
+        // plans counts (D-485), its registration and its 200 answer.
+        ("StatusCode::", 2, 112),
     ] {
         assert_eq!(census::count_in_functions(census::CONTROL, needle), control);
         assert_eq!(census::production_count(needle), production, "{needle}");
@@ -301,7 +308,7 @@ async fn every_operation_has_a_human_summary_and_a_description() {
         assert_ne!(description, summary, "{id}");
         described += 1;
     }
-    assert_eq!(described, 52);
+    assert_eq!(described, 56);
 }
 
 /// Every answer that sets an `ETag` declares the header on its success response, and nothing else
@@ -404,10 +411,11 @@ async fn no_operation_declares_a_422() {
 // Run 3.3 plans: method | path | resource:action | If-Match | Idempotency-Key
 // POST /plans plan:author (then price_book:read, D-456) false true
 // GET /plans plan:read false false
+// GET /plans/counts plan:read false false (D-485)
 // GET /plans/{id} plan:read false false
 // PATCH /plans/{id} plan:author true false
 // POST /plans/{id}/revisions plan:author false true
-// GET /plan-revisions/{id} plan:read false false
+// GET /plan-revisions/{id} plan:read (then price_book:read for the sale-date price, D-480) false false
 // PATCH /plan-revisions/{id} plan:author (then price_book:read when it names a book, D-456) true false
 // DELETE /plan-revisions/{id} plan:author false false
 
@@ -415,6 +423,7 @@ async fn no_operation_declares_a_422() {
 // POST /plan-revisions/{id}/items plan:author false true
 // PATCH /plan-items/{id} plan:author true false
 // DELETE /plan-items/{id} plan:author false false
+// GET /plan-revisions/checks plan:read false false
 // GET /plan-revisions/{id}/checks plan:read false false
 
 // Run 3.4 plan approvals: method | path | resource:action | If-Match | Idempotency-Key
@@ -436,3 +445,145 @@ async fn no_operation_declares_a_422() {
 
 // Run 8.2 (D-452): method | path | resource:action | If-Match | Idempotency-Key
 // POST /plan-revisions/{id}/unschedule plan:submit false true
+
+// Run 9.6 (D-480, D-481): method | path | resource:action | If-Match | Idempotency-Key
+// GET /plan-revisions/{id}/reservations plan:read false false
+// GET /approval-policy/{kind}/effective price_book_entry:read for prices, plan:read for plan_revision false false
+#[tokio::test]
+async fn init_registers_pricing_read_beside_sku_usage_and_checks_pdp() {
+    use bss_pricing_sdk::read::{CatalogRef, PriceQuery, PricingReadV1};
+    let harness = rest_support::Harness::new().await.unwrap();
+    let port = harness.ctx.client_hub().get::<dyn PricingReadV1>().unwrap();
+    assert!(
+        harness
+            .ctx
+            .client_hub()
+            .get::<dyn bss_products_sdk::sku_usage::SkuUsageV1>()
+            .is_ok()
+    );
+    let tenant = uuid::Uuid::new_v4();
+    let reader = toolkit_security::SecurityContext::builder()
+        .subject_id(uuid::Uuid::new_v4())
+        .subject_tenant_id(tenant)
+        .subject_type("user")
+        .build()
+        .unwrap();
+    let error = port
+        .price(
+            &reader,
+            PriceQuery {
+                catalog: CatalogRef { tenant_id: tenant },
+                price_id: uuid::Uuid::new_v4(),
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.status_code(), 503, "the configured PDP is down");
+}
+
+#[tokio::test]
+async fn init_registers_both_commercial_ports_separately_from_read() {
+    use bss_pricing_sdk::acceptance::{AcceptanceQuery, PricingAcceptanceV1, SellabilityV1};
+    let h = rest_support::Harness::new().await.unwrap();
+    let hub = h.ctx.client_hub();
+    assert!(
+        hub.get::<dyn bss_pricing_sdk::read::PricingReadV1>()
+            .is_ok()
+    );
+    assert!(hub.get::<dyn SellabilityV1>().is_ok());
+    let acceptance = hub.get::<dyn PricingAcceptanceV1>().unwrap();
+    let tenant = uuid::Uuid::new_v4();
+    let ctx = toolkit_security::SecurityContext::builder()
+        .subject_id(uuid::Uuid::new_v4())
+        .subject_tenant_id(tenant)
+        .subject_type("user")
+        .build()
+        .unwrap();
+    assert_eq!(
+        acceptance
+            .acceptance(
+                &ctx,
+                AcceptanceQuery {
+                    catalog: bss_pricing_sdk::read::CatalogRef { tenant_id: tenant },
+                    acceptance_id: uuid::Uuid::new_v4()
+                }
+            )
+            .await
+            .unwrap_err()
+            .status_code(),
+        503
+    );
+}
+
+#[tokio::test]
+async fn startup_validates_versioned_hold_policy_before_registering_providers() {
+    for policy in [
+        serde_json::json!({"version":0,"duration_seconds":86400}),
+        serde_json::json!({"version":1,"duration_seconds":0}),
+        serde_json::json!({"version":1,"duration_seconds":-1}),
+        serde_json::json!({"version":1}),
+        serde_json::json!({"version":1,"duration_seconds":86400,"typo":1}),
+    ] {
+        let result =
+            rest_support::Harness::with_config(serde_json::json!({"seller_hold_policy":policy}))
+                .await;
+        assert!(result.is_err(), "{policy}");
+    }
+    rest_support::Harness::with_config(
+        serde_json::json!({"seller_hold_policy":{"version":2,"duration_seconds":3600}}),
+    )
+    .await
+    .unwrap();
+    let default = bss_pricing::config::BssPricingConfig::default().seller_hold_policy;
+    assert_eq!((default.version, default.duration_seconds), (1, 86400));
+}
+
+#[test]
+fn resource_and_action_census_is_exact() {
+    assert_eq!(
+        bss_pricing::authz::labels::ALL,
+        [
+            "gts.cf.bss.pricing.price_book.v1~",
+            "gts.cf.bss.pricing.price_book_entry.v1~",
+            "gts.cf.bss.pricing.price.v1~",
+            "gts.cf.bss.pricing.approval_unit.v1~",
+            "gts.cf.bss.pricing.config.v1~",
+            "gts.cf.bss.pricing.plan.v1~",
+            "gts.cf.bss.pricing.acceptance.v1~",
+        ]
+    );
+    assert_eq!(
+        [
+            bss_pricing::authz::actions::CREATE,
+            bss_pricing::authz::actions::READ,
+            bss_pricing::authz::actions::HOLD
+        ],
+        ["create", "read", "hold"]
+    );
+}
+
+#[tokio::test]
+async fn absent_pdp_is_a_named_unconfigured_dependency() {
+    let error = rest_support::Harness::with_dependencies(serde_json::json!({}), false)
+        .await
+        .err()
+        .unwrap();
+    let canonical = error
+        .downcast_ref::<toolkit_canonical_errors::CanonicalError>()
+        .unwrap();
+    assert_eq!(canonical.status_code(), 400);
+    let problem =
+        serde_json::to_value(toolkit_canonical_errors::Problem::from(canonical.clone())).unwrap();
+    assert_eq!(
+        problem["context"]["violations"][0]["type"], "UNCONFIGURED_DEPENDENCY",
+        "{problem}"
+    );
+    assert_eq!(
+        problem["context"]["violations"][0]["description"],
+        "unconfigured dependency: AuthZResolverApi"
+    );
+    assert_eq!(
+        problem["context"]["violations"][0]["subject"],
+        "AuthZResolverApi"
+    );
+}

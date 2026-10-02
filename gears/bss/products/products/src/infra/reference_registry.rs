@@ -265,6 +265,40 @@ impl ReferenceRegistryV1 for LocalReferenceRegistry {
             .await
             .map_err(rest::tx_to_canonical)
     }
+    async fn skus_for_write(
+        &self,
+        ctx: &SecurityContext,
+        tenant: Uuid,
+        sku_ids: &[Uuid],
+    ) -> Result<Vec<Sku>, CanonicalError> {
+        let (scope, _) = self.scope(ctx, tenant, actions::READ).await?;
+        let mut seen = std::collections::BTreeSet::new();
+        let mut ordered = Vec::new();
+        for id in sku_ids {
+            if seen.insert(*id) {
+                ordered.push(*id);
+            }
+        }
+        if ordered.is_empty() {
+            return Ok(Vec::new());
+        }
+        let db = self.state.db.db();
+        let backend = db.backend();
+        let conn = self
+            .state
+            .db
+            .conn()
+            .map_err(|e| rest::tx_to_canonical(e.into()))?;
+        let found = repo::find_skus(&conn, backend, &scope, tenant, &ordered)
+            .await
+            .map_err(|e| rest::repo_error_to_canonical(&e))?;
+        let by_id: std::collections::HashMap<Uuid, Sku> =
+            found.into_iter().map(|sku| (sku.id, sku)).collect();
+        Ok(ordered
+            .into_iter()
+            .filter_map(|id| by_id.get(&id).cloned())
+            .collect())
+    }
     async fn sku_version_as_of(
         &self,
         ctx: &SecurityContext,
@@ -283,3 +317,7 @@ impl ReferenceRegistryV1 for LocalReferenceRegistry {
             .map_err(|e| rest::repo_error_to_canonical(&e))
     }
 }
+
+#[cfg(test)]
+#[path = "reference_registry_tests.rs"]
+mod reference_registry_tests;

@@ -967,6 +967,15 @@ impl bss_products_sdk::sku_usage::SkuUsageV1 for UsagePort {
     > {
         panic!("a SKU read without a usage filter asked for the usage sets")
     }
+    /// The SKU reads here take no picker key: a call is a defect of the read.
+    async fn sku_ids_in(
+        &self,
+        _ctx: &toolkit_security::SecurityContext,
+        _tenant: Uuid,
+        _scope: bss_products_sdk::sku_usage::UsageScope,
+    ) -> Result<Vec<Uuid>, toolkit::api::canonical_prelude::CanonicalError> {
+        panic!("a SKU read asked for a picker scope")
+    }
 }
 /// A router and its state over a fresh database, with no usage port registered.
 async fn usage_app(tenant: Uuid) -> (Router, Arc<ApiState>) {

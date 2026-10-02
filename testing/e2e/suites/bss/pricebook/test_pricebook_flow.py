@@ -78,7 +78,22 @@ def _usage_type_or_skip(api) -> None:
 VARIANTS = {
     "usage": {
         "sku": {"type": "usage", "usage_type_ref": USAGE_TYPE, "unit": "GB"},
-        "entry": {"model": "per_unit"},
+        # E1 must register this exact immutable meter declaration on the real binary.
+        "entry": {
+            "model": "per_unit",
+            "usage_rating_policy": {
+                "rating_window": {"kind": "billing_cycle"},
+                "aggregation_scope": "subscription_line",
+                "reset": "rating_window_start",
+                "quantity_semantics": {
+                    "meter": {"usage_type_id": USAGE_TYPE, "version": "v1"},
+                    "unit": "GB",
+                    "fold": "SUM",
+                    "accrual_policy_version": "integrated-v1",
+                },
+                "partial_window": "actual_quantity_full_thresholds",
+            },
+        },
         "price": {"price": {"rate": "0.10"}},
     },
     "recurring": {
@@ -324,10 +339,13 @@ def _plan_row(api, sku: str) -> dict:
     return row
 
 
-def _current(revision: str, rev_no: int, state: str, skus: list[str], author: str) -> dict:
+def _current(
+    revision: str, rev_no: int, state: str, skus: list[str], author: str, book: dict | None = None
+) -> dict:
     """A plan's ``current`` revision (D-460): the draft or pending one, else the scheduled one,
-    else the published one in effect; its items' SKUs in ascending order."""
-    return {
+    else the published one in effect; its items' SKUs in ascending order; and its book's identity
+    (D-485, ask 54), compared when the caller names it."""
+    expected = {
         "revision_id": revision,
         "rev_no": rev_no,
         "state": state,
@@ -335,6 +353,14 @@ def _current(revision: str, rev_no: int, state: str, skus: list[str], author: st
         "sku_ids": sorted(skus),
         "created_by": author,
     }
+    if book is not None:
+        expected["book"] = book
+    return expected
+
+
+def _current_of(row: dict) -> dict:
+    """``current`` without its book identity, for the assertions that do not name the book."""
+    return {k: v for k, v in row["current"].items() if k != "book"}
 
 
 @pytest.mark.timeout(120)
@@ -452,7 +478,7 @@ def test_a_plan_blocked_by_a_pending_price_publishes_copies_and_clones(api, revi
         # D-460: the create answers its empty draft as the plan's current revision, and no
         # revision is in effect yet.
         author = r.json()["created_by"]
-        assert r.json()["current"] == _current(rev1, 1, "draft", [], author), r.text
+        assert _current_of(r.json()) == _current(rev1, 1, "draft", [], author), r.text
         assert r.json()["in_effect"] is None, r.text
         r = api.get(f"{PRICING}/plan-revisions/{rev1}")
         assert r.status_code == 200, r.text
@@ -474,7 +500,7 @@ def test_a_plan_blocked_by_a_pending_price_publishes_copies_and_clones(api, revi
         # D-460: GET /plans names the draft as current, with its item's SKU.
         row = _plan_row(api, sku)
         assert row["id"] == plan, row
-        assert row["current"] == _current(rev1, 1, "draft", [sku], author), row
+        assert _current_of(row) == _current(rev1, 1, "draft", [sku], author), row
         assert row["in_effect"] is None, row
         # A draft revision naming the entry counts its plan.
         assert _usage(api, entry) == _entry_usage(pending=1, plans=1)
@@ -517,9 +543,9 @@ def test_a_plan_blocked_by_a_pending_price_publishes_copies_and_clones(api, revi
         assert r.json()["published_rev"] == 1, r.text
         # D-460: the published rev 1 is current and in effect, on the read and on the list.
         published = _current(rev1, 1, "published", [sku], author)
-        assert (r.json()["current"], r.json()["in_effect"]) == (
+        assert (_current_of(r.json()), r.json()["in_effect"]) == (
             published,
-            {"revision_id": rev1, "rev_no": 1},
+            {"revision_id": rev1, "rev_no": 1, "sku_ids": [sku]},
         ), r.text
         row = _plan_row(api, sku)
         assert (row["current"], row["in_effect"]) == (
@@ -580,8 +606,8 @@ def test_a_plan_blocked_by_a_pending_price_publishes_copies_and_clones(api, revi
         assert _usage(api, entry) == _entry_usage(active=1, plans=1)
         # D-460: the draft copy is current; rev 1 is still the one in effect.
         row = _plan_row(api, sku)
-        assert row["current"] == _current(rev2, 2, "draft", [sku], author), row
-        assert row["in_effect"] == {"revision_id": rev1, "rev_no": 1}, row
+        assert _current_of(row) == _current(rev2, 2, "draft", [sku], author), row
+        assert row["in_effect"] == {"revision_id": rev1, "rev_no": 1, "sku_ids": [sku]}, row
         # A submit without a body carries no note (D-464).
         r = api.post(f"{PRICING}/plan-revisions/{rev2}/submit", headers=_key())
         assert r.status_code == 201, r.text
@@ -590,9 +616,9 @@ def test_a_plan_blocked_by_a_pending_price_publishes_copies_and_clones(api, revi
         assert _revision(api, rev1)["state"] == "superseded"
         r = api.get(f"{PRICING}/plans/{plan}")
         assert r.json()["published_rev"] == 2, r.text
-        assert (r.json()["current"], r.json()["in_effect"]) == (
+        assert (_current_of(r.json()), r.json()["in_effect"]) == (
             _current(rev2, 2, "published", [sku], author),
-            {"revision_id": rev2, "rev_no": 2},
+            {"revision_id": rev2, "rev_no": 2, "sku_ids": [sku]},
         ), r.text
         # Rev 1 superseded is history; rev 2 published still names the entry: still one plan.
         assert _usage(api, entry) == _entry_usage(active=1, plans=1)
@@ -616,7 +642,7 @@ def test_a_plan_blocked_by_a_pending_price_publishes_copies_and_clones(api, revi
         assert clone["published_rev"] is None, clone
         assert [x["state"] for x in clone["revisions"]] == ["draft"], clone
         # D-460: the clone answers its new draft, with the items it copied, and nothing in effect.
-        assert clone["current"] == _current(
+        assert _current_of(clone) == _current(
             clone["revisions"][0]["id"], 1, "draft", [sku], author
         ), clone
         assert clone["in_effect"] is None, clone

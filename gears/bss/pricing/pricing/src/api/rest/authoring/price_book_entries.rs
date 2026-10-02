@@ -111,7 +111,7 @@ async fn check_sku_rules(
     state: &AuthoringState,
     ctx: &SecurityContext,
     input: &PricingPriceBookEntryCreate,
-) -> Result<(), CanonicalError> {
+) -> Result<Option<crate::infra::usage_policy_wire::MeterEvidence>, CanonicalError> {
     let model: price_book_entry::Model = input
         .model
         .parse()
@@ -131,11 +131,38 @@ async fn check_sku_rules(
     if !price_book_entry::period_valid(sku.r#type, input.period.as_deref()) {
         return Err(support::invalid("period", "ENTRY_PERIOD_INVALID"));
     }
+    if let Ok(kind) = price_book_entry::charge_kind_for(sku.r#type) {
+        match (&input.usage_rating_policy, kind) {
+            (None, price_book_entry::ChargeKind::Usage) => {
+                return Err(support::invalid(
+                    "usage_rating_policy",
+                    "MISSING_RATING_POLICY",
+                ));
+            }
+            (
+                Some(_),
+                price_book_entry::ChargeKind::Recurring | price_book_entry::ChargeKind::OneTime,
+            ) => {
+                return Err(support::invalid(
+                    "usage_rating_policy",
+                    "UNEXPECTED_RATING_POLICY",
+                ));
+            }
+            (Some(policy), _) => crate::domain::usage_policy::validate_policy_shape(&policy.into())
+                .map_err(|e| support::invalid("usage_rating_policy", e.code))?,
+            (None, _) => {}
+        }
+    }
     match price_book_entry::charge_kind_for(sku.r#type) {
         Ok(kind) if !price_book_entry::model_allowed(kind, model) => {
             Err(support::invalid("model", "MODEL_KIND_CHARGEKIND_MISMATCH"))
         }
-        _ => Ok(()),
+        _ => match &input.usage_rating_policy {
+            Some(policy) => crate::infra::meter_semantics::resolve(&state.hub, ctx, policy, &sku)
+                .await
+                .map(Some),
+            None => Ok(None),
+        },
     }
 }
 /// A named dimension key must be declared in the tenant's registry (the seed key counts while
@@ -173,7 +200,7 @@ pub(super) async fn create(
     {
         return receipt.response();
     }
-    check_sku_rules(&state, &ctx, &input).await?;
+    let evidence = check_sku_rules(&state, &ctx, &input).await?;
     let result = support::transaction(&state.db.db(), move |tx| {
         let (scope, ctx, key, digest, input, endpoint) = (
             scope.clone(),
@@ -183,6 +210,7 @@ pub(super) async fn create(
             input.clone(),
             endpoint.clone(),
         );
+        let evidence = evidence.clone();
         Box::pin(async move {
             let tenant = ctx.subject_tenant_id();
             let now = crate::infra::storage::stored_now();
@@ -214,7 +242,10 @@ pub(super) async fn create(
             let work = Work {
                 target: Target::PriceBookEntry {
                     book_id: book,
-                    input: EntryInput::from(input),
+                    input: EntryInput {
+                        meter_evidence: evidence.map(Box::new),
+                        ..EntryInput::from(input)
+                    },
                 },
                 correlation,
                 refusal: None,
@@ -296,7 +327,7 @@ pub(super) async fn patch(
     .await?;
     Ok(support::response(
         StatusCode::OK,
-        &PricingPriceBookEntryDto::try_from(m)?,
+        &PricingPriceBookEntryDto::load(tx, m).await?,
         Some(version + 1),
     )?)
 }
@@ -523,19 +554,24 @@ pub(super) async fn read(
     } else {
         std::collections::BTreeMap::new()
     };
+    let mut policies =
+        crate::infra::storage::repo::usage_policy_repo::for_entries(tx, tenant, &entries).await?;
     entries
         .into_iter()
         .map(|m| {
+            let id = m.id;
             let (counted, prices) = (
-                usage.remove(&m.id).unwrap_or_default(),
-                headlines.remove(&m.id).unwrap_or_default(),
+                usage.remove(&id).unwrap_or_default(),
+                headlines.remove(&id).unwrap_or_default(),
             );
-            Ok(super::dto::PricingPriceBookEntryReadDto::of(
+            let mut dto = super::dto::PricingPriceBookEntryReadDto::of(
                 m,
                 counted,
                 prices.current,
                 prices.next,
-            )?)
+            )?;
+            dto.entry.usage_rating_policy = policies.remove(&id);
+            Ok(dto)
         })
         .collect()
 }
@@ -636,17 +672,22 @@ pub(super) async fn for_sku(
     } else {
         BTreeMap::new()
     };
+    let mut policies =
+        crate::infra::storage::repo::usage_policy_repo::for_entries(tx, tenant, &entries).await?;
     let mut items = Vec::with_capacity(entries.len());
     for e in entries {
         let book = named.get(&e.book_id).ok_or_else(|| {
             RepoError::CorruptRow(format!("entry {} names lost book {}", e.id, e.book_id))
         })?;
-        let prices = headlines.remove(&e.id).unwrap_or_default();
+        let id = e.id;
+        let prices = headlines.remove(&id).unwrap_or_default();
         let entry_usage: super::dto::PricingEntryUsage =
-            usage.remove(&e.id).unwrap_or_default().into();
+            usage.remove(&id).unwrap_or_default().into();
         let (status, changing) = standing(&entry_usage.prices);
+        let mut entry = PricingPriceBookEntryDto::try_from(e)?;
+        entry.usage_rating_policy = policies.remove(&id);
         items.push(super::dto::PricingSkuEntryDto {
-            entry: e.try_into()?,
+            entry,
             book_code: book.code.clone(),
             book_name: book.name.clone(),
             currency: book.currency.clone(),

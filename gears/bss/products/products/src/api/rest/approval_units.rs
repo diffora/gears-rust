@@ -22,7 +22,7 @@ use crate::{
             change::SkuChange, publish::SkuPublish, retire::SkuRetire,
         },
         error::DomainError,
-        recognized::UsageTypeAnswer,
+        recognized::UsageRefAnswer,
         sku::SkuPatch,
     },
     infra::{
@@ -180,9 +180,12 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .summary("approve_unit")
         .description(
             "Approves the unit at the generation its reviewer saw. The note is at most 2000 \
-             characters (the approval engine's cap). Refusals include 400 NOTE_TOO_LONG on a \
-             longer note, 400 GENERATION_MISMATCH, 400 UNIT_STALE after a refresh, 403 \
-             SOD_VIOLATION and 409 DUPLICATE_VOTE.",
+             characters (the approval engine's cap). The apply judges the SKU as it is then: a \
+             change that would move a derived pin, or leave a unit other than the pinned \
+             version's output unit, is refused (P-D-232). Refusals include 400 NOTE_TOO_LONG on \
+             a longer note, 400 GENERATION_MISMATCH, 400 UNIT_STALE after a refresh, 403 \
+             SOD_VIOLATION, 409 DUPLICATE_VOTE, and the apply's 409 DERIVED_PIN_IMMUTABLE, \
+             DERIVED_UNIT_MISMATCH or DERIVED_USAGE_TYPE_UNKNOWN.",
         )
         .tag("Approval units")
         .authenticated()
@@ -264,7 +267,17 @@ async fn approve(
     )
     .await?;
     let body = json_body(body)?;
-    vote(state, scope, ctx, id, Vote::Approve, Some(body), headers).await
+    vote(
+        &enforcer,
+        state,
+        scope,
+        ctx,
+        id,
+        Vote::Approve,
+        Some(body),
+        headers,
+    )
+    .await
 }
 async fn reject(
     Extension(state): Extension<Arc<ApiState>>,
@@ -283,7 +296,17 @@ async fn reject(
     )
     .await?;
     let body = json_body(body)?;
-    vote(state, scope, ctx, id, Vote::Reject, Some(body), headers).await
+    vote(
+        &enforcer,
+        state,
+        scope,
+        ctx,
+        id,
+        Vote::Reject,
+        Some(body),
+        headers,
+    )
+    .await
 }
 async fn withdraw(
     Extension(state): Extension<Arc<ApiState>>,
@@ -300,7 +323,17 @@ async fn withdraw(
         actions::SUBMIT,
     )
     .await?;
-    vote(state, scope, ctx, id, Vote::Withdraw, None, headers).await
+    vote(
+        &enforcer,
+        state,
+        scope,
+        ctx,
+        id,
+        Vote::Withdraw,
+        None,
+        headers,
+    )
+    .await
 }
 async fn list(
     Extension(state): Extension<Arc<ApiState>>,
@@ -705,7 +738,7 @@ async fn subject(
     store: &repo::ProductsApprovalStore,
     ctx: &SecurityContext,
     unit: &Unit,
-    usage: Option<UsageTypeAnswer>,
+    usage: Option<UsageRefAnswer>,
 ) -> Result<Subject, TxError> {
     let sku_scope = AccessScope::for_tenant(store.tenant_id);
     let base = SkuPublish {
@@ -776,7 +809,12 @@ async fn proposed(subject: &Subject, tx: &DbTx<'_>, unit: &Unit) -> Result<SkuCo
     }
 }
 /// @cpt-cf-bss-products-fr-concurrency-idempotency
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the derived pin needs the same enforcer the door already judged"
+)]
 async fn vote(
+    enforcer: &PolicyEnforcer,
     state: Arc<ApiState>,
     scope: AccessScope,
     ctx: SecurityContext,
@@ -825,7 +863,7 @@ async fn vote(
         let content = review_content(&state, &scope, &ctx, id).await?;
         if let Some(content) = content {
             resolved_ref = content.usage_type_ref.clone();
-            usage = g::resolve(&state, &ctx, &content).await?;
+            usage = g::resolve(&state, enforcer, &ctx, &content).await?;
         }
     }
     let seen = body.as_ref().map(|b| b.generation);
@@ -857,8 +895,9 @@ async fn vote(
                 return Err(ApprovalError::AlreadyDecided.into());
             }
             let sub = subject(&outbox, tx, &store, &ctx, &unit, usage).await?;
-            // P-D-213: the SKU's lifecycle before the decision, and after it below.
-            let found = g::lifecycle(tx, ctx.subject_tenant_id(), unit.ref_id).await?;
+            // P-D-249: snapshot `lifecycle_next` before the act.
+            let (found, before_next) =
+                lifecycle_before(tx, ctx.subject_tenant_id(), unit.ref_id).await?;
             let now = crate::infra::storage::stored_now();
             let outcome = match action {
                 Vote::Approve => {
@@ -908,7 +947,17 @@ async fn vote(
             };
             let (label, have, need) = match outcome {
                 ApproveOutcome::Refreshed { generation } => {
-                    decision_audit(tx, &ctx, Audited::Refreshed, &unit, found, None, now).await?;
+                    decision_audit(
+                        tx,
+                        &ctx,
+                        Audited::Refreshed,
+                        &unit,
+                        found,
+                        before_next,
+                        None,
+                        now,
+                    )
+                    .await?;
                     let mut problem = toolkit::api::canonical_prelude::Problem::from(
                         CanonicalError::from(DomainError::StaleUnit { generation }),
                     );
@@ -935,7 +984,17 @@ async fn vote(
                     None,
                 ),
             };
-            decision_audit(tx, &ctx, Audited::Vote(label), &unit, found, note, now).await?;
+            decision_audit(
+                tx,
+                &ctx,
+                Audited::Vote(label),
+                &unit,
+                found,
+                before_next,
+                note,
+                now,
+            )
+            .await?;
             if matches!(outcome, ApproveOutcome::Applied) {
                 unit = load(tx, &store, id).await?;
                 g::decided(&outbox, tx, &store, &unit, ctx.subject_id()).await?;
@@ -986,19 +1045,39 @@ impl Audited {
         }
     }
 }
+/// The SKU's lifecycle in force, and its `lifecycle_next`, before an act (P-D-249).
+async fn lifecycle_before(
+    tx: &DbTx<'_>,
+    tenant: Uuid,
+    id: Uuid,
+) -> Result<
+    (
+        bss_products_sdk::models::Lifecycle,
+        Option<bss_products_sdk::models::LifecycleNext>,
+    ),
+    TxError,
+> {
+    let before = g::find(tx, &AccessScope::for_tenant(tenant), tenant, id).await?;
+    Ok((before.lifecycle, before.lifecycle_next))
+}
 /// A decision's audit row (P-D-193) for what it did, with the SKU lifecycle move it made
 /// (P-D-213): `found` before the decision, and the lifecycle it left, read now.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the audit row names the act, the lifecycle it found, and the next it found"
+)]
 async fn decision_audit(
     tx: &DbTx<'_>,
     ctx: &SecurityContext,
     audited: Audited,
     unit: &Unit,
     found: bss_products_sdk::models::Lifecycle,
+    before_next: Option<bss_products_sdk::models::LifecycleNext>,
     note: Option<String>,
     now: OffsetDateTime,
 ) -> Result<(), TxError> {
     let action = audited.action();
-    let left = g::recorded_to(tx, ctx.subject_tenant_id(), unit.ref_id).await?;
+    let left = g::recorded_to(tx, ctx.subject_tenant_id(), unit.ref_id, before_next).await?;
     let moved = repo::LifecycleMove::between(found, left);
     g::audit(tx, ctx, action, "approval_unit", unit.id, note, now, moved).await
 }

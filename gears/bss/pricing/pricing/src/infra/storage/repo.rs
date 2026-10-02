@@ -11,6 +11,7 @@ pub mod idempotency_repo;
 pub mod plan_item_repo;
 pub mod plan_repo;
 pub mod plan_revision_repo;
+pub mod plan_summary;
 pub mod price_book_entry_repo;
 pub mod price_repo;
 pub mod reference_op_repo;
@@ -168,3 +169,11 @@ fn matched(rows: u64, code: &'static str) -> Result<(), RepoError> {
         Err(RepoError::Conflict { code })
     }
 }
+
+pub mod usage_policy_repo;
+
+pub mod acceptance_repo;
+
+pub mod hold_repo;
+
+pub mod commercial_command_repo;

@@ -407,6 +407,7 @@ async fn every_route_denies_authorization_before_preconditions_or_disclosure() {
         ("PUT", "/approval-policy".into()),
         ("POST", "/plans".into()),
         ("GET", "/plans".into()),
+        ("GET", "/plans/counts".into()),
         ("GET", format!("/plans/{id}")),
         ("PATCH", format!("/plans/{id}")),
         ("POST", format!("/plans/{id}/revisions")),
@@ -416,6 +417,7 @@ async fn every_route_denies_authorization_before_preconditions_or_disclosure() {
         ("POST", format!("/plan-revisions/{id}/items")),
         ("PATCH", format!("/plan-items/{id}")),
         ("DELETE", format!("/plan-items/{id}")),
+        ("GET", "/plan-revisions/checks".into()),
         ("GET", format!("/plan-revisions/{id}/checks")),
         ("POST", format!("/plan-revisions/{id}/submit")),
         ("POST", format!("/plans/{id}/clone")),
@@ -427,6 +429,8 @@ async fn every_route_denies_authorization_before_preconditions_or_disclosure() {
         ("PATCH", "/dimension-keys".into()),
         ("GET", format!("/price-book-entries/{id}/prices")),
         ("POST", format!("/plan-revisions/{id}/unschedule")),
+        ("GET", format!("/plan-revisions/{id}/reservations")),
+        ("GET", "/approval-policy/prices/effective".into()),
     ] {
         assert_eq!(
             request(&f.denied, &f.ctx, method, &path, json!({}), None, None)
@@ -467,6 +471,9 @@ fn entry(b: &price_book::Model) -> price_book_entry::Model {
         charge_kind: "usage".into(),
         period: None,
         model: "per_unit".into(),
+        usage_policy_id: None,
+        usage_policy_version: None,
+        usage_policy_digest: None,
         dimension_key: None,
         invoice_line_override: None,
         reservation_id: Uuid::new_v4(),
@@ -738,6 +745,7 @@ async fn authorization_labels_actions_and_cross_tenant_reads_are_pinned() {
         ("PUT", "/approval-policy".into(), "config", "settings"),
         ("POST", "/plans".into(), "plan", "author"),
         ("GET", "/plans".into(), "plan", "read"),
+        ("GET", "/plans/counts".into(), "plan", "read"),
         ("GET", format!("/plans/{id}"), "plan", "read"),
         ("PATCH", format!("/plans/{id}"), "plan", "author"),
         ("POST", format!("/plans/{id}/revisions"), "plan", "author"),
@@ -752,6 +760,7 @@ async fn authorization_labels_actions_and_cross_tenant_reads_are_pinned() {
         ),
         ("PATCH", format!("/plan-items/{id}"), "plan", "author"),
         ("DELETE", format!("/plan-items/{id}"), "plan", "author"),
+        ("GET", "/plan-revisions/checks".into(), "plan", "read"),
         (
             "GET",
             format!("/plan-revisions/{id}/checks"),
@@ -796,6 +805,20 @@ async fn authorization_labels_actions_and_cross_tenant_reads_are_pinned() {
             "plan",
             "submit",
         ),
+        (
+            "GET",
+            format!("/plan-revisions/{id}/reservations"),
+            "plan",
+            "read",
+        ),
+        // D-481: prices is read under price_book_entry read. plan_revision is the other grant
+        // of the same door, pinned in tests/revision_reads.rs.
+        (
+            "GET",
+            "/approval-policy/prices/effective".into(),
+            "price_book_entry",
+            "read",
+        ),
     ];
     // The label table is a route census: exactly the routes the router registers, one row each.
     let rows: std::collections::BTreeSet<(String, String)> = table
@@ -811,7 +834,8 @@ async fn authorization_labels_actions_and_cross_tenant_reads_are_pinned() {
             )
         })
         .collect();
-    assert_eq!(table.len(), 52);
+    // 56: run 9.7's batch checks read (D-482) and run 9.8b's plans counts (D-485), one each.
+    assert_eq!(table.len(), 56);
     assert_eq!(rows.len(), table.len(), "one row per route");
     assert_eq!(
         rows, f.registered,

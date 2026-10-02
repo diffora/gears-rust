@@ -2,6 +2,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 mod entry_support;
 use bss_pricing::infra::storage::repo::{price_book_entry_repo, price_repo};
+use entry_support::policy_support;
 use entry_support::{Fixture, Script};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -30,9 +31,9 @@ async fn priced(dimension: bool) -> (Fixture, Value) {
         assert_eq!(saved.0, 200, "{saved:?}");
     }
     let body = if dimension {
-        json!({"sku_id":Uuid::new_v4(),"dimension_key":"region","model":"per_unit"})
+        json!({"usage_rating_policy":policy_support::input(),"sku_id":Uuid::new_v4(),"dimension_key":"region","model":"per_unit"})
     } else {
-        json!({"sku_id":Uuid::new_v4(),"model":"per_unit"})
+        json!({"usage_rating_policy":policy_support::input(),"sku_id":Uuid::new_v4(),"model":"per_unit"})
     };
     let (status, entry, _) = f
         .call(
@@ -55,7 +56,7 @@ async fn beside(f: &Fixture, entry: &Value, model: &str) -> Value {
                 "/price-books/{}/entries",
                 entry["book_id"].as_str().unwrap()
             ),
-            json!({"sku_id":entry["sku_id"],"dimension_key":entry["dimension_key"],"model":model}),
+            json!({"usage_rating_policy":policy_support::input(),"sku_id":entry["sku_id"],"dimension_key":entry["dimension_key"],"model":model}),
             None,
             Some(&format!("entry-{model}")),
         )
@@ -822,7 +823,7 @@ async fn a_price_has_its_entrys_model_and_carries_none_of_its_own() {
         .call(
             "POST",
             &format!("/price-books/{}/entries", book["id"].as_str().unwrap()),
-            json!({"sku_id":Uuid::new_v4(),"model":"graduated"}),
+            json!({"usage_rating_policy":policy_support::input(),"sku_id":Uuid::new_v4(),"model":"graduated"}),
             None,
             Some("entry"),
         )

@@ -24,6 +24,7 @@
   - [3.7 Database schemas & tables](#37-database-schemas--tables)
 - [4. Additional context](#4-additional-context)
 - [5. Traceability](#5-traceability)
+  - [Executable seam fixture boundary (D-509)](#executable-seam-fixture-boundary-d-509)
 
 <!-- /toc -->
 
@@ -46,7 +47,7 @@ The plan's D-399 deviation removes the phase 2 SkuChanged listener; current SKU 
 | --- | --- | --- |
 | `cpt-cf-bss-pricing-fr-dimension-registry` | A tenant registry stores dimension keys and their allowed values, seeded with region: with nothing stored, GET /dimension-keys reads region with no values, and the first entry naming it stores the seed in its own transaction. A key has no values yet or at least two (DIM_VALUES_FEW). Every read shows each value's use, the prices that carry it, and PATCH /dimension-keys adds and removes one key's values (D-436). | Books & Entries, phase 2; §3 and slice 02. |
 | `cpt-cf-bss-pricing-fr-price-book` | A book has a tenant-unique code, name, immutable currency and optional valid_from/valid_until dates. | Books & Entries, phase 2; §3 and slice 02. |
-| `cpt-cf-bss-pricing-fr-entry-key` | Inside a book there is one entry per (sku_id, charge_kind, period, model), with null period normalized for uniqueness; the model is the entry's, fixed for its life (D-427). | Books & Entries, phase 2; §3 and slice 02. |
+| `cpt-cf-bss-pricing-fr-entry-key` | Inside a book there is one entry per (sku_id, charge_kind, period, model, usage_policy_digest), with null period and absent policy normalized for uniqueness; model and policy are fixed for the entry's life (D-427, D-502). | Books & Entries, phase 2; §3 and slice 02. |
 | `cpt-cf-bss-pricing-fr-price` | Draft prices carry price_json in their entry's model, dates, optional dim_value and min_fee, eligibility all or new, note and author (D-427). | Prices, Windows & Dimension, phase 2; §3 and slice 03. |
 | `cpt-cf-bss-pricing-fr-chain-windows` | Windows are half-open and close independently for each (price_book_entry_id, dim_value), including the null default chain. | Prices, Windows & Dimension, phase 2; §3 and slice 03. |
 | `cpt-cf-bss-pricing-fr-pair-guard` | On a usage chain, a successor preserves package size and SKU metering as of each price's start (D-402); the model is the entry's (D-427). | Prices, Windows & Dimension, phase 2; §3 and slice 03. |
@@ -232,6 +233,11 @@ Deferred by the owner: approved migration requests without executing subscriptio
 **ID**: `cpt-cf-bss-pricing-component-read-contract`
 
 Phase 4: resolve matrix, renewal walk, period bindings and durable pin reads; the Studio quote is not built (D-415); versioned Products reads at binding time.
+D-501 adds the delivered `PricingReadV1` SDK with explicit authorized catalog tenants, typed complete
+bindings and canonical JSON digests over the shared read snapshot. `current_revision` catches up due
+scheduled revisions before returning the published pointer. REST's preview and approved-price goldens
+remain unchanged; [slice 07](design/07-read-contract-events.md) defines the exact producer surface.
+Acceptance, holds and usage-policy persistence are later deliveries.
 
 ### 3.3 API Contracts
 
@@ -251,23 +257,151 @@ moves no existing pin (D-394). Never label unavailable impact as a measured zero
 entry SKU's current descriptors, beside the fingerprinted after, never in it (D-408); their read is best-effort, and a
 registry that cannot answer or refuses the caller records "descriptors": "unavailable" and refuses nothing (D-416).
 Products read (D-416): the reads a rule needs are made as the caller, so the plan_revision submitter and its final
-approver, readers of GET /plan-revisions/{id}/checks, plan item authors, price-book entry authors (the period rule and
+approver, readers of GET /plan-revisions/{id}/checks and GET /plan-revisions/checks, plan item authors, price-book entry authors (the period rule and
 the create re-read), and the submitter and final approver of a prices unit on a usage chain (the dated metering read, D-402) need products read; an approve-only reviewer votes on every other
 unit and rejects any unit.
 
 | Area | Phase | Operations below the authoring base |
 | --- | --- | --- |
-| Books | 2 | POST/GET /price-books (a new book takes a currency the tenant settings offer, when they offer any: 409 CURRENCY_NOT_OFFERED, D-438); GET /price-books pages on the toolkit's OData pager: $filter over code, name, currency, valid_from and valid_until, $orderby code or name, $top 200 by default and at most 500, the cursor, q over the code and the name (ICU case folding on Postgres) and sku_id; any other key is 400 QUERY_INVALID and a cursor under another narrowing 400 FILTER_MISMATCH (D-442); GET/PATCH /price-books/{id}, with an optional description of at most 2000 characters (400 BOOK_DESCRIPTION_TOO_LONG; PATCH: omitted keeps it, null clears it, D-444); DELETE /price-books/{id} (If-Match, the book write grant) of a book no entry and no plan revision names: 204 and an audit row, else 409 BOOK_HAS_ENTRIES, BOOK_IN_PLAN or BOOK_IN_PLAN_HISTORY, in that order, and a row a concurrent writer adds is the same 409 (D-444); both book reads carry each book's stats (D-441); GET /price-books/{id}/entries (each entry with its usage, D-428, its current_price, D-440, and its next_price, D-472, all judged on one day: as_of, a YYYY-MM-DD date, else today; any other key is 400 QUERY_INVALID and a malformed date 400 DATE_INVALID, D-473); GET /price-books/{id}/export |
-| Entries | 2 | POST /price-books/{id}/entries with sku_id, model, period?, dimension_key?, invoice_line_override? (model is required and fixed for the entry's life, D-427: 400 MODEL_INVALID for an unknown model, 400 MODEL_KIND_CHARGEKIND_MISMATCH for one the charge kind does not allow, judged at the door and again in Tx B; 409 ENTRY_KEY_TAKEN for a taken (SKU, charge kind, period, model) in the book; the PATCH does not carry model); GET /price-book-entries/{id} reads one entry with its ETag, its usage, its current_price and its next_price (price_book_entry read, D-428, D-440, D-472); GET /price-book-entries/{id}/prices lists every price of the entry with its status today, the default chain first, filtered by status=, under price_book_entry read and price_book read on its book (403 PRICE_BOOK_READ_REQUIRED, D-440); GET /price-book-entries?sku_id= lists one SKU's entries across the tenant's books, narrowed, ordered and paged in memory (D-486: book_id, currency, q, status, changing; $orderby book_name or status; limit 500), each with its book's code, name and currency, its usage, status and changing on today, current_price, the default chain's approved price in force today, and next_price (D-472), both prices shown only to a caller who also holds price_book read (D-434); PATCH /price-book-entries/{id} for invoice_line_override (locked with 409 INVOICE_LINE_LOCKED once the entry has an approved or pending price, D-426) and permitted dimension_key changes; DELETE /price-book-entries/{id} answers 204 once removed, deleting its draft and rejected prices with it; approved or pending prices refuse 409 ENTRY_PRICES_IN_USE, and another author's draft 403 NOT_DRAFT_AUTHOR (D-404); from phase 3 an entry a plan item names, in a revision of any state, refuses 409 ENTRY_IN_USE, judged in the delete's transaction (D-408) |
+| Books | 2 | POST/GET /price-books (a new book takes a currency the tenant settings offer, when they offer any: 409 CURRENCY_NOT_OFFERED, D-438); GET /price-books pages on the toolkit's OData pager: $filter over code, name, currency, valid_from and valid_until, $orderby code or name, $top 200 by default and at most 500, the cursor, q over the code and the name (ICU case folding on Postgres) and sku_id; any other key is 400 QUERY_INVALID and a cursor under another narrowing 400 FILTER_MISMATCH (D-442); GET/PATCH /price-books/{id}, with an optional description of at most 2000 characters (400 BOOK_DESCRIPTION_TOO_LONG; PATCH: omitted keeps it, null clears it, D-444); DELETE /price-books/{id} (If-Match, the book write grant) of a book no entry and no plan revision names: 204 and an audit row, else 409 BOOK_HAS_ENTRIES, BOOK_IN_PLAN or BOOK_IN_PLAN_HISTORY, in that order, and a row a concurrent writer adds is the same 409 (D-444); both book reads carry each book's stats (D-441); GET /price-books/{id}/entries (each entry with its usage, D-428, its current_price, D-440, and its next_price, D-472, all judged on one day: as_of, a YYYY-MM-DD date, else today; a malformed date is 400 DATE_INVALID, D-473; paged on the toolkit's OData pager in the order (sku_id, charge_kind, model, id), limit 500 by default and at most 500, the cursor from page_info hashing $filter and the day, $filter over sku_id, charge_kind, model and reference_state; any other plain key is 400 QUERY_INVALID and a cursor under another $filter or as_of 400 FILTER_MISMATCH, D-483); GET /price-books/{id}/export |
+| Entries | 2 | POST /price-books/{id}/entries with sku_id, model, period?, dimension_key?, invoice_line_override?, usage_rating_policy (required for usage, refused for other charge kinds, D-502) (model is required and fixed for the entry's life, D-427: 400 MODEL_INVALID for an unknown model, 400 MODEL_KIND_CHARGEKIND_MISMATCH for one the charge kind does not allow, judged at the door and again in Tx B; 409 ENTRY_KEY_TAKEN for a taken (SKU, charge kind, normalized period, model, policy digest) in the book; the PATCH does not carry model or policy); GET /price-book-entries/{id} reads one entry with its ETag, its usage, its usage_rating_policy (D-502), its current_price and its next_price (price_book_entry read, D-428, D-440, D-472); GET /price-book-entries/{id}/prices lists every price of the entry with its status today, the default chain first, filtered by status=, under price_book_entry read and price_book read on its book (403 PRICE_BOOK_READ_REQUIRED, D-440); GET /price-book-entries?sku_id= lists one SKU's entries across the tenant's books, narrowed, ordered and paged in memory (D-486: book_id, currency, q, status, changing; $orderby book_name or status; limit 500), each with its book's code, name and currency, its usage, its usage_rating_policy (D-502), status and changing on today, current_price, the default chain's approved price in force today, and next_price (D-472), both prices shown only to a caller who also holds price_book read (D-434); PATCH /price-book-entries/{id} for invoice_line_override (locked with 409 INVOICE_LINE_LOCKED once the entry has an approved or pending price, D-426) and permitted dimension_key changes; DELETE /price-book-entries/{id} answers 204 once removed, deleting its draft and rejected prices with it; approved or pending prices refuse 409 ENTRY_PRICES_IN_USE, and another author's draft 403 NOT_DRAFT_AUTHOR (D-404); from phase 3 an entry a plan item names, in a revision of any state, refuses 409 ENTRY_IN_USE, judged in the delete's transaction (D-408) |
 | Prices | 2 | POST /price-book-entries/{id}/prices; PATCH/DELETE /prices/{id} draft only, by its author (D-404); the PATCH of a temporary draft takes effective_from and temporary_until and builds its pair again over them in the same transaction, the return kept, deleted or created, and a return's own dates, dim_value, an end on another price and a null end stay 400 TEMPORARY_PRICE_FIXED (D-443); neither carries model: a price's money is in its entry's model, and a shape that does not match it is 400 PRICE_MISSING; every price read carries model read-only, copied from the entry (D-427); POST /prices/{id}/submit (no body, no note); POST /price-books/{id}/publish-changes with price_ids?, common_effective_date? and note?, the submitter's note stored as the unit's submit_note (D-464) |
 | Approval units | 2 | GET /approval-units?state&kind&ref_id&limit&cursor, one page in submission order (limit 200 by default, clamped at 500, the cursor of page_info; D-458), newest first with $orderby=submitted_at desc, the id breaking a tie the same way, a cursor carrying its order (the order is not in the narrowing's hash; $orderby beside a cursor is 400 ORDER_WITH_CURSOR), and impact=false to skip the live impact (impact null, no plan read) (D-470); GET /approval-units/counts, the list's narrowing counted by state and kind in one grouped statement, read outside any transaction (D-470); the list and the counts take a kind pricing records, prices or plan_revision, else 400 QUERY_INVALID on kind, and the repository reads a stored unit's kind through the same set (D-470); a client merging pricing's and products' pages compares submitted_at as an instant and then the id as lower-case hex (D-470, products P-D-227); GET /approval-units/{id}; every unit read and receipt carries caller_can_approve, whether the caller may approve the unit now, judged by bss_approval::approve_eligibility over its stored items' authors and decisions: Approve only (a reject judges no separation of duties) and not the grant (D-471); POST /approval-units/{id}/approve or /reject with generation, /withdraw by submitter. Every unit door dispatches on the unit's stored kind (phase 3): its subject, the domain event its apply writes and the impact its card shows; a stored kind pricing does not record is a corrupt row (500), never judged as `prices`. Every unit carries submit_note, the submitter's note of the unit shape products shares (D-445): the note a plan revision's submit or publish-changes sent, else null (D-464) |
 | Policy/settings | 2 | GET/PUT /approval-policy, /settings, /dimension-keys; PUT /approval-policy sets the default (`*`) or one kind's quorum, `prices` or `plan_revision` (phase 3); any other kind is 400 POLICY_KIND_INVALID; DELETE /approval-policy/{kind} (If-Match) removes a kind's override so it follows the default again, and the default itself is 400 POLICY_DEFAULT_REQUIRED (D-435); PATCH /dimension-keys (If-Match) adds and removes the values of one declared key, and every registry answer carries each value's usage { prices } (D-436); the settings answer carries currencies, updated_at and updated_by, and PUT /settings requires currencies and a rounding of half_up, half_even, half_down, up or down (D-437, D-438) |
 | Reference work | 2 | GET /reference-ops?state&limit&cursor lists the tenant's durable reference ops in op-id order (config settings permission); limit 1 to 1000, default 100; the next page starts after next_cursor |
-| Plans | 3 | POST /plans with code, name, book_id and an optional available_from, rev 1's sale date (D-463); the code is 1 to 32 characters of A-Z, 0-9, - and _, starting with a letter or a digit, judged as sent with no trim or case folding, else 400 PLAN_CODE_INVALID, and a code stored before the rule keeps reading (D-468) (201: the plan and its draft rev 1 on that book; the caller also needs price_book read on that book, and so do the clone and a PATCH that names a book: 403 PRICE_BOOK_READ_REQUIRED, D-456); GET /plans, set-based, and GET /plans?sku_id= for the plans whose draft, pending, scheduled or published revisions name the SKU through an entry (D-434), each revision header with the state it reads today (D-453), and each plan with current { revision_id, rev_no, state, item_count, sku_ids, created_by } and in_effect { revision_id, rev_no } (D-460), four statements whatever the number of plans; every header and revision carries submitted_at and approved_at, from the unit it names, and a header created_by and created_at (D-461); GET/PATCH /plans/{id} (name); POST /plans/{id}/revisions copies the published revision (book, availability, items) into a new draft under D-413, refused while a draft or pending revision exists (REVISION_DRAFT_EXISTS) or a revision waits for its sale date (REVISION_SCHEDULED), after a due scheduled revision is switched (D-451); GET /plan-revisions/{id}, a pending one with approval { unit_id, approvals, quorum_required } under plan read (D-462); PATCH /plan-revisions/{id} with book_id?, available_from?, draft only (REVISION_NOT_DRAFT), with no item list (D-407): a new book_id remaps each item to the new book's entry of the same (SKU, charge kind, period, model) (D-427), bumping the item's version, and an unmatched item keeps its entry (the checks then show ITEM_BOOK_FOREIGN); DELETE /plan-revisions/{id} draft only, with a delete op for every item reference (D-414), and the last revision of a never-published plan takes the plan with it in the same transaction, freeing its code (D-417); GET /plan-revisions/{id}/checks answers { checks, ready, sale_date } from fresh SKU reads (D-408), each row with subjects, the items that turn it red { item_id, sku_id, price_book_entry_id }, and blocked_by_prices, the pending prices behind blocked_by { unit_id, price_id, price_book_entry_id } (D-466); POST /plan-revisions/{id}/submit (plan submit, D-418, as POST /prices/{id}/submit is price submit; an optional body { note }, the submitter's note stored as the unit's submit_note, D-464) makes an unlocked draft a plan_revision unit (201 { applied, unit, revision }; REVISION_NOT_DRAFT otherwise), judged by the checks of GET …/checks built by the same function from fresh SKU reads: a red check is 400 REVISION_CHECKS_RED with the red checks (code, label, detail, blocked_by, subjects, blocked_by_prices, D-466) in the problem detail and no unit; its lock is the conditional pending_unit_id, a lost one 409 ROW_LOCKED_PENDING; quorum 0 applies at once; an applied revision whose sale date is after today is scheduled, and published on that date (D-449, D-450); POST /plan-revisions/{id}/unschedule (plan submit, Idempotency-Key, no body) returns a waiting revision to a draft, 409 REVISION_IN_EFFECT for a published revision and REVISION_NOT_SCHEDULED for any other (D-452); POST /plans/{id}/clone with code (the rule of POST /plans, D-468), name and an optional available_from, which overrides the copied sale date or, null, clears it (D-463) (plan author, Idempotency-Key; 201 with the new plan, as POST /plans answers) makes a new plan whose draft rev 1 copies the source's published revision (book, availability, items), the one in effect (D-451), under D-413, without the source's decisions, approval identity or pins; a deprecated SKU is carried and the new plan's checks show ITEM_SKU_DEPRECATED (D-408). Deferred by the owner: grants and bundle_sku_id in the revision PATCH (D-411); POST /plans/{id}/retire with migration_request_id, and PLAN_RETIRING on a retiring plan (D-410) |
+| Plans | 3 | POST /plans with code, name, book_id and an optional available_from, rev 1's sale date (D-463); the code is 1 to 32 characters of A-Z, 0-9, - and _, starting with a letter or a digit, judged as sent with no trim or case folding, else 400 PLAN_CODE_INVALID, and a code stored before the rule keeps reading (D-468) (201: the plan and its draft rev 1 on that book; the caller also needs price_book read on that book, and so do the clone and a PATCH that names a book: 403 PRICE_BOOK_READ_REQUIRED, D-456); GET /plans, set-based, and GET /plans?sku_id= for the plans whose draft, pending, scheduled or published revisions name the SKU through an entry (D-434), each revision header with the state it reads today (D-453), and each plan with current { revision_id, rev_no, state, item_count, sku_ids, created_by } and in_effect { revision_id, rev_no, sku_ids } (D-460, D-480), four statements whatever the number of plans; every header and revision carries submitted_at and approved_at, from the unit it names, and a header created_by and created_at (D-461); GET/PATCH /plans/{id} (name); POST /plans/{id}/revisions copies the published revision (book, availability, items) into a new draft under D-413, refused while a draft or pending revision exists (REVISION_DRAFT_EXISTS) or a revision waits for its sale date (REVISION_SCHEDULED), after a due scheduled revision is switched (D-451); GET /plan-revisions/{id}, a pending one with approval { unit_id, approvals, quorum_required } under plan read (D-462); PATCH /plan-revisions/{id} with book_id?, available_from?, draft only (REVISION_NOT_DRAFT), with no item list (D-407): a new book_id remaps each item to the new book's entry of the same (SKU, charge kind, normalized period, model, policy digest), with an equal dimension key (D-502), bumping the item's version, and an unmatched item keeps its entry (the checks then show ITEM_BOOK_FOREIGN); DELETE /plan-revisions/{id} draft only, with a delete op for every item reference (D-414), and the last revision of a never-published plan takes the plan with it in the same transaction, freeing its code (D-417); GET /plan-revisions/{id}/checks answers { checks, ready, sale_date } from one fresh SKU read (D-408, D-482); GET /plan-revisions/checks?revision_ids= answers the same checks for 1 to 50 revisions, and missing names a revision the tenant does not hold or the plan-read scope does not admit (D-482), each row with subjects, the items that turn it red { item_id, sku_id, price_book_entry_id }, and blocked_by_prices, the pending prices behind blocked_by { unit_id, price_id, price_book_entry_id } (D-466); POST /plan-revisions/{id}/submit (plan submit, D-418, as POST /prices/{id}/submit is price submit; an optional body { note }, the submitter's note stored as the unit's submit_note, D-464) makes an unlocked draft a plan_revision unit (201 { applied, unit, revision }; REVISION_NOT_DRAFT otherwise), judged by the checks of GET …/checks built by the same function from fresh SKU reads: a red check is 400 REVISION_CHECKS_RED with the red checks (code, label, detail, blocked_by, subjects, blocked_by_prices, D-466) in the problem detail and no unit; its lock is the conditional pending_unit_id, a lost one 409 ROW_LOCKED_PENDING; quorum 0 applies at once; an applied revision whose sale date is after today is scheduled, and published on that date (D-449, D-450); POST /plan-revisions/{id}/unschedule (plan submit, Idempotency-Key, no body) returns a waiting revision to a draft, 409 REVISION_IN_EFFECT for a published revision and REVISION_NOT_SCHEDULED for any other (D-452); POST /plans/{id}/clone with code (the rule of POST /plans, D-468), name and an optional available_from, which overrides the copied sale date or, null, clears it (D-463) (plan author, Idempotency-Key; 201 with the new plan, as POST /plans answers) makes a new plan whose draft rev 1 copies the source's published revision (book, availability, items), the one in effect (D-451), under D-413, without the source's decisions, approval identity or pins; a deprecated SKU is carried and the new plan's checks show ITEM_SKU_DEPRECATED (D-408). Deferred by the owner: grants and bundle_sku_id in the revision PATCH (D-411); POST /plans/{id}/retire with migration_request_id, and PLAN_RETIRING on a retiring plan (D-410) |
+| Plans | 3 | POST /plans with code, name, book_id and an optional available_from, rev 1's sale date (D-463); the code is 1 to 32 characters of A-Z, 0-9, - and _, starting with a letter or a digit, judged as sent with no trim or case folding, else 400 PLAN_CODE_INVALID, and a code stored before the rule keeps reading (D-468) (201: the plan and its draft rev 1 on that book; the caller also needs price_book read on that book, and so do the clone and a PATCH that names a book: 403 PRICE_BOOK_READ_REQUIRED, D-456); GET /plans, set-based, and GET /plans?sku_id= for the plans whose draft, pending, scheduled or published revisions name the SKU through an entry (D-434), each revision header with the state it reads today (D-453), and each plan with current { revision_id, rev_no, state, item_count, sku_ids, created_by, book: { code, name, currency } } and in_effect { revision_id, rev_no, sku_ids } (D-460, D-480, D-485), selling, change and last_activity_at (D-484), five statements for a non-empty page, and GET /plans/counts under the same narrowing (D-485); every header and revision carries submitted_at and approved_at, from the unit it names, and a header created_by and created_at (D-461); GET/PATCH /plans/{id} (name); POST /plans/{id}/revisions copies the published revision (book, availability, items) into a new draft under D-413, refused while a draft or pending revision exists (REVISION_DRAFT_EXISTS) or a revision waits for its sale date (REVISION_SCHEDULED), after a due scheduled revision is switched (D-451); GET /plan-revisions/{id}, a pending one with approval { unit_id, approvals, quorum_required } under plan read (D-462); PATCH /plan-revisions/{id} with book_id?, available_from?, draft only (REVISION_NOT_DRAFT), with no item list (D-407): a new book_id remaps each item to the new book's entry of the same (SKU, charge kind, normalized period, model, policy digest), with an equal dimension key (D-502), bumping the item's version, and an unmatched item keeps its entry (the checks then show ITEM_BOOK_FOREIGN); DELETE /plan-revisions/{id} draft only, with a delete op for every item reference (D-414), and the last revision of a never-published plan takes the plan with it in the same transaction, freeing its code (D-417); GET /plan-revisions/{id}/checks answers { checks, ready, sale_date } from fresh SKU reads (D-408), each row with subjects, the items that turn it red { item_id, sku_id, price_book_entry_id }, and blocked_by_prices, the pending prices behind blocked_by { unit_id, price_id, price_book_entry_id } (D-466); POST /plan-revisions/{id}/submit (plan submit, D-418, as POST /prices/{id}/submit is price submit; an optional body { note }, the submitter's note stored as the unit's submit_note, D-464) makes an unlocked draft a plan_revision unit (201 { applied, unit, revision }; REVISION_NOT_DRAFT otherwise), judged by the checks of GET …/checks built by the same function from fresh SKU reads: a red check is 400 REVISION_CHECKS_RED with the red checks (code, label, detail, blocked_by, subjects, blocked_by_prices, D-466) in the problem detail and no unit; its lock is the conditional pending_unit_id, a lost one 409 ROW_LOCKED_PENDING; quorum 0 applies at once; an applied revision whose sale date is after today is scheduled, and published on that date (D-449, D-450); POST /plan-revisions/{id}/unschedule (plan submit, Idempotency-Key, no body) returns a waiting revision to a draft, 409 REVISION_IN_EFFECT for a published revision and REVISION_NOT_SCHEDULED for any other (D-452); POST /plans/{id}/clone with code (the rule of POST /plans, D-468), name and an optional available_from, which overrides the copied sale date or, null, clears it (D-463) (plan author, Idempotency-Key; 201 with the new plan, as POST /plans answers) makes a new plan whose draft rev 1 copies the source's published revision (book, availability, items), the one in effect (D-451), under D-413, without the source's decisions, approval identity or pins; a deprecated SKU is carried and the new plan's checks show ITEM_SKU_DEPRECATED (D-408). Deferred by the owner: grants and bundle_sku_id in the revision PATCH (D-411); POST /plans/{id}/retire with migration_request_id, and PLAN_RETIRING on a retiring plan (D-410) |
 | Plan items | 3 | POST /plan-revisions/{id}/items with sku_id and price_book_entry_id, both required: a plan item is a SKU and its entry, and treatment, included_qty or qty_min is 400 BODY_UNEXPECTED (D-467) (a plan_item create op, D-407; at most 200 items per revision; a deprecated SKU only when the plan's published revision in effect carries it, else 400 ITEM_SKU_DEPRECATED, judged by the door and by the op's SKU re-read, D-465); GET /plan-items/{id} reads one item with its plan_id, rev_no and its revision's state as it reads today (D-453), its version as the ETag (D-434); PATCH /plan-items/{id} with price_book_entry_id only (null is 400 ITEM_ENTRY_MISSING; the three removed keys are 400 BODY_UNEXPECTED, D-467), draft only and never a SKU change; DELETE /plan-items/{id} (a delete op); the revision's creator edits it and its items (D-404) |
 | Read contract | 4 | GET /resolve?plan_revision_id&date&item_id?&pins? (plan read, D-419): a published or superseded revision on one date, or a scheduled one on a date on or after its sale date (D-454), each item with its entry's model (null without an entry, D-427) and its chain matrix (default and every value, `binding` or `uncovered`), its SKU version as of the date and its resolved invoice inputs with their source (D-420, D-421); no totals, no promotion (D-409, D-415); pins are price_id or price_id:dim_value, at most 1 000. GET /prices/{id} (price read, D-422): an approved price of the tenant, whatever its window, with its entry's SKU, charge kind, period, model, book and currency, stored facts only. Both are reads: no audit row, no idempotency key, no binding |
 | Promotions | deferred (D-409) | Deferred by the owner and not built in phase 3; the planned shape: POST /promotions with name, percent, from_date, to_date, plan_ids (at most 50), apply_to; GET /promotions; GET /promotions/{id} (the current approved version, the open version and the history); PATCH /promotions/{id} under If-Match on the promotion, editing the open draft version or creating it from the current approved one; POST /promotions/{id}/submit, /end-today, /cancel |
 | Migrations | deferred (D-410) | Deferred by the owner and not built in phase 3; the planned shape: POST /plans/{id}/migrations with target_plan_id, target_revision_id, timing (next_renewal or date), at?, scope (all or listed) and subscriptions [{ subscription_id, current_plan_revision_id, current_period_end }] (at most 1000; caller-supplied, D-410) answers the request with its preview and its migration unit; GET /migration-requests/{id}; GET /plans/{id}/migrations |
+
+D-503 adds exact-version semantic validation to D-502. Pricing consumes
+`pricing-sdk::meter_semantics::UsageMeterSemanticsV1::resolve(ctx, MeterRef)` as the authorized
+caller, before opening a Pricing transaction. `MeterSemantics` carries the exact meter identity
+and version, canonical unit, SUM fold, accrual-policy version, source-integrated flag and provider
+evidence digest. All quantity fields and the SKU's unit and usage-type identity must agree;
+otherwise `METER_POLICY_MISMATCH` refuses the write. There is no substitution of a latest version.
+
+New entry-create work uses schema version 2 and persists the captured declaration before reservation.
+Recovery validates that captured evidence against the reservation's SKU without another meter lookup.
+Unversioned and version-1 work keep their original recovery rules; they acquire no invented evidence.
+The existing D-401 cancellation of unreserved abandoned creates remains unchanged. A later fresh
+request must resolve its own evidence. Confirmation recovery preserves the original entry and policy.
+
+D-503 validates a usage entry's policy at price and plan-revision submit and final apply.
+Products and meter reads happen outside Pricing transactions, as the acting caller. The subjects
+consume captured results, recheck the entry identity/version in their existing transaction and keep
+provider evidence digests in approval snapshots. Dependency failures remain typed observations until
+the engine reaches a semantic gate, preserving non-final votes, rejects and withdrawals. Authorized
+successful command replay precedes dependency observations.
+
+The revision fingerprint now includes each selected entry ID and its policy ID/version/digest,
+read from entry rows in the same transaction. Policy content remains entry-owned; no plan-item
+column or override is added. Changed selection refreshes the approval generation (`UNIT_STALE`)
+and an old approval cannot publish it. A scheduled revision is checked at approval; D-450's later
+switch does not revalidate dependencies. New usage approvals require a policy-bearing entry;
+legacy approved prices and published revisions remain readable.
+
+D-503 refuses CalendarHour with any `min_fee` at price create, submit and apply
+(`UNSUPPORTED_TERMS`), and when publishing a revision selecting such approved money. A successor,
+temporary pair and return keep their entry and therefore the same policy, window, scope and reset.
+Policy changes require a different entry and an explicitly selected revision. The existing dated
+SKU chain guard uses immutable Products history captured before the transaction.
+
+D-503 projects the entry's optional typed `usage_rating_policy` on each REST resolve item
+and each SDK binding. The materialized identity/content is loaded from local policy storage alongside
+the selected entry; historical reads never call the meter provider. SDK bindings retain the same
+`price_book_entry_id` as their price. Entry reads and exports retain D-502's optional projection.
+A BillingCycle VM entry beside a CalendarHour cloudlet entry keeps two independent policies;
+there is no plan-wide window or aggregation across subscription lines. Missing legacy policy is null.
+
+**External production dependency E1 (not delivered by Pricing).** Types Registry owns immutable
+meter declaration storage/lifecycle; Usage Collector owns the semantic read adapter; source/IRM
+owners supply accrual-definition provenance. Their delivery is separate from this Pricing work.
+The consumer port, validation and contract-test provider do not establish authoritative production
+meter semantics. ClientHub must supply a real `UsageMeterSemanticsV1`; there is no successful
+production fallback. Its absence is typed `UnconfiguredMeterSemantics` with canonical
+`UNCONFIGURED_DEPENDENCY`; a configured outage is 503, and denial is 403. None becomes
+`MISSING_RATING_POLICY` or an empty semantic result.
+
+E1 blocks real usage-entry creation, new price/plan publication and usage sales at their semantic
+gates until the authoritative provider is wired. Delivery must identify the implementing gear/adapter
+and its tracked work item, and demonstrate exact-version resolution, canonical unit matching,
+declared SUM/additivity, source integration provenance, historical immutability, caller authorization,
+outage behavior and VM/cloudlet contract vectors against the real provider. These responsibilities
+are required ownership for handoff, not evidence that another team has accepted or implemented the
+work. Pricing's contract tests certify its consumer behavior only; production readiness remains
+blocked until that external evidence exists.
+E1 = E1a (raw meters, the usage collector / types registry; external) + E1b (derived meters, provided by Products since P-D-233).
+
+**Owner amendment of D-503, 2026-10-01: E1 has a raw and a derived kind.** A derived (composite)
+usage meter computes one quantity from other usage; a cloudlet is 128 MB of RAM and 400 MHz of CPU.
+Products declares it as a derived usage type with an immutable version: its inputs at exact versions,
+the formula as data, the granularity it applies at and its output unit. Rating evaluates it per
+subscription line and rating window. The usage collector reports raw meters only. These are
+products P-D-229 and rating T-D-39, decisions made on branch `bss/pricebook-meters` (`d8f78cf9b`)
+and carried onto this branch by the derived usage types plan. E1 therefore has two parts:
+
+- **E1a, raw meters:** Types Registry declarations answer through the Usage Collector's semantic
+  adapter, with source/IRM accrual provenance, as above.
+- **E1b, derived meters:** Products' derived usage type at its exact version answers: its
+  canonical output unit and the digest of its stored declaration, which names the inputs at their
+  exact versions and the formula (products P-D-233).
+
+A policy's `MeterRef` names either kind. `UsageMeterSemanticsV1`, `validate_meter_policy` and the
+publication and acceptance gates do not change: one provider behind the port answers both kinds,
+and each kind owes the delivery evidence above against its own source. Pricing computes no derived
+quantity.
+E1 = E1a (raw meters, the usage collector / types registry; external) + E1b (derived meters, provided by Products since P-D-233).
+
+**Amended 2026-10-01 by products P-D-233: E1b is provided; E1a is still external.** Products registers
+the one `UsageMeterSemanticsV1` in the ClientHub. For a derived meter, named
+`MeterRef { usage_type_id: "products.derived/<code>@<n>", version: "<n>" }`, it answers from its own
+store, in the caller's tenant and under products `sku:read`: `canonical_unit` the version's output
+unit, `fold` SUM, `accrual_policy_version` `derived-v1:<stored digest hex>`, `source_integrated` true,
+and `digest` the stored SHA-256 of the declaration's canonical bytes. A `version` that is not canonical
+or disagrees with `@<n>` is 400 `METER_POLICY_MISMATCH`; an unknown code, version or tenant is one 400
+`METER_VERSION_UNKNOWN`; a store outage is 503 and a denial 403. Every other meter answers exactly as an
+absent provider does (`UNCONFIGURED_DEPENDENCY`): the raw-meter provider (E1a) is not built, so raw usage
+stays blocked at its semantic gates. A derived meter is sellable: products' `tests/derived_meter_e2e.rs`
+sells a cloudlet through Pricing's entry, price, plan and sellability gates with no test provider.
+Pricing's checks do not change.
+E1 = E1a (raw meters, the usage collector / types registry; external) + E1b (derived meters, provided by Products since P-D-233).
+
+D-502 binds an immutable UsageRatingPolicy to each new usage entry. The create requires
+`usage_rating_policy` for usage (`MISSING_RATING_POLICY` otherwise) and refuses it for recurring
+or one-time entries (`UNEXPECTED_RATING_POLICY`). The closed input contains rating_window
+(BillingCycle or CalendarHour with UTC), aggregation_scope (subscription_line or resource),
+reset (rating_window_start), quantity_semantics (meter usage_type_id/version, unit, SUM fold,
+accrual_policy_version), and partial_window (actual_quantity_full_thresholds). Empty or whitespace-only
+meter identifiers, versions, units or accrual versions are `METER_POLICY_MISMATCH`. The server assigns
+policy_id, version 1 and the lowercase SHA-256 canonical content digest; author input refuses these
+identity fields. The entry PATCH cannot change or clear policy. Item and price requests refuse policy
+fields. Changed content requires a new entry, then a revision explicitly selecting it.
+
+Policy rows are append-only on both databases and deduplicate by (tenant_id, digest), checking stored
+content on every reuse. Migration 18 adds the nullable entry reference (id, version, digest), an
+all-null-or-all-present check, and a tenant-qualified composite foreign key including digest. The entry
+key is (book_id, sku_id, charge_kind, coalesce(period, ''), model, coalesce(usage_policy_digest, ''));
+only absent policy uses the empty index token. Hourly and billing-cycle variants coexist; equal content
+cannot evade uniqueness through a new UUID. Entry reads, export, write answers and durable create
+receipts materialize policy content with its identity; legacy/non-usage entries return null.
+
+Tx A persists typed content (schema version 1 in D-502, version 2 with meter evidence in D-503) before the remote reserve. Tx B
+inserts or reuses the policy and writes the entry atomically. A crash cannot change content; replay
+returns the confirmed receipt. Unversioned persisted creates decode as legacy and may recover with
+null policy; new versioned usage creates cannot take that path. Re-reserve and delete preserve the
+original entry reference. Migration assigns no policy to old entries, including published plans;
+they continue to read and resolve. D-503 adds meter verification, publication gates and resolve
+policy projection. E1 = E1a (raw meters, the usage collector / types registry; external) + E1b (derived meters, provided by Products since P-D-233).
+
+D-502: a plan item remains a SKU and its selected entry (D-467), with no policy override,
+treatment, included quantity or minimum quantity. Copy/clone within a book preserves entry IDs.
+Changing a draft's book matches the full (SKU, charge kind, normalized period, model, policy digest)
+key and an equal dimension key. With no equivalent target, the item retains the old entry and
+ITEM_BOOK_FOREIGN blocks publication. An hourly entry never silently becomes monthly, and an absent
+legacy policy never becomes a new policy. Explicit item selection chooses the replacement entry.
 
 The two entry reads, GET /price-book-entries/{id} and GET /price-books/{id}/entries, answer
 PricingPriceBookEntryReadDto: the fields of the entry, usage { prices { approved, pending, draft, scheduled, active,
@@ -285,7 +419,9 @@ null. The POST and PATCH answers, the stored Tx B receipt, the export and the pu
 PricingPriceBookEntryDto, without usage, current_price or next_price. The book's entries list judges all of it on one
 day, its as_of (a YYYY-MM-DD date, today by default): the counts by date, both prices and their statuses (D-473). A day
 outside the book's validity still answers with the prices in force on it, which the book does not sell on that day. A day
-other than today is money: it takes price_book read on the book, else 403 PRICE_BOOK_READ_REQUIRED (D-473). The
+other than today is money: it takes price_book read on the book, else 403 PRICE_BOOK_READ_REQUIRED (D-473), judged
+before any entry is read (D-483). The list answers PricingPriceBookEntryList { items, page_info }: one page of 500
+entries by default, ordered (sku_id, charge_kind, model, id), in seven statements per page (D-483). The
 single read and the SKU's entry list stay dated on today.
 GET /price-book-entries/{id}/prices answers PricingEntryPriceList { items: [PricingPriceDto] }: every price in every
 state, each with its display status today; the default chain first, then each value's chain in ascending order, each
@@ -336,8 +472,9 @@ rounding_policy, a unit's kind and ref_type, a check's code and a proposal's cha
 | A plan create or clone whose available_from does not read | 400 DATE_INVALID on available_from, among the body's refusals, before the 404 of the book or the source plan (D-463) |
 | A plan revision submit with a body key other than note; a price submit with any body key | 400 BODY_UNEXPECTED (D-464) |
 | An entry's prices read without price_book read on its book (the entry itself readable); an unknown status | 403 PRICE_BOOK_READ_REQUIRED; 400 QUERY_INVALID (D-440) |
-| A book's entries list with a query key other than as_of, or as_of twice; an as_of that is not a YYYY-MM-DD date | 400 QUERY_INVALID; 400 DATE_INVALID on as_of, after the 503 of the money's policy and before the 404 of the book (D-473) |
-| A book's entries list with an as_of other than today, without price_book read on the book | 403 PRICE_BOOK_READ_REQUIRED, after the 404 of the book and before any price or usage is read (D-473) |
+| A book's entries list with a plain key other than as_of, limit and cursor, or one given twice; an as_of that is not a YYYY-MM-DD date | 400 QUERY_INVALID; 400 DATE_INVALID on as_of, after the 503 of the money's policy and before the 404 of the book (D-473, D-483) |
+| A book's entries list with $orderby, $select, $count, a $filter it does not take, limit 0 or a cursor that does not read; a cursor under another $filter or as_of | 400; 400 FILTER_MISMATCH, before the 404 of the book (D-483) |
+| A book's entries list with an as_of other than today, without price_book read on the book | 403 PRICE_BOOK_READ_REQUIRED, after the 404 of the book and before any entry, price or usage is read (D-473, D-483) |
 | The book list: an unknown, repeated or malformed plain key; a cursor under another $filter, q or sku_id; $select or $count | 400 QUERY_INVALID; 400 FILTER_MISMATCH; 400 UNSUPPORTED_QUERY_PARAM (D-442) |
 | Deleting the default quorum | 400 POLICY_DEFAULT_REQUIRED (D-435) |
 | Changing an entry's invoice_line_override once it has an approved or pending price | 409 INVOICE_LINE_LOCKED (D-426) |
@@ -603,6 +740,13 @@ CREATE TABLE bss.pricing_approval_decision (
   generation integer NOT NULL, decision text NOT NULL CHECK (decision IN ('approve','reject')), note text,
   at timestamptz NOT NULL, stale boolean NOT NULL DEFAULT false, PRIMARY KEY (unit_id, actor, generation)
 );
+CREATE TABLE bss.pricing_usage_rating_policy (
+  tenant_id uuid NOT NULL, policy_id uuid NOT NULL, version bigint NOT NULL CHECK (version > 0),
+  digest text NOT NULL CHECK (digest ~ '^[0-9a-f]{64}$'), content jsonb NOT NULL,
+  created_at timestamptz NOT NULL, created_by uuid NOT NULL,
+  PRIMARY KEY (tenant_id, policy_id, version), UNIQUE (tenant_id, digest),
+  UNIQUE (tenant_id, policy_id, version, digest)
+); -- UPDATE and DELETE refused by append-only triggers on both engines (D-502).
 CREATE TABLE bss.pricing_price_book_entry (
   id uuid PRIMARY KEY, tenant_id uuid NOT NULL, book_id uuid NOT NULL REFERENCES bss.pricing_price_book(id),
   sku_id uuid NOT NULL, charge_kind text NOT NULL CHECK (charge_kind IN ('recurring','usage','one_time')),
@@ -612,6 +756,12 @@ CREATE TABLE bss.pricing_price_book_entry (
   version bigint NOT NULL DEFAULT 1,
   created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL,
   model text NOT NULL,  -- m20260926_000013 (D-427)
+  usage_policy_id uuid, usage_policy_version bigint, usage_policy_digest text,
+  CONSTRAINT pricing_entry_policy_complete CHECK (
+    (usage_policy_id IS NULL AND usage_policy_version IS NULL AND usage_policy_digest IS NULL) OR
+    (usage_policy_id IS NOT NULL AND usage_policy_version IS NOT NULL AND usage_policy_digest IS NOT NULL AND charge_kind = 'usage')),
+  FOREIGN KEY (tenant_id, usage_policy_id, usage_policy_version, usage_policy_digest)
+    REFERENCES bss.pricing_usage_rating_policy(tenant_id, policy_id, version, digest),
   FOREIGN KEY (tenant_id, dimension_key) REFERENCES bss.pricing_dimension_key(tenant_id, key),
   CHECK ((charge_kind = 'recurring' AND period IS NOT NULL AND period IN ('month','year'))
     OR (charge_kind IN ('usage','one_time') AND period IS NULL)),
@@ -619,7 +769,9 @@ CREATE TABLE bss.pricing_price_book_entry (
     CHECK (model IN ('flat','per_unit','graduated','volume','package'))
 );
 CREATE UNIQUE INDEX pricing_price_book_entry_key
-  ON bss.pricing_price_book_entry (book_id, sku_id, charge_kind, coalesce(period, ''), model);
+  ON bss.pricing_price_book_entry (book_id, sku_id, charge_kind, coalesce(period, ''), model, coalesce(usage_policy_digest, ''));
+-- Migration 18 extends the model key with the immutable policy digest. The empty
+-- token represents absent legacy/non-usage policy; equal policy content shares a key.
 CREATE TABLE bss.pricing_price (
   id uuid PRIMARY KEY, tenant_id uuid NOT NULL, price_book_entry_id uuid NOT NULL REFERENCES bss.pricing_price_book_entry(id),
   version_no integer NOT NULL, dim_value text,
@@ -707,7 +859,16 @@ switch job and the reads that use them are D-449 to D-454; no table or column ch
 CREATE TABLE bss.pricing_plan (
   id uuid PRIMARY KEY, tenant_id uuid NOT NULL, code text NOT NULL, name text NOT NULL, published_rev integer,
   version bigint NOT NULL DEFAULT 1, created_by uuid NOT NULL,
-  created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL
+  created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL,
+  -- m20261002_000020 (D-484): time-stable list facts. selling and change are derived from these and the day.
+  work_revision_id uuid, work_state text,
+  scheduled_revision_id uuid, scheduled_from date,
+  published_revision_id uuid,
+  current_book_id uuid, current_currency text,
+  last_activity_at timestamptz NOT NULL,
+  CONSTRAINT pricing_plan_work_pair CHECK ((work_revision_id IS NULL) = (work_state IS NULL)),
+  CONSTRAINT pricing_plan_work_state CHECK (work_state IS NULL OR work_state IN ('draft','pending')),
+  CONSTRAINT pricing_plan_scheduled_pair CHECK ((scheduled_revision_id IS NULL) = (scheduled_from IS NULL))
 );
 CREATE UNIQUE INDEX pricing_plan_code ON bss.pricing_plan (tenant_id, code);
 CREATE TABLE bss.pricing_plan_revision (
@@ -867,6 +1028,34 @@ Known limits (accepted by the owner). In broker mode (an EventBrokerApi is regis
 ProducerOutbox::enqueue turns the outbox's database error into a string, so a contended outbox insert fails the
 act with 500 instead of being retried by the transaction; Products has the same limit, and the SDK stays unchanged.
 
+**Pure commercial compatibility (D-504).**
+
+`domain/commercial_terms.rs` exposes pure `validate_commercial_terms(&NewSaleQuery,
+&[AcceptedBinding])` and `validate_new_sale_observation(&SaleObservation)`. The exact matrix,
+anchor rules, reason mapping and integration boundary are recorded in PRD §7.1 and D-504.
+SDK `acceptance.rs` contains query/market/tenant/term/error values and the commercial capabilities;
+`terms.rs` adds the Subscriptions-owned BillingTerms snapshot projection. D-505–D-508 add
+versioned receipt persistence and authorized acceptance orchestration. `infra/commercial_terms_wire.rs` strictly decodes that snapshot without defaults.
+The existing canonical JSON encoder now also hashes billing terms, request intent and accepted
+terms. Runtime validation recomputes digests and reuses money tier validation. Authoritative
+provider evidence and complete live revision selection remain the command orchestrator's inputs;
+this layer neither queries dependencies nor opens transactions.
+
+**Durable acceptance (D-507).**
+
+SellabilityV1::check authorizes before immutable replay, then promotes due revisions, captures local
+rows and resolves complete selections with detached Products/meter observations. One serializable
+transaction rechecks local generations, samples the injected clock, enforces price windows and the
+seller-policy version, and persists acceptance, command and audit. Bounded recapture prevents mixed
+generations. Receipt schema 1 is unchanged. Exact retries and new keys on an identical order line
+retain the original terms and deadline. D-508 adds original-binding fulfilment and frozen holds;
+see design slice 07. Fresh checks compare receipt axes/digest/market, live SKU retirement and current
+original-price ends, without traversing successors or replacing descriptors. Hold commits reread
+local prices and sample Clock before atomically inserting the hold and command. Exact replay is
+historical; another key requires fresh checks and never renews TTL. The first activation is pinned
+inside the accepted window. Subscriptions retains committed order/attempt fencing; an eligibility
+observation is never a reusable admission token.
+
 ## 5. Traceability
 
 | Slice | Feature | Requirements / delivery |
@@ -881,3 +1070,96 @@ act with 500 instead of being retried by the transaction; Products has the same 
 
 All four ADRs are cited in §1.2. [PRD](PRD.md) owns requirements; [DECISIONS](DECISIONS.md) owns D-384–D-433.
 Source: `docs/superpowers/specs/2026-09-24-pricebook-model-design.md`, §2.2, §5–§8, §12–§13.
+
+### Executable seam fixture boundary (D-509)
+
+`pricing/tests/pricing_seam_contract.rs` decodes five schema-1 fixture scenarios using test-only typed
+serde DTOs. Prices and plans pass their real authoring/approval paths; all seven ClientHub methods
+retain their command/read classification and authorization. Full AcceptedBinding equality covers the
+entry/policy identity, version/digest/content, money digest/model, dated SKU descriptors and invoice
+pins. Expected commercial values are independent fixture inputs, not snapshots copied from resolve.
+Mixed plans, policy reuse, exact-policy book remapping and policy mismatch are provider contracts.
+
+The combined fixture view is not a new production DTO. Policy remains on the entry, money on its
+price and BillingTerms on the accepted query. F23/F24 use only existing pure Pricing math; consumers
+still own hourly work, source coverage, reset behavior and complete parent/invoice composition.
+No production meter, timer, event or HTTP command is added. Remote deployment must bind the exact
+PricingReadV1, PricingAcceptanceV1 and SellabilityV1 ports to the same services. SDK types remain
+serde-free. The read-only atlas baseline and outstanding reconciliation are recorded in D-509.
+
+
+**Final provider surface (D-510).** All methods are async, take `&self` and
+`ctx: &SecurityContext`, and return `Result<Output, CanonicalError>`; the table gives the
+remaining typed arguments and output. Only the two commands take `meta: CommandMeta`.
+
+| Trait / method | Query | Output | Semantics |
+| --- | --- | --- | --- |
+| `PricingReadV1::resolve` | `ResolveQuery` | `ResolvedBindings` | SafeRead; dated preview |
+| `PricingReadV1::price` | `PriceQuery` | `ImmutablePrice` | SafeRead; immutable money |
+| `PricingReadV1::current_revision` | `PlanQuery` | `RevisionRef` | SafeRead; server-time due promotion |
+| `PricingAcceptanceV1::acceptance` | `AcceptanceQuery` | `AcceptanceReceipt` | SafeRead; retained receipt |
+| `PricingAcceptanceV1::hold` | `FulfilmentQuery`, `CommandMeta` | `HeldBindings` | IdempotentWrite; frozen first hold |
+| `SellabilityV1::check` | `NewSaleQuery`, `CommandMeta` | `AcceptanceReceipt` | IdempotentWrite; durable acceptance |
+| `SellabilityV1::check_fulfilment` | `FulfilmentQuery` | `FulfilmentEligibility` | SafeRead; fresh eligibility |
+
+The declarations live in [read.rs](../pricing-sdk/src/read.rs) and
+[acceptance.rs](../pricing-sdk/src/acceptance.rs); implementations are
+[PricingReadProvider](../pricing/src/api/pricing_read.rs),
+[PricingAcceptanceProvider](../pricing/src/api/pricing_acceptance.rs) and
+[SellabilityProvider](../pricing/src/api/sellability.rs). Commands remain SDK-only; a remote
+adapter must bind these ports to the same services. No REST command or consumer integration is implied.
+
+PDP-derived scope and explicit catalog tenant qualify every lookup, including replay. Caller tenant
+and subject come from SecurityContext, never the idempotency key or a system-looking actor name.
+Malformed/unsupported terms retain typed `CommercialReason` metadata and 400; `ResolutionChanged`,
+`IdempotencyConflict`, `AcceptanceMismatch`, `PriceClosed`, `HoldExpired`, `SkuRetired`,
+`MarketChanged` and `ActivationOutsideAcceptedWindow` are 409; denial is 403 and an authorized missing
+receipt is 404. An absent meter provider is typed `UNCONFIGURED_DEPENDENCY`; an unreachable configured
+provider is 503. Dependency failure must not masquerade as MissingRatingPolicy or commercial refusal.
+
+Acceptance business identity is `(catalog tenant, order_id, order_version, line_id)`; command identity
+also includes authenticated caller tenant/subject, operation and key. Same-key changed content conflicts;
+a new key with identical business content attaches to the original acceptance. Receipts, commands,
+policy versions and schema-1 readers are retained indefinitely. The initial versioned seller hold policy
+is 24 hours; expiry limits new eligibility, never historical reads or exact command replay. Neither replay
+nor a different key refreshes accepted money or the deadline. First activation is within
+`start_at <= activation_at < hold_until`, and server time must still be before `hold_until`.
+A fresh eligibility result is an observation, not a reusable activation permission.
+
+**Database conformance evidence.** [SQLite](../pricing/tests/sqlite_pricing_seams.rs) and
+[PostgreSQL](../pricing/tests/postgres_pricing_seams.rs) invoke the same
+[scenario suite](../pricing/tests/seam_parity_support/mod.rs) and
+[acceptance race](../pricing/tests/seam_support/mod.rs). They cover one durable winner, changed payload
+and business-key replay after 25 hours, authorization denial, explicit-close interleaving, money digest
+stability, concurrent due promotion and immutable held policies. Crash and response-loss phases destroy
+the runtime and reopen persisted storage with a new pool. Scoped persisted reads supply the race result.
+
+The [upgrade proof](../pricing/tests/seam_parity_support/migration.rs) starts at the committed phase-9
+chain through migration 17 and seeds policy-less usage entries, published revisions and old entry/item
+reference-operation payloads. Migrations 18/19 preserve bindings and payloads, add no policy columns
+to items or prices, leave receipt tables empty and match a fresh install on each engine.
+The SQLite review regression additionally compares pre/post migration-18 sqlite_master DDL,
+normalizing only quoting, formatting, clause order and the explicitly added policy clauses; every
+old CHECK and UNIQUE clause survives, including unnamed constraints (D-511). Existing entries
+remain readable without invented policy; new usage-entry authoring requires an explicit policy.
+Concurrent identical-policy creates have one entry winner; different policies create distinct entries
+and identical content is interned once per tenant. PostgreSQL goldens are compared, never regenerated.
+G4 controller certification and atlas publication are orchestrator/atlas-owner work, separate from these tests.
+
+**External production obligations remain open.** E1 = E1a (raw meters, the usage collector / types registry; external) + E1b (derived meters, provided by Products since P-D-233). E1a (raw meters): Types Registry owns immutable
+declarations, Usage Collector the authorized exact-version semantic adapter, and source/IRM owners
+the accrual provenance. E1b (derived meters; products P-D-229 and rating T-D-39) is delivered by
+Products (products P-D-233): the one provider behind `UsageMeterSemanticsV1` answers a derived usage
+type at its exact version with its canonical output unit and the digest of its stored declaration,
+which names the inputs at their exact versions and the formula, and answers every raw meter as
+unconfigured until E1a is delivered behind it. Delivery must identify the implementation and tracked
+work and prove, for each kind, canonical units, SUM/additivity, source integration, historical
+immutability, authorization, outage behavior and real VM/cloudlet vectors; for E1b that evidence is
+products' meter-semantics tests and its `tests/derived_meter_e2e.rs`.
+E2: Orders resolves Subscriptions-owned versioned BillingTerms and authenticates
+payer/market; Subscriptions checks committed order/version and attempt fencing immediately before
+activation. E3: deployment grants scoped actions to Orders, Subscriptions and Rating; names confer no
+privilege. E4: Collector retains immutable source history, Subscriptions schedules incompatible policy
+changes at the next UTC hour boundary, and Rating consumes the original history. Rating owns hourly
+scheduling/reset/catch-up and exact amounts; Billing sums exact contributions before HALF_EVEN invoice
+rounding. Pricing tests do not certify those downstream behaviors.

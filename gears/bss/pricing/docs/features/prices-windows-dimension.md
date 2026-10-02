@@ -70,6 +70,12 @@ Holding multiple permissions never bypasses separation of duties.
 - [DECISIONS](../DECISIONS.md), D-384–D-443; spec means `docs/superpowers/specs/2026-09-24-pricebook-model-design.md` in the main checkout.
 - Source: spec §2 decisions 4–8, 13–17, §2.2, §5–§8, §10, §12–§13; the phase 2 plan supplies delivery boundaries and D-399/D-400.
 
+D-503 refuses CalendarHour with any `min_fee` at price create, submit and apply
+(`UNSUPPORTED_TERMS`), and when publishing a revision selecting such approved money. A successor,
+temporary pair and return keep their entry and therefore the same policy, window, scope and reset.
+Policy changes require a different entry and an explicitly selected revision. The existing dated
+SKU chain guard uses immutable Products history captured before the transaction.
+
 ## 2. Actor Flows (CDSL)
 
 ### Draft a temporary money change
@@ -232,3 +238,24 @@ Requirement: `cpt-cf-bss-pricing-fr-reference-protocol`; PRD AC #11.
 | `cpt-cf-bss-pricing-dod-confirmation-retry` | AC #11; `cpt-cf-bss-pricing-fr-reference-protocol` | Given a committed entry and lost confirm response, when retry resumes then it confirms safely without release; a receipt released before its confirm is re-reserved (lost, with PriceBookEntryReferenceLost, only when the SKU is fenced, retiring or retired) and deletion release failure remains queued. |
 
 Verification uses domain tests, scoped repository tests on both backends and REST positive/denial/precondition probes as applicable. Phase 2 checks must not mark later-phase behavior implemented. Golden consumer contracts belong to phase 4.
+
+
+**Final seam conformance (D-510).** Prices retain dated exact money under the entry's immutable model/policy. Approval submit and final
+apply reject missing/mismatched meter evidence and hourly minimum fees (including zero). New-sale
+support is recurring/one-time Flat or PerUnit and usage PerUnit, Volume or Graduated; Package, allowances,
+FX and promotions remain outside the supported sale profile. BillingCycle floors require subscription-line
+scope; CalendarHour uses UTC, SUM and actual partial quantities with full thresholds. Stable money digest
+projection normalizes equivalent decimal spellings. A successor never replaces a receipt's original
+price/policy; an explicit close raced with acceptance is refused. Current retirement/close checks remain
+necessary for fresh fulfilment. Tests run identical behavior on SQLite and PostgreSQL.
+
+The final seven typed signatures, CommercialReason mappings, PDP authorization, indefinite receipt
+retention, supported-model matrix and provider-test links are consolidated in
+[DESIGN](../DESIGN.md#executable-seam-fixture-boundary-d-509) and [PRD](../PRD.md). Acceptance and hold
+commands are SDK-only; historical replay never refreshes the original 24-hour seller-policy deadline.
+E1a (real raw meter declarations/adapter/provenance), E2 (resolved terms, authenticated market and
+consumer fencing), E3 (runtime PDP grants) and E4 (source history and safe policy transitions) remain
+external; E1b (Products' derived usage types) is provided by Products (products P-D-233).
+E1 = E1a (raw meters, the usage collector / types registry; external) + E1b (derived meters, provided by Products since P-D-233).
+The atlas owner reconciles C00/C01/C10; downstream Rating scheduling and Billing invoicing remain
+unexecuted integration obligations, even when Pricing provider parity is green.

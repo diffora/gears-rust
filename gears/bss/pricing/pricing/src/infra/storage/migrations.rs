@@ -60,6 +60,10 @@ mod m20260927_000014_settings_currencies_and_author;
 mod m20260928_000015_book_description;
 mod m20260928_000016_unit_submit_note;
 mod m20260929_000017_revision_scheduled;
+mod m20260930_000018_usage_rating_policy;
+
+mod m20260930_000019_commercial_receipts;
+mod m20261002_000020_plan_summary;
 
 /// Coordination followed by pricing-owned migrations.
 pub struct Migrator;
@@ -86,6 +90,9 @@ impl MigratorTrait for Migrator {
             Box::new(m20260928_000015_book_description::Migration),
             Box::new(m20260928_000016_unit_submit_note::Migration),
             Box::new(m20260929_000017_revision_scheduled::Migration),
+            Box::new(m20260930_000018_usage_rating_policy::Migration),
+            Box::new(m20260930_000019_commercial_receipts::Migration),
+            Box::new(m20261002_000020_plan_summary::Migration),
         ]
     }
 }

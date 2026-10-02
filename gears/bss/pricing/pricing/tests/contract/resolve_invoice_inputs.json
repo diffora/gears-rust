@@ -19,6 +19,7 @@
         "date": "2026-09-15",
         "items": [
           {
+            "usage_rating_policy": null,
             "item_id": "<item:pro-1/pro>",
             "sku_id": "<sku:pro>",
             "price_book_entry_id": "<entry:pro>",
@@ -72,6 +73,7 @@
             ]
           },
           {
+            "usage_rating_policy": null,
             "item_id": "<item:pro-1/storage>",
             "sku_id": "<sku:storage>",
             "price_book_entry_id": "<entry:storage>",
@@ -201,6 +203,7 @@
             ]
           },
           {
+            "usage_rating_policy": null,
             "item_id": "<item:pro-1/legacy>",
             "sku_id": "<sku:legacy>",
             "price_book_entry_id": null,
@@ -250,6 +253,7 @@
         "date": "2026-09-15",
         "items": [
           {
+            "usage_rating_policy": null,
             "item_id": "<item:pro-2/egress>",
             "sku_id": "<sku:egress>",
             "price_book_entry_id": "<entry:egress>",
@@ -370,6 +374,7 @@
         "date": "2026-09-15",
         "items": [
           {
+            "usage_rating_policy": null,
             "item_id": "<item:pro-2/backup>",
             "sku_id": "<sku:backup>",
             "price_book_entry_id": null,

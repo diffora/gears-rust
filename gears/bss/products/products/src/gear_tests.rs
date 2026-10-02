@@ -16,9 +16,10 @@ async fn configured_gear_registers_implemented_routes() -> anyhow::Result<()> {
     assert!(gear.runtime.load_full().is_some());
     assert_eq!(
         crate::infra::storage::migrations::Migrator::migrations().len(),
-        13,
-        "the schema guard, coordination and the eleven PriceBook migrations (000009: the unit's \
-         note, P-D-219; 000010: no retired default, P-D-220; 000011: retire_pending, P-D-248)"
+        14,
+        "the schema guard, coordination and the twelve PriceBook migrations (000009: the unit's \
+         note, P-D-219; 000010: no retired default, P-D-220; 000011: retire_pending, P-D-248; \
+         000012: the derived usage types, P-D-231)"
     );
     let openapi = OpenApiRegistryImpl::new();
     let router = gear.register_rest(&ctx, Router::new(), &openapi)?;
@@ -66,6 +67,11 @@ async fn configured_gear_registers_implemented_routes() -> anyhow::Result<()> {
         "bss_products.release_reference",
         "bss_products.browse",
         "bss_products.list_usage_types",
+        "bss_products.create_derived_usage_type",
+        "bss_products.create_derived_usage_type_version",
+        "bss_products.list_derived_usage_types",
+        "bss_products.get_derived_usage_type",
+        "bss_products.get_derived_usage_type_version",
     ];
     expected.sort_unstable();
     assert_eq!(actual, expected);
@@ -149,6 +155,31 @@ async fn served_query_parameters_are_typed_and_the_list_publishes_its_odata_voca
             "type"
         ],
         "{list}"
+    );
+    // P-D-249: the CASE serves `eq`, `ne` and `in`. The served text names those, not the text functions.
+    let filter_text = list["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "$filter")
+        .unwrap()["description"]
+        .as_str()
+        .unwrap();
+    assert!(
+        filter_text.contains("- lifecycle: eq|ne|in\n"),
+        "{filter_text}"
+    );
+    assert!(
+        !filter_text.contains("lifecycle: eq|ne|contains"),
+        "{filter_text}"
+    );
+    assert!(
+        list["description"]
+            .as_str()
+            .unwrap()
+            .contains("joined by `and`"),
+        "{}",
+        list["description"]
     );
     let mut order: Vec<&str> = list["x-odata-orderby"]["allowedFields"]
         .as_array()
@@ -353,7 +384,8 @@ const CLOSED: &[Closed] = &[
 ];
 
 /// P-D-217: response fields that stay `string`. No CHECK guards the stored set (the audit
-/// `action` and `unit_kind`, the approval unit's `ref_type`, a reference's `owner`), the value is not
+/// `action` and `unit_kind`, the approval unit's `ref_type`, a reference's `owner`, and a derived usage
+/// type's declaration, stored as JSON and served in the request's own strings, P-D-231), the value is not
 /// this gear's (a usage type's `kind`, the collector's), it names the wired catalog (`source`), or
 /// the kept `/browse` envelope carries the catalog port's vocabulary verbatim (`CatalogSku`: "not
 /// an enum").
@@ -367,6 +399,11 @@ const KEPT_STRING: &[(&str, &str)] = &[
     ("ProductsUsageTypeList", "source"),
     ("SkuRow", "lifecycle_state"),
     ("SkuRow", "sku_type"),
+    ("ProductsDerivedDeclaration", "granularity"),
+    ("ProductsDerivedDeclaration", "output_round"),
+    ("ProductsDerivedInput", "granule_fold"),
+    ("ProductsDerivedExpr", "op"),
+    ("ProductsDerivedExpr", "mode"),
 ];
 
 /// Request fields over the same sets: `string`, so the door's own code refuses a bad value.
@@ -378,6 +415,11 @@ const REQUEST_STRING: &[(&str, &str)] = &[
     ("SkuPatchRequest", "billing_timing"),
     ("ReserveRequest", "kind"),
     ("ApprovalPolicyRequest", "kind"),
+    ("ProductsDerivedDeclaration", "granularity"),
+    ("ProductsDerivedDeclaration", "output_round"),
+    ("ProductsDerivedInput", "granule_fold"),
+    ("ProductsDerivedExpr", "op"),
+    ("ProductsDerivedExpr", "mode"),
 ];
 
 async fn served_spec() -> anyhow::Result<serde_json::Value> {
@@ -718,5 +760,53 @@ async fn every_unit_says_whether_its_reader_may_approve_it() -> anyhow::Result<(
         .unwrap_or_default();
     assert!(!reject.contains("SOD_VIOLATION"), "{reject}");
     assert!(reject.contains("separation of duties"), "{reject}");
+    Ok(())
+}
+
+/// P-D-247 (ask 56): the picker declares its `Cache-Control` on its 200. Ask 46 and P-D-246
+/// (ask 52): the SKU list's text names `$filter=id in (…)` as the multi-id read with its bounds,
+/// and the list and the counts declare and name the picker keys `priced_in`, `not_priced_in` and
+/// `not_in_revision`.
+#[tokio::test]
+async fn the_picker_reads_say_how_they_cache_and_narrow() -> anyhow::Result<()> {
+    let api = served_spec().await?;
+    let header = &api["paths"]["/bss-products/v1/usage-types"]["get"]["responses"]["200"]["headers"]
+        ["Cache-Control"];
+    assert!(
+        header.is_object(),
+        "the 200 declares Cache-Control: {header}"
+    );
+    let said = header["description"].as_str().unwrap_or_default();
+    assert!(said.contains("private, max-age=60"), "{said}");
+    for path in ["/bss-products/v1/skus", "/bss-products/v1/skus/counts"] {
+        let op = &api["paths"][path]["get"];
+        let names: Vec<&str> = op["parameters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|p| p["in"] == "query")
+            .filter_map(|p| p["name"].as_str())
+            .collect();
+        for key in ["priced_in", "not_priced_in", "not_in_revision"] {
+            assert!(names.contains(&key), "{path} declares {key}: {names:?}");
+        }
+        let text = op["description"].as_str().unwrap_or_default();
+        for said in [
+            "priced_in",
+            "not_priced_in",
+            "not_in_revision",
+            "plan read",
+            "USAGE_FORBIDDEN",
+            "USAGE_UNAVAILABLE",
+        ] {
+            assert!(text.contains(said), "{path} says {said}: {text}");
+        }
+    }
+    let list = api["paths"]["/bss-products/v1/skus"]["get"]["description"]
+        .as_str()
+        .unwrap_or_default();
+    for said in ["$filter=id in (", "$top", "200", "8 KiB"] {
+        assert!(list.contains(said), "the list says {said}: {list}");
+    }
     Ok(())
 }

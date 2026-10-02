@@ -1,7 +1,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 use super::*;
 use crate::infra::storage::repo::{AuditCommon, LifecycleMove, write_eventless_act_audit};
-use crate::test_support::{test_db, utc};
+use crate::test_support::{products_statements, recorded_test_db, test_db, utc};
 use sea_orm::Set;
 use toolkit_db::secure::SecureInsertExt;
 use toolkit_odata::CursorV1;
@@ -496,5 +496,92 @@ async fn a_stored_retiring_move_is_mapped_and_never_a_corrupt_row() {
             "sku.unfence deprecated>deprecated",
             "sku.fence_expired published>published",
         ]
+    );
+}
+
+/// Unit A entered `retiring` on an earlier page. Unit B's submit and apply sit on the next page.
+/// B's apply is served `published → retired`: the enter row is loaded with every `retiring` row
+/// of the SKU, one statement, not only the page's units (P-D-248).
+#[tokio::test]
+async fn a_later_page_maps_a_legacy_retire_from_the_whole_sku() {
+    let (db, _, _, _dsn, recorder) = recorded_test_db().await;
+    let conn = db.conn().unwrap();
+    let earlier = Uuid::from_u128(0x0b_01);
+    let later = Uuid::from_u128(0x0b_02);
+    unit(&conn, earlier, TENANT, SKU, "sku_retire").await;
+    unit(&conn, later, TENANT, SKU, "sku_retire").await;
+    legacy(
+        &conn,
+        1,
+        "approval_unit",
+        earlier,
+        "approval.submit",
+        Some("published"),
+        Some("retiring"),
+    )
+    .await;
+    legacy(
+        &conn,
+        2,
+        "approval_unit",
+        later,
+        "approval.submit",
+        Some("retiring"),
+        Some("retiring"),
+    )
+    .await;
+    legacy(
+        &conn,
+        3,
+        "approval_unit",
+        later,
+        "approval.applied",
+        Some("retiring"),
+        Some("retired"),
+    )
+    .await;
+    let first = page_sku_history(&conn, TENANT, SKU, &ODataQuery::default().with_limit(1))
+        .await
+        .unwrap();
+    let cursor =
+        CursorV1::decode(&first.page_info.next_cursor.expect("B is on the next page")).unwrap();
+    recorder.clear();
+    let page = page_sku_history(
+        &conn,
+        TENANT,
+        SKU,
+        &ODataQuery::default().with_cursor(cursor).with_limit(2),
+    )
+    .await
+    .unwrap();
+    let moves: Vec<_> = page
+        .items
+        .iter()
+        .map(|e| {
+            format!(
+                "{} {}>{}",
+                e.action,
+                e.from_lifecycle.map_or("-", Lifecycle::as_str),
+                e.to_lifecycle.map_or("-", Lifecycle::as_str)
+            )
+        })
+        .collect();
+    assert_eq!(
+        moves,
+        [
+            "approval.submit published>published",
+            "approval.applied published>retired",
+        ],
+        "{moves:#?}"
+    );
+    let sqls = products_statements(&recorder);
+    let audit = sqls
+        .iter()
+        .filter(|sql| sql.to_lowercase().contains("products_audit_log"))
+        .filter(|sql| sql.to_lowercase().starts_with("select"))
+        .count();
+    assert_eq!(
+        audit, 3,
+        "one page, the page's units, and one retiring load: {sqls:#?}"
     );
 }

@@ -281,7 +281,7 @@ async fn the_legacy_set_is_the_legacy_chain_minus_a_fresh_chain() {
 
     assert_eq!(
         db.products_tables().await.len(),
-        10,
+        12,
         "the fresh chain's products tables"
     );
     let in_both: Vec<&str> = LEGACY_CHAIN_TABLES

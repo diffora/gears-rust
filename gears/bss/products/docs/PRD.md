@@ -71,6 +71,7 @@ reference. The prototype model and the explicit dispositions in spec §3 define 
 | Category | An optional flat grouping, at most one per SKU, with code, name, default flag, sort order and active/retired status. |
 | Descriptors | `gl_code`, `tax_category` and `invoice_line_template`, bound by pricing from a dated SKU version. |
 | Metering | A usage SKU's `usage_type_ref` and `unit`; the reference resolves through the usage-type catalog port. |
+| Derived usage type | A meter computed per granule from other usage, such as a cloudlet-hour from RAM and CPU; declared by Products as versioned data and evaluated by Rating (P-D-229). |
 | Lifecycle | `draft`, `published`, `deprecated`, `retiring`, `retired`; `retiring` is the transient retirement fence. |
 | SKU version | An append-only snapshot identified by SKU and `published_version`, with `effective_from`. |
 | Concurrency version | A mutable row's optimistic concurrency token; distinct from the published SKU version. |
@@ -136,8 +137,8 @@ from its own registry (spec §2 decision 17, §4, §7.3, §13).
 
 ### 4.1 In Scope
 
-Typed SKUs; flat categories; billing descriptors and billing-timing override; usage-type resolution; lifecycle;
-durable dated versions; the three SKU approval kinds; policy settings; reference reservations and fences;
+Typed SKUs; flat categories; billing descriptors and billing-timing override; usage-type resolution; derived
+usage types (P-D-229); lifecycle; durable dated versions; the three SKU approval kinds; policy settings; reference reservations and fences;
 concurrency and idempotency; browse/search and reference summaries; audit and transactional events
 (spec §3 D, §4, §6, §7.2–§7.3).
 
@@ -222,6 +223,47 @@ A usage SKU shall declare the meter reference and unit needed by consumers befor
 - Submit validates the proposed content and apply revalidates it before publication or change.
 
 **Rationale**: spec §4 (usage rule), §6 (subject validation), §15 (usage-type catalog design retained).
+
+#### `fr-derived-usage-type`
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-fr-derived-usage-type`
+
+The registry shall declare a derived usage type, a meter computed per granule from other usage (a cloudlet-hour from RAM and
+CPU, for example), as versioned data with one evaluator that Rating calls (P-D-229, P-D-230).
+
+**Rules**
+
+- A version names its output unit, its granularity (an hour), at least two raw inputs, a formula over them, and the
+  output's scale and rounding. Each input is a GTS usage type at its exact version, with its granule fold and, for a
+  time-weighted input, its hold bound. A version never changes; a new formula is a new version.
+- The formula is data in a closed grammar: inputs, constants, add, subtract, multiply, divide by a non-zero constant, the
+  larger and the smaller of two or more, ceil, floor and round. A declaration that breaks a rule is refused with the rule
+  named: an unknown, unused or duplicate input, a derived input, a division by zero, a max or min of fewer than two
+  operands, a formula deeper than 32 or of more than 256 nodes, a scale above 12, a hold that is missing, misplaced or
+  outside 1 to 86,400 seconds, or an empty or over-cap unit.
+- The formula applies per granule, to that granule's folded input quantities; a window's quantity is the sum of its granule
+  outputs. The arithmetic is exact decimal and checked: an overflow, a missing, extra or negative input and a negative
+  result are errors, never a panic. A result is rounded, then normalized (`-0` is `0`).
+- A derived meter is named `products.derived/<code>@<n>`, with `<n>` a canonical version from 1. The prefix is reserved;
+  a GTS id never starts with it.
+- A declaration has one canonical encoding (decimals normalized, a fixed field order), and its digest identifies the
+  version.
+- A type has a code unique in the tenant and a name; its versions are stored append-only, with no approval of their own,
+  each with the digest of its canonical encoding. Each input resolves through the usage-type catalog as the caller. Writes
+  need the derived usage type's author grant, reads the SKU read grant, and every create and version is audited (P-D-231).
+- A usage SKU names a derived meter by its id as its `usage_type_ref`, and sells its version's output unit. The registry
+  judges the ref from its own store, never from the usage-type catalog, configured or not: a version the tenant does not
+  hold, and a unit other than its output unit, are refused. A draft may move to another version; the first publish pins
+  it, and no change moves it after that (to another version, to or from a GTS ref, or by dropping it). A new formula is
+  sold through a new usage SKU (P-D-232).
+- The registry answers pricing's meter semantics for a derived meter (E1b): the version's output unit, a sum over the
+  granules, the accrual `derived-v1:<digest>` and the stored digest, read in the caller's tenant under the SKU read grant;
+  a version off the meter id, or a meter the tenant does not hold, is refused. Any other meter is a raw one, answered as
+  if no provider were registered until the raw-meter provider exists (P-D-233).
+
+**Rationale**: owner decision of 2026-10-01 (P-D-229; rating T-D-39); the declaration, grammar and evaluator (P-D-230);
+the storage, doors, grants and audit (P-D-231); the SKU's binding and pin (P-D-232); the meter semantics answered to
+pricing (P-D-233).
 
 #### `fr-sku-bundle`
 
@@ -791,11 +833,36 @@ transport (`GET /bss-products/v1/browse`) remain until phase 2, as required by t
 - **When** the storage verification suites run, including concurrent reservation/fence and unit-update cases.
 - **Then** both enforce the same uniqueness, timeline, audit, replay and reference invariants without row locks.
 
+**AC #30. Derived usage type versions — `fr-derived-usage-type`**
+
+- **Given** a tenant whose usage-type catalog resolves a RAM and a CPU usage type, and the cloudlet declaration over them.
+- **When** an author creates the derived usage type and later adds a version with another formula.
+- **Then** versions 1 and 2 both read back, version 1 unchanged, each with its stored digest and its meter id
+  `products.derived/<code>@<n>`; a declaration that breaks a rule is refused with the rule named, an input the catalog does
+  not know is refused, each create and version is audited, and another tenant reads neither (P-D-231).
+
+**AC #31. A usage SKU pins a derived version — `fr-derived-usage-type`**
+
+- **Given** the tenant's derived usage type with versions 1 and 2, and a usage-type catalog that is configured or not.
+- **When** an author creates a usage SKU on version 1 selling its output unit, publishes it, and then proposes changes.
+- **Then** the draft saves and publishes without the catalog being asked; an unknown version and another unit are
+  refused at draft save; the draft may move to version 2 before its first publish; after it, a change to version 2, to a
+  GTS ref, from a GTS ref, or one that drops the ref, is refused at submit and again at apply (P-D-232).
+
+**AC #32. A derived meter sells through pricing — `fr-derived-usage-type`**
+
+- **Given** the cloudlet derived usage type, a published usage SKU on its version 1 with its output unit and its invoice
+  fields, and pricing running beside the registry with no other meter provider.
+- **When** a pricing author creates a usage entry whose policy names the meter, the output unit and the version's accrual,
+  prices it, publishes a plan revision, and a sale is checked.
+- **Then** the sale is accepted; a policy with another unit or another accrual is refused `METER_POLICY_MISMATCH`, a raw
+  meter is answered as unconfigured, another tenant's type is unknown, and a store outage is 503 (P-D-233).
+
 ## 10. Dependencies
 
 | Dependency | Description | Criticality |
 | --- | --- | --- |
-| Pricing | Reads SKU versions and consumes `SkuChanged`; owns the reserve/write/confirm and release protocol. Products serves reference reads locally. | `p1` |
+| Pricing | Reads SKU versions and consumes `SkuChanged`; owns the reserve/write/confirm and release protocol. Products serves reference reads locally, and answers pricing's meter semantics for derived meters (P-D-233). | `p1` |
 | `bss-approval` | Shared policy, unit, item and decision model plus subject contract; each gear owns its stored copies. | `p1` |
 | Usage-type catalog port | Resolves usage meter references; retained as the pluggable integration in spec §4 and §15. | `p1` |
 | Toolkit REST, authz and SecureORM | Existing API infrastructure, deny-by-default permissions, scoped storage and transactional writes. | `p1` |
@@ -843,6 +910,7 @@ in their actor, requirement or use-case blocks above.
 | `fr-sku-define`, `fr-sku-type-frozen`, `fr-category-flat` | Spec §2 decisions 3, 12 and 17; §3 D; §4. |
 | `fr-sku-descriptors`, `fr-sku-versions` | Spec §2 decision 14; §2.2; §4; §7.1; §8; §12. |
 | `fr-sku-metering`, `fr-sku-bundle` | Spec §3 D; §4; §5; §15. |
+| `fr-derived-usage-type` | Owner decision of 2026-10-01 (P-D-229; rating T-D-39); P-D-230; P-D-231; P-D-232; P-D-233. |
 | `fr-sku-lifecycle`, `fr-sku-retire-fenced`, `fr-reference-registry` | Spec §2 decision 17; §2.2; §4; §6; §7.2; §13. |
 | `fr-approval-units`, `fr-concurrency-idempotency` | Spec §2 decision 8; §2.2; §3 items 23 and 27; §6; §7.2; §14. |
 | `fr-events`, `fr-read-model` | Spec §3 item 43; §4; §6; §7.3; §12–§13. |

@@ -15,6 +15,7 @@ pub mod approval_units;
 pub mod browse;
 pub mod categories;
 pub mod closed_sets;
+pub mod derived_usage_types;
 pub mod dto;
 pub(crate) mod governance;
 pub mod preconditions;
