@@ -131,8 +131,12 @@ async fn check_sku_rules(
     if !price_book_entry::period_valid(sku.r#type, input.period.as_deref()) {
         return Err(support::invalid("period", "ENTRY_PERIOD_INVALID"));
     }
+    let policy = input
+        .usage_rating_policy
+        .as_ref()
+        .map(crate::infra::usage_policy_wire::UsageRatingPolicyInput::from);
     if let Ok(kind) = price_book_entry::charge_kind_for(sku.r#type) {
-        match (&input.usage_rating_policy, kind) {
+        match (&policy, kind) {
             (None, price_book_entry::ChargeKind::Usage) => {
                 return Err(support::invalid(
                     "usage_rating_policy",
@@ -157,7 +161,7 @@ async fn check_sku_rules(
         Ok(kind) if !price_book_entry::model_allowed(kind, model) => {
             Err(support::invalid("model", "MODEL_KIND_CHARGEKIND_MISMATCH"))
         }
-        _ => match &input.usage_rating_policy {
+        _ => match &policy {
             Some(policy) => crate::infra::meter_semantics::resolve(&state.hub, ctx, policy, &sku)
                 .await
                 .map(Some),

@@ -71,7 +71,11 @@ D-502 binds an immutable UsageRatingPolicy to each new usage entry. The create r
 or one-time entries (`UNEXPECTED_RATING_POLICY`). The closed input contains rating_window
 (BillingCycle or CalendarHour with UTC), aggregation_scope (subscription_line or resource),
 reset (rating_window_start), quantity_semantics (meter usage_type_id/version, unit, SUM fold,
-accrual_policy_version), and partial_window (actual_quantity_full_thresholds). Empty or whitespace-only
+accrual_policy_version), and partial_window (actual_quantity_full_thresholds). On author input,
+`quantity_semantics.fold`, `reset` and `partial_window` may be absent or null; the server fills `SUM`,
+`rating_window_start` and `actual_quantity_full_thresholds` before validation, the content digest and
+the meter check (D-513). An explicit value is accepted and an unknown value is refused. Reads still
+return all three. Empty or whitespace-only
 meter identifiers, versions, units or accrual versions are `METER_POLICY_MISMATCH`. The server assigns
 policy_id, version 1 and the lowercase SHA-256 canonical content digest; author input refuses these
 identity fields. The entry PATCH cannot change or clear policy. Item and price requests refuse policy

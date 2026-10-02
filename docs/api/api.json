@@ -12545,8 +12545,8 @@
                 "type": "null"
               },
               {
-                "$ref": "#/components/schemas/UsageRatingPolicyInput",
-                "description": "Required for usage entries; immutable after creation. Identity is server assigned."
+                "$ref": "#/components/schemas/UsageRatingPolicyRequest",
+                "description": "Required for usage entries; immutable after creation. Identity is server assigned.\n`quantity_semantics.fold`, `reset` and `partial_window` may be absent or null; the server\nfills `SUM`, `rating_window_start` and `actual_quantity_full_thresholds` (D-513)."
               }
             ]
           }
@@ -15216,6 +15216,36 @@
           "meter",
           "unit",
           "fold",
+          "accrual_policy_version"
+        ],
+        "type": "object"
+      },
+      "QuantitySemanticsRequest": {
+        "additionalProperties": false,
+        "description": "Quantity semantics on author input. `fold` defaults to `SUM` when absent or null (D-513).",
+        "properties": {
+          "accrual_policy_version": {
+            "type": "string"
+          },
+          "fold": {
+            "default": "SUM",
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Fold",
+                "description": "Absent or null defaults to `SUM` (D-513)."
+              }
+            ]
+          },
+          "meter": {
+            "$ref": "#/components/schemas/MeterRef"
+          },
+          "unit": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "meter",
+          "unit",
           "accrual_policy_version"
         ],
         "type": "object"
@@ -20940,7 +20970,7 @@
       },
       "UsageRatingPolicyInput": {
         "additionalProperties": false,
-        "description": "Author input contains no server-assigned policy identity.",
+        "description": "Complete policy content. Server-assigned identity is not part of this object.\nAuthor input uses [`UsageRatingPolicyRequest`], which fills the single-valued fields (D-513).\nStored rows and every response keep `fold`, `reset` and `partial_window` required.",
         "properties": {
           "aggregation_scope": {
             "$ref": "#/components/schemas/AggregationScope"
@@ -20964,6 +20994,45 @@
           "reset",
           "quantity_semantics",
           "partial_window"
+        ],
+        "type": "object"
+      },
+      "UsageRatingPolicyRequest": {
+        "additionalProperties": false,
+        "description": "Author input for a usage policy (D-513).\n\n`fold`, `reset` and `partial_window` default when absent or null. The parse fills them\nbefore validation, the content digest, storage and the meter check. Stored and served\npolicies use [`UsageRatingPolicyInput`], which keeps those fields required.",
+        "properties": {
+          "aggregation_scope": {
+            "$ref": "#/components/schemas/AggregationScope"
+          },
+          "partial_window": {
+            "default": "actual_quantity_full_thresholds",
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PartialWindow",
+                "description": "Absent or null defaults to `actual_quantity_full_thresholds` (D-513)."
+              }
+            ]
+          },
+          "quantity_semantics": {
+            "$ref": "#/components/schemas/QuantitySemanticsRequest"
+          },
+          "rating_window": {
+            "$ref": "#/components/schemas/RatingWindow"
+          },
+          "reset": {
+            "default": "rating_window_start",
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Reset",
+                "description": "Absent or null defaults to `rating_window_start` (D-513)."
+              }
+            ]
+          }
+        },
+        "required": [
+          "rating_window",
+          "aggregation_scope",
+          "quantity_semantics"
         ],
         "type": "object"
       },
@@ -42362,7 +42431,7 @@
         }
       },
       "post": {
-        "description": "Adds an entry for a SKU to a book in a model fixed for the entry's life (D-427), reserving the SKU reference in Products before the write and confirming it after; the Idempotency-Key replays the receipt. The invoice-line override is at most 2000 characters (D-457). Usage entries require an immutable usage_rating_policy; other charge kinds refuse one. Policy identity is server-issued (D-502). Refusals: 400 MISSING_RATING_POLICY, UNEXPECTED_RATING_POLICY, METER_POLICY_MISMATCH, MODEL_INVALID, MODEL_KIND_CHARGEKIND_MISMATCH (judged at the door and again after the reservation), ENTRY_PERIOD_INVALID, DIM_NOT_DECLARED, or FIELD_TOO_LONG on an override over its cap; 409 ENTRY_KEY_TAKEN (the SKU, charge kind, normalized period, model and policy digest are taken in the book), SKU_DRAFT, SKU_DEPRECATED, SKU_RETIRING, SKU_FENCED, BUNDLE_SKU_NOT_PRICEABLE or CHARGE_KIND_SKU_TYPE; 503 REGISTRY_UNAVAILABLE.",
+        "description": "Adds an entry for a SKU to a book in a model fixed for the entry's life (D-427), reserving the SKU reference in Products before the write and confirming it after; the Idempotency-Key replays the receipt. The invoice-line override is at most 2000 characters (D-457). Usage entries require an immutable usage_rating_policy; other charge kinds refuse one. Policy identity is server-issued (D-502). `quantity_semantics.fold`, `reset` and `partial_window` may be absent or null; the server fills `SUM`, `rating_window_start` and `actual_quantity_full_thresholds` (D-513). An unknown value is still refused. Refusals: 400 MISSING_RATING_POLICY, UNEXPECTED_RATING_POLICY, METER_POLICY_MISMATCH, MODEL_INVALID, MODEL_KIND_CHARGEKIND_MISMATCH (judged at the door and again after the reservation), ENTRY_PERIOD_INVALID, DIM_NOT_DECLARED, or FIELD_TOO_LONG on an override over its cap; 409 ENTRY_KEY_TAKEN (the SKU, charge kind, normalized period, model and policy digest are taken in the book), SKU_DRAFT, SKU_DEPRECATED, SKU_RETIRING, SKU_FENCED, BUNDLE_SKU_NOT_PRICEABLE or CHARGE_KIND_SKU_TYPE; 503 REGISTRY_UNAVAILABLE.",
         "operationId": "bss_pricing.create_entry",
         "parameters": [
           {
