@@ -137,15 +137,15 @@ pub async fn list_page(
     if pages.is_empty() && all_forbidden(&sources) {
         return Err(error::forbidden());
     }
-    let views: Vec<SourceAnswer<'_>> = pages
-        .iter()
+    let views: Vec<SourceAnswer> = pages
+        .into_iter()
         .map(|(name, page)| SourceAnswer {
             source: name,
-            units: &page.units,
+            units: page.units,
             has_more: page.has_more,
         })
         .collect();
-    let merged = merge::merge(prepared.order, prepared.limit, &prepared.keys, &views);
+    let merged = merge::merge(prepared.order, prepared.limit, &prepared.keys, views);
     let unavailable: Vec<String> = sources
         .iter()
         .filter(|row| row.status == SourceHealth::Unavailable)
