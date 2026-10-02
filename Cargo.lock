@@ -1897,6 +1897,68 @@ dependencies = [
 ]
 
 [[package]]
+name = "cf-gears-bss-approval"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "aws-lc-rs",
+ "cf-gears-toolkit-db",
+ "parking_lot",
+ "sea-orm",
+ "sea-orm-migration",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "time",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "cf-gears-bss-approvals"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "arc-swap",
+ "async-trait",
+ "aws-lc-rs",
+ "axum",
+ "base64 0.22.1",
+ "cf-gears-bss-approvals-sdk",
+ "cf-gears-toolkit",
+ "cf-gears-toolkit-canonical-errors",
+ "cf-gears-toolkit-gts",
+ "cf-gears-toolkit-macros",
+ "cf-gears-toolkit-odata",
+ "cf-gears-toolkit-security",
+ "futures",
+ "http-body-util",
+ "proptest",
+ "serde",
+ "serde_json",
+ "time",
+ "tokio",
+ "tokio-util",
+ "tower",
+ "tracing",
+ "utoipa",
+ "uuid",
+]
+
+[[package]]
+name = "cf-gears-bss-approvals-sdk"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "cf-gears-toolkit-canonical-errors",
+ "cf-gears-toolkit-security",
+ "serde",
+ "serde_json",
+ "time",
+ "uuid",
+]
+
+[[package]]
 name = "cf-gears-bss-coord"
 version = "0.0.0"
 dependencies = [
@@ -1914,26 +1976,6 @@ dependencies = [
  "tokio-util",
  "tracing",
  "uuid",
-]
-
-[[package]]
-name = "cf-gears-bss-fixtures"
-version = "0.0.0"
-dependencies = [
- "chrono",
- "serde",
- "thiserror 2.0.20",
- "toml 1.1.2+spec-1.1.0",
-]
-
-[[package]]
-name = "cf-gears-bss-fixtures-conformance"
-version = "0.0.0"
-dependencies = [
- "cf-gears-bss-fixtures",
- "chrono",
- "thiserror 2.0.20",
- "toml 1.1.2+spec-1.1.0",
 ]
 
 [[package]]
@@ -2014,16 +2056,16 @@ dependencies = [
  "async-trait",
  "aws-lc-rs",
  "axum",
- "base64 0.22.1",
- "cf-gears-account-management",
- "cf-gears-account-management-sdk",
  "cf-gears-authz-resolver",
  "cf-gears-authz-resolver-sdk",
+ "cf-gears-bss-approval",
+ "cf-gears-bss-approvals-sdk",
  "cf-gears-bss-coord",
- "cf-gears-bss-fixtures",
- "cf-gears-bss-fixtures-conformance",
  "cf-gears-bss-pricing",
  "cf-gears-bss-pricing-sdk",
+ "cf-gears-bss-products-sdk",
+ "cf-gears-event-broker",
+ "cf-gears-event-broker-sdk",
  "cf-gears-test-containers",
  "cf-gears-toolkit",
  "cf-gears-toolkit-canonical-errors",
@@ -2035,23 +2077,23 @@ dependencies = [
  "cf-gears-toolkit-security",
  "cf-gears-types-registry",
  "cf-gears-types-registry-sdk",
- "futures-util",
- "gts",
- "opentelemetry",
- "opentelemetry_sdk",
  "parking_lot",
+ "proptest",
+ "rust_decimal",
  "sea-orm",
  "sea-orm-migration",
  "serde",
  "serde_json",
+ "tempfile",
  "testcontainers-modules",
  "thiserror 2.0.20",
  "time",
  "tokio",
+ "tokio-retry",
  "tokio-util",
+ "toml 0.8.23",
  "tower",
  "tracing",
- "tracing-subscriber",
  "utoipa",
  "uuid",
 ]
@@ -2061,11 +2103,86 @@ name = "cf-gears-bss-pricing-sdk"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "aws-lc-rs",
  "cf-gears-toolkit-canonical-errors",
+ "cf-gears-toolkit-contract",
+ "cf-gears-toolkit-security",
+ "rust_decimal",
+ "serde_json",
+ "thiserror 2.0.20",
+ "time",
+ "uuid",
+]
+
+[[package]]
+name = "cf-gears-bss-products"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "arc-swap",
+ "async-trait",
+ "aws-lc-rs",
+ "axum",
+ "cf-gears-authz-resolver",
+ "cf-gears-authz-resolver-sdk",
+ "cf-gears-bss-approval",
+ "cf-gears-bss-approvals",
+ "cf-gears-bss-approvals-sdk",
+ "cf-gears-bss-coord",
+ "cf-gears-bss-pricing",
+ "cf-gears-bss-pricing-sdk",
+ "cf-gears-bss-products-sdk",
+ "cf-gears-event-broker",
+ "cf-gears-event-broker-sdk",
+ "cf-gears-test-containers",
+ "cf-gears-toolkit",
+ "cf-gears-toolkit-canonical-errors",
+ "cf-gears-toolkit-contract",
+ "cf-gears-toolkit-db",
+ "cf-gears-toolkit-db-macros",
+ "cf-gears-toolkit-gts",
+ "cf-gears-toolkit-http",
+ "cf-gears-toolkit-macros",
  "cf-gears-toolkit-odata",
  "cf-gears-toolkit-odata-macros",
  "cf-gears-toolkit-security",
+ "cf-gears-types-registry",
+ "cf-gears-types-registry-sdk",
+ "cf-gears-usage-collector",
+ "cf-gears-usage-collector-sdk",
+ "gts",
+ "opentelemetry",
+ "rust_decimal",
+ "sea-orm",
+ "sea-orm-migration",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "testcontainers-modules",
  "thiserror 2.0.20",
+ "time",
+ "tokio",
+ "tokio-util",
+ "tower",
+ "tracing",
+ "tracing-opentelemetry",
+ "unicode-normalization",
+ "utoipa",
+ "uuid",
+]
+
+[[package]]
+name = "cf-gears-bss-products-sdk"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "cf-gears-toolkit-canonical-errors",
+ "cf-gears-toolkit-gts",
+ "cf-gears-toolkit-security",
+ "proptest",
+ "rust_decimal",
+ "serde",
  "time",
  "uuid",
 ]
@@ -2462,8 +2579,10 @@ dependencies = [
  "cf-gears-api-gateway",
  "cf-gears-authn-resolver",
  "cf-gears-authz-resolver",
+ "cf-gears-bss-approvals",
  "cf-gears-bss-ledger",
  "cf-gears-bss-pricing",
+ "cf-gears-bss-products",
  "cf-gears-bss-rate-provider",
  "cf-gears-bss-rate-provider-ecb-plugin",
  "cf-gears-bss-rate-provider-http-json-plugin",
@@ -2498,11 +2617,14 @@ dependencies = [
  "cf-gears-usage-collector",
  "clap",
  "mimalloc",
+ "sea-orm",
  "serde-saphyr 1.3.0",
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-util",
  "users-info",
+ "uuid",
 ]
 
 [[package]]
