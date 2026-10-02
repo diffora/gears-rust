@@ -60,7 +60,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-421 | H | The binding carries resolved invoice inputs with their source | DECIDED 2026-09-26 · Phase 4 plan rev 3 (Run 4.2); PRD AC #13; plan review H3, L7; amended by D-467 |
 | D-422 | H | The pinned price read serves approved money forever | DECIDED 2026-09-26 · Phase 4 plan rev 3 (Run 4.2); spec §7.1; plan review H4 |
 | D-423 | H | Both gears refuse a legacy or stale schema at boot | DECIDED 2026-09-26 · Phase 4 plan rev 2 (Run 4.1); plan review H1, M1, M2, L6 |
-| D-424 | H | Resolve reads SKU versions as pricing's system actor | DECIDED 2026-09-26 · Phase 4 review, fix run 8 (docs M1); amends D-421 |
+| D-424 | H | Resolve reads SKU versions as pricing's system actor | DECIDED 2026-09-26 · Phase 4 review, fix run 8 (docs M1); amends D-421; amended 2026-10-02 (phase 9 review F1) |
 | D-425 | H | The binding says where it ends for its holder | DECIDED 2026-09-26 · Phase 4 review, fix run 8 (contract C-1, docs M2); amends D-420 |
 | D-426 | H | An entry's invoice line is locked once the entry carries money | DECIDED 2026-09-26 · Owner, 2026-09-26 (option 1 of three); amends D-421 |
 | D-427 | H | The model belongs to the entry, fixed for its life, and is part of its key | DECIDED 2026-09-26 · Owner, 2026-09-26; phase 5 plan rev 2; closes D-412; amends D-386, D-390, D-391, D-401, D-402 |
@@ -465,7 +465,9 @@ Rating and Subscriptions call GET /bss-pricing/v1/resolve as system subjects (bs
 
 The registry's trust of pricing's system actor is in-process only; its threat model is products P-D-222 (whole-branch review RS-02, fix run W1b). A pricing door hands the registry its caller's context (the entry and plan item doors, the plan checks' SKU reads), so no REST door of either gear serves that actor: a caller whose context carries it in either half, the subject type bss-pricing.system or the id PRICING_SYSTEM_ACTOR, is 403 SYSTEM_ACTOR_RESERVED at every door, before the PDP (support::require_authenticated, which every door calls first; the test is bss_products_sdk::is_pricing_system_actor). Before, a token carrying both halves, with a pricing grant, got the registry's tenant-wide trust through an entry create (the second review of W1b, M1; fix run W1c). Rating's and Subscriptions' system subjects are not refused: they pass the edge and the PDP judges their plan:read, as above. Resolve still builds its own system actor after the caller passed plan:read.
 
-**Source:** Phase 4 review, fix run 8 (docs M1: the decision change that the review names as the alternative; the orchestrator's decision). Amends D-421. Amended by the second review of W1b, M1 (fix run W1c): the REST edge refuses pricing's system actor.
+**Amended 2026-10-02 (phase 9 review F1).** The same actor is the contract on `PricingReadV1::resolve`. REST resolve and the SDK method both call `pricing_reads::finish`, which calls `versions_as_of`. That read builds `reference_ticker::system_actor` for the caller's tenant and does not forward the caller's context to Products. It runs only after the caller passed `plan:read` and the revision was found in the caller's tenant: the REST door's plan read, or `PricingReadProvider::scope` on the SDK path. A consumer Products does not trust would be refused if the read used the caller's context. The SKU ids still come only from the admitted revision, in the caller's tenant.
+
+**Source:** Phase 4 review, fix run 8 (docs M1: the decision change that the review names as the alternative; the orchestrator's decision). Amends D-421. Amended by the second review of W1b, M1 (fix run W1c): the REST edge refuses pricing's system actor. Amended 2026-10-02 (phase 9 review F1): the SDK resolve path uses the same system actor.
 
 #### D-425 [H] The binding says where it ends for its holder
 
@@ -1378,8 +1380,9 @@ The approvals inbox (`bss-approvals`, AP-D-1 to AP-D-4) serves ONE paged list, O
 Pricing provides `PricingReadV1::{resolve, price, current_revision}` through ClientHub. Queries name
 an explicit catalog tenant, authorized against PDP-derived constraints under plan:read or price:read;
 a subject name grants nothing. The existing REST matrix and approved-price shape remain frozen.
-A shared snapshot owns local loading, resolution and dated Products evidence outside the transaction;
-the SDK requires complete commercial inputs and reports `IncompleteCommercialInputs` when a priced
+A shared snapshot owns local loading, resolution and dated Products evidence outside the transaction.
+The dated Products read is pricing's system actor on both paths (D-424, amended 2026-10-02).
+The SDK requires complete commercial inputs and reports `IncompleteCommercialInputs` when a priced
 cell cannot supply them, while REST preserves nullable historical previews. The refusal is a failed
 precondition: violation type `INCOMPLETE_COMMERCIAL_INPUTS`, subject the missing field, description
 `incomplete commercial inputs: <field>` (amended 2026-10-02, phase 9 review F1). Missing legacy entry policy

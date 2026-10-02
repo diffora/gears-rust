@@ -314,9 +314,10 @@ pub async fn read_stored_at(
 }
 
 /// D-421: each SKU version as of `date`, one read per distinct SKU, through the detached
-/// registry as pricing's system actor for `tenant` (D-424); the door calls it only after the
-/// caller passed `plan:read` and the revision was found in the caller's tenant. A SKU Products
-/// does not know (404) has no version.
+/// registry as pricing's system actor for `tenant` (D-424). REST resolve and
+/// `PricingReadV1::resolve` both call this, and only after the caller passed `plan:read` and
+/// the revision was found in the caller's tenant. The caller's context is not forwarded:
+/// Products trusts this actor, not the consumer. A SKU Products does not know (404) has no version.
 /// # Errors
 /// Any other definite refusal as Products gave it; 503 `REGISTRY_UNAVAILABLE` when Products
 /// cannot answer.
@@ -472,6 +473,8 @@ async fn snapshot(
     .await
     .map_err(|e| read_failure(e, plan_conflict))
 }
+/// Finish a snapshot: the matrix, then each SKU version as pricing's system actor (D-424).
+/// `ctx` is the caller who already passed `plan:read`. It is not the Products subject.
 pub async fn finish(
     state: &AuthoringState,
     stored: &mut ReadSnapshot,
