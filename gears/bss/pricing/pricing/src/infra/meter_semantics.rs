@@ -360,6 +360,8 @@ impl Observations {
                         serde_json::json!({
                             "price_book_entry_id":id, "policy_id":e.policy.policy_id,
                             "policy_version":e.policy.version, "policy_digest":e.policy.digest,
+                            "usage_sku_version": e.entry.usage_sku_version,
+                            "rules": e.policy.content,
                             "meter_evidence":e.evidence
                         })
                     })
@@ -368,7 +370,11 @@ impl Observations {
         )
     }
 }
-/// Capture exact dated history once; never ask the registry while judging a DB transaction.
+/// Dated SKU versions for the chain guard's unit. One walk per distinct SKU, not per entry.
+///
+/// The meter itself is not learned here. Capture reads the head once, in the `skus_for_write`
+/// batch, and P-D-232 pins that meter for every revision. The walk remains because
+/// `Observations::metering` still supplies the dated unit to the price chain guard.
 async fn history(
     hub: &toolkit::ClientHub,
     ctx: &SecurityContext,
