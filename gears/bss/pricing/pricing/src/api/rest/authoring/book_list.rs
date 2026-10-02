@@ -225,7 +225,13 @@ fn params(uri: &Uri) -> Result<ListParams, CanonicalError> {
         })
         .transpose()?;
     Ok(ListParams {
-        q: value("q").filter(|q| !q.is_empty()),
+        q: {
+            let q = value("q").filter(|q| !q.is_empty());
+            if let Some(q) = q.as_deref() {
+                super::caps::search(q)?;
+            }
+            q
+        },
         sku_id,
     })
 }

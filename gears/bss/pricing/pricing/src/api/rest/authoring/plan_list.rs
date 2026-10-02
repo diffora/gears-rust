@@ -224,8 +224,12 @@ fn params(uri: &Uri, plain: &[&str]) -> Result<Params, CanonicalError> {
                 .map_err(|_| invalid_because("sku_id", "QUERY_INVALID", "`sku_id` is a SKU id"))
         })
         .transpose()?;
+    let q = value("q").filter(|q| !q.is_empty());
+    if let Some(q) = q.as_deref() {
+        super::caps::search(q)?;
+    }
     Ok(Params {
-        q: value("q").filter(|q| !q.is_empty()),
+        q,
         selling,
         change,
         sku_id,

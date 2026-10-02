@@ -27,6 +27,7 @@ use uuid::Uuid;
 fn provider_outage(error: CanonicalError) -> CanonicalError {
     let status = error.status_code();
     if (500..600).contains(&status) && status != 500 {
+        tracing::error!(status, error = %error, "UsageMeterSemanticsV1 provider outage");
         CanonicalError::service_unavailable().create()
     } else {
         error

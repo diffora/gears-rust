@@ -791,9 +791,11 @@ pub(super) fn sku_entries_query(uri: &Uri) -> Result<SkuEntriesQuery, CanonicalE
         .map_err(|_| support::invalid_because("sku_id", "QUERY_INVALID", "`sku_id` is a SKU id"))?;
     let book_ids = value("book_id").map(book_ids).transpose()?;
     let currency = value("currency").map(currency_key).transpose()?;
-    let q = value("q")
-        .filter(|text| !text.is_empty())
-        .map(str::to_owned);
+    let q = value("q").filter(|text| !text.is_empty());
+    if let Some(q) = q {
+        super::caps::search(q)?;
+    }
+    let q = q.map(str::to_owned);
     let statuses = value("status").map(status_keys).transpose()?;
     let changing = value("changing").map(changing_key).transpose()?;
     let limit = value("limit")

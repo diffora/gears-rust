@@ -166,6 +166,8 @@ impl PricingReadV1 for PricingReadProvider {
     }
 }
 fn corrupt(detail: impl Into<String>) -> CanonicalError {
+    let detail = detail.into();
+    tracing::error!(%detail, "corrupt stored pricing row");
     CanonicalError::internal(detail).create()
 }
 fn amount(value: &str) -> Result<Decimal, CanonicalError> {
