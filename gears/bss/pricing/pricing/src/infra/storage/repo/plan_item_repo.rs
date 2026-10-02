@@ -44,8 +44,9 @@ async fn entry_in_tenant(
     Ok(())
 }
 /// `m` in the row shape every write stores from D-467 on: the treatment `plan::stored_treatment`
-/// derives from its entry (`paid`, or `included` for a copy of a legacy item without one, the one
-/// entry-less row the column's CHECK admits) and no quantity, whatever `m` carries.
+/// derives from its entry (`paid`, or `included` for an item with no entry — a draft waiting for
+/// one, D-512, or a copy of a legacy item — the entry-less row the column's CHECK admits) and no
+/// quantity, whatever `m` carries.
 fn d467_shape(mut m: e::Model) -> e::Model {
     m.treatment = crate::domain::plan::stored_treatment(m.price_book_entry_id)
         .as_str()

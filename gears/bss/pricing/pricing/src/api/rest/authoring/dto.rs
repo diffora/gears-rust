@@ -564,16 +564,19 @@ pub struct PricingPriceBookEntryPatch {
 }
 
 /// `POST /plan-revisions/{id}/items`: one item, one op with its own key (D-407). A plan item is a
-/// SKU and its entry in the plan's book (D-467): the entry is required, and `treatment`,
-/// `included_qty` and `qty_min` are refused (400 `BODY_UNEXPECTED`).
+/// SKU and, once the author has chosen it, its entry in the plan's book (D-467, D-512). The entry
+/// may be absent: the draft holds the SKU and a later PATCH sets the entry. Submit still needs an
+/// entry for every item. `treatment`, `included_qty` and `qty_min` are refused (400
+/// `BODY_UNEXPECTED`).
 #[toolkit_macros::api_dto(request)]
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PricingPlanItemCreate {
     pub sku_id: Uuid,
-    /// The entry of the plan's book that prices the SKU; a missing or null one is 400
-    /// `ITEM_ENTRY_MISSING`.
-    pub price_book_entry_id: Uuid,
+    /// The entry of the plan's book that prices the SKU. Absent or null adds an entry-less item
+    /// (D-512). A given entry is still judged: another book, another SKU, or an unknown entry.
+    #[serde(default)]
+    pub price_book_entry_id: Option<Uuid>,
 }
 #[toolkit_macros::api_dto(response)]
 pub struct PricingPlanItemDto {
@@ -581,7 +584,8 @@ pub struct PricingPlanItemDto {
     pub tenant_id: Uuid,
     pub revision_id: Uuid,
     pub sku_id: Uuid,
-    /// The entry that prices the item; null only for a legacy item stored without one (D-467).
+    /// The entry that prices the item. Null while a draft item waits for its entry (D-512), and
+    /// for a legacy item stored without one (D-467).
     pub price_book_entry_id: Option<Uuid>,
     /// None until a reserve answers: a copied item attaches after its write (D-413).
     pub reservation_id: Option<Uuid>,
@@ -1201,8 +1205,9 @@ pub struct PricingPlanRevisionPatch {
     pub available_from: Option<Option<String>>,
 }
 /// `PATCH /plan-items/{id}`, draft only: never a SKU change (the SKU is the item's reference).
-/// It changes the item's entry (D-467): `treatment`, `included_qty` and `qty_min` are refused
-/// (400 `BODY_UNEXPECTED`), and a null entry is 400 `ITEM_ENTRY_MISSING`.
+/// It sets the item's entry (D-467, D-512), including on an item that has none. `treatment`,
+/// `included_qty` and `qty_min` are refused (400 `BODY_UNEXPECTED`). A null entry is 400
+/// `ITEM_ENTRY_MISSING`: a PATCH never clears an entry.
 #[toolkit_macros::api_dto(request)]
 #[derive(Clone)]
 #[serde(deny_unknown_fields)]

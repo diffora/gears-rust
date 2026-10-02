@@ -178,7 +178,7 @@ impl From<PricingPlanItemCreate> for ItemInput {
     fn from(input: PricingPlanItemCreate) -> Self {
         Self {
             sku_id: input.sku_id,
-            price_book_entry_id: Some(input.price_book_entry_id),
+            price_book_entry_id: input.price_book_entry_id,
         }
     }
 }

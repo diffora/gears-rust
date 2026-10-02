@@ -46,9 +46,9 @@ use toolkit_security::SecurityContext;
 use uuid::Uuid;
 /// The keys a plan item no longer takes (D-467): a plan item is a SKU and its entry.
 pub const REMOVED_KEYS: [&str; 3] = ["treatment", "included_qty", "qty_min"];
-/// The item create's body rules that the typed body cannot say, judged before any read: a key a
+/// The item create's body rule that the typed body cannot say, judged before any read: a key a
 /// plan item no longer takes is 400 `BODY_UNEXPECTED` on that key, the rule for a stray key
-/// (D-467); then a missing or null `price_book_entry_id` is 400 `ITEM_ENTRY_MISSING`. Any other key
+/// (D-467). An absent or null `price_book_entry_id` adds an entry-less item (D-512). Any other key
 /// the body does not know is refused by its parse, as before.
 /// # Errors
 /// The refusals above.
@@ -56,17 +56,7 @@ pub fn judge_create_body(body: &serde_json::Value) -> Result<(), CanonicalError>
     let Some(fields) = body.as_object() else {
         return Ok(());
     };
-    refuse_removed_keys(fields)?;
-    if fields
-        .get("price_book_entry_id")
-        .is_none_or(serde_json::Value::is_null)
-    {
-        return Err(support::invalid(
-            "price_book_entry_id",
-            "ITEM_ENTRY_MISSING",
-        ));
-    }
-    Ok(())
+    refuse_removed_keys(fields)
 }
 /// The item PATCH's body rule that the typed body cannot say, judged before any read: a key a
 /// plan item no longer takes is 400 `BODY_UNEXPECTED` on that key (D-467). Its entry is judged
@@ -176,7 +166,9 @@ async fn admit(
     let children = AccessScope::for_tenant(tenant);
     let r = plans::find_revision(tx, scope, tenant, revision).await?;
     plans::editable(&r, ctx)?;
-    entry_fits(tx, &children, &r, input.sku_id, input.price_book_entry_id).await?;
+    if let Some(entry) = input.price_book_entry_id {
+        entry_fits(tx, &children, &r, input.sku_id, entry).await?;
+    }
     let items = plan_item_repo::for_revision(tx, &children, tenant, revision).await?;
     if items.iter().any(|i| i.sku_id == input.sku_id) {
         return Err(support::conflict("ITEM_SKU_TAKEN").into());
