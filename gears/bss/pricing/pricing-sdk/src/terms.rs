@@ -88,6 +88,8 @@ pub struct QuantitySemantics {
 }
 
 /// `UsageRatingPolicyInput` value in the versioned pricing read contract.
+///
+/// The five rating rules only. The meter, the unit and the accrual version live on the SKU revision, not here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UsageRatingPolicyInput {
     /// Rating window.
@@ -99,11 +101,11 @@ pub struct UsageRatingPolicyInput {
     /// Reset.
     pub reset: Reset,
 
-    /// Quantity semantics.
-    pub quantity_semantics: QuantitySemantics,
-
     /// Partial window.
     pub partial_window: PartialWindow,
+
+    /// Fold of quantities inside the window.
+    pub fold: Fold,
 }
 
 /// `UsageRatingPolicy` value in the versioned pricing read contract.
