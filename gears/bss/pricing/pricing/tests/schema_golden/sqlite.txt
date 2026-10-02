@@ -358,6 +358,8 @@ TABLE pricing_plan_revision
 TABLE pricing_price
   COLUMN approved_at TEXT NULL DEFAULT - PK 0
   COLUMN approved_by_unit_id TEXT NULL DEFAULT - PK 0
+  COLUMN cancelled_by_unit_id TEXT NULL DEFAULT - PK 0
+  COLUMN change_kind TEXT NOT NULL DEFAULT 'set' PK 0
   COLUMN closed_explicitly INTEGER NOT NULL DEFAULT 0 PK 0
   COLUMN created_at TEXT NOT NULL DEFAULT - PK 0
   COLUMN created_by TEXT NOT NULL DEFAULT - PK 0
@@ -375,16 +377,19 @@ TABLE pricing_price
   COLUMN price_json TEXT NOT NULL DEFAULT - PK 0
   COLUMN return_of_price_id TEXT NULL DEFAULT - PK 0
   COLUMN state TEXT NOT NULL DEFAULT - PK 0
+  COLUMN target_price_id TEXT NULL DEFAULT - PK 0
   COLUMN temporary_until TEXT NULL DEFAULT - PK 0
   COLUMN tenant_id TEXT NOT NULL DEFAULT - PK 0
   COLUMN updated_at TEXT NOT NULL DEFAULT - PK 0
   COLUMN version INTEGER NOT NULL DEFAULT 1 PK 0
   COLUMN version_no INTEGER NOT NULL DEFAULT - PK 0
   FK approved_by_unit_id -> pricing_approval_unit.id
+  FK cancelled_by_unit_id -> pricing_approval_unit.id
   FK paired_price_id -> pricing_price.id
   FK pending_unit_id -> pricing_approval_unit.id
   FK price_book_entry_id -> pricing_price_book_entry.id
   FK return_of_price_id -> pricing_price.id
+  FK target_price_id -> pricing_price.id
 TABLE pricing_price_book
   COLUMN code TEXT NOT NULL DEFAULT - PK 0
   COLUMN created_at TEXT NOT NULL DEFAULT - PK 0

@@ -74,6 +74,7 @@ async fn migrate(pg: &Pg, without: Option<&str>) -> Result<MigrationResult, Migr
             Some(m.name()) != without
                 && m.name() != "m20260930_000018_usage_rating_policy"
                 && !m.name().contains("000021")
+                && !m.name().contains("000022")
         })
         .collect();
     run_migrations_for_testing(&pg.db().await, chain).await

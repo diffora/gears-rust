@@ -103,10 +103,12 @@ closed_set!(
         Pending => "pending",
         Approved => "approved",
         Rejected => "rejected",
+        Cancelled => "cancelled",
     }
 );
 closed_set!(
     /// A price's display state (matrix row 10): an approved price shows where its window stands.
+    /// A cancelled price shows `cancelled` (D-520).
     PricingPriceStatus from DisplayStatus {
         Draft => "draft",
         Pending => "pending",
@@ -114,6 +116,7 @@ closed_set!(
         Scheduled => "scheduled",
         Active => "active",
         Superseded => "superseded",
+        Cancelled => "cancelled",
     }
 );
 closed_set!(

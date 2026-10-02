@@ -17,8 +17,9 @@ use std::collections::BTreeMap;
 use toolkit_db::secure::DBRunner;
 use uuid::Uuid;
 
-/// A book's prices by state — every state, a rejected price included — and its approved prices
-/// by where their window stands today: `approved` = `scheduled + active + superseded`.
+/// A book's prices by state — a rejected price included, a cancelled price not (D-520: it is
+/// not a price in force) — and its approved prices by where their window stands today:
+/// `approved` = `scheduled + active + superseded`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct BookPriceCounts {
     pub draft: u64,
@@ -121,6 +122,7 @@ pub async fn book_stats(
                 p.scheduled += future;
                 p.active += active;
             }
+            PriceState::Cancelled => {}
         }
         later(book, row.latest.as_deref())?;
     }

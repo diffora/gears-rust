@@ -14,7 +14,7 @@ const PERIOD: &[&str] = &["month", "year"];
 const MODEL: &[&str] = &["flat", "per_unit", "graduated", "volume", "package"];
 const ENTRY_REFERENCE: &[&str] = &["confirmation_pending", "confirmed", "lost"];
 const ELIGIBILITY: &[&str] = &["all", "new"];
-const PRICE_STATE: &[&str] = &["draft", "pending", "approved", "rejected"];
+const PRICE_STATE: &[&str] = &["draft", "pending", "approved", "rejected", "cancelled"];
 const PRICE_STATUS: &[&str] = &[
     "draft",
     "pending",
@@ -22,6 +22,7 @@ const PRICE_STATUS: &[&str] = &[
     "scheduled",
     "active",
     "superseded",
+    "cancelled",
 ];
 /// Where a SKU's entry stands today (D-486). Not a price's display status.
 const SKU_ENTRY_STATUS: &[&str] = &["priced", "scheduled", "unpriced"];
