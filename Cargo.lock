@@ -2281,6 +2281,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "cf-gears-bss-rest"
+version = "0.0.0"
+dependencies = [
+ "aws-lc-rs",
+ "axum",
+ "base64 0.22.1",
+ "http",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "cf-gears-clickhouse-usage-collector-plugin"
 version = "0.1.0"
 dependencies = [
