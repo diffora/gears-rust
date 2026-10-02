@@ -13,7 +13,10 @@ use time::{Month, Time, UtcOffset};
 /// Verified live facts, constructed inside Pricing, never accepted from an SDK caller.
 #[toolkit_macros::domain_model]
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(clippy::struct_excessive_bools)] // Deliberately independent verified facts from the specified seam.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each verified fact is an independent seam input"
+)]
 pub struct SaleObservation {
     pub revision_is_current: bool,
     pub revision_available: bool,

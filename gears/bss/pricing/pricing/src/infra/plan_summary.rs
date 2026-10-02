@@ -113,7 +113,10 @@ pub fn change(summary: &Summary, today: Date) -> &'static str {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "fixture dates and summaries are well formed"
+)]
 mod tests {
     use super::*;
 

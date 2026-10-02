@@ -6,7 +6,10 @@ use uuid::Uuid;
 
 /// Independently authorized tenant axes supplied by Orders.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(clippy::struct_field_names)] // Contract names distinguish all three tenant axes.
+#[allow(
+    clippy::struct_field_names,
+    reason = "contract names distinguish the three tenant axes"
+)]
 pub struct TenantAxes {
     /// Catalog owner.
     pub seller_tenant_id: Uuid,

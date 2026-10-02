@@ -52,7 +52,7 @@ pub fn validate_meter_policy(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used, clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, reason = "the assertion is the refusal")]
     use bss_pricing_sdk::terms::*;
     #[test]
     fn meter_version_is_required() {
