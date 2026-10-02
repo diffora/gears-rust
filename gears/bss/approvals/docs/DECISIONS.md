@@ -12,6 +12,7 @@
   - [AP-D-4 Votes and idempotency](#ap-d-4-votes-and-idempotency)
   - [AP-D-5 A down source is omitted and the walk does not resume it](#ap-d-5-a-down-source-is-omitted-and-the-walk-does-not-resume-it)
   - [AP-D-6 The inbox requires the caller's Idempotency-Key](#ap-d-6-the-inbox-requires-the-callers-idempotency-key)
+  - [AP-D-7 The inbox unit carries whether the caller may reject or withdraw it](#ap-d-7-the-inbox-unit-carries-whether-the-caller-may-reject-or-withdraw-it)
   - [AP-D-8 The inbox publishes `$orderby` through the toolkit](#ap-d-8-the-inbox-publishes-orderby-through-the-toolkit)
 
 <!-- /toc -->
@@ -26,6 +27,7 @@
 | AP-D-4 | H | Votes and idempotency | DECIDED 2026-10-01 · amended by Run 2 (pricing D-490, products P-D-250); amended by AP-D-6 |
 | AP-D-5 | H | A down source is omitted and the walk does not resume it | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 60); amends AP-D-2, AP-D-3 |
 | AP-D-6 | H | The inbox requires the caller's Idempotency-Key | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 61); amends AP-D-4 |
+| AP-D-7 | M | The inbox unit carries whether the caller may reject or withdraw it | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 63) |
 | AP-D-8 | M | The inbox publishes `$orderby` through the toolkit | DECIDED 2026-10-02 · amends AP-D-2 |
 
 ## Entries
@@ -100,6 +102,14 @@ Approve, reject and withdraw on the inbox require `Idempotency-Key`. The header 
 A query the inbox cannot parse is 400 `INVALID_QUERY_PARAMS` on the field `query`, carrying the parser's text. It is not an `INVALID_FILTER`.
 
 **Source:** Owner, 2026-10-02 (ask 61, "все ок"). Amends AP-D-4.
+
+### AP-D-7 The inbox unit carries whether the caller may reject or withdraw it
+
+**Status:** DECIDED 2026-10-02.
+
+`InboxUnit` and `InboxUnitDto` carry `caller_can_reject` and `caller_can_withdraw` beside `caller_can_approve`. The owning gear judges them (products P-D-255, pricing D-497). The inbox copies the door's values and does not judge a grant of its own.
+
+**Source:** Owner, 2026-10-02 (ask 63, "все ок").
 
 ### AP-D-8 The inbox publishes `$orderby` through the toolkit
 

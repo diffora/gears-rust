@@ -76,6 +76,7 @@
 | P-D-252 | M | The inbox source judges `state` before a foreign empty page | DECIDED 2026-10-02 · phase 9 review; amends P-D-250 |
 | P-D-253 | M | A products vote body is a closed set, and withdraw digests the body sent | DECIDED 2026-10-02 · phase 9 review |
 | P-D-254 | M | `GET /approval-units` refuses a query key it does not declare | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 62) |
+| P-D-255 | M | A unit says whether its reader may reject or withdraw it, and approve includes the grant | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 63); amends P-D-228 |
 
 ## Entries
 
@@ -1921,3 +1922,17 @@ A kind products does not record, and any `book_id`, stay an empty page and zero 
 The list takes `state`, `kind`, `ref_id`, `limit`, `cursor` and `$orderby`. Any other key is 400, the same refusal the counts already give. A census of this repository and of `vhp-core/tests/e2e/tests` found no caller that sends a key outside that set on the products list.
 
 **Source:** Owner, 2026-10-02 (ask 62, "все ок").
+
+#### P-D-255 [M] A unit says whether its reader may reject or withdraw it, and approve includes the grant
+
+**Status:** DECIDED 2026-10-02.
+
+Every unit DTO carries `caller_can_reject` and `caller_can_withdraw` beside `caller_can_approve`.
+
+- `caller_can_approve` is the engine's approve rule and the caller's `approval_unit:approve` grant on that unit.
+- `caller_can_reject` is that same grant, the unit pending, and no vote by the caller in this generation. The engine's reject judges no separation of duties and does not look at the note until the vote is sent.
+- `caller_can_withdraw` is the caller being the submitter, the unit pending, and the `approval_unit:submit` grant the withdraw door asks.
+
+The list, the card, a receipt and the inbox source compile each grant once per request and test each unit against that scope. A denial is an empty scope, so the page still answers. An unreachable PDP is 503.
+
+**Source:** Owner, 2026-10-02 (ask 63, "все ок"). Amends P-D-228. Twin of pricing D-497 and approvals AP-D-7.

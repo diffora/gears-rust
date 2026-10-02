@@ -371,7 +371,18 @@ async fn list(
         query.map_err(|e| CanonicalError::from(g::validation("query", e.to_string())))?;
     let filter = narrowing(q.state.as_deref(), q.kind.as_deref(), q.ref_id)?;
     let page = unit_page(&filter, q.limit, q.cursor.as_deref(), q.orderby.as_deref())?;
-    let list = page_of(&state, scope, &ctx, filter, page).await?;
+    let approve_scope = g::grant_scope(&enforcer, &ctx, actions::APPROVE).await?;
+    let submit_scope = g::grant_scope(&enforcer, &ctx, actions::SUBMIT).await?;
+    let list = page_of(
+        &state,
+        scope,
+        &ctx,
+        filter,
+        page,
+        approve_scope,
+        submit_scope,
+    )
+    .await?;
     Ok(Json(list).into_response())
 }
 /// The list door's read (P-D-224, P-D-228): one page under `scope` and `filter`, in the order
@@ -383,6 +394,8 @@ async fn page_of(
     ctx: &SecurityContext,
     filter: repo::UnitListFilter,
     page: toolkit_odata::ODataQuery,
+    approve_scope: AccessScope,
+    submit_scope: AccessScope,
 ) -> Result<UnitList, CanonicalError> {
     let (tenant, reader) = (ctx.subject_tenant_id(), ctx.subject_id());
     state
@@ -390,6 +403,7 @@ async fn page_of(
         .db()
         .transaction_with_retry(category_tx_config(state), contention_db_err, move |tx| {
             let (scope, filter, page) = (scope.clone(), filter.clone(), page.clone());
+            let (approve_scope, submit_scope) = (approve_scope.clone(), submit_scope.clone());
             Box::pin(async move {
                 // One page, all its units' decisions and all their items, one read each
                 // (P-D-224, P-D-228): the same statements whatever the page's size.
@@ -418,6 +432,8 @@ async fn page_of(
                             &authored.remove(&id).unwrap_or_default(),
                             decisions.remove(&id).unwrap_or_default(),
                             reader,
+                            &approve_scope,
+                            &submit_scope,
                         )
                         .map_err(TxError::Repo)
                     })
@@ -616,10 +632,20 @@ pub(super) async fn as_read_by(
     store: &repo::ProductsApprovalStore,
     unit: Unit,
     reader: Uuid,
+    approve_scope: &AccessScope,
+    submit_scope: &AccessScope,
 ) -> Result<UnitDto, TxError> {
     let authors = authors_of(tx, store, unit.id).await?;
     let decisions = store.decisions(tx, unit.id).await?;
-    UnitDto::of(unit, &authors, decisions, reader).map_err(TxError::Repo)
+    UnitDto::of(
+        unit,
+        &authors,
+        decisions,
+        reader,
+        approve_scope,
+        submit_scope,
+    )
+    .map_err(TxError::Repo)
 }
 /// The authors of one unit's stored items, in one statement that reads nothing else.
 async fn authors_of(
@@ -650,6 +676,8 @@ async fn get(
         actions::READ,
     )
     .await?;
+    let approve_scope = g::grant_scope(&enforcer, &ctx, actions::APPROVE).await?;
+    let submit_scope = g::grant_scope(&enforcer, &ctx, actions::SUBMIT).await?;
     let ttl = state.fence_ttl_minutes;
     let card = state
         .db
@@ -657,6 +685,8 @@ async fn get(
         .transaction_with_retry(category_tx_config(&state), contention_db_err, move |tx| {
             let scope = scope.clone();
             let ctx = ctx.clone();
+            let approve_scope = approve_scope.clone();
+            let submit_scope = submit_scope.clone();
             Box::pin(async move {
                 let store = repo::ProductsApprovalStore {
                     scope: scope.clone(),
@@ -680,8 +710,15 @@ async fn get(
                     .map_err(TxError::Repo)?;
                 let authors = authors_of(tx, &store, id).await?;
                 let decisions = store.decisions(tx, id).await?;
-                let mut dto = UnitDto::of(unit, &authors, decisions, ctx.subject_id())
-                    .map_err(TxError::Repo)?;
+                let mut dto = UnitDto::of(
+                    unit,
+                    &authors,
+                    decisions,
+                    ctx.subject_id(),
+                    &approve_scope,
+                    &submit_scope,
+                )
+                .map_err(TxError::Repo)?;
                 dto.impact_live = live
                     .map(|live| {
                         serde_json::to_value(super::dto::SkuDto::from(live))
@@ -937,6 +974,16 @@ async fn vote(
             usage = g::resolve(&state, enforcer, &ctx, &content).await?;
         }
     }
+    let approve_scope = if matches!(action, Vote::Approve | Vote::Reject) {
+        scope.clone()
+    } else {
+        g::grant_scope(enforcer, &ctx, actions::APPROVE).await?
+    };
+    let submit_scope = if matches!(action, Vote::Withdraw) {
+        scope.clone()
+    } else {
+        g::grant_scope(enforcer, &ctx, actions::SUBMIT).await?
+    };
     let seen = body.as_ref().map(|b| b.generation);
     let note = body.and_then(|b| b.note);
     let (db, sink, config) = (
@@ -951,6 +998,8 @@ async fn vote(
         let resolved_ref = resolved_ref.clone();
         let note = note.clone();
         let claim = claim.clone();
+        let approve_scope = approve_scope.clone();
+        let submit_scope = submit_scope.clone();
         Box::pin(async move {
             let store = repo::ProductsApprovalStore {
                 scope: scope.clone(),
@@ -1074,7 +1123,15 @@ async fn vote(
                 have,
                 need,
                 outcome: label,
-                unit: as_read_by(tx, &store, unit, ctx.subject_id()).await?,
+                unit: as_read_by(
+                    tx,
+                    &store,
+                    unit,
+                    ctx.subject_id(),
+                    &approve_scope,
+                    &submit_scope,
+                )
+                .await?,
             };
             replay::finish(
                 tx,

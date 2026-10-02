@@ -526,7 +526,16 @@ pub struct UnitDto {
     /// separation of duties, so the submitter and the SKU's creator may reject a unit whose flag
     /// is false. The grant is not judged here: without products approve the vote door still
     /// answers 403.
+    /// Whether the caller may approve this unit now (P-D-228, P-D-255): the engine's approve
+    /// rule and the caller's `approval_unit:approve` grant on this unit. Approve only. Without
+    /// the grant the vote door is still 403.
     pub caller_can_approve: bool,
+    /// Whether the caller may reject this unit now (P-D-255): the approve grant, the unit
+    /// pending, and no vote by the caller in this generation. That is what the engine allows.
+    pub caller_can_reject: bool,
+    /// Whether the caller may withdraw this unit now (P-D-255): the caller submitted it, the
+    /// unit is pending, and the caller holds the submit grant the withdraw door asks.
+    pub caller_can_withdraw: bool,
 }
 /// `GET /approval-units/counts` (P-D-227): the units the list's narrowing keeps, by state and by
 /// kind, every state and kind named (0 when none), and their total.
@@ -644,11 +653,17 @@ impl UnitDto {
         authors: &[Uuid],
         decisions: Vec<bss_approval::Decision>,
         reader: Uuid,
+        approve_scope: &toolkit_db::secure::AccessScope,
+        submit_scope: &toolkit_db::secure::AccessScope,
     ) -> Result<Self, RepoError> {
-        let caller_can_approve =
+        let grant_approve = super::governance::scope_holds(approve_scope, u.tenant_id, u.id);
+        let grant_submit = super::governance::scope_holds(submit_scope, u.tenant_id, u.id);
+        let engine =
             bss_approval::approve_eligibility(&u, authors.iter().copied(), &decisions, reader)
                 .refusal
                 .is_none();
+        let pending = u.state == bss_approval::UnitState::Pending;
+        let voted = bss_approval::already_voted(&u, &decisions, reader);
         Ok(Self {
             id: u.id,
             kind: ProductsApprovalKind::stored(&u.kind, &format_args!("approval unit {}", u.id))?,
@@ -666,7 +681,9 @@ impl UnitDto {
             snapshot: u.snapshot,
             decisions: decisions.into_iter().map(Into::into).collect(),
             impact_live: None,
-            caller_can_approve,
+            caller_can_approve: engine && grant_approve,
+            caller_can_reject: grant_approve && pending && !voted,
+            caller_can_withdraw: grant_submit && pending && u.submitted_by == reader,
         })
     }
 }

@@ -47,6 +47,66 @@ pub async fn scope(
         })
     })
 }
+
+/// The approve or submit grant for the flags on a unit read (P-D-255). A denial is an empty
+/// scope, so a reader who cannot vote still gets the page. An unreachable PDP is 503.
+pub async fn grant_scope(
+    enforcer: &PolicyEnforcer,
+    ctx: &SecurityContext,
+    action: &str,
+) -> Result<AccessScope, CanonicalError> {
+    match crate::authz::access_scope(
+        enforcer,
+        ctx,
+        &resource_types::APPROVAL_UNIT,
+        action,
+        Some(ctx.subject_tenant_id()),
+    )
+    .await
+    {
+        Ok(scope) => Ok(scope),
+        Err(crate::authz::AuthzError::Denied(_)) => Ok(AccessScope::deny_all()),
+        Err(crate::authz::AuthzError::Unavailable(detail)) => {
+            tracing::error!(detail, "bss-products: authorization service unavailable");
+            Err(CanonicalError::service_unavailable().create())
+        }
+    }
+}
+
+/// Whether `scope` admits this unit. A filter that cannot be decided in memory does not.
+#[must_use]
+pub fn scope_holds(scope: &AccessScope, tenant: Uuid, id: Uuid) -> bool {
+    if scope.is_unconstrained() {
+        return true;
+    }
+    if scope.is_deny_all() {
+        return false;
+    }
+    scope.constraints().iter().any(|constraint| {
+        let filters = constraint.filters();
+        !filters.is_empty()
+            && filters
+                .iter()
+                .all(|filter| filter_holds(filter, tenant, id))
+    })
+}
+
+fn filter_holds(filter: &toolkit_security::ScopeFilter, tenant: Uuid, id: Uuid) -> bool {
+    use toolkit_security::pep_properties;
+    if !filter.is_representable_in_memory() {
+        return false;
+    }
+    let wanted = match filter.property() {
+        pep_properties::OWNER_TENANT_ID => tenant,
+        pep_properties::RESOURCE_ID => id,
+        _ => return false,
+    };
+    filter
+        .values()
+        .iter()
+        .any(|value| value.as_uuid() == Some(wanted))
+}
+
 pub(super) fn validation(field: &str, detail: impl Into<String>) -> DomainError {
     let mut r = ValidationReport::new();
     r.violate("VALIDATION", field, detail);

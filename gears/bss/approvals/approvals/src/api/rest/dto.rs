@@ -125,7 +125,15 @@ pub struct InboxUnitDto {
     pub decided_note: Option<String>,
     pub snapshot: serde_json::Value,
     pub decisions: Vec<InboxDecisionDto>,
+    /// Whether the caller may approve this unit now. The owning gear judges the engine's rule
+    /// and the caller's approve grant (AP-D-7).
     pub caller_can_approve: bool,
+    /// Whether the caller may reject this unit now. The owning gear judges the grant, that the
+    /// unit is pending, and that the caller has not voted in this generation (AP-D-7).
+    pub caller_can_reject: bool,
+    /// Whether the caller may withdraw this unit now. The owning gear judges the submitter, that
+    /// the unit is pending, and the submit grant (AP-D-7).
+    pub caller_can_withdraw: bool,
     pub subject_live: Option<serde_json::Value>,
     pub impact: Option<serde_json::Value>,
 }
@@ -150,6 +158,8 @@ impl From<InboxUnit> for InboxUnitDto {
             snapshot: unit.snapshot,
             decisions: unit.decisions.into_iter().map(Into::into).collect(),
             caller_can_approve: unit.caller_can_approve,
+            caller_can_reject: unit.caller_can_reject,
+            caller_can_withdraw: unit.caller_can_withdraw,
             subject_live: unit.subject_live,
             impact: unit.impact,
         }

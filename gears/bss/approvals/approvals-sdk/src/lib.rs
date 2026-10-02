@@ -383,6 +383,12 @@ pub struct InboxUnit {
     pub decisions: Vec<InboxDecision>,
     /// Whether the caller may approve the unit now. The owning gear judges it.
     pub caller_can_approve: bool,
+    /// Whether the caller may reject the unit now. The owning gear judges it.
+    #[serde(default)]
+    pub caller_can_reject: bool,
+    /// Whether the caller may withdraw the unit now. The owning gear judges it.
+    #[serde(default)]
+    pub caller_can_withdraw: bool,
     /// Products: the card's live SKU head. Pricing: null.
     pub subject_live: Option<serde_json::Value>,
     /// The live impact, or null when it was skipped or the source could not read it.

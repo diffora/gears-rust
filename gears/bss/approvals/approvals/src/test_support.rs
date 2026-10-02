@@ -47,6 +47,8 @@ pub fn unit_at(source: &str, submitted_at: OffsetDateTime, id: u128) -> InboxUni
         snapshot: serde_json::json!({}),
         decisions: Vec::new(),
         caller_can_approve: true,
+        caller_can_reject: true,
+        caller_can_withdraw: false,
         subject_live: None,
         impact: None,
     }

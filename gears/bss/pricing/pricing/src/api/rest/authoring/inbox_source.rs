@@ -190,10 +190,20 @@ impl ApprovalSourceV1 for PricingApprovalSource {
             Some(after) => page.with_cursor(keyset_cursor(after, direction)?),
             None => page.with_order(submission_order(direction)),
         };
+        let (approve_scope, submit_scope) = (
+            crate::authz::grant_scope(&self.enforcer, &ctx, actions::APPROVE)
+                .await
+                .map_err(authz_failure)?,
+            crate::authz::grant_scope(&self.enforcer, &ctx, actions::SUBMIT)
+                .await
+                .map_err(authz_failure)?,
+        );
         let request = approvals::UnitListRequest {
             filter,
             page,
             impact: q.impact,
+            approve_scope,
+            submit_scope,
         };
         let response = transaction(&self.state.db.db(), move |tx| {
             let (scope, ctx, request) = (scope.clone(), ctx.clone(), request.clone());

@@ -1457,10 +1457,16 @@ pub struct PricingApprovalUnitDto {
     /// (`bss_approval::approve_eligibility`, D-459) over the unit's stored items and its decisions,
     /// with the caller as the voter. It is false for a decided unit, for its submitter and every
     /// author of its items (separation of duties) and for a caller who already voted in its current
-    /// generation. It means Approve only: a reject judges no separation of duties, so the submitter
-    /// and an item's author may reject a unit whose flag is false. The grant is not judged here:
-    /// without `approval_unit` approve the vote door still answers 403.
+    /// generation. It means Approve only: a reject judges no separation of duties. It also
+    /// requires the caller's `approval_unit:approve` grant on this unit (D-497). Without that
+    /// grant the vote door is 403.
     pub caller_can_approve: bool,
+    /// Whether the caller may reject this unit now (D-497): the approve grant, the unit pending,
+    /// and no vote by the caller in this generation.
+    pub caller_can_reject: bool,
+    /// Whether the caller may withdraw this unit now (D-497): the caller submitted it, the unit
+    /// is pending, and the caller holds the submit grant the withdraw door asks.
+    pub caller_can_withdraw: bool,
 }
 impl PricingApprovalUnitDto {
     /// The unit as `reader` reads it: its decisions of every generation, and whether `reader` may
@@ -1474,11 +1480,17 @@ impl PricingApprovalUnitDto {
         authors: &[Uuid],
         decisions: Vec<bss_approval::Decision>,
         reader: Uuid,
+        approve_scope: &toolkit_db::secure::AccessScope,
+        submit_scope: &toolkit_db::secure::AccessScope,
     ) -> Result<Self, RepoError> {
-        let caller_can_approve =
+        let grant_approve = crate::authz::scope_holds(approve_scope, u.tenant_id, u.id);
+        let grant_submit = crate::authz::scope_holds(submit_scope, u.tenant_id, u.id);
+        let engine =
             bss_approval::approve_eligibility(&u, authors.iter().copied(), &decisions, reader)
                 .refusal
                 .is_none();
+        let pending = u.state == bss_approval::UnitState::Pending;
+        let voted = bss_approval::already_voted(&u, &decisions, reader);
         Ok(Self {
             id: u.id,
             kind: PricingApprovalKind::stored(&u.kind, &format_args!("approval unit {}", u.id))?,
@@ -1496,7 +1508,9 @@ impl PricingApprovalUnitDto {
             snapshot: u.snapshot,
             decisions: decisions.into_iter().map(Into::into).collect(),
             impact: None,
-            caller_can_approve,
+            caller_can_approve: engine && grant_approve,
+            caller_can_reject: grant_approve && pending && !voted,
+            caller_can_withdraw: grant_submit && pending && u.submitted_by == reader,
         })
     }
 }
