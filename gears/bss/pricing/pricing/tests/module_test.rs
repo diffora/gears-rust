@@ -252,6 +252,10 @@ fn etag_routes() -> Routes {
         ("GET", "/bss-pricing/v1/plans/{id}"),
         ("GET", "/bss-pricing/v1/plan-revisions/{id}"),
         ("GET", "/bss-pricing/v1/plan-items/{id}"),
+        // D-518: the list reads. The tag is a weak hash of the JSON body, not an If-Match version.
+        ("GET", "/bss-pricing/v1/plans"),
+        ("GET", "/bss-pricing/v1/plans/counts"),
+        ("GET", "/bss-pricing/v1/price-books"),
         // D-469: the write answers that set one (run 9.2's census).
         ("POST", "/bss-pricing/v1/price-books"),
         ("PATCH", "/bss-pricing/v1/price-books/{id}"),
@@ -312,8 +316,9 @@ async fn every_operation_has_a_human_summary_and_a_description() {
 }
 
 /// Every answer that sets an `ETag` declares the header on its success response, and nothing else
-/// declares one: the eight reads, and the nineteen write answers that the census of run 9.2 found
-/// (D-469), each the version a following If-Match takes.
+/// declares one: the eight reads and the nineteen write answers of D-469, each the version a
+/// following If-Match takes, plus the three list reads of D-518 (a weak tag of the JSON body,
+/// also declared on the 304).
 #[tokio::test]
 async fn every_answer_that_sets_an_etag_declares_it() {
     let harness = rest_support::Harness::new().await.unwrap();
@@ -346,8 +351,8 @@ async fn every_answer_that_sets_an_etag_declares_it() {
         })
         .count();
     assert_eq!(
-        anywhere, 27,
-        "only the success answer of those ops declares it"
+        anywhere, 33,
+        "only the success answer of those ops declares it, plus the 304 of the three list reads"
     );
 }
 

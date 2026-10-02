@@ -805,3 +805,30 @@ pub fn header(name: &str) -> toolkit::api::operation_builder::ParamSpec {
         .required(true)
         .description("Required authoring precondition")
 }
+/// `If-None-Match` on a list read (D-518). A match is 304; the header is optional.
+#[must_use]
+pub fn if_none_match() -> toolkit::api::operation_builder::ParamSpec {
+    toolkit::api::operation_builder::ParamSpec::header("If-None-Match")
+        .required(false)
+        .description("A weak ETag from an earlier read of this answer, or *. A match is 304.")
+}
+/// The weak `ETag` of the JSON body (D-518). It is not the version a write sends as `If-Match`.
+#[must_use]
+pub fn weak_etag_header() -> toolkit::api::operation_builder::ResponseHeaderSpec {
+    use toolkit::api::operation_builder::{ResponseHeaderSpec, ResponseHeaderType};
+    ResponseHeaderSpec::new(
+        "ETag",
+        "Weak tag of this JSON body",
+        ResponseHeaderType::String,
+    )
+}
+/// `Cache-Control: private, no-cache` (D-518): the browser stores the answer and must revalidate it.
+#[must_use]
+pub fn revalidate_header() -> toolkit::api::operation_builder::ResponseHeaderSpec {
+    use toolkit::api::operation_builder::{ResponseHeaderSpec, ResponseHeaderType};
+    ResponseHeaderSpec::new(
+        "Cache-Control",
+        "private, no-cache",
+        ResponseHeaderType::String,
+    )
+}

@@ -11,7 +11,10 @@
 use super::{
     AuthoringState, books,
     dto::PricingPriceBookReadDto,
-    support::{authz_failure, invalid_because, require_authenticated, response, transaction},
+    support::{
+        authz_failure, if_none_match, invalid_because, require_authenticated, revalidate_header,
+        transaction, weak_etag_header,
+    },
 };
 use crate::{
     authz::{self, actions, resource_types},
@@ -20,9 +23,10 @@ use crate::{
 use authz_resolver_sdk::PolicyEnforcer;
 use axum::{
     Extension, Router,
-    http::{StatusCode, Uri},
+    http::{HeaderMap, StatusCode, Uri},
     response::Response,
 };
+use bss_rest::conditional_get::{PRIVATE_REVALIDATE, respond};
 use std::sync::Arc;
 use toolkit::api::{
     OpenApiRegistry,
@@ -131,7 +135,8 @@ pub(super) fn register(router: Router, openapi: &dyn OpenApiRegistry) -> Router 
              the books with an entry of that SKU. Refusals: 400 QUERY_INVALID for any other key, a \
              repeated key or a malformed sku_id; 400 FILTER_MISMATCH for a cursor replayed with \
              another `$filter`, `q` or `sku_id`; 400 for `$select`, `$count` and the other OData \
-             options it does not take.",
+             options it does not take. A matching If-None-Match is 304 with an empty body; the 200 \
+             carries a weak ETag of its JSON and Cache-Control private, no-cache (D-518).",
         )
         .tag("Pricing")
         .authenticated()
@@ -160,6 +165,7 @@ pub(super) fn register(router: Router, openapi: &dyn OpenApiRegistry) -> Router 
             "Only the books with an entry of this SKU",
             "string",
         )
+        .param(if_none_match())
         .handler(list_books)
         .with_odata_filter::<BookFilterField>()
         .with_odata_orderby::<BookOrderField>()
@@ -168,6 +174,14 @@ pub(super) fn register(router: Router, openapi: &dyn OpenApiRegistry) -> Router 
             StatusCode::OK,
             "Response",
         )
+        .response_header(weak_etag_header())
+        .response_header(revalidate_header())
+        .no_content_response(
+            StatusCode::NOT_MODIFIED,
+            "The If-None-Match tag matches this body",
+        )
+        .response_header(weak_etag_header())
+        .response_header(revalidate_header())
         .standard_errors(openapi)
         .error_503(openapi)
         .register(router, openapi)
@@ -236,6 +250,7 @@ async fn list_books(
     Extension(state): Extension<Arc<AuthoringState>>,
     Extension(enforcer): Extension<PolicyEnforcer>,
     ctx: Option<Extension<SecurityContext>>,
+    headers: HeaderMap,
     uri: Uri,
     odata: Result<OData, CanonicalError>,
 ) -> Result<Response, CanonicalError> {
@@ -286,10 +301,15 @@ async fn list_books(
     let backend = state.db.db().backend();
     let today = time::OffsetDateTime::now_utc().date();
     transaction(&state.db.db(), move |tx| {
-        let (scope, filter, odata) = (scope.clone(), filter.clone(), odata.clone());
+        let (scope, filter, odata, headers) = (
+            scope.clone(),
+            filter.clone(),
+            odata.clone(),
+            headers.clone(),
+        );
         Box::pin(async move {
             let page = books::page(tx, &scope, tenant, backend, &filter, &odata, today).await?;
-            Ok(response(StatusCode::OK, &page, None)?)
+            Ok(respond(&headers, &page, PRIVATE_REVALIDATE))
         })
     })
     .await

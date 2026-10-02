@@ -8,7 +8,10 @@
 //! is 400 `FILTER_MISMATCH`. The counts use the same narrowing, without the page or the order.
 use super::{
     plans,
-    support::{authz_failure, invalid_because, require_authenticated, response, transaction},
+    support::{
+        authz_failure, if_none_match, invalid_because, require_authenticated, revalidate_header,
+        transaction, weak_etag_header,
+    },
 };
 use crate::{
     authz::{self, actions, resource_types},
@@ -17,9 +20,10 @@ use crate::{
 use authz_resolver_sdk::PolicyEnforcer;
 use axum::{
     Extension, Router,
-    http::{StatusCode, Uri},
+    http::{HeaderMap, StatusCode, Uri},
     response::Response,
 };
+use bss_rest::conditional_get::{PRIVATE_REVALIDATE, respond};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use toolkit::api::{
@@ -97,7 +101,9 @@ pub(super) fn register(router: Router, openapi: &dyn OpenApiRegistry) -> Router 
              false. change is none, draft, pending or scheduled, one or several, comma-separated. \
              sku_id keeps the plans whose draft, pending, scheduled or published revisions name \
              the SKU through an entry (D-434), inside the page query. Five statements for a \
-             non-empty page, whatever its size. Refusals: 400 QUERY_INVALID for any other plain \
+             non-empty page, whatever its size. A matching If-None-Match is 304 with an empty body; \
+             the 200 carries a weak ETag of its JSON and Cache-Control private, no-cache (D-518). \
+             Refusals: 400 QUERY_INVALID for any other plain \
              key, a repeated key, or a malformed value; 400 FILTER_MISMATCH for a cursor replayed \
              under another narrowing; 400 for $select, $count and an order field it does not take.",
         )
@@ -135,6 +141,7 @@ pub(super) fn register(router: Router, openapi: &dyn OpenApiRegistry) -> Router 
             "Only the plans naming this SKU through an entry",
             "string",
         )
+        .param(if_none_match())
         .handler(list_plans)
         .with_odata_filter::<PlanFilterField>()
         .with_odata_orderby::<PlanOrderField>()
@@ -143,6 +150,14 @@ pub(super) fn register(router: Router, openapi: &dyn OpenApiRegistry) -> Router 
             StatusCode::OK,
             "Response",
         )
+        .response_header(weak_etag_header())
+        .response_header(revalidate_header())
+        .no_content_response(
+            StatusCode::NOT_MODIFIED,
+            "The If-None-Match tag matches this body",
+        )
+        .response_header(weak_etag_header())
+        .response_header(revalidate_header())
         .standard_errors(openapi)
         .error_503(openapi)
         .register(router, openapi);
@@ -153,7 +168,9 @@ pub(super) fn register(router: Router, openapi: &dyn OpenApiRegistry) -> Router 
             "Counts the tenant's plans that the list's narrowing keeps (D-485): by_selling \
              (true and false; they add up to total), by_change (none, draft, pending, \
              scheduled; each 0 when none) and total. The same plain keys and $filter as the list, \
-             and not limit, cursor or $orderby. One grouped statement. Refusals: the list's.",
+             and not limit, cursor or $orderby. One grouped statement. A matching If-None-Match is \
+             304 with an empty body; the 200 carries a weak ETag of its JSON and Cache-Control \
+             private, no-cache (D-518). Refusals: the list's.",
         )
         .tag("Pricing")
         .authenticated()
@@ -177,6 +194,7 @@ pub(super) fn register(router: Router, openapi: &dyn OpenApiRegistry) -> Router 
             "Only the plans naming this SKU through an entry",
             "string",
         )
+        .param(if_none_match())
         .handler(count_plans)
         .with_odata_filter::<PlanFilterField>()
         .json_response_with_schema::<crate::api::rest::authoring::dto::PricingPlanCounts>(
@@ -184,6 +202,14 @@ pub(super) fn register(router: Router, openapi: &dyn OpenApiRegistry) -> Router 
             StatusCode::OK,
             "Response",
         )
+        .response_header(weak_etag_header())
+        .response_header(revalidate_header())
+        .no_content_response(
+            StatusCode::NOT_MODIFIED,
+            "The If-None-Match tag matches this body",
+        )
+        .response_header(weak_etag_header())
+        .response_header(revalidate_header())
         .standard_errors(openapi)
         .error_503(openapi)
         .register(router, openapi)
@@ -323,6 +349,7 @@ async fn list_plans(
     Extension(state): Extension<Arc<super::AuthoringState>>,
     Extension(enforcer): Extension<PolicyEnforcer>,
     ctx: Option<Extension<SecurityContext>>,
+    headers: HeaderMap,
     uri: Uri,
     odata: Result<OData, CanonicalError>,
 ) -> Result<Response, CanonicalError> {
@@ -342,10 +369,15 @@ async fn list_plans(
     let tenant = ctx.subject_tenant_id();
     let backend = state.db.db().backend();
     transaction(&state.db.db(), move |tx| {
-        let (scope, filter, odata) = (scope.clone(), filter.clone(), odata.clone());
+        let (scope, filter, odata, headers) = (
+            scope.clone(),
+            filter.clone(),
+            odata.clone(),
+            headers.clone(),
+        );
         Box::pin(async move {
             let body = plans::list(tx, &scope, tenant, backend, &filter, &odata).await?;
-            Ok(response(StatusCode::OK, &body, None)?)
+            Ok(respond(&headers, &body, PRIVATE_REVALIDATE))
         })
     })
     .await
@@ -355,6 +387,7 @@ async fn count_plans(
     Extension(state): Extension<Arc<super::AuthoringState>>,
     Extension(enforcer): Extension<PolicyEnforcer>,
     ctx: Option<Extension<SecurityContext>>,
+    headers: HeaderMap,
     uri: Uri,
     odata: Result<OData, CanonicalError>,
 ) -> Result<Response, CanonicalError> {
@@ -381,10 +414,15 @@ async fn count_plans(
     let tenant = ctx.subject_tenant_id();
     let backend = state.db.db().backend();
     transaction(&state.db.db(), move |tx| {
-        let (scope, filter, odata) = (scope.clone(), filter.clone(), odata.clone());
+        let (scope, filter, odata, headers) = (
+            scope.clone(),
+            filter.clone(),
+            odata.clone(),
+            headers.clone(),
+        );
         Box::pin(async move {
             let body = plans::counts(tx, &scope, tenant, backend, &filter, &odata).await?;
-            Ok(response(StatusCode::OK, &body, None)?)
+            Ok(respond(&headers, &body, PRIVATE_REVALIDATE))
         })
     })
     .await

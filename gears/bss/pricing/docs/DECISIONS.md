@@ -138,6 +138,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-515 | M | A plan row's book carries its id and validity | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 67); amends D-485 |
 | D-516 | M | A named book carries its identity beside its id | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 54); amends D-460, D-408 |
 | D-517 | M | Entries can be read by id | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 68); amends D-486 |
+| D-518 | M | The plan list, the plan counts and the book list answer 304 | DECIDED 2026-10-03 · Owner, 2026-10-03 (asks 56, 57); extends D-469 |
 
 ## Entries
 
@@ -2088,3 +2089,15 @@ A screen that shows a revision, or a price unit, had only the book's id. It coul
 - **The test.** `tests/sku_reads.rs`: the named entries, an omitted id, another tenant, the money grant, and the refused shapes.
 
 **Source:** Owner, 2026-10-02 (ask 68). Amends D-486.
+
+#### D-518 [M] The plan list, the plan counts and the book list answer 304
+
+**Status:** DECIDED 2026-10-03.
+
+`GET /plans`, `GET /plans/counts` and `GET /price-books` answer a weak `ETag` of the JSON body they serve: `W/"` plus 22 base64url characters of its SHA-256. They also send `Cache-Control: private, no-cache`. `If-None-Match` matches that tag by weak comparison, including `*` and a comma-separated list. A match is `304` with an empty body and the same two headers. An error is not turned into a `304`.
+
+The tag is the body, not a row version. It does not replace the strong `ETag` a single-resource read serves for `If-Match`. `GET /settings` keeps that strong tag: a `PUT` parses it, and a weak tag is refused there.
+
+The statement counts of these reads are unchanged.
+
+**Source:** Owner, 2026-10-03 (asks 56 and 57). Extends D-469.

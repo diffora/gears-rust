@@ -39705,7 +39705,7 @@
     },
     "/bss-pricing/v1/plans": {
       "get": {
-        "description": "One page of the tenant's plans (D-485). Each plan carries selling and change for the request's day, derived from its stored summary (D-484), last_activity_at (the instant a page ordered by it is ordered by), the headers of its revisions as they read today (D-447), each header with book { id, code, name, currency } beside book_id (D-516), its current revision with that revision's book (id, code, name, currency, valid_from and valid_until, D-515) and the published revision in effect (D-460). OData `$filter` over code, name, book_id, currency and last_activity_at; `$orderby` over code (the default), name and last_activity_at, with id breaking the tie in that direction; `$top` (alias limit; default 500, clamped at 500) and cursor (alias $skiptoken). q is a case-insensitive literal substring of the code or the name. selling is true or false. change is none, draft, pending or scheduled, one or several, comma-separated. sku_id keeps the plans whose draft, pending, scheduled or published revisions name the SKU through an entry (D-434), inside the page query. Five statements for a non-empty page, whatever its size. Refusals: 400 QUERY_INVALID for any other plain key, a repeated key, or a malformed value; 400 FILTER_MISMATCH for a cursor replayed under another narrowing; 400 for $select, $count and an order field it does not take.",
+        "description": "One page of the tenant's plans (D-485). Each plan carries selling and change for the request's day, derived from its stored summary (D-484), last_activity_at (the instant a page ordered by it is ordered by), the headers of its revisions as they read today (D-447), each header with book { id, code, name, currency } beside book_id (D-516), its current revision with that revision's book (id, code, name, currency, valid_from and valid_until, D-515) and the published revision in effect (D-460). OData `$filter` over code, name, book_id, currency and last_activity_at; `$orderby` over code (the default), name and last_activity_at, with id breaking the tie in that direction; `$top` (alias limit; default 500, clamped at 500) and cursor (alias $skiptoken). q is a case-insensitive literal substring of the code or the name. selling is true or false. change is none, draft, pending or scheduled, one or several, comma-separated. sku_id keeps the plans whose draft, pending, scheduled or published revisions name the SKU through an entry (D-434), inside the page query. Five statements for a non-empty page, whatever its size. A matching If-None-Match is 304 with an empty body; the 200 carries a weak ETag of its JSON and Cache-Control private, no-cache (D-518). Refusals: 400 QUERY_INVALID for any other plain key, a repeated key, or a malformed value; 400 FILTER_MISMATCH for a cursor replayed under another narrowing; 400 for $select, $count and an order field it does not take.",
         "operationId": "bss_pricing.list_plans",
         "parameters": [
           {
@@ -39763,6 +39763,15 @@
             }
           },
           {
+            "description": "A weak ETag from an earlier read of this answer, or *. A match is 304.",
+            "in": "header",
+            "name": "If-None-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "description": "OData v4 filter expression\n- code: eq|ne|contains|startswith|endswith|in\n- name: eq|ne|contains|startswith|endswith|in\n- book_id: eq|ne|in\n- currency: eq|ne|contains|startswith|endswith|in\n- last_activity_at: eq|ne|gt|ge|lt|le|in",
             "in": "query",
             "name": "$filter",
@@ -39790,7 +39799,38 @@
                 }
               }
             },
-            "description": "Response"
+            "description": "Response",
+            "headers": {
+              "Cache-Control": {
+                "description": "private, no-cache",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Weak tag of this JSON body",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "The If-None-Match tag matches this body",
+            "headers": {
+              "Cache-Control": {
+                "description": "private, no-cache",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Weak tag of this JSON body",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -40075,7 +40115,7 @@
     },
     "/bss-pricing/v1/plans/counts": {
       "get": {
-        "description": "Counts the tenant's plans that the list's narrowing keeps (D-485): by_selling (true and false; they add up to total), by_change (none, draft, pending, scheduled; each 0 when none) and total. The same plain keys and $filter as the list, and not limit, cursor or $orderby. One grouped statement. Refusals: the list's.",
+        "description": "Counts the tenant's plans that the list's narrowing keeps (D-485): by_selling (true and false; they add up to total), by_change (none, draft, pending, scheduled; each 0 when none) and total. The same plain keys and $filter as the list, and not limit, cursor or $orderby. One grouped statement. A matching If-None-Match is 304 with an empty body; the 200 carries a weak ETag of its JSON and Cache-Control private, no-cache (D-518). Refusals: the list's.",
         "operationId": "bss_pricing.count_plans",
         "parameters": [
           {
@@ -40115,6 +40155,15 @@
             }
           },
           {
+            "description": "A weak ETag from an earlier read of this answer, or *. A match is 304.",
+            "in": "header",
+            "name": "If-None-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "description": "OData v4 filter expression\n- code: eq|ne|contains|startswith|endswith|in\n- name: eq|ne|contains|startswith|endswith|in\n- book_id: eq|ne|in\n- currency: eq|ne|contains|startswith|endswith|in\n- last_activity_at: eq|ne|gt|ge|lt|le|in",
             "in": "query",
             "name": "$filter",
@@ -40133,7 +40182,38 @@
                 }
               }
             },
-            "description": "Response"
+            "description": "Response",
+            "headers": {
+              "Cache-Control": {
+                "description": "private, no-cache",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Weak tag of this JSON body",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "The If-None-Match tag matches this body",
+            "headers": {
+              "Cache-Control": {
+                "description": "private, no-cache",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Weak tag of this JSON body",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -41688,7 +41768,7 @@
     },
     "/bss-pricing/v1/price-books": {
       "get": {
-        "description": "One page of the tenant's price books (D-442), each with its stats (D-441): its entries and their distinct SKUs, the distinct plans with a draft, pending, scheduled or published revision on it and those that name it only through superseded revisions, its prices by state (the approved ones also as scheduled, active and superseded today), its prices units in review and its last change. OData `$filter` over id, code, name, currency, valid_from and valid_until (`eq null`: open on that side); `$orderby` over code and name (tie-break id; default code); `$top` (alias `limit`; default 200, clamped at 500) and `cursor` (alias `$skiptoken`) from `page_info`. `q` is a case-insensitive substring of the code or the name, matched literally; `sku_id` keeps the books with an entry of that SKU. Refusals: 400 QUERY_INVALID for any other key, a repeated key or a malformed sku_id; 400 FILTER_MISMATCH for a cursor replayed with another `$filter`, `q` or `sku_id`; 400 for `$select`, `$count` and the other OData options it does not take.",
+        "description": "One page of the tenant's price books (D-442), each with its stats (D-441): its entries and their distinct SKUs, the distinct plans with a draft, pending, scheduled or published revision on it and those that name it only through superseded revisions, its prices by state (the approved ones also as scheduled, active and superseded today), its prices units in review and its last change. OData `$filter` over id, code, name, currency, valid_from and valid_until (`eq null`: open on that side); `$orderby` over code and name (tie-break id; default code); `$top` (alias `limit`; default 200, clamped at 500) and `cursor` (alias `$skiptoken`) from `page_info`. `q` is a case-insensitive substring of the code or the name, matched literally; `sku_id` keeps the books with an entry of that SKU. Refusals: 400 QUERY_INVALID for any other key, a repeated key or a malformed sku_id; 400 FILTER_MISMATCH for a cursor replayed with another `$filter`, `q` or `sku_id`; 400 for `$select`, `$count` and the other OData options it does not take. A matching If-None-Match is 304 with an empty body; the 200 carries a weak ETag of its JSON and Cache-Control private, no-cache (D-518).",
         "operationId": "bss_pricing.list_books",
         "parameters": [
           {
@@ -41728,6 +41808,15 @@
             }
           },
           {
+            "description": "A weak ETag from an earlier read of this answer, or *. A match is 304.",
+            "in": "header",
+            "name": "If-None-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "description": "OData v4 filter expression\n- id: eq|ne|in\n- code: eq|ne|contains|startswith|endswith|in\n- name: eq|ne|contains|startswith|endswith|in\n- currency: eq|ne|contains|startswith|endswith|in\n- valid_from: eq|ne|gt|ge|lt|le|in\n- valid_until: eq|ne|gt|ge|lt|le|in",
             "in": "query",
             "name": "$filter",
@@ -41755,7 +41844,38 @@
                 }
               }
             },
-            "description": "Response"
+            "description": "Response",
+            "headers": {
+              "Cache-Control": {
+                "description": "private, no-cache",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Weak tag of this JSON body",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "The If-None-Match tag matches this body",
+            "headers": {
+              "Cache-Control": {
+                "description": "private, no-cache",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Weak tag of this JSON body",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {

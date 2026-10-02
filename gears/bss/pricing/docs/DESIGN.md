@@ -247,7 +247,10 @@ OpenAPI success/error schemas. Every operation declares a 503 problem, since eve
 policy decision point first, and an unreachable one is 503; the texts name REGISTRY_UNAVAILABLE on exactly the eight
 operations that read Products hard (the checks, the item create, the plan submit, the approve, the entry create,
 resolve, the price submit and publish-changes), never on a reject or an item PATCH. Every answer that sets an ETag
-declares it: the eight reads and nineteen write answers (D-469). POST requires Idempotency-Key; PATCH/PUT require If-Match. Queue reads return
+declares it: the eight reads and nineteen write answers (D-469), and the plan list, the plan counts
+and the book list, whose ETag is a weak tag of the JSON body and whose `Cache-Control` is
+`private, no-cache`. A matching `If-None-Match` on those three reads is 304 with an empty body
+(D-518). `GET /settings` keeps the strong version tag a `PUT` sends back as `If-Match`. POST requires Idempotency-Key; PATCH/PUT require If-Match. Queue reads return
 stored snapshots and live impact: a prices unit's GET /approval-units item and GET /approval-units/{id}, and the GET
 publish-changes listing, carry the same impact object, {prices, entries, plans, subscriptions}: from phase 3, plans lists
 every plan revision, in any state, whose items name an entry of the unit or listing, as { plan_id, code, revision_id,
