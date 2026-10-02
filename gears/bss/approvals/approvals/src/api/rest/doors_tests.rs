@@ -676,7 +676,14 @@ async fn the_card_outcomes_and_votes_pass_through_byte_for_byte() {
     ];
     let payload = br#"{"generation":1,"note":"keep"}"#;
     for action in ["approve", "reject", "withdraw"] {
+        let expected = match action {
+            "approve" => VoteAction::Approve,
+            "reject" => VoteAction::Reject,
+            "withdraw" => VoteAction::Withdraw,
+            _ => unreachable!("the loop names the three vote doors"),
+        };
         for (status, content_type, body) in cases {
+            *pricing.seen.lock().unwrap() = None;
             *pricing.vote.lock().unwrap() = VoteResponse {
                 status: *status,
                 headers: vec![
@@ -709,7 +716,13 @@ async fn the_card_outcomes_and_votes_pass_through_byte_for_byte() {
                     .and_then(|value| value.to_str().ok()),
                 Some(*content_type)
             );
-            let seen = pricing.seen.lock().unwrap().clone().unwrap();
+            let seen = pricing
+                .seen
+                .lock()
+                .unwrap()
+                .clone()
+                .expect("the source saw this vote");
+            assert_eq!(seen.0, expected, "{action}");
             assert_eq!(seen.1.body, payload);
             assert_eq!(seen.1.idempotency_key.as_deref(), Some("key-1"));
         }
@@ -853,6 +866,47 @@ async fn a_source_vote_that_does_not_read_is_500_and_a_bad_query_names_query() {
     let text = String::from_utf8(body).unwrap();
     assert!(text.contains("\"query\""), "{text}");
     assert!(!text.contains("INVALID_FILTER"), "{text}");
+}
+
+#[tokio::test]
+async fn a_card_whose_only_source_is_not_registered_is_unavailable() {
+    let app = inbox(&["pricing"], &[]);
+    let id = test_support::unit("pricing", 1, 11).id;
+    let (status, _, body) = bytes(
+        call(
+            &app,
+            "GET",
+            &format!("/bss-approvals/v1/approval-units/{id}"),
+            b"",
+            true,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    let text = String::from_utf8(body).unwrap();
+    assert!(text.contains("SOURCE_UNAVAILABLE"), "{text}");
+    assert!(text.contains("pricing"), "{text}");
+
+    let products = Arc::new(Fake::serving(vec![test_support::unit("products", 2, 22)]));
+    let app = inbox(&["pricing", "products"], &[("products", products)]);
+    let (status, _, body) = bytes(
+        call(
+            &app,
+            "GET",
+            &format!(
+                "/bss-approvals/v1/approval-units/{}",
+                test_support::unit("products", 2, 22).id
+            ),
+            b"",
+            true,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let text = String::from_utf8(body).unwrap();
+    assert!(text.contains("products"), "{text}");
 }
 
 #[tokio::test]

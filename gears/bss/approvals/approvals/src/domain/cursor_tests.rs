@@ -157,3 +157,56 @@ fn a_cursor_keeps_its_order_and_starts_a_new_source_at_null() {
     assert!(prepared.keys["pricing"].is_some());
     assert!(prepared.keys["gone"].is_some());
 }
+
+#[test]
+fn a_zero_limit_is_invalid_limit() {
+    let err = query::prepare_list(&ListParams {
+        limit: Some(0),
+        ..ListParams::default()
+    })
+    .unwrap_err();
+    assert_eq!(err.status_code(), 400);
+    assert_eq!(reasons(&err), vec!["INVALID_LIMIT".to_owned()]);
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(64))]
+
+    #[test]
+    fn a_cursor_round_trips(
+        desc in proptest::bool::ANY,
+        secs in -1_000_000_i64..1_000_000,
+        products_key in proptest::bool::ANY,
+        down in proptest::collection::vec("[a-z]{1,6}", 0..3usize),
+    ) {
+        let order = if desc { Order::Desc } else { Order::Asc };
+        let at = time::OffsetDateTime::from_unix_timestamp(secs).unwrap();
+        let mut keys = BTreeMap::new();
+        keys.insert(
+            "pricing".to_owned(),
+            Some(SortKey {
+                submitted_at: at,
+                id: Uuid::from_u128(u128::from(secs.unsigned_abs())),
+            }),
+        );
+        keys.insert(
+            "products".to_owned(),
+            products_key.then_some(SortKey {
+                submitted_at: at,
+                id: Uuid::nil(),
+            }),
+        );
+        let token = cursor::encode(order, "hash", &keys, &down).unwrap();
+        let decoded = cursor::decode(&token).unwrap();
+        proptest::prop_assert_eq!(decoded.order, order);
+        proptest::prop_assert_eq!(decoded.narrowing_hash, "hash");
+        proptest::prop_assert_eq!(decoded.keys, keys);
+        proptest::prop_assert_eq!(decoded.unavailable, down);
+    }
+
+    #[test]
+    fn decode_of_arbitrary_bytes_does_not_panic(raw in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..48)) {
+        let token = URL_SAFE_NO_PAD.encode(&raw);
+        let _ = cursor::decode(&token);
+    }
+}
