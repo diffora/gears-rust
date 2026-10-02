@@ -16,10 +16,10 @@
 //! the catalog is asked: [`derived::validate`] refuses the `products.derived/` prefix.
 //!
 //! A usage SKU names a version by its meter id and pins it at its first publish (P-D-232):
-//! [`judge_binding`] is the binding rule the draft doors and the publish rule share, and
-//! [`pin_moves`] the pin rule a change is judged by, at submit and at apply. A published raw meter
-//! may move onto the identity wrapper of that meter ([`wraps`], P-D-251); every other move stays
-//! refused.
+//! [`judge_binding`] is the binding rule the draft doors and the publish rule share.
+//! [`metering_moves`] is the rule a published usage SKU is judged by, at the change door, at submit
+//! and at apply (P-D-258): it keeps its ref and its unit. A published raw meter may move onto the
+//! identity wrapper of that meter ([`wraps`], P-D-251); every other move stays refused.
 use crate::domain::caps;
 use crate::domain::error::DomainError;
 use crate::domain::recognized::UsageTypeAnswer;
@@ -48,10 +48,11 @@ pub const ACCRUAL_POLICY_PREFIX: &str = "derived-v1:";
 pub const USAGE_TYPE_UNKNOWN: &str = "DERIVED_USAGE_TYPE_UNKNOWN";
 /// A SKU's unit other than its derived version's output unit (P-D-232): 400 on `unit`.
 pub const UNIT_MISMATCH: &str = "DERIVED_UNIT_MISMATCH";
-/// A change that moves a published SKU's derived pin (P-D-232): 400 at submit, 409 at apply.
-pub const PIN_IMMUTABLE: &str = "DERIVED_PIN_IMMUTABLE";
+/// A change that moves a published usage SKU's metering (P-D-258): 400 at submit, 409 at apply.
+/// PROBE-9-13-2: the code is `METERING_IMMUTABLE`.
+pub const METERING_IMMUTABLE: &str = "METERING_IMMUTABLE";
 /// The binding's codes: they refuse a SKU's write, so they name the SKU, not the derived type.
-pub const SKU_BINDING_CODES: [&str; 3] = [USAGE_TYPE_UNKNOWN, UNIT_MISMATCH, PIN_IMMUTABLE];
+pub const SKU_BINDING_CODES: [&str; 3] = [USAGE_TYPE_UNKNOWN, UNIT_MISMATCH, METERING_IMMUTABLE];
 
 // The SDK's caps are the SKU's (Run 1's note): a derived output unit is the selling SKU's unit, and
 // an input ref is a usage-type ref.
@@ -361,21 +362,6 @@ pub fn wrap_exception(
     stored.is_some_and(|declaration| wraps(current_ref, declaration, unit))
 }
 
-/// Whether the pin refuses this change. The two call sites share this, so the wrap and the pin
-/// stay one check.
-#[must_use]
-pub fn pin_check(
-    current: RefUnit<'_>,
-    proposed: RefUnit<'_>,
-    stored: Option<&DerivedUsageDeclaration>,
-) -> bool {
-    pin_refuses(
-        current.usage_type_ref,
-        proposed.usage_type_ref,
-        wrap_exception(current, proposed, stored),
-    )
-}
-
 /// The pin refuses this change, unless it is the wrap [`wrap_exception`] allows.
 #[must_use]
 pub fn pin_refuses(current: Option<&str>, proposed: Option<&str>, wrap: bool) -> bool {
@@ -383,17 +369,70 @@ pub fn pin_refuses(current: Option<&str>, proposed: Option<&str>, wrap: bool) ->
     pin_moves(current, proposed) && !wrap
 }
 
-/// The pin rule's refusal: 400 [`PIN_IMMUTABLE`] on `usage_type_ref`.
+/// The metering a published usage SKU's change is judged on (P-D-258).
+#[derive(Clone, Copy)]
+pub struct Metering<'a> {
+    /// The SKU's type is usage.
+    pub usage: bool,
+    pub usage_type_ref: Option<&'a str>,
+    pub unit: Option<&'a str>,
+}
+
+/// The field a published usage SKU's change moves, or `None` when the metering stays or the move
+/// is the identity wrap (P-D-251).
+///
+/// `usage_type_ref` when the ref moves or the type leaves usage, and when both the ref and the
+/// unit move. `unit` when only the unit moves. A non-usage SKU has no metering. [`pin_moves`] and
+/// [`wrap_exception`] stay pure; the change door, submit and apply share this predicate.
 #[must_use]
-pub fn pin_immutable() -> DomainError {
+pub fn metering_moves(
+    current: Metering<'_>,
+    proposed: Metering<'_>,
+    stored: Option<&DerivedUsageDeclaration>,
+) -> Option<&'static str> {
+    if !current.usage {
+        return None;
+    }
+    // A type change away from usage drops the metering, so it is a ref move even when the strings
+    // are left in place.
+    if !proposed.usage {
+        return Some("usage_type_ref");
+    }
+    let current_pair = RefUnit {
+        usage_type_ref: current.usage_type_ref,
+        unit: current.unit,
+    };
+    let proposed_pair = RefUnit {
+        usage_type_ref: proposed.usage_type_ref,
+        unit: proposed.unit,
+    };
+    // PROBE-9-13-3: the identity wrap is the one move this rule allows.
+    if wrap_exception(current_pair, proposed_pair, stored) {
+        return None;
+    }
+    // PROBE-9-13-1: a raw ref change is a move, as a derived one is.
+    let ref_moved = current.usage_type_ref != proposed.usage_type_ref;
+    let unit_moved = named_unit(current.unit) != named_unit(proposed.unit);
+    if ref_moved {
+        Some("usage_type_ref")
+    } else if unit_moved {
+        Some("unit")
+    } else {
+        None
+    }
+}
+
+/// The metering rule's refusal: 400 [`METERING_IMMUTABLE`] on `field`.
+#[must_use]
+pub fn metering_immutable(field: &'static str) -> DomainError {
     let mut report = ValidationReport::new();
-    report.violate(PIN_IMMUTABLE, "usage_type_ref", PIN_DETAIL);
+    report.violate(METERING_IMMUTABLE, field, METERING_DETAIL);
     DomainError::Validation(report)
 }
 
-/// What a [`PIN_IMMUTABLE`] refusal says, at submit and at apply.
-pub const PIN_DETAIL: &str = "a usage SKU keeps the derived usage type it was first published \
-     on; sell another version through a new usage SKU";
+/// What a [`METERING_IMMUTABLE`] refusal says, at submit and at apply.
+pub const METERING_DETAIL: &str = "a published usage SKU keeps its usage type and its unit; \
+     sell another meter through a new usage SKU";
 
 #[cfg(test)]
 #[path = "derived_tests.rs"]

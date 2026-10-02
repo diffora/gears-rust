@@ -253,6 +253,21 @@ impl Fixture {
         let (status, b) = self.post("/submit", json!({})).await;
         assert_eq!(status, 200, "{b}");
     }
+    /// The fixture SKU is usage. A published usage SKU cannot leave usage (P-D-258), so a
+    /// type-change case moves this draft onto recurring, with no meter, before it publishes.
+    async fn as_recurring_draft(&self) {
+        let revision = self.card().await["revision"].as_i64().unwrap();
+        let (status, _, b) = call_with(
+            &self.app,
+            &self.author,
+            Method::PATCH,
+            &format!("/skus/{}", self.id),
+            json!({"type":"recurring","usage_type_ref":null,"unit":null}),
+            &[("If-Match", format!("\"{revision}\""))],
+        )
+        .await;
+        assert_eq!(status, 200, "{b}");
+    }
     /// A second recurring draft of the tenant, by the fixture's author; its id.
     async fn draft(&self, code: &str) -> Uuid {
         let (status, s) = call(
@@ -566,6 +581,7 @@ async fn retire_is_refused_while_a_reservation_is_live_and_a_fenced_sku_refuses_
 #[tokio::test]
 async fn a_type_change_on_a_published_sku_is_frozen_by_a_confirmed_reference() {
     let f = Fixture::new(0).await;
+    f.as_recurring_draft().await;
     f.publish().await;
     f.policy(1).await;
     let (_, r) = f.reserve(Uuid::new_v4()).await;
@@ -585,15 +601,15 @@ async fn a_type_change_on_a_published_sku_is_frozen_by_a_confirmed_reference() {
         .0,
         200
     );
-    let (status, b) = f.post("/changes", json!({"type":"recurring"})).await;
+    let (status, b) = f.post("/changes", json!({"type":"one_time"})).await;
     assert_eq!(status, 409);
     assert_eq!(problem_code(&b), "SKU_TYPE_FROZEN");
     assert_eq!(f.card().await["type_change_pending"], false);
     f.release(&r["reservation_id"]).await;
-    let (_, u) = f.post("/changes", json!({"type":"recurring"})).await;
+    let (_, u) = f.post("/changes", json!({"type":"one_time"})).await;
     assert_eq!(f.vote(&u, "reject", 1).await.0, 200);
     assert_eq!(f.card().await["type_change_pending"], false);
-    assert_eq!(f.post("/changes", json!({"type":"recurring"})).await.0, 200);
+    assert_eq!(f.post("/changes", json!({"type":"one_time"})).await.0, 200);
 }
 #[tokio::test]
 async fn an_unconfirmed_reservation_keeps_counting_until_released_and_reserve_is_idempotent() {
@@ -1864,11 +1880,7 @@ impl bss_products_sdk::usage_types::UsageTypeCatalog for ProposedCatalog {
         _: &SecurityContext,
         reference: &str,
     ) -> crate::domain::recognized::UsageTypeAnswer {
-        assert_eq!(
-            reference, "new-meter",
-            "both submit and approve resolve proposed content"
-        );
-        crate::domain::recognized::UsageTypeAnswer::Resolved(probe_binding())
+        panic!("a published metering change is refused before the catalog is asked: {reference}");
     }
     async fn list(
         &self,
@@ -1884,13 +1896,14 @@ impl bss_products_sdk::usage_types::UsageTypeCatalog for ProposedCatalog {
         Ok(bss_products_sdk::usage_types::UsageTypePage::default())
     }
 }
+/// P-D-258: a published usage SKU's ref change is 400 `METERING_IMMUTABLE` before any catalog
+/// is asked. `ProposedCatalog` panics if `resolve` runs.
 #[tokio::test]
-async fn changes_resolve_the_proposed_meter_and_apply_revalidates_catalog_answers() {
+async fn a_published_usage_sku_ref_change_is_refused_before_the_catalog() {
     let f = Fixture::new(0).await;
     f.publish().await;
-    f.policy(1).await;
     let proposed = second_app(&f, Arc::new(ProposedCatalog)).await;
-    let (status, u) = call(
+    let (status, b) = call(
         &proposed,
         &f.author,
         Method::POST,
@@ -1899,44 +1912,9 @@ async fn changes_resolve_the_proposed_meter_and_apply_revalidates_catalog_answer
         None,
     )
     .await;
-    assert_eq!(status, 200, "{u}");
-    let path = format!(
-        "/approval-units/{}/approve",
-        u["unit"]["id"].as_str().unwrap()
-    );
-    let unavailable = second_app(
-        &f,
-        Arc::new(StubUsageTypes::always(
-            crate::domain::recognized::UsageTypeAnswer::Unresolved,
-        )),
-    )
-    .await;
-    let (status, b) = call(
-        &unavailable,
-        &f.reviewer,
-        Method::POST,
-        &path,
-        json!({"generation":1}),
-        None,
-    )
-    .await;
-    assert_eq!(status, 409, "{b}");
-    assert_eq!(problem_code(&b), "USAGE_TYPE_UNRESOLVED");
+    assert_eq!(status, 400, "{b}");
+    assert_eq!(problem_code(&b), "METERING_IMMUTABLE");
     assert_eq!(f.card().await["usage_type_ref"], "storage");
-    assert_eq!(
-        call(
-            &proposed,
-            &f.reviewer,
-            Method::POST,
-            &path,
-            json!({"generation":1}),
-            None
-        )
-        .await
-        .0,
-        200
-    );
-    assert_eq!(f.card().await["usage_type_ref"], "new-meter");
 }
 #[tokio::test]
 async fn equal_version_dates_work_and_backwards_changes_roll_back_the_head() {
@@ -1971,13 +1949,14 @@ async fn equal_version_dates_work_and_backwards_changes_roll_back_the_head() {
 #[tokio::test]
 async fn approved_type_change_clears_its_fence_and_retire_replays_before_fence_work() {
     let f = Fixture::new(0).await;
+    f.as_recurring_draft().await;
     f.publish().await;
     f.policy(1).await;
-    let (_, u) = f.post("/changes", json!({"type":"recurring"})).await;
+    let (_, u) = f.post("/changes", json!({"type":"one_time"})).await;
     let (status, b) = f.vote(&u, "approve", 1).await;
     assert_eq!(status, 200, "{b}");
     let s = f.card().await;
-    assert_eq!(s["type"], "recurring");
+    assert_eq!(s["type"], "one_time");
     assert_eq!(s["type_change_pending"], false);
     assert_eq!(s["approved_by_unit_id"], u["unit"]["id"]);
     let (db, scope) = repo_connection(&f.dsn, f.tenant).await;

@@ -331,10 +331,13 @@ fn a_refusal_names_the_resource_it_refuses() {
             }),
             labels::SKU,
         ),
-        (crate::domain::derived::pin_immutable(), labels::SKU),
+        (
+            crate::domain::derived::metering_immutable("usage_type_ref"),
+            labels::SKU,
+        ),
         (
             DomainError::Conflict {
-                code: "DERIVED_PIN_IMMUTABLE",
+                code: "METERING_IMMUTABLE",
                 detail: "pinned".into(),
             },
             labels::SKU,

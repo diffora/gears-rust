@@ -144,7 +144,7 @@ writes ask `author` on the resource `derived_usage_type`; the reads ask `sku:rea
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-derived-usage-types-pin-holds`
 
-1. [ ] - `p1` - Compare the head's ref with the proposed ref. When the head is a raw GTS id and the proposed ref is the identity wrapper of that meter (one input, that ref whole-string, the same unit, which the change does not move), allow it (P-D-251). Otherwise, when either ref is derived and they differ, refuse DERIVED_PIN_IMMUTABLE on `usage_type_ref`: another version, raw to a derived version that does not wrap, raw to derived with a unit change, derived to raw, a dropped ref (a type change included) - `inst-derived-pin-compare`
+1. [ ] - `p1` - Compare the head's ref and unit with the proposed ref and unit. When the head is a raw GTS id and the proposed ref is the identity wrapper of that meter (one input, that ref whole-string, the same unit, which the change does not move), allow it (P-D-251). Otherwise refuse METERING_IMMUTABLE when the ref moves, the unit moves, or the type leaves usage (P-D-258): on `usage_type_ref` when the ref moves and on `unit` when only the unit moves - `inst-derived-pin-compare`
 2. [ ] - `p1` - At submit the change door refuses it before resolving the proposal (400), and the subject again in the transaction; at apply the subject judges the head it finds (409) - `inst-derived-pin-when`
 
 ### meter-semantics
@@ -165,7 +165,7 @@ writes ask `author` on the resource `derived_usage_type`; the reads ask `sku:rea
 
 1. [ ] - `p1` - A type has no lifecycle: create gives it version 1, and no door renames, retires or deletes it (O-1).
 2. [ ] - `p1` - A version is immutable from its insert: the storage refuses every update and delete; a new formula is a new version.
-3. [ ] - `p1` - A usage SKU's derived pin moves only while the SKU is a draft that was never published, except a published raw meter moving onto the identity wrapper of that meter in the same unit (P-D-251); its first publish otherwise fixes it, and a new formula is sold through a new usage SKU (M1).
+3. [ ] - `p1` - A usage SKU's metering moves only while the SKU is a draft that was never published, except a published raw meter moving onto the identity wrapper of that meter in the same unit (P-D-251); its first publish otherwise fixes the ref and the unit (P-D-258), and a new formula is sold through a new usage SKU (M1).
 
 ## 5. Definitions of Done
 
@@ -237,16 +237,18 @@ Verified by `derived_binding_tests::a_usage_sku_on_a_derived_version_is_created_
 `derived_binding_tests::a_published_gts_usage_sku_cannot_take_a_derived_pin`,
 `derived_binding_tests::a_published_raw_usage_sku_moves_onto_the_identity_wrapper_of_its_meter`,
 `derived_binding_tests::a_stale_change_is_refused_at_apply_when_a_concurrent_write_pinned_a_derived_type`,
+`derived_binding_tests::a_published_usage_sku_keeps_its_metering`,
 `domain::derived_tests::a_derived_ref_binds_to_its_version_and_its_output_unit` and
 `domain::derived_tests::the_pin_moves_only_between_gts_refs` and
+`domain::derived_tests::a_published_usage_sku_keeps_its_ref_and_its_unit` and
 `domain::derived_tests::wraps_is_the_identity_of_that_one_raw_meter_in_the_sku_unit`. Implementation markers in `products/src/domain/derived.rs`,
 `products/src/domain/approvals/change.rs` and `products/src/api/rest/governance.rs`.
 
 A usage SKU's `products.derived/<code>@<n>` ref is judged from the tenant's store first, at draft save, submit and apply,
-and the catalog is never asked for it: 400 DERIVED_USAGE_TYPE_UNKNOWN or DERIVED_UNIT_MISMATCH. A draft may move it; a
-published SKU keeps it, except a raw meter moving onto the identity wrapper of that meter in the same unit (P-D-251),
-and every other change that moves it is DERIVED_PIN_IMMUTABLE at submit (400) and at apply (409). The three
-codes name the SKU (DESIGN §3.1, §3.3, §3.5; P-D-232).
+and the catalog is never asked for it: 400 DERIVED_USAGE_TYPE_UNKNOWN or DERIVED_UNIT_MISMATCH. A draft may move its ref
+and its unit. A published usage SKU keeps both, except a raw meter moving onto the identity wrapper of that meter in the
+same unit (P-D-251), and every other change that moves the ref or the unit, or that changes the type away from usage, is
+METERING_IMMUTABLE at submit (400) and at apply (409) (P-D-258). The codes name the SKU (DESIGN §3.1, §3.3, §3.5; P-D-232).
 
 ### Products answers pricing's derived meter semantics
 
