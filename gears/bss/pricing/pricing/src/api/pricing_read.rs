@@ -170,16 +170,21 @@ fn corrupt(detail: impl Into<String>) -> CanonicalError {
     tracing::error!(%detail, "corrupt stored pricing row");
     CanonicalError::internal(detail).create()
 }
-fn amount(value: &str) -> Result<Decimal, CanonicalError> {
+fn amount(price_id: Uuid, value: &str) -> Result<Decimal, CanonicalError> {
     Decimal::from_str_exact(value)
         .ok()
         .filter(|v| *v >= Decimal::ZERO)
-        .ok_or_else(|| corrupt("invalid stored amount"))
+        .ok_or_else(|| corrupt(format!("price {price_id}: invalid stored amount {value}")))
 }
-fn price_model(model: Model, value: serde_json::Value) -> Result<PriceModel, CanonicalError> {
-    let data = money::decode(model, value).map_err(|e| corrupt(e.code))?;
+fn price_model(
+    price_id: Uuid,
+    model: Model,
+    value: serde_json::Value,
+) -> Result<PriceModel, CanonicalError> {
+    let data = money::decode(model, value)
+        .map_err(|e| corrupt(format!("price {price_id}: {}", e.code)))?;
     if let Some(e) = money::validate(model, &data).first() {
-        return Err(corrupt(e.code));
+        return Err(corrupt(format!("price {price_id}: {}", e.code)));
     }
     Ok(match data {
         PriceData::Flat { amount } => PriceModel::Flat { amount },
@@ -217,8 +222,12 @@ fn immutable(
         price_book_entry_id: row.price_book_entry_id,
         money_digest: [0; 32],
         currency: currency.into(),
-        model: price_model(model, row.price_json.clone())?,
-        minimum_fee: row.min_fee.as_deref().map(amount).transpose()?,
+        model: price_model(row.id, model, row.price_json.clone())?,
+        minimum_fee: row
+            .min_fee
+            .as_deref()
+            .map(|value| amount(row.id, value))
+            .transpose()?,
         effective_from: row.effective_from,
         ends_on: row
             .temporary_until
@@ -228,11 +237,12 @@ fn immutable(
     Ok(p)
 }
 fn project_price(s: &PriceSnapshot) -> Result<ImmutablePrice, CanonicalError> {
-    let model = s
-        .entry
-        .model
-        .parse()
-        .map_err(|_| corrupt("invalid stored price model"))?;
+    let model = s.entry.model.parse().map_err(|_| {
+        corrupt(format!(
+            "entry {} price {}: invalid stored price model {}",
+            s.entry.id, s.row.id, s.entry.model
+        ))
+    })?;
     immutable(&s.row, model, &s.book.currency)
 }
 fn incomplete(field: &'static str) -> CanonicalError {
@@ -270,10 +280,9 @@ pub(crate) fn project_resolution(s: &ReadSnapshot) -> Result<ResolvedBindings, C
                         .find(|i| i.id == r.item_id)
                         .and_then(|i| i.entry.as_ref())
                         .ok_or_else(|| incomplete("entry"))?;
-                    let inputs = s
-                        .inputs
-                        .get(&r.item_id)
-                        .ok_or_else(|| corrupt("resolved inputs missing"))?;
+                    let inputs = s.inputs.get(&r.item_id).ok_or_else(|| {
+                        corrupt(format!("item {}: resolved inputs missing", r.item_id))
+                    })?;
                     let template = required(
                         inputs.invoice_line_template.value.as_deref(),
                         "invoice_template",
@@ -311,13 +320,15 @@ pub(crate) fn project_resolution(s: &ReadSnapshot) -> Result<ResolvedBindings, C
                         Some("year") => Some(BillingCycle::Year),
                         _ => return Err(incomplete("recurring_period")),
                     };
-                    let row = s
-                        .rows
-                        .get(&b.price.id)
-                        .ok_or_else(|| corrupt("bound price missing"))?;
+                    let row = s.rows.get(&b.price.id).ok_or_else(|| {
+                        corrupt(format!("price {}: bound price missing", b.price.id))
+                    })?;
                     let price = immutable(row, entry.model, &s.currency)?;
                     if price.price_book_entry_id != entry.id {
-                        return Err(corrupt("bound price entry mismatch"));
+                        return Err(corrupt(format!(
+                            "price {} entry {}: bound price entry mismatch",
+                            b.price.id, entry.id
+                        )));
                     }
                     Ok(AcceptedBinding {
                         item_id: r.item_id,
