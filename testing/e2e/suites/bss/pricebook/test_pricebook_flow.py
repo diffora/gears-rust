@@ -642,7 +642,7 @@ def test_a_plan_blocked_by_a_pending_price_publishes_copies_and_clones(api, revi
         assert clone["published_rev"] is None, clone
         assert [x["state"] for x in clone["revisions"]] == ["draft"], clone
         # D-460: the clone answers its new draft, with the items it copied, and nothing in effect.
-        assert clone["current"] == _current(
+        assert _current_of(clone) == _current(
             clone["revisions"][0]["id"], 1, "draft", [sku], author
         ), clone
         assert clone["in_effect"] is None, clone
