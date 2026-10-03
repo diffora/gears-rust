@@ -366,6 +366,7 @@ fn version_dto(
         canonical_unit,
         accrual_policy_version: v.accrual_policy_version(),
         created_by: v.created_by,
+        created_by_name: None,
         created_at: v.created_at,
     })
 }
@@ -667,7 +668,7 @@ async fn list_derived_usage_types(
     let latest = store::latest_versions(&conn, &scope, tenant, &ids)
         .await
         .map_err(|e| stored_row_error(&e))?;
-    let items = page
+    let mut items: Vec<ProductsDerivedUsageTypeItem> = page
         .items
         .into_iter()
         .map(|t| {
@@ -683,11 +684,14 @@ async fn list_derived_usage_types(
                 latest_version,
                 latest: latest_row,
                 created_by: t.created_by,
+                created_by_name: None,
                 created_at: t.created_at,
             })
         })
         .collect::<Result<_, RepoError>>()
         .map_err(|e| stored_row_error(&e))?;
+    // P-D-262: the page's creators in one lookup; the weak tag covers their names.
+    state.actor_names.fill(&ctx, &mut items).await;
     Ok(respond(
         &headers,
         &Page {
@@ -725,19 +729,24 @@ async fn get_derived_usage_type(
                 meter_ref: meter(&t, v.version)?,
                 accrual_policy_version: v.accrual_policy_version(),
                 created_by: v.created_by,
+                created_by_name: None,
                 created_at: v.created_at,
             })
         })
         .collect::<Result<_, RepoError>>()
         .map_err(|e| stored_row_error(&e))?;
-    Ok(Json(ProductsDerivedUsageType {
+    let mut body = ProductsDerivedUsageType {
         id: t.id,
         code: t.code,
         name: t.name,
         created_by: t.created_by,
+        created_by_name: None,
         created_at: t.created_at,
         versions,
-    }))
+    };
+    // P-D-262: the type's and its versions' creators in one lookup.
+    state.actor_names.fill(&ctx, &mut body).await;
+    Ok(Json(body))
 }
 
 /// @cpt-cf-bss-products-fr-derived-usage-type
@@ -763,7 +772,9 @@ async fn get_derived_usage_type_version(
         .await
         .map_err(|e| stored_row_error(&e))?
         .ok_or_else(not_found)?;
-    let body = version_dto(&t, &v).map_err(|e| stored_row_error(&e))?;
+    let mut body = version_dto(&t, &v).map_err(|e| stored_row_error(&e))?;
+    // P-D-262: the version's creator.
+    state.actor_names.fill(&ctx, &mut body).await;
     Ok(Json(body).into_response())
 }
 

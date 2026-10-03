@@ -290,6 +290,7 @@ async fn skeleton_harness() -> anyhow::Result<(BssProductsGear, GearCtx)> {
         fence_ttl_minutes: 30,
         reference_principals: std::collections::BTreeMap::new(),
         hub: Arc::new(toolkit::ClientHub::new()),
+        actor_names: crate::api::rest::ApiState::names_from(&Arc::new(toolkit::ClientHub::new())),
     });
     gear.runtime.store(Some(Arc::new(ProductsRuntime {
         enforcer: Arc::new(crate::test_support::flat_in_enforcer(uuid::Uuid::new_v4())),

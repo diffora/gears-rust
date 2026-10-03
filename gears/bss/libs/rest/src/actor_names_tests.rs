@@ -629,3 +629,39 @@ fn queried_ids_reads_the_id_set_of_a_lookup_and_nothing_else() {
     assert_eq!(queried_ids(&query), [one, two]);
     assert!(queried_ids(&ListUsersQuery::default()).is_empty());
 }
+
+/// A response shape that names its actors through the macro.
+struct Header {
+    by: Uuid,
+    by_name: Option<String>,
+    rows: Vec<Row>,
+}
+
+crate::actor_fields!(Header { by => by_name } [rows]);
+
+#[tokio::test]
+async fn the_macro_implements_the_fields_of_an_id_and_its_nested_values() {
+    let directory = Arc::new(Directory::default());
+    let (one, two) = (Uuid::from_u128(1), Uuid::from_u128(2));
+    {
+        let mut users = directory.users.lock().unwrap();
+        users.insert(one, IdpUser::new(one, "one"));
+        users.insert(two, IdpUser::new(two, "two"));
+    }
+    let service = names(directory.clone());
+    let mut header = Header {
+        by: one,
+        by_name: None,
+        rows: vec![row(Some(two)), row(None)],
+    };
+    let mut ids = Vec::new();
+    header.actor_ids(&mut ids);
+    assert_eq!(ids, [one, two]);
+    service
+        .fill(&SecurityContext::anonymous(), &mut header)
+        .await;
+    assert_eq!(header.by_name.as_deref(), Some("one"));
+    assert_eq!(header.rows[0].actor_name.as_deref(), Some("two"));
+    assert_eq!(header.rows[1].actor_name, None);
+    assert_eq!(directory.calls.lock().unwrap().len(), 1);
+}

@@ -347,6 +347,11 @@ responses additionally expose the current generation. All doors use authenticate
 registration and standardized errors. `GET /skus`, `GET /skus/counts` and `GET /categories` answer 304 when
 `If-None-Match` matches a weak ETag of the JSON body, and send `Cache-Control: private, no-cache`.
 `GET /derived-usage-types` does the same with `Cache-Control: private, max-age=60` (P-D-261).
+Every actor id a read shows (`created_by`, `actor`, `submitted_by`) carries a sibling `<field>_name`: the current name
+through Account Management's user read, under the caller's own rights, resolved once per answer (ids deduplicated,
+chunks of 200, at most four at once, one 2 s budget). It is null when no name is available now, the system's own acts
+and pricing's system actor read "System", and no write answer names anyone. Names are never stored or cached; the
+weak tags cover them (P-D-262).
 
 | Surface | Routes | Contract |
 | --- | --- | --- |

@@ -35,6 +35,12 @@ use uuid::Uuid;
 /// The SDK types of the [`ActorDirectory`] boundary, so that a gear's test fake needs no other
 /// dependency.
 pub use account_management_sdk::{IdpUser, ListUsersQuery};
+/// The id type of [`actor_fields!`](crate::actor_fields)'s expansion.
+#[doc(hidden)]
+pub use uuid::Uuid as __Uuid;
+
+/// The names [`ActorNames::resolve`] answers, by actor id.
+pub type Names = BTreeMap<Uuid, ActorName>;
 
 /// The most AM lookups one response runs at once.
 const LOOKUP_CONCURRENCY: usize = 4;
@@ -116,7 +122,7 @@ pub trait ActorFields {
     /// Push every actor id the value shows.
     fn actor_ids(&self, ids: &mut Vec<Uuid>);
     /// Set every `*_name` sibling from `names`, with [`label`].
-    fn fill_names(&mut self, names: &BTreeMap<Uuid, ActorName>);
+    fn fill_names(&mut self, names: &Names);
 }
 
 impl<T: ActorFields> ActorFields for Vec<T> {
@@ -125,7 +131,7 @@ impl<T: ActorFields> ActorFields for Vec<T> {
             value.actor_ids(ids);
         }
     }
-    fn fill_names(&mut self, names: &BTreeMap<Uuid, ActorName>) {
+    fn fill_names(&mut self, names: &Names) {
         for value in self {
             value.fill_names(names);
         }
@@ -138,16 +144,39 @@ impl<T: ActorFields> ActorFields for Option<T> {
             value.actor_ids(ids);
         }
     }
-    fn fill_names(&mut self, names: &BTreeMap<Uuid, ActorName>) {
+    fn fill_names(&mut self, names: &Names) {
         if let Some(value) = self {
             value.fill_names(names);
         }
     }
 }
 
+/// Implements [`ActorFields`] for a response type: each actor id field (a `Uuid`) with its
+/// `*_name` sibling, then the nested values (`Vec`, `Option` or another [`ActorFields`] type) that
+/// carry their own.
+///
+/// ```ignore
+/// bss_rest::actor_fields!(PlanDto { created_by => created_by_name } [revisions, current]);
+/// ```
+#[macro_export]
+macro_rules! actor_fields {
+    ($type:ty { $($id:ident => $name:ident),* } [$($nested:ident),*]) => {
+        impl $crate::actor_names::ActorFields for $type {
+            fn actor_ids(&self, ids: &mut ::std::vec::Vec<$crate::actor_names::__Uuid>) {
+                $(ids.push(self.$id);)*
+                $($crate::actor_names::ActorFields::actor_ids(&self.$nested, ids);)*
+            }
+            fn fill_names(&mut self, names: &$crate::actor_names::Names) {
+                $(self.$name = $crate::actor_names::label(names, self.$id);)*
+                $($crate::actor_names::ActorFields::fill_names(&mut self.$nested, names);)*
+            }
+        }
+    };
+}
+
 /// The `*_name` a response shows for `id`: its label among `names`, or `None`.
 #[must_use]
-pub fn label(names: &BTreeMap<Uuid, ActorName>, id: Uuid) -> Option<String> {
+pub fn label(names: &Names, id: Uuid) -> Option<String> {
     names.get(&id).and_then(ActorName::label).map(str::to_owned)
 }
 
@@ -205,7 +234,7 @@ impl ActorNames {
         &self,
         ctx: &SecurityContext,
         ids: impl IntoIterator<Item = Uuid>,
-    ) -> BTreeMap<Uuid, ActorName> {
+    ) -> Names {
         let (system, unique): (BTreeSet<_>, BTreeSet<_>) =
             ids.into_iter().partition(|id| self.system_ids.contains(id));
         let unique: Vec<_> = unique.into_iter().collect();
@@ -247,7 +276,7 @@ impl ActorNames {
         ctx: &SecurityContext,
         ids: &[Uuid],
         deadline: tokio::time::Instant,
-    ) -> BTreeMap<Uuid, ActorName> {
+    ) -> Names {
         let mut names = BTreeMap::new();
         let mut remaining: BTreeSet<_> = ids.iter().copied().collect();
         let mut seen_cursors = BTreeSet::new();

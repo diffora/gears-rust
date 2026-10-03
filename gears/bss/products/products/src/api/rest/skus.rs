@@ -778,15 +778,15 @@ async fn get_sku(
         .map_err(|e| repo_error_to_canonical(&e))?;
     // P-D-197: pricing's usage, or null; the card never fails for it.
     let usage = super::usage::of(&state, &ctx, &[s.id]).await.remove(&s.id);
-    Ok((
-        [(header::ETAG, etag(InternalRevision::new(s.revision)))],
-        Json(SkuCard {
-            sku: s.into(),
-            references: refs.into(),
-            usage,
-        }),
-    )
-        .into_response())
+    let tag = etag(InternalRevision::new(s.revision));
+    let mut card = SkuCard {
+        sku: s.into(),
+        references: refs.into(),
+        usage,
+    };
+    // P-D-262: the creator's name, in one lookup.
+    state.actor_names.fill(&ctx, &mut card).await;
+    Ok(([(header::ETAG, tag)], Json(card)).into_response())
 }
 /// Convert malformed query values into canonical 400 violations.
 fn query<T>(q: Result<Query<T>, QueryRejection>) -> Result<T, CanonicalError> {

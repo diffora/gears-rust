@@ -88,6 +88,10 @@ pub struct SkuDto {
     pub pending_unit_id: Option<Uuid>,
     pub approved_by_unit_id: Option<Uuid>,
     pub created_by: Uuid,
+    /// The current name of `created_by` (P-D-262): its display name, else first and last name, else
+    /// username, from Account Management under the caller's rights; "System" for a system actor.
+    /// Null when no name is available now, and on a write answer.
+    pub created_by_name: Option<String>,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339")]
@@ -122,6 +126,7 @@ impl From<Sku> for SkuDto {
             pending_unit_id: value.pending_unit_id,
             approved_by_unit_id: value.approved_by_unit_id,
             created_by: value.created_by,
+            created_by_name: None,
             created_at: value.created_at,
             updated_at: value.updated_at,
         }
@@ -327,6 +332,10 @@ pub struct ProductsSkuHistoryEntry {
     #[serde(with = "time::serde::rfc3339")]
     pub at: OffsetDateTime,
     pub actor: Uuid,
+    /// The current name of `actor` (P-D-262): its display name, else first and last name, else
+    /// username, from Account Management under the caller's rights; "System" for a system actor.
+    /// Null when no name is available now.
+    pub actor_name: Option<String>,
     /// The audit row's action: a string, since no CHECK holds the column to a set (P-D-217).
     pub action: String,
     pub from_lifecycle: Option<ProductsLifecycle>,
@@ -340,6 +349,7 @@ impl From<crate::infra::storage::repo::SkuHistoryEntry> for ProductsSkuHistoryEn
         Self {
             at: e.at,
             actor: e.actor,
+            actor_name: None,
             action: e.action,
             from_lifecycle: e.from_lifecycle.map(Into::into),
             to_lifecycle: e.to_lifecycle.map(Into::into),
@@ -510,6 +520,10 @@ pub struct UnitDto {
     #[serde(with = "crate::infra::serde_date::option")]
     pub common_effective_date: Option<Date>,
     pub submitted_by: Uuid,
+    /// The current name of `submitted_by` (P-D-262): its display name, else first and last name, else
+    /// username, from Account Management under the caller's rights; "System" for a system actor.
+    /// Null when no name is available now, and on a write answer.
+    pub submitted_by_name: Option<String>,
     #[serde(with = "time::serde::rfc3339")]
     pub submitted_at: OffsetDateTime,
     /// The submitter's note, as sent to the submit, change or retire door; null when none was
@@ -573,6 +587,10 @@ pub struct ProductsApprovalUnitKindCounts {
 #[toolkit_macros::api_dto(response)]
 pub struct DecisionDto {
     pub actor: Uuid,
+    /// The current name of `actor` (P-D-262): its display name, else first and last name, else
+    /// username, from Account Management under the caller's rights; "System" for a system actor.
+    /// Null when no name is available now, and on a write answer.
+    pub actor_name: Option<String>,
     pub generation: i32,
     pub decision: ProductsDecisionKind,
     pub note: Option<String>,
@@ -680,6 +698,7 @@ impl UnitDto {
             quorum_required: u.quorum_required,
             common_effective_date: u.common_effective_date,
             submitted_by: u.submitted_by,
+            submitted_by_name: None,
             submitted_at: u.submitted_at,
             submit_note: u.submit_note,
             decided_at: u.decided_at,
@@ -697,6 +716,7 @@ impl From<bss_approval::Decision> for DecisionDto {
     fn from(d: bss_approval::Decision) -> Self {
         Self {
             actor: d.actor,
+            actor_name: None,
             generation: d.generation,
             decision: d.verdict.into(),
             note: d.note,
@@ -865,6 +885,10 @@ pub struct ProductsDerivedUsageTypeVersion {
     /// `derived-v1:<digest>`.
     pub accrual_policy_version: String,
     pub created_by: Uuid,
+    /// The current name of `created_by` (P-D-262): its display name, else first and last name, else
+    /// username, from Account Management under the caller's rights; "System" for a system actor.
+    /// Null when no name is available now, and on a write answer.
+    pub created_by_name: Option<String>,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }
@@ -876,6 +900,10 @@ pub struct ProductsDerivedVersionHeader {
     pub meter_ref: ProductsDerivedMeterRef,
     pub accrual_policy_version: String,
     pub created_by: Uuid,
+    /// The current name of `created_by` (P-D-262): its display name, else first and last name, else
+    /// username, from Account Management under the caller's rights; "System" for a system actor.
+    /// Null when no name is available now, and on a write answer.
+    pub created_by_name: Option<String>,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }
@@ -886,6 +914,10 @@ pub struct ProductsDerivedUsageType {
     pub code: String,
     pub name: String,
     pub created_by: Uuid,
+    /// The current name of `created_by` (P-D-262): its display name, else first and last name, else
+    /// username, from Account Management under the caller's rights; "System" for a system actor.
+    /// Null when no name is available now, and on a write answer.
+    pub created_by_name: Option<String>,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
     pub versions: Vec<ProductsDerivedVersionHeader>,
@@ -901,6 +933,10 @@ pub struct ProductsDerivedUsageTypeItem {
     /// The latest version, in the version-read shape (P-D-257).
     pub latest: ProductsDerivedUsageTypeVersion,
     pub created_by: Uuid,
+    /// The current name of `created_by` (P-D-262): its display name, else first and last name, else
+    /// username, from Account Management under the caller's rights; "System" for a system actor.
+    /// Null when no name is available now, and on a write answer.
+    pub created_by_name: Option<String>,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }
