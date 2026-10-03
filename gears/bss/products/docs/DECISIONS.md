@@ -40,14 +40,14 @@
 | P-D-205 | M | The approval policy is read with a content `ETag` and written under `If-Match` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | P-D-206 | M | A never-published draft is deleted by its author, never retired | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amends P-D-190 |
 | P-D-207 | H | Usage types are read as the caller: a denial is 403 `USAGE_TYPE_FORBIDDEN`, and products serves the picker | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 (owner option b); amends P-D-184, P-D-203; extended by P-D-247 |
-| P-D-208 | M | A retired SKU no longer keeps its category in use; retiring a retired category is `CATEGORY_RETIRED` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amends P-D-186 |
+| P-D-208 | M | A retired SKU no longer keeps its category in use; retiring a retired category is `CATEGORY_RETIRED` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amends P-D-186; extended by P-D-263 |
 | P-D-209 | L | No tenant settings door: the fence TTL is the deployment setting `fence_ttl_minutes` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amends P-D-189 |
-| P-D-210 | M | The SKU list pages on the toolkit's OData, with a literal case-insensitive `q` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amended by P-D-246 |
-| P-D-211 | M | The SKU list's tab counts: `GET /skus/counts` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
+| P-D-210 | M | The SKU list pages on the toolkit's OData, with a literal case-insensitive `q` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amended by P-D-246; extended by P-D-263 |
+| P-D-211 | M | The SKU list's tab counts: `GET /skus/counts` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; extended by P-D-263 |
 | P-D-212 | M | The SKU list filters on pricing's usage (`priced`, `in_plan`) through the port's sets; a filter pricing cannot answer fails the read | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amends P-D-197; amended by P-D-246 |
 | P-D-213 | M | A SKU's history: every audit row on a SKU carries the lifecycle move its act made, and `GET /skus/{id}/history` reads them | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amends P-D-189, P-D-200; amended by P-D-219; extended by P-D-262 |
 | P-D-214 | L | SKU versions answer one shape each: the history an array, the version in force at `versions/as-of?date=` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
-| P-D-215 | M | Category reads: `GET /categories/{id}`, a `sku_count` on every read from one grouped count, and the list on the toolkit's OData | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
+| P-D-215 | M | Category reads: `GET /categories/{id}`, a `sku_count` on every read from one grouped count, and the list on the toolkit's OData | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; extended by P-D-263 |
 | P-D-216 | M | An approval-policy override can be reset; the default cannot be deleted (twin of pricing D-435) | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | P-D-217 | M | Closed sets are enums on the responses; requests keep strings and their codes (twin of pricing D-439) | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amended by the phase 9 review (C, fix run 9.5d-1) |
 | P-D-218 | M | Making a category the default moves the default in one write; a lost race is 409 `CATEGORY_DEFAULT_TAKEN` | DECIDED 2026-09-28 · Owner, 2026-09-28; amended by P-D-220 |
@@ -82,6 +82,7 @@
 | P-D-259 | H | A usage SKU sells a derived usage type, and its unit is that type's | DECIDED 2026-10-02 · Owner, 2026-10-02; run 9.13; amends P-D-207, P-D-229, P-D-232, P-D-251 |
 | P-D-261 | M | The SKU, derived-type and category lists answer 304 | DECIDED 2026-10-03 · Owner, 2026-10-03 (asks 56, 57); extends P-D-247 |
 | P-D-262 | M | Every actor id a read shows carries its current name (twin of pricing D-519) | DECIDED 2026-10-03 · Owner, 2026-10-02 (ask 32: names on the server, through AM); extends P-D-213, P-D-224, P-D-231 |
+| P-D-263 | M | A retired SKU or category can be archived, and its list hides it by default (twin of pricing D-522) | DECIDED 2026-10-03 · Owner, 2026-10-03 ("archived"; ask 58b); extends P-D-208, P-D-210, P-D-211, P-D-215 |
 
 ## Entries
 
@@ -558,6 +559,8 @@ to a retired category already answers; `CATEGORY_IN_USE` no longer covers it.
 
 **Source:** Owner, 2026-09-27; phase 6 plan rev 2 (validation D6, ask 9).
 
+**Extended by P-D-263 (2026-10-03).** A retired category, which no SKU keeps in use, can be archived; an archived SKU is retired, so it keeps no category in use either.
+
 #### P-D-209 [L] No tenant settings door: the fence TTL is the deployment setting `fence_ttl_minutes`
 
 DESIGN §3.3, PRD §7.1 and slice 03 §5 described `GET/PUT /settings` with a tenant `fence_ttl_minutes`
@@ -625,6 +628,8 @@ as the multi-id read, within `$top` 200 and the 8 KiB filter.
 **Source:** Owner, 2026-09-27; phase 6 plan rev 2 (owner decision 1; asks 1, 2 and 4; validation D4, D7; plan
 review H1, L1–L5, L10); phase 6 review (queries F1: null equality opt-in per field; F3: the ICU fold).
 
+**Extended by P-D-263 (2026-10-03).** `$filter` names `archived`; an archived SKU is left out unless asked `archived eq true`.
+
 #### P-D-211 [M] The SKU list's tab counts: `GET /skus/counts`
 
 `GET /skus/counts` answers `{ all, draft, published, deprecated, retired, in_review }` for the tabs
@@ -645,6 +650,8 @@ statements as a read that finds fifty; a read that finds none makes the one read
 
 **Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 1; plan review M2); phase 6 review (queries F2: the
 set-based fence recovery).
+
+**Extended by P-D-263 (2026-10-03).** The counts drop the top-level `archived` terms too. `all`, each lifecycle and `in_review` count the SKUs that are not archived, and `archived` counts the archived ones.
 
 #### P-D-212 [M] The SKU list filters on pricing's usage (`priced`, `in_plan`) through the port's sets
 
@@ -823,6 +830,8 @@ list. The downstream e2e reads it whole (its SKU checks and its tenant-isolation
 phase 6.6.
 
 **Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 9; plan review M4).
+
+**Extended by P-D-263 (2026-10-03).** `$filter` names `archived`; an archived category is left out unless asked `archived eq true`.
 
 #### P-D-216 [M] An approval-policy override can be reset; the default cannot be deleted (twin of pricing D-435)
 
@@ -2078,3 +2087,43 @@ Management read per id of its own.
 
 **Source:** Owner, 2026-10-02 (ask 32: "there was already code that resolves the names through AM; do it that way on
 the server"). Twin of pricing D-519. Extends P-D-213, P-D-224 and P-D-231.
+
+#### P-D-263 [M] A retired SKU or category can be archived, and its list hides it by default (twin of pricing D-522)
+
+**Status:** DECIDED 2026-10-03.
+
+A retired SKU and a retired category stay in their lists for ever: history must resolve, and nothing deletes them. The
+lists filled with rows nobody works with.
+
+- **A mark, not a state.** `products_sku` and `products_category` gain `archived_at` (timestamptz) and `archived_by`
+  (uuid), both null until the row is archived (`m20261003_000014_archive_mark`). Nothing that reads the lifecycle or the
+  status changes: an archived SKU stays `retired`, an archived category stays `retired`.
+- **The doors.** `POST /skus/{id}/archive` and `POST /skus/{id}/unarchive`, `POST /categories/{id}/archive` and
+  `POST /categories/{id}/unarchive`. Each takes If-Match against the row's ETag (the SKU's revision, the category's
+  version), moves it, and writes an audit row in the same transaction (`sku.archive`, `sku.unarchive`,
+  `category.archive`, `category.unarchive`). The grant is author on the row's own resource type, as every other write
+  of that type: SKU author for a SKU, category author for a category. A row already in the asked state is answered as it
+  is, and nothing is written.
+- **Only a finished row is archived.** A SKU whose lifecycle in force is not `retired` is 409 `SKU_NOT_RETIRED`; a
+  category that is not retired is 409 `CATEGORY_NOT_RETIRED`. A stale tag is judged first and is 409 `STALE_REVISION`,
+  as on every other write of a head. Unarchive takes no lifecycle condition: the row is simply listed again.
+- **Lists hide archived rows by default.** `GET /skus`, its pickers (`priced_in`, `not_priced_in`, `not_in_revision`),
+  `GET /skus/counts` and `GET /categories` leave an archived row out. `$filter` names `archived`, a boolean:
+  `archived eq true` keeps only the archived rows, and `archived eq false` is the default made explicit. `archived`
+  compares with `eq` or `ne` and `true` or `false`, alone or joined by top-level `and`; any other use of it is 400
+  (`bss_rest::archived::take_archived`, which the pricing book list shares). The counts drop the top-level `archived`
+  terms, as they drop the `lifecycle` ones: `all`, each lifecycle and `in_review` count the rows that are not
+  archived, and the new `archived` counts the archived ones. The list and the counts read in the same statements as
+  before (`sku_list_tests::recorded_door`; a partial index `(tenant_id) WHERE archived_at IS NULL` serves the default).
+- **What ignores the mark.** A read by id (`GET /skus/{id}`, `GET /categories/{id}`), `/browse`, the consumer read
+  contract and pinned facts: history must resolve. The SKU and category answers carry `archived_at`, `archived_by` and
+  `archived_by_name` (P-D-262), and the SDK's `Sku` and `Category` carry the first two.
+- **No automatic archive.** Archiving is always an operator's act, never a rule.
+- **Pricing's twin (D-522).** Archiving a pricing book releases its entries' SKU references, so a SKU that only a
+  finished book named stops being `SKU_REFERENCED`, can be retired, and then archived here.
+- **The tests.** `api/rest/archive_tests.rs` (the doors, the lists, the counts, the refusals) and
+  `tests/postgres_archive.rs` (the migration up and down on Postgres, the list, the counts and the category list there);
+  the migration's own `_tests.rs` on SQLite.
+
+**Source:** Owner, 2026-10-03 ("archived"; ask 58b). Twin of pricing D-522. Extends P-D-208, P-D-210, P-D-211 and
+P-D-215.

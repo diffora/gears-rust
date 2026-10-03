@@ -28,6 +28,15 @@ pub struct ProductsCategoryDto {
     pub sort_order: i32,
     pub status: ProductsCategoryStatus,
     pub version: i64,
+    /// When the retired category was archived (P-D-263); null while it is not. Its list hides it
+    /// unless asked `archived eq true`; a read by id ignores the mark.
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub archived_at: Option<OffsetDateTime>,
+    /// Who archived it; null while it is not archived.
+    pub archived_by: Option<Uuid>,
+    /// The current name of `archived_by` (P-D-262), as `created_by_name` names its actor; null
+    /// when no name is available now, and on a write answer.
+    pub archived_by_name: Option<String>,
 }
 impl TryFrom<Category> for ProductsCategoryDto {
     type Error = RepoError;
@@ -44,6 +53,9 @@ impl TryFrom<Category> for ProductsCategoryDto {
                 &format_args!("category {} status", value.id),
             )?,
             version: value.version,
+            archived_at: value.archived_at,
+            archived_by: value.archived_by,
+            archived_by_name: None,
         })
     }
 }
@@ -96,6 +108,15 @@ pub struct SkuDto {
     pub created_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339")]
     pub updated_at: OffsetDateTime,
+    /// When the retired SKU was archived (P-D-263); null while it is not. The SKU list hides it
+    /// unless asked `archived eq true`; a read by id ignores the mark. Not a lifecycle.
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub archived_at: Option<OffsetDateTime>,
+    /// Who archived it; null while it is not archived.
+    pub archived_by: Option<Uuid>,
+    /// The current name of `archived_by` (P-D-262), as `created_by_name` names its actor; null
+    /// when no name is available now, and on a write answer.
+    pub archived_by_name: Option<String>,
 }
 impl From<Sku> for SkuDto {
     fn from(value: Sku) -> Self {
@@ -129,6 +150,9 @@ impl From<Sku> for SkuDto {
             created_by_name: None,
             created_at: value.created_at,
             updated_at: value.updated_at,
+            archived_at: value.archived_at,
+            archived_by: value.archived_by,
+            archived_by_name: None,
         }
     }
 }
@@ -299,7 +323,8 @@ pub struct SkuListItem {
     pub usage: Option<SkuUsageDto>,
 }
 /// The SKU list's tab counts (P-D-211): every SKU the narrowing keeps, those in each lifecycle,
-/// and those a pending approval unit locks (in any lifecycle).
+/// and those a pending approval unit locks (in any lifecycle), none of them archived; and the
+/// archived SKUs the narrowing keeps, which no other number counts (P-D-263).
 #[toolkit_macros::api_dto(response)]
 pub struct ProductsSkuCounts {
     pub all: u64,
@@ -308,6 +333,7 @@ pub struct ProductsSkuCounts {
     pub deprecated: u64,
     pub retired: u64,
     pub in_review: u64,
+    pub archived: u64,
 }
 impl From<crate::infra::storage::repo::SkuCounts> for ProductsSkuCounts {
     fn from(c: crate::infra::storage::repo::SkuCounts) -> Self {
@@ -318,6 +344,7 @@ impl From<crate::infra::storage::repo::SkuCounts> for ProductsSkuCounts {
             deprecated: c.deprecated,
             retired: c.retired,
             in_review: c.in_review,
+            archived: c.archived,
         }
     }
 }

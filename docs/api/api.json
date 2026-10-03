@@ -14318,6 +14318,29 @@
       "ProductsCategoryDto": {
         "description": "Wire representation of the registry Category.",
         "properties": {
+          "archived_at": {
+            "description": "When the retired category was archived (P-D-263); null while it is not. Its list hides it\nunless asked `archived eq true`; a read by id ignores the mark.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "archived_by": {
+            "description": "Who archived it; null while it is not archived.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "archived_by_name": {
+            "description": "The current name of `archived_by` (P-D-262), as `created_by_name` names its actor; null\nwhen no name is available now, and on a write answer.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "code": {
             "type": "string"
           },
@@ -14842,9 +14865,14 @@
         "type": "string"
       },
       "ProductsSkuCounts": {
-        "description": "The SKU list's tab counts (P-D-211): every SKU the narrowing keeps, those in each lifecycle,\nand those a pending approval unit locks (in any lifecycle).",
+        "description": "The SKU list's tab counts (P-D-211): every SKU the narrowing keeps, those in each lifecycle,\nand those a pending approval unit locks (in any lifecycle), none of them archived; and the\narchived SKUs the narrowing keeps, which no other number counts (P-D-263).",
         "properties": {
           "all": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "archived": {
             "format": "int64",
             "minimum": 0,
             "type": "integer"
@@ -14881,7 +14909,8 @@
           "published",
           "deprecated",
           "retired",
-          "in_review"
+          "in_review",
+          "archived"
         ],
         "type": "object"
       },
@@ -18946,6 +18975,29 @@
         "properties": {
           "approved_by_unit_id": {
             "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "archived_at": {
+            "description": "When the retired SKU was archived (P-D-263); null while it is not. The SKU list hides it\nunless asked `archived eq true`; a read by id ignores the mark. Not a lifecycle.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "archived_by": {
+            "description": "Who archived it; null while it is not archived.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "archived_by_name": {
+            "description": "The current name of `archived_by` (P-D-262), as `created_by_name` names its actor; null\nwhen no name is available now, and on a write answer.",
             "type": [
               "string",
               "null"
@@ -46082,7 +46134,7 @@
     },
     "/bss-products/v1/categories": {
       "get": {
-        "description": "One page of the tenant's categories on the toolkit's OData (P-D-215): `$filter` over id, code, name, status (active or retired), is_default and sort_order; `$orderby` sort_order, code or name (tie-break id; default sort_order, then code); `$top` (alias `limit`; default 200, clamped at 200) and `cursor` (alias `$skiptoken`) from `page_info`. Each item carries `sku_count`, the SKUs that are not retired naming it, from one grouped count. Any other key, `$select` and `$count` are 400; a cursor replayed under another `$filter` is 400. A matching If-None-Match is 304 with an empty body; the 200 carries a weak ETag of its JSON and Cache-Control private, no-cache (P-D-261).",
+        "description": "One page of the tenant's categories on the toolkit's OData (P-D-215): `$filter` over id, code, name, status (active or retired), is_default, sort_order and archived (an archived category is left out unless asked `archived eq true`, P-D-263; `archived` compares with `eq` or `ne` and a boolean, joined only by top-level `and`); `$orderby` sort_order, code or name (tie-break id; default sort_order, then code); `$top` (alias `limit`; default 200, clamped at 200) and `cursor` (alias `$skiptoken`) from `page_info`. Each item carries `sku_count`, the SKUs that are not retired naming it, from one grouped count. Any other key, `$select` and `$count` are 400; a cursor replayed under another `$filter` is 400. A matching If-None-Match is 304 with an empty body; the 200 carries a weak ETag of its JSON and Cache-Control private, no-cache (P-D-261).",
         "operationId": "bss_products.list_categories",
         "parameters": [
           {
@@ -46113,7 +46165,7 @@
             }
           },
           {
-            "description": "OData v4 filter expression\n- id: eq|ne|in\n- code: eq|ne|contains|startswith|endswith|in\n- name: eq|ne|contains|startswith|endswith|in\n- status: eq|ne|contains|startswith|endswith|in\n- is_default: eq|ne\n- sort_order: eq|ne|gt|ge|lt|le|in",
+            "description": "OData v4 filter expression\n- id: eq|ne|in\n- code: eq|ne|contains|startswith|endswith|in\n- name: eq|ne|contains|startswith|endswith|in\n- status: eq|ne|contains|startswith|endswith|in\n- is_default: eq|ne\n- sort_order: eq|ne|gt|ge|lt|le|in\n- archived: eq|ne",
             "in": "query",
             "name": "$filter",
             "required": false,
@@ -46235,6 +46287,10 @@
         ],
         "x-odata-filter": {
           "allowedFields": {
+            "archived": [
+              "eq",
+              "ne"
+            ],
             "code": [
               "eq",
               "ne",
@@ -46624,6 +46680,123 @@
         ]
       }
     },
+    "/bss-products/v1/categories/{id}/archive": {
+      "post": {
+        "description": "Marks a retired category archived at the version the caller read (If-Match), with an audit row: `archived_at` and `archived_by` are set and the version moves (P-D-263). The mark is not a status: the category stays retired. `GET /categories` leaves an archived category out unless asked `archived eq true`; a read by id ignores the mark. Archiving an archived category answers it unchanged. Refusals: 403 without category author; 400 for a missing or malformed If-Match; 404; 409 STALE_REVISION, or CATEGORY_NOT_RETIRED for a category that is not retired.",
+        "operationId": "bss_products.archive_category",
+        "parameters": [
+          {
+            "description": "Category id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Send the ETag returned by the last read. Missing or malformed: 400; stale: 409 STALE_REVISION.",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductsCategoryDto"
+                }
+              }
+            },
+            "description": "The archived category; ETag carries its version."
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Archive a retired category",
+        "tags": [
+          "Categories"
+        ]
+      }
+    },
     "/bss-products/v1/categories/{id}/retire": {
       "post": {
         "description": "Retires a category no SKU in draft, published or deprecated names; a retire under review keeps one of those, so it still holds the category (P-D-248). Retired SKUs do not keep it in use (P-D-208). Retiring the tenant's default clears it in the same transaction, with its own version and audit row, and leaves the tenant without a default (P-D-220). Refusals: 404; 409 CATEGORY_IN_USE, or CATEGORY_RETIRED when it is already retired.",
@@ -46726,6 +46899,123 @@
           }
         ],
         "summary": "Retire an unused category",
+        "tags": [
+          "Categories"
+        ]
+      }
+    },
+    "/bss-products/v1/categories/{id}/unarchive": {
+      "post": {
+        "description": "Clears a category's archive mark at the version the caller read (If-Match), with an audit row; the category is listed again, still retired (P-D-263). Unarchiving a category that is not archived answers it unchanged. Refusals: 403 without category author; 400 for a missing or malformed If-Match; 404; 409 STALE_REVISION.",
+        "operationId": "bss_products.unarchive_category",
+        "parameters": [
+          {
+            "description": "Category id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Send the ETag returned by the last read. Missing or malformed: 400; stale: 409 STALE_REVISION.",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductsCategoryDto"
+                }
+              }
+            },
+            "description": "The unarchived category; ETag carries its version."
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Unarchive a category",
         "tags": [
           "Categories"
         ]
@@ -47525,7 +47815,7 @@
     },
     "/bss-products/v1/skus": {
       "get": {
-        "description": "One page of the tenant's SKUs (P-D-210). OData `$filter` over id, code, name, lifecycle, retire_pending, type, category_id (`eq null`: no category) and pending_unit_id (`ne null`: in review). `lifecycle` compares with `eq`, `ne` or `in`, and with those joined by `and` (the effective lifecycle); a `lifecycle` term under `or` or `not`, or `contains`, `startswith` or `endswith` on it, is 400. `$orderby` over code, name, updated_at (tie-break id; default code); `$top` (alias `limit`; default 50, clamped at 200) and `cursor` (alias `$skiptoken`) from `page_info`. `q` is a case-insensitive substring of the code, name, unit, usage type or GL code, matched literally (ASCII case folding on SQLite). `priced` and `in_plan` (true or false) keep the SKUs pricing prices or a plan names, or the others (P-D-212): 403 USAGE_FORBIDDEN when pricing refuses the caller, 503 USAGE_UNAVAILABLE when it cannot answer. Any other key, `$select` and `$count` are 400; a cursor replayed with another `$filter`, `q`, `priced` or `in_plan` is 400. Each item carries pricing's `usage`, or null (P-D-197). The pickers (P-D-246): `priced_in` or `not_priced_in`, a price book id (at most one of the two), keeps the SKUs with an entry in that book, in any reference state, or the others; `not_in_revision`, a plan revision id, keeps the SKUs its items do not name. Each key is one call to pricing, under pricing price_book_entry read, and the revision's also under plan read: 403 USAGE_FORBIDDEN when pricing refuses the caller, 503 USAGE_UNAVAILABLE when it cannot answer. A book or a revision the tenant does not hold is an empty set. The cursor carries the picker keys too. The multi-id read is `$filter=id in (...)`, one page of at most `$top` 200, within the 8 KiB filter. A matching If-None-Match is 304 with an empty body; the 200 carries a weak ETag of its JSON and Cache-Control private, no-cache (P-D-261).",
+        "description": "One page of the tenant's SKUs (P-D-210). OData `$filter` over id, code, name, lifecycle, retire_pending, archived, type, category_id (`eq null`: no category) and pending_unit_id (`ne null`: in review). An archived SKU is left out unless the filter asks `archived eq true`, which lists only the archived ones; `archived eq false` is the default made explicit (P-D-263). `archived` compares with `eq` or `ne` and a boolean, joined only by top-level `and`; any other use of it is 400. `lifecycle` compares with `eq`, `ne` or `in`, and with those joined by `and` (the effective lifecycle); a `lifecycle` term under `or` or `not`, or `contains`, `startswith` or `endswith` on it, is 400. `$orderby` over code, name, updated_at (tie-break id; default code); `$top` (alias `limit`; default 50, clamped at 200) and `cursor` (alias `$skiptoken`) from `page_info`. `q` is a case-insensitive substring of the code, name, unit, usage type or GL code, matched literally (ASCII case folding on SQLite). `priced` and `in_plan` (true or false) keep the SKUs pricing prices or a plan names, or the others (P-D-212): 403 USAGE_FORBIDDEN when pricing refuses the caller, 503 USAGE_UNAVAILABLE when it cannot answer. Any other key, `$select` and `$count` are 400; a cursor replayed with another `$filter`, `q`, `priced` or `in_plan` is 400. Each item carries pricing's `usage`, or null (P-D-197). The pickers (P-D-246): `priced_in` or `not_priced_in`, a price book id (at most one of the two), keeps the SKUs with an entry in that book, in any reference state, or the others; `not_in_revision`, a plan revision id, keeps the SKUs its items do not name. Each key is one call to pricing, under pricing price_book_entry read, and the revision's also under plan read: 403 USAGE_FORBIDDEN when pricing refuses the caller, 503 USAGE_UNAVAILABLE when it cannot answer. A book or a revision the tenant does not hold is an empty set. The cursor carries the picker keys too. The multi-id read is `$filter=id in (...)`, one page of at most `$top` 200, within the 8 KiB filter. A matching If-None-Match is 304 with an empty body; the 200 carries a weak ETag of its JSON and Cache-Control private, no-cache (P-D-261).",
         "operationId": "bss_products.list_skus",
         "parameters": [
           {
@@ -47610,7 +47900,7 @@
             }
           },
           {
-            "description": "OData v4 filter expression\n- id: eq|ne|in\n- code: eq|ne|contains|startswith|endswith|in\n- name: eq|ne|contains|startswith|endswith|in\n- lifecycle: eq|ne|contains|startswith|endswith|in\n- type: eq|ne|contains|startswith|endswith|in\n- category_id: eq|ne|in\n- pending_unit_id: eq|ne|in\n- retire_pending: eq|ne",
+            "description": "OData v4 filter expression\n- id: eq|ne|in\n- code: eq|ne|contains|startswith|endswith|in\n- name: eq|ne|contains|startswith|endswith|in\n- lifecycle: eq|ne|contains|startswith|endswith|in\n- type: eq|ne|contains|startswith|endswith|in\n- category_id: eq|ne|in\n- pending_unit_id: eq|ne|in\n- retire_pending: eq|ne\n- archived: eq|ne",
             "in": "query",
             "name": "$filter",
             "required": false,
@@ -47732,6 +48022,10 @@
         ],
         "x-odata-filter": {
           "allowedFields": {
+            "archived": [
+              "eq",
+              "ne"
+            ],
             "category_id": [
               "eq",
               "ne",
@@ -47918,7 +48212,7 @@
     },
     "/bss-products/v1/skus/counts": {
       "get": {
-        "description": "The list's tab counts (P-D-211): every SKU, each lifecycle, and those in review (`pending_unit_id` set), narrowed like the list by `q`, `priced`, `in_plan` and `$filter`. Top-level `lifecycle` comparisons (`eq`, `ne`, `in`, and those joined by `and`) are dropped. A `lifecycle` term under `or` or `not`, or `contains`, `startswith` or `endswith` on `lifecycle`, is 400. `$orderby`, `$top`/`limit`, `cursor`/`$skiptoken` and `$select` are 400. The picker keys `priced_in`, `not_priced_in` (at most one of the two) and `not_in_revision` narrow the counts as they narrow the list (P-D-246): 403 USAGE_FORBIDDEN when pricing refuses the caller (a revision takes plan read beside price_book_entry read), 503 USAGE_UNAVAILABLE when it cannot answer. A matching If-None-Match is 304 with an empty body; the 200 carries a weak ETag of its JSON and Cache-Control private, no-cache (P-D-261).",
+        "description": "The list's tab counts (P-D-211): every SKU, each lifecycle, and those in review (`pending_unit_id` set), none of them archived, and the archived SKUs in `archived` (P-D-263), narrowed like the list by `q`, `priced`, `in_plan` and `$filter`. Top-level `lifecycle` comparisons (`eq`, `ne`, `in`, and those joined by `and`) and top-level `archived` comparisons are dropped. A `lifecycle` term under `or` or `not`, or `contains`, `startswith` or `endswith` on `lifecycle`, is 400. `$orderby`, `$top`/`limit`, `cursor`/`$skiptoken` and `$select` are 400. The picker keys `priced_in`, `not_priced_in` (at most one of the two) and `not_in_revision` narrow the counts as they narrow the list (P-D-246): 403 USAGE_FORBIDDEN when pricing refuses the caller (a revision takes plan read beside price_book_entry read), 503 USAGE_UNAVAILABLE when it cannot answer. A matching If-None-Match is 304 with an empty body; the 200 carries a weak ETag of its JSON and Cache-Control private, no-cache (P-D-261).",
         "operationId": "bss_products.count_skus",
         "parameters": [
           {
@@ -47985,7 +48279,7 @@
             }
           },
           {
-            "description": "OData v4 filter expression\n- id: eq|ne|in\n- code: eq|ne|contains|startswith|endswith|in\n- name: eq|ne|contains|startswith|endswith|in\n- lifecycle: eq|ne|contains|startswith|endswith|in\n- type: eq|ne|contains|startswith|endswith|in\n- category_id: eq|ne|in\n- pending_unit_id: eq|ne|in\n- retire_pending: eq|ne",
+            "description": "OData v4 filter expression\n- id: eq|ne|in\n- code: eq|ne|contains|startswith|endswith|in\n- name: eq|ne|contains|startswith|endswith|in\n- lifecycle: eq|ne|contains|startswith|endswith|in\n- type: eq|ne|contains|startswith|endswith|in\n- category_id: eq|ne|in\n- pending_unit_id: eq|ne|in\n- retire_pending: eq|ne\n- archived: eq|ne",
             "in": "query",
             "name": "$filter",
             "required": false,
@@ -48098,6 +48392,10 @@
         ],
         "x-odata-filter": {
           "allowedFields": {
+            "archived": [
+              "eq",
+              "ne"
+            ],
             "category_id": [
               "eq",
               "ne",
@@ -48479,6 +48777,123 @@
           }
         ],
         "summary": "Edit a draft SKU",
+        "tags": [
+          "SKUs"
+        ]
+      }
+    },
+    "/bss-products/v1/skus/{id}/archive": {
+      "post": {
+        "description": "Marks a retired SKU archived at the revision the caller read (If-Match), with an audit row: `archived_at` and `archived_by` are set and the revision moves (P-D-263). The mark is not a lifecycle: the SKU stays retired. `GET /skus`, its counts and the pickers leave an archived SKU out unless asked `archived eq true`; a read by id, the browse, the consumer reads and the pinned facts ignore the mark. Archiving an archived SKU answers it unchanged. Refusals: 403 without SKU author; 400 for a missing or malformed If-Match; 404; 409 STALE_REVISION, or SKU_NOT_RETIRED for a SKU whose lifecycle in force is not retired.",
+        "operationId": "bss_products.archive_sku",
+        "parameters": [
+          {
+            "description": "SKU id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Send the ETag returned by the last read. Missing or malformed: 400; stale: 409 STALE_REVISION.",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkuDto"
+                }
+              }
+            },
+            "description": "The archived SKU."
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Archive a retired SKU",
         "tags": [
           "SKUs"
         ]
@@ -49221,6 +49636,123 @@
         "summary": "submit_sku",
         "tags": [
           "SKU governance"
+        ]
+      }
+    },
+    "/bss-products/v1/skus/{id}/unarchive": {
+      "post": {
+        "description": "Clears a SKU's archive mark at the revision the caller read (If-Match), with an audit row; the SKU is listed again, still retired (P-D-263). Unarchiving a SKU that is not archived answers it unchanged. Refusals: 403 without SKU author; 400 for a missing or malformed If-Match; 404; 409 STALE_REVISION.",
+        "operationId": "bss_products.unarchive_sku",
+        "parameters": [
+          {
+            "description": "SKU id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Send the ETag returned by the last read. Missing or malformed: 400; stale: 409 STALE_REVISION.",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkuDto"
+                }
+              }
+            },
+            "description": "The unarchived SKU."
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Unarchive a SKU",
+        "tags": [
+          "SKUs"
         ]
       }
     },

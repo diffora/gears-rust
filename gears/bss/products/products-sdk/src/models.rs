@@ -112,6 +112,13 @@ pub struct Category {
     pub sort_order: i32,
     pub status: String,
     pub version: i64,
+    /// When the retired category was archived (P-D-263); `None` while it is not. A mark, not a
+    /// status: nothing that reads the status changes.
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    pub archived_at: Option<OffsetDateTime>,
+    /// Who archived it; set with [`Self::archived_at`].
+    #[serde(default)]
+    pub archived_by: Option<Uuid>,
 }
 
 /// The registry's SKU as the doors return it. Field names are `snake_case` on the wire (the
@@ -157,6 +164,13 @@ pub struct Sku {
     pub created_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339")]
     pub updated_at: OffsetDateTime,
+    /// When the retired SKU was archived (P-D-263); `None` while it is not. A mark, not a
+    /// lifecycle: a read by id, the browse, the consumer reads and the pinned facts ignore it.
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    pub archived_at: Option<OffsetDateTime>,
+    /// Who archived it; set with [`Self::archived_at`].
+    #[serde(default)]
+    pub archived_by: Option<Uuid>,
 }
 
 /// The business content of a SKU — what an approval unit fingerprints (spec §6: never lock,

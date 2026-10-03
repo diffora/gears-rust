@@ -1267,6 +1267,8 @@ const DOOR_ACTIONS: &[(&str, &str)] = &[
     ("bss_products.get_category", "read"),
     ("bss_products.update_category", "author"),
     ("bss_products.retire_category", "author"),
+    ("bss_products.archive_category", "author"),
+    ("bss_products.unarchive_category", "author"),
     ("bss_products.create_sku", "author"),
     ("bss_products.list_skus", "read"),
     ("bss_products.count_skus", "read"),
@@ -1276,6 +1278,8 @@ const DOOR_ACTIONS: &[(&str, &str)] = &[
     ("bss_products.sku_versions", "read"),
     ("bss_products.sku_version_as_of", "read"),
     ("bss_products.sku_references", "read"),
+    ("bss_products.archive_sku", "author"),
+    ("bss_products.unarchive_sku", "author"),
     ("bss_products.sku_history", "read"),
     ("bss_products.submit_sku", "submit"),
     ("bss_products.change_sku", "submit"),
@@ -1781,13 +1785,14 @@ async fn the_sdk_sku_types_read_the_doors_json() {
     let mut card = f.card().await;
     let sku: bss_products_sdk::models::Sku = serde_json::from_value(card.clone()).unwrap();
     assert_eq!(sku.id, f.id);
-    // P-D-262: the door also names the creator, a read-side field the SDK model does not carry.
-    assert!(
-        card.as_object_mut()
-            .unwrap()
-            .remove("created_by_name")
-            .is_some()
-    );
+    // P-D-262: the door also names the creator, and the archiving actor (P-D-263), read-side
+    // fields the SDK model does not carry.
+    for name in ["created_by_name", "archived_by_name"] {
+        assert!(
+            card.as_object_mut().unwrap().remove(name).is_some(),
+            "{name}"
+        );
+    }
     assert_eq!(serde_json::to_value(&sku).unwrap(), card);
     let (status, versions) = call(
         &f.app,

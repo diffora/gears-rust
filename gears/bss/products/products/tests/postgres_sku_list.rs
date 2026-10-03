@@ -318,6 +318,7 @@ async fn null_filters_the_order_and_the_counts_hold_on_postgres() {
             deprecated: 1,
             retired: 0,
             in_review: 1,
+            archived: 0,
         }
     );
 }

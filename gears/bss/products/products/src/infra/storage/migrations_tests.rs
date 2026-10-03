@@ -56,6 +56,7 @@ fn the_chain_is_the_guard_coord_then_the_twelve_pricebook_migrations() {
             "m20261001_000011_sku_lifecycle_honesty",
             "m20261001_000012_derived_usage_type",
             "m20261002_000013_derived_sku_unit",
+            "m20261003_000014_archive_mark",
         ]
     );
 }

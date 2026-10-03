@@ -179,6 +179,8 @@ pub(crate) fn sku_of(m: sku::Model) -> Result<Sku, RepoError> {
         created_by: m.created_by,
         created_at: m.created_at,
         updated_at: m.updated_at,
+        archived_at: m.archived_at,
+        archived_by: m.archived_by,
     })
 }
 
@@ -293,6 +295,8 @@ pub async fn insert_sku(
         created_by: Set(created_by),
         created_at: Set(now),
         updated_at: Set(now),
+        archived_at: Set(None),
+        archived_by: Set(None),
     };
     let row = sku::Entity::insert(model.clone())
         .secure()
@@ -885,6 +889,39 @@ pub async fn delete_draft_sku(
         .await
         .map_err(|e| driver_failure("delete draft SKU".into(), e))?;
     Ok(r.rows_affected == 1)
+}
+/// Write the archive mark (P-D-263) at the revision the caller read: `Some(actor)` archives the
+/// SKU now, `None` unarchives it. The mark is a write of its own (`revision` + 1, `updated_at`); the
+/// lifecycle is not touched, and the door judges which SKU may carry the mark.
+/// # Errors
+/// Returns scoped storage failures. `Unmatched` when the revision moved or the SKU is gone.
+pub async fn set_sku_archived(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    id: Uuid,
+    expected_revision: i64,
+    archived_by: Option<Uuid>,
+    now: OffsetDateTime,
+) -> Result<HeadWrite<Sku>, RepoError> {
+    let r = sku::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            sku::Column::ArchivedAt,
+            Expr::value(archived_by.map(|_| now)),
+        )
+        .col_expr(sku::Column::ArchivedBy, Expr::value(archived_by))
+        .col_expr(sku::Column::UpdatedAt, Expr::value(now))
+        .col_expr(
+            sku::Column::Revision,
+            Expr::col(sku::Column::Revision).add(1_i64),
+        )
+        .filter(key(tenant_id, id).add(sku::Column::Revision.eq(expected_revision)))
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure("mark SKU archived".into(), e))?;
+    written(runner, scope, tenant_id, id, r.rows_affected).await
 }
 #[cfg(test)]
 #[path = "sku_repo_tests.rs"]

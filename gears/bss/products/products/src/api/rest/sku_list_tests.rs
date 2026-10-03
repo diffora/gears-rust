@@ -851,6 +851,25 @@ async fn the_list_and_the_counts_read_in_fixed_statements_for_10_and_100_skus() 
     }
 }
 
+/// The archive mark adds no statement (P-D-263): the list hiding archived rows, the list of
+/// archived rows and the counts with their `archived` number read in the same two statements, for
+/// 10 and for 100 SKUs.
+#[tokio::test]
+async fn the_archived_list_and_counts_read_in_the_same_fixed_statements() {
+    let (ten, ten_rec) = recorded_door(10).await;
+    let (hundred, hundred_rec) = recorded_door(100).await;
+    for uri in [
+        list(&[("$filter", "archived eq true")]),
+        list(&[("$filter", "archived eq false and lifecycle eq 'published'")]),
+        counts(&[("$filter", "archived eq true")]),
+    ] {
+        let a = statements(&ten, &ten_rec, &uri).await;
+        let b = statements(&hundred, &hundred_rec, &uri).await;
+        assert_eq!(a.len(), 2, "{uri}: one fence expiry and one read: {a:#?}");
+        assert_eq!(a, b, "{uri}: the same statements whatever the size");
+    }
+}
+
 /// The orphan-fence expiry the list and the counts run first is set-based (P-D-189, P-D-211): a
 /// read that finds 1 expired fence and a read that finds 5 make the same number of statements —
 /// the tenant's expired fences, one UPDATE lifting them all, one INSERT of all their audit rows,

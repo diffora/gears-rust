@@ -381,6 +381,8 @@ impl ReferenceRegistryV1 for Catalog {
             created_by: Uuid::nil(),
             created_at: time::OffsetDateTime::now_utc(),
             updated_at: time::OffsetDateTime::now_utc(),
+            archived_at: None,
+            archived_by: None,
         })
     }
     async fn sku_version_as_of(
