@@ -17,7 +17,7 @@ use crate::{
         storage::{
             RepoError,
             entity::{self, price_book_entry},
-            repo::{self, price_book_entry_repo, price_repo},
+            repo::{self, acceptance_repo, price_book_entry_repo, price_repo},
         },
     },
 };
@@ -218,7 +218,11 @@ async fn open_change_in(
         target: target.id,
         end: request.end,
     };
-    crate::infra::prices::guard_change(&change, &chain, &pc.prices, request.today, false)
+    // D-520: only a consumer's binding refuses a cancel, never the `keep_for_bound` mark alone.
+    let bound = request.kind == price::ChangeKind::Cancel
+        && acceptance_repo::binds_price(tx, &AccessScope::for_tenant(tenant), tenant, target.id)
+            .await?;
+    crate::infra::prices::guard_change(&change, &chain, &pc.prices, request.today, false, bound)
         .map_err(support::approval_failure)?;
     let now = crate::infra::storage::stored_now();
     // The row names the price and carries its money and chain unchanged: it is not a price of

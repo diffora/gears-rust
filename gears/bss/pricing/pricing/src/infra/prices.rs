@@ -21,8 +21,8 @@ use crate::{
             RepoError,
             entity::{self, price_book_entry},
             repo::{
-                book_repo, dimension_repo, plan_item_repo, plan_repo, plan_revision_repo,
-                price_book_entry_repo, price_repo,
+                acceptance_repo, book_repo, dimension_repo, plan_item_repo, plan_repo,
+                plan_revision_repo, price_book_entry_repo, price_repo,
             },
         },
     },
@@ -728,7 +728,11 @@ impl PricesSubject {
                     format!("price {}", change.target),
                 ));
             }
-            let ended = guard_change(change, &before, &pc.prices, today, applying)?;
+            let bound = change.kind == ChangeKind::Cancel
+                && acceptance_repo::binds_price(tx, &self.scope(), self.tenant_id, change.target)
+                    .await
+                    .map_err(storage)?;
+            let ended = guard_change(change, &before, &pc.prices, today, applying, bound)?;
             if let Some(target) = before.iter().find(|row| row.id == change.target) {
                 touched.insert(target.dim_value.clone());
             }
@@ -757,15 +761,18 @@ impl PricesSubject {
 
 /// The guards of a `cancel` or an `end` (D-520, D-521): at its door, at submit and again at
 /// apply. `chain` is the entry's approved prices as the unit's own prices leave them; `stored` is
-/// every row of the entry. An `end` answers its price explicitly closed at the new end.
+/// every row of the entry; `bound` says whether a consumer's binding names the price a cancel
+/// names ([`acceptance_repo::binds_price`]). An `end` answers its price explicitly closed at the
+/// new end.
 ///
 /// A cancel names an approved price that has not started, that no other pending change names
-/// and that is not kept for bound subscriptions. An end names an approved price that has not
-/// ended by today and that no other pending change names; its new end is after today, after the
-/// price's start and no later than its current end.
+/// and that no binding names. Its `keep_for_bound` mark is not the test: the apply sets it on the
+/// price before every `new` price, whether or not anyone holds it (D-520 amended). An end names an
+/// approved price that has not ended by today and that no other pending change names; its new
+/// end is after today, after the price's start and no later than its current end.
 /// # Errors
 /// A cancel: `PRICE_NOT_SCHEDULED` (not approved, or started; `PRICE_ALREADY_STARTED` when
-/// applying), `PRICE_CHANGE_PENDING`, `PRICE_BOUND`. An end: `PRICE_ALREADY_ENDED` (not approved,
+/// applying), `PRICE_CHANGE_PENDING`, `PRICE_BOUND` (a binding names it). An end: `PRICE_ALREADY_ENDED` (not approved,
 /// or ended), `PRICE_CHANGE_PENDING`, `END_DATE_INVALID`.
 pub fn guard_change(
     change: &Change,
@@ -773,6 +780,7 @@ pub fn guard_change(
     stored: &[entity::price::Model],
     today: Date,
     applying: bool,
+    bound: bool,
 ) -> Result<Option<Price>, ApprovalError> {
     let refuse = |code: &'static str| invalid(code, format!("price {}", change.target));
     let target = chain
@@ -797,10 +805,7 @@ pub fn guard_change(
             if pending {
                 return Err(refuse("PRICE_CHANGE_PENDING"));
             }
-            if stored
-                .iter()
-                .any(|row| row.id == change.target && row.keep_for_bound)
-            {
+            if bound {
                 return Err(refuse("PRICE_BOUND"));
             }
             Ok(None)

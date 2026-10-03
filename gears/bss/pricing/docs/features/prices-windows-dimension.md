@@ -203,7 +203,7 @@ Requirement: `cpt-cf-bss-pricing-fr-temporary-pair`; PRD AC #8.
 
 - [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-price-pending-guard`
 
-Draft PATCH/DELETE requires current version and no pending unit. Historical approved prices cannot be deleted; pending ownership is acquired conditionally by approval submission (spec §5–§6). A draft `cancel` or `end` row is deleted, never edited (409 PRICE_NOT_DRAFT on PATCH), and its guards run at its door, at submit and again at apply (D-520, D-521).
+Draft PATCH/DELETE requires current version and no pending unit. Historical approved prices cannot be deleted; pending ownership is acquired conditionally by approval submission (spec §5–§6). A draft `cancel` or `end` row is deleted, never edited (409 PRICE_NOT_DRAFT on PATCH), and its guards run at its door, at submit and again at apply (D-520, D-521). A cancel is refused 409 PRICE_BOUND only when a consumer's binding names the price (an acceptance whose bindings name it); its `keep_for_bound` mark alone never refuses it (D-520 amended).
 
 Requirement: `cpt-cf-bss-pricing-fr-price`; PRD AC #4.
 
@@ -235,7 +235,7 @@ Requirement: `cpt-cf-bss-pricing-fr-reference-protocol`; PRD AC #11.
 | `cpt-cf-bss-pricing-dod-min-fee-price-period` | AC #7; `cpt-cf-bss-pricing-fr-min-fee` | Given two 10 charges bound to one price with floor 30 then the result is 30; two distinct floor-30 prices yield 60, not 30 or 120. |
 | `cpt-cf-bss-pricing-dod-temporary-pair` | AC #8; `cpt-cf-bss-pricing-fr-temporary-pair` | Given an existing EU chain, when a five-day temporary change shifts by three days then both boundaries shift and the return stays EU; partial pair submission fails. |
 | `cpt-cf-bss-pricing-dod-temporary-value-fallback` | AC #8; `cpt-cf-bss-pricing-fr-temporary-pair` | Given only a default chain, when a temporary EU override ends then EU follows the current default; no paired return price exists. |
-| `cpt-cf-bss-pricing-dod-price-pending-guard` | AC #4; `cpt-cf-bss-pricing-fr-price` | Given a pending price and its old ETag, when PATCH or DELETE runs then it is refused and unit content is unchanged; an unlocked current draft can be edited. |
+| `cpt-cf-bss-pricing-dod-price-pending-guard` | AC #4; `cpt-cf-bss-pricing-fr-price` | Given a pending price and its old ETag, when PATCH or DELETE runs then it is refused and unit content is unchanged; an unlocked current draft can be edited. Given a scheduled `keep_for_bound` price that no binding names, when it is cancelled then the cancel applies and its predecessor re-opens; given an acceptance whose bindings name it, the cancel is refused 409 PRICE_BOUND at the door, at submit and at apply (D-520). |
 | `cpt-cf-bss-pricing-dod-reference-protocol` | AC #11; `cpt-cf-bss-pricing-fr-reference-protocol` | Given Products and Pricing on real SQLite/Postgres storage, when reserve races retire then both cannot succeed; a live entry blocks retire until durable removal and release. |
 | `cpt-cf-bss-pricing-dod-confirmation-retry` | AC #11; `cpt-cf-bss-pricing-fr-reference-protocol` | Given a committed entry and lost confirm response, when retry resumes then it confirms safely without release; a receipt released before its confirm is re-reserved (lost, with PriceBookEntryReferenceLost, only when the SKU is fenced, retiring or retired) and deletion release failure remains queued. |
 

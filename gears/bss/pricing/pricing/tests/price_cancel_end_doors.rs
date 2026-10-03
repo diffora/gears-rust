@@ -6,7 +6,8 @@
 mod entry_support;
 
 use bss_pricing::infra::clock::Clock;
-use bss_pricing::infra::storage::repo::{price_book_entry_repo, price_repo};
+use bss_pricing::infra::commercial_terms::wire;
+use bss_pricing::infra::storage::repo::{acceptance_repo, price_book_entry_repo, price_repo};
 use entry_support::{Fixture, Script, request, state_with_clock, test_db};
 use sea_orm::{ConnectionTrait, Database, DbBackend, Statement};
 use serde_json::{Value, json};
@@ -104,41 +105,35 @@ impl World {
 
     /// An approved price of the default chain, written through the repository.
     async fn seed(&self, version_no: i32, from: &str) -> Uuid {
-        self.insert(version_no, from, None, false).await
+        self.write(version_no, from, |_| {}).await
     }
 
     async fn seed_bound(&self, version_no: i32, from: &str) -> Uuid {
-        self.insert(version_no, from, None, true).await
+        self.write(version_no, from, |p| p.keep_for_bound = true)
+            .await
     }
 
     async fn seed_ended(&self, version_no: i32, from: &str, to: &str) -> Uuid {
-        self.insert(version_no, from, Some(to), false).await
+        self.write(version_no, from, |p| {
+            p.effective_to = Some(date(to));
+            p.closed_explicitly = true;
+        })
+        .await
     }
 
     /// An approved price whose end the next start set, as normalisation stores it: not an
     /// explicit end.
     async fn seed_closed(&self, version_no: i32, from: &str, to: &str) -> Uuid {
-        self.write(version_no, from, Some(to), false, false).await
-    }
-
-    async fn insert(
-        &self,
-        version_no: i32,
-        from: &str,
-        to: Option<&str>,
-        keep_for_bound: bool,
-    ) -> Uuid {
-        self.write(version_no, from, to, to.is_some(), keep_for_bound)
+        self.write(version_no, from, |p| p.effective_to = Some(date(to)))
             .await
     }
 
+    /// An approved price as `seed` writes it, then `tweak`ed.
     async fn write(
         &self,
         version_no: i32,
         from: &str,
-        to: Option<&str>,
-        closed_explicitly: bool,
-        keep_for_bound: bool,
+        tweak: impl FnOnce(&mut bss_pricing::infra::storage::entity::price::Model),
     ) -> Uuid {
         let tenant = self.f.ctx.subject_tenant_id();
         let scope = AccessScope::for_tenant(tenant);
@@ -152,10 +147,33 @@ impl World {
         price.state = "approved".into();
         price.price_json = json!({"rate": "1.00"});
         price.effective_from = date(from);
-        price.effective_to = to.map(date);
-        price.closed_explicitly = closed_explicitly;
-        price.keep_for_bound = keep_for_bound;
+        tweak(&mut price);
         price_repo::insert(&conn, &scope, price).await.unwrap().id
+    }
+
+    /// A consumer's binding: an acceptance whose receipt binds `price` (D-520). `order` is the
+    /// receipt's order id, any id. The receipt is the stored v1 fixture with the tenant, the
+    /// identities and the bound price replaced; its digests are not recomputed, and the
+    /// repository does not recompute them either.
+    async fn bind(&self, price: Uuid, order: Uuid) {
+        let tenant = self.f.ctx.subject_tenant_id();
+        let mut receipt =
+            wire::decode_acceptance(include_str!("commercial_receipts/acceptance-v1.json"))
+                .unwrap();
+        receipt.acceptance_id = Uuid::now_v7();
+        receipt.query.tenant_axes.seller_tenant_id = tenant;
+        receipt.query.order_id = order;
+        receipt.bindings[0].price_book_entry_id = self.entry;
+        receipt.bindings[0].price.price_book_entry_id = self.entry;
+        receipt.bindings[0].price.price_id = price;
+        let row = acceptance_repo::from_receipt(&receipt, self.f.ctx.subject_id()).unwrap();
+        acceptance_repo::insert(
+            &self.f.db.conn().unwrap(),
+            &AccessScope::for_tenant(tenant),
+            row,
+        )
+        .await
+        .unwrap();
     }
 
     async fn call(&self, method: &str, path: &str, body: Value, key: Option<&str>) -> (u16, Value) {
@@ -442,7 +460,9 @@ async fn the_cancel_guards_answer_their_codes() {
     let world = World::at("2026-02-15").await;
     let live = world.seed(1, "2026-01-01").await;
     let scheduled = world.seed(2, "2026-03-01").await;
+    // A consumer's binding names it: `keep_for_bound` alone would not refuse (D-520 amended).
     let bound = world.seed_bound(3, "2026-04-01").await;
+    world.bind(bound, Uuid::new_v4()).await;
     let later = world.seed(4, "2026-06-01").await;
     let answer = world
         .call(
@@ -966,4 +986,88 @@ async fn a_change_is_deleted_not_edited() {
     let rows = world.prices().await;
     assert!(rows.iter().all(|row| row["id"] != change["id"]));
     assert_eq!(World::row(&rows, &scheduled)["state"], "approved");
+}
+
+// ------------------------------------------------------------------ a binding (D-520 amended)
+
+/// Ask 19's common case: a scheduled price followed by a `new` price is `keep_for_bound`, and no
+/// binding names it, so it cancels. Its predecessor re-opens onto the `new` price's start and is
+/// now the price kept for bound subscriptions. An acceptance that names the price outside its
+/// bindings (here, as its order id) is not a binding of it.
+#[tokio::test]
+async fn a_scheduled_price_kept_for_bound_with_no_binding_cancels_and_its_predecessor_reopens() {
+    let world = World::at("2026-02-15").await;
+    let a = world.seed_closed(1, "2026-01-01", "2026-03-01").await;
+    let b = world
+        .write(2, "2026-03-01", |p| {
+            p.effective_to = Some(date("2026-05-01"));
+            p.keep_for_bound = true;
+        })
+        .await;
+    let n = world
+        .write(3, "2026-05-01", |p| p.eligibility = "new".into())
+        .await;
+    world.bind(a, b).await;
+    let change = world.change(b, "cancel", json!({}), "cancel").await;
+    let (status, receipt) = world.submit(&change["id"], "submit").await;
+    assert_eq!(status, 201, "{receipt}");
+    assert_eq!(receipt["applied"], true);
+    let rows = world.prices().await;
+    assert_eq!(World::row(&rows, &b)["state"], "cancelled");
+    let reopened = World::row(&rows, &a);
+    assert_eq!(reopened["effective_to"], "2026-05-01");
+    assert_eq!(
+        reopened["keep_for_bound"], true,
+        "the price before the `new` one now keeps renewals"
+    );
+    assert_eq!(World::row(&rows, &n)["state"], "approved");
+    assert_eq!(World::row(&rows, &n)["effective_to"], Value::Null);
+}
+
+/// A real binding refuses a cancel with `PRICE_BOUND`, `keep_for_bound` or not: an acceptance
+/// whose bindings name the price. It is refused at the door, at submit and again at apply.
+#[tokio::test]
+async fn a_price_that_a_binding_names_is_refused_at_every_guard() {
+    let world = World::at("2026-02-15").await;
+    world.seed_closed(1, "2026-01-01", "2026-03-01").await;
+    let b = world
+        .write(2, "2026-03-01", |p| {
+            p.effective_to = Some(date("2026-05-01"));
+            p.keep_for_bound = true;
+        })
+        .await;
+    let c = world.seed_closed(3, "2026-05-01", "2026-07-01").await;
+    let d = world.seed(4, "2026-07-01").await;
+    world.bind(b, Uuid::new_v4()).await;
+    let answer = world
+        .call(
+            "POST",
+            &format!("/prices/{b}/cancel"),
+            json!({}),
+            Some("door"),
+        )
+        .await;
+    refused(&answer, 409, "PRICE_BOUND");
+
+    let draft = world.change(c, "cancel", json!({}), "c").await;
+    world.bind(c, Uuid::new_v4()).await;
+    refused(
+        &world.submit(&draft["id"], "submit-c").await,
+        409,
+        "PRICE_BOUND",
+    );
+
+    world.quorum(1).await;
+    let pending = world.change(d, "cancel", json!({}), "d").await;
+    let (status, receipt) = world.submit(&pending["id"], "submit-d").await;
+    assert_eq!(status, 201, "{receipt}");
+    assert_eq!(receipt["applied"], false);
+    world.bind(d, Uuid::new_v4()).await;
+    let answer = world.approve_as_reviewer(&receipt, "approve-d").await;
+    refused(&answer, 409, "APPLY_REFUSED");
+    assert!(code(&answer.1).contains("PRICE_BOUND"), "{}", answer.1);
+    let rows = world.prices().await;
+    for id in [b, c, d] {
+        assert_eq!(World::row(&rows, &id)["state"], "approved", "{id}");
+    }
 }

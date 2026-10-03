@@ -6,7 +6,8 @@ mod entry_support;
 mod pg_support;
 
 use bss_pricing::infra::clock::Clock;
-use bss_pricing::infra::storage::repo::{price_book_entry_repo, price_repo};
+use bss_pricing::infra::commercial_terms::wire;
+use bss_pricing::infra::storage::repo::{acceptance_repo, price_book_entry_repo, price_repo};
 use bss_pricing::module::BssPricingGear;
 use entry_support::{Script, app_for, policy_support, request, state_with_clock, user_of};
 use pg_support::Pg;
@@ -283,8 +284,9 @@ fn day(s: &str) -> time::Date {
 }
 
 /// The chain on Postgres: A → B → C; cancelling B re-opens A onto C, and ending C keeps its
-/// explicit end. Each applied change keeps its price's start, which the narrowed approved-start
-/// index allows, while a second price on a taken start is still refused.
+/// explicit end. A later price D that an acceptance binds is refused a cancel (`PRICE_BOUND`).
+/// Each applied change keeps its price's start, which the narrowed approved-start index allows,
+/// while a second price on a taken start is still refused.
 #[tokio::test]
 #[ignore = "needs the Postgres harness"]
 async fn postgres_a_cancel_and_an_end_apply_through_the_unit() {
@@ -418,6 +420,34 @@ async fn postgres_a_cancel_and_an_end_apply_through_the_unit() {
             ("end", "approved", day("2026-05-01")),
         ]
     );
+    // D-520 amended: a consumer's binding refuses a cancel. The acceptance's receipt is text on
+    // Postgres too, and only its bindings count.
+    let mut later = entry_support::price(&stored);
+    later.version_no = 8;
+    later.state = "approved".into();
+    later.effective_from = day("2026-07-01");
+    let bound = price_repo::insert(&conn, &scope, later).await.unwrap().id;
+    let mut receipt =
+        wire::decode_acceptance(include_str!("commercial_receipts/acceptance-v1.json")).unwrap();
+    receipt.acceptance_id = Uuid::now_v7();
+    receipt.query.tenant_axes.seller_tenant_id = tenant;
+    receipt.bindings[0].price.price_id = bound;
+    acceptance_repo::insert(
+        &conn,
+        &scope,
+        acceptance_repo::from_receipt(&receipt, AUTHOR).unwrap(),
+    )
+    .await
+    .unwrap();
+    let (s, refused) = call(
+        "POST",
+        format!("/prices/{bound}/cancel"),
+        json!({}),
+        Some("cancel-bound"),
+    )
+    .await;
+    assert_eq!(s, 409, "{refused}");
+    assert!(refused.to_string().contains("PRICE_BOUND"), "{refused}");
     let mut twin = entry_support::price(&stored);
     twin.version_no = 9;
     twin.state = "approved".into();

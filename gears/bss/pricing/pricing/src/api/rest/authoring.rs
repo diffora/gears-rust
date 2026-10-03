@@ -617,8 +617,9 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
              at submit and again at apply. On approval the price becomes cancelled and the price \
              before it re-opens onto the next start that remains. Refusals: 400 BODY_UNEXPECTED \
              for a body other than {}; 409 PRICE_NOT_SCHEDULED (not approved, or started), \
-             PRICE_CHANGE_PENDING (another pending change names it), PRICE_BOUND (kept for bound \
-             subscriptions) or ENTRY_REFERENCE_LOST; the vote that applies the unit answers 409 \
+             PRICE_CHANGE_PENDING (another pending change names it), PRICE_BOUND (a consumer's \
+             binding names it: an acceptance whose bindings name the price; keep_for_bound alone \
+             never refuses) or ENTRY_REFERENCE_LOST; the vote that applies the unit answers 409 \
              PRICE_ALREADY_STARTED when the price started after the submit. The Idempotency-Key \
              replays the answer.",
         )

@@ -485,7 +485,7 @@ rounding_policy, a unit's kind and ref_type, a check's code and a proposal's cha
 | Changing an entry's invoice_line_override once it has an approved or pending price | 409 INVOICE_LINE_LOCKED (D-426) |
 | Edit or delete of a price that is not an unlocked draft (a pending price included); an edit of a cancel or end row, which is deleted instead (D-520) | 409 PRICE_NOT_DRAFT |
 | A cancel of a price that is not approved or has started, at its door or at submit; a cancel whose price started between submit and apply | 409 PRICE_NOT_SCHEDULED; 409 PRICE_ALREADY_STARTED, and the unit applies nothing (D-520) |
-| A cancel or an end of a price another pending change names, or that one unit names twice; a cancel of a price kept for bound subscriptions | 409 PRICE_CHANGE_PENDING; 409 PRICE_BOUND (D-520, D-521) |
+| A cancel or an end of a price another pending change names, or that one unit names twice; a cancel of a price that a consumer's binding names (an acceptance whose bindings name it; `keep_for_bound` alone never refuses) | 409 PRICE_CHANGE_PENDING; 409 PRICE_BOUND (D-520, D-521) |
 | An end that is not a date, not after today, not after the price's start or after its current end, at its door or at submit; the same at apply; an end of a price that is not approved or has ended | 400 END_DATE_INVALID; 409 APPLY_REFUSED naming END_DATE_INVALID; 409 PRICE_ALREADY_ENDED (D-521) |
 | Stale If-Match, or a conditional write that lost its version | 409 STALE_REVISION |
 | A price another pending unit owns, at submit; a plan revision whose lock is lost at submit; a contended unit | 409 PRICE_LOCKED_PENDING; 409 ROW_LOCKED_PENDING (phase 3); 409 UNIT_CONTENDED |
