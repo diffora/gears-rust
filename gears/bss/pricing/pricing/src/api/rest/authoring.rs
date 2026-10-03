@@ -7,6 +7,7 @@ pub(crate) mod configuration;
 pub mod dto;
 mod entry_list;
 pub mod inbox_source;
+mod names;
 pub mod plan_items;
 mod plan_list;
 mod plan_routes;
@@ -52,6 +53,9 @@ use toolkit::api::{
 use toolkit_canonical_errors::CanonicalError;
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
+/// The actors that are not people (D-519): pricing's own system actor, and the nil id of the
+/// platform's system context. A read names them "System" and never asks Account Management.
+pub const SYSTEM_ACTORS: [Uuid; 2] = [bss_products_sdk::PRICING_SYSTEM_ACTOR, Uuid::nil()];
 /// Dependencies shared by every authoring request.
 pub struct AuthoringState {
     pub db: toolkit_db::DBProvider<toolkit_db::DbError>,
@@ -60,6 +64,9 @@ pub struct AuthoringState {
     pub outbox: crate::infra::events::EventSink,
     /// The clock the approval doors read their instant from: the wall clock, or a test's.
     clock: Arc<dyn crate::infra::reference_work::Clock>,
+    /// The names of the actors a read shows (D-519), through Account Management when the hub
+    /// holds it.
+    actor_names: bss_rest::actor_names::ActorNames,
     pipeline: tokio::sync::Mutex<Option<Pipeline>>,
 }
 /// The running outbox processor: the broker SDK's producer, or the holding one.
@@ -110,11 +117,13 @@ impl AuthoringState {
                 Pipeline::Interim(handle),
             )
         };
+        let actor_names = bss_rest::actor_names::ActorNames::from_hub(hub.clone(), &SYSTEM_ACTORS);
         Ok(Self {
             db,
             hub,
             outbox,
             clock: Arc::new(crate::infra::reference_work::WallClock),
+            actor_names,
             pipeline: tokio::sync::Mutex::new(Some(pipeline)),
         })
     }
@@ -123,6 +132,14 @@ impl AuthoringState {
     #[must_use]
     pub fn with_clock(self, clock: Arc<dyn crate::infra::reference_work::Clock>) -> Self {
         Self { clock, ..self }
+    }
+    /// The same state naming actors with `actor_names`; tests install a fake directory.
+    #[must_use]
+    pub fn with_actor_names(self, actor_names: bss_rest::actor_names::ActorNames) -> Self {
+        Self {
+            actor_names,
+            ..self
+        }
     }
     pub(crate) async fn stop(&self) {
         match self.pipeline.lock().await.take() {
@@ -1146,13 +1163,13 @@ async fn list_publish_changes(
     )
     .await
     .map_err(authz_failure)?;
-    transaction(&state.db.db(), move |tx| {
-        let (scope, ctx) = (scope.clone(), ctx.clone());
-        Box::pin(
-            async move { approvals::publish_list(tx, &scope, ctx.subject_tenant_id(), id).await },
-        )
+    let tenant = ctx.subject_tenant_id();
+    let body = transaction(&state.db.db(), move |tx| {
+        let scope = scope.clone();
+        Box::pin(async move { approvals::publish_list(tx, &scope, tenant, id).await })
     })
-    .await
+    .await?;
+    names::named(&state, &ctx, body, None).await
 }
 async fn publish_changes(
     Extension(state): Extension<Arc<AuthoringState>>,
@@ -1236,11 +1253,13 @@ async fn list_approval_units(
         approve_scope,
         submit_scope,
     };
-    transaction(&state.db.db(), move |tx| {
-        let (scope, ctx, request) = (scope.clone(), ctx.clone(), request.clone());
-        Box::pin(async move { approvals::list_units(tx, &scope, &ctx, &request).await })
+    let caller = ctx.clone();
+    let body = transaction(&state.db.db(), move |tx| {
+        let (scope, ctx, request) = (scope.clone(), caller.clone(), request.clone());
+        Box::pin(async move { approvals::read_unit_page(tx, &scope, &ctx, &request).await })
     })
-    .await
+    .await?;
+    names::named(&state, &ctx, body, None).await
 }
 /// The unit list's narrowing, which the counts take too (D-458, D-470): a known state (else 400
 /// `UNIT_STATE_INVALID`), a kind pricing records (else 400 `QUERY_INVALID` on `kind`), and the
@@ -1430,14 +1449,16 @@ async fn get_approval_unit(
     .await
     .map_err(authz_failure)?;
     let (approve_scope, submit_scope) = approval_flag_scopes(&enforcer, &ctx).await?;
-    transaction(&state.db.db(), move |tx| {
-        let (scope, ctx) = (scope.clone(), ctx.clone());
+    let caller = ctx.clone();
+    let body = transaction(&state.db.db(), move |tx| {
+        let (scope, ctx) = (scope.clone(), caller.clone());
         let (approve_scope, submit_scope) = (approve_scope.clone(), submit_scope.clone());
         Box::pin(async move {
             approvals::get_unit(tx, &scope, &ctx, id, &approve_scope, &submit_scope).await
         })
     })
-    .await
+    .await?;
+    names::named(&state, &ctx, body, None).await
 }
 async fn approve_unit(
     Extension(state): Extension<Arc<AuthoringState>>,
@@ -1993,18 +2014,13 @@ async fn export_book(
     )
     .await
     .map_err(authz_failure)?;
-    transaction(&state.db.db(), move |tx| {
-        let (scope, ctx) = (scope.clone(), ctx.clone());
-        Box::pin(async move {
-            let tenant = ctx.subject_tenant_id();
-            Ok(response(
-                StatusCode::OK,
-                &books::export(tx, &scope, tenant, id).await?,
-                None,
-            )?)
-        })
+    let tenant = ctx.subject_tenant_id();
+    let body = transaction(&state.db.db(), move |tx| {
+        let scope = scope.clone();
+        Box::pin(async move { books::export(tx, &scope, tenant, id).await })
     })
-    .await
+    .await?;
+    names::named(&state, &ctx, body, None).await
 }
 async fn get_settings(
     Extension(state): Extension<Arc<AuthoringState>>,
@@ -2023,18 +2039,20 @@ async fn get_settings(
     )
     .await
     .map_err(authz_failure)?;
-    let answer = transaction(&state.db.db(), move |tx| {
-        let (scope, ctx) = (scope.clone(), ctx.clone());
+    let tenant = ctx.subject_tenant_id();
+    let (body, version) = transaction(&state.db.db(), move |tx| {
+        let scope = scope.clone();
         Box::pin(async move {
-            let tenant = ctx.subject_tenant_id();
             let body = configuration::settings(tx, &scope, tenant).await?;
             let version = preconditions::RowVersion::from_stored(body.version)
                 .map_err(CanonicalError::from)?
                 .get();
-            Ok(response(StatusCode::OK, &body, Some(version))?)
+            Ok((body, version))
         })
     })
     .await?;
+    // D-519: the writer's name, after the transaction.
+    let answer = names::named(&state, &ctx, body, Some(version)).await?;
     // D-518: the strong version tag stays; a matching If-None-Match is 304.
     Ok(support::revalidate_version(&headers, answer))
 }
@@ -2180,37 +2198,24 @@ async fn list_sku_entries(
     // with a null current_price; only an unavailable policy fails the read. Status is not money.
     let books = money_scope(&enforcer, &ctx).await?;
     let today = time::OffsetDateTime::now_utc().date();
-    transaction(&state.db.db(), move |tx| {
-        let (scope, books, ctx, query) = (scope.clone(), books.clone(), ctx.clone(), query.clone());
+    let tenant = ctx.subject_tenant_id();
+    let body = transaction(&state.db.db(), move |tx| {
+        let (scope, books, query) = (scope.clone(), books.clone(), query.clone());
         Box::pin(async move {
-            let body = match &query {
+            match &query {
                 price_book_entries::EntriesRead::Sku(query) => {
-                    price_book_entries::for_sku(
-                        tx,
-                        &scope,
-                        books.as_ref(),
-                        ctx.subject_tenant_id(),
-                        query,
-                        today,
-                    )
-                    .await?
+                    price_book_entries::for_sku(tx, &scope, books.as_ref(), tenant, query, today)
+                        .await
                 }
                 price_book_entries::EntriesRead::Ids(ids) => {
-                    price_book_entries::for_ids(
-                        tx,
-                        &scope,
-                        books.as_ref(),
-                        ctx.subject_tenant_id(),
-                        ids,
-                        today,
-                    )
-                    .await?
+                    price_book_entries::for_ids(tx, &scope, books.as_ref(), tenant, ids, today)
+                        .await
                 }
-            };
-            Ok(response(StatusCode::OK, &body, None)?)
+            }
         })
     })
-    .await
+    .await?;
+    names::named(&state, &ctx, body, None).await
 }
 
 async fn create_entry(
@@ -2269,10 +2274,10 @@ async fn get_entry(
     // D-440: the money is shown as D-434 shows it — price_book read, judged a second time.
     let books = money_scope(&enforcer, &ctx).await?;
     let today = time::OffsetDateTime::now_utc().date();
-    transaction(&state.db.db(), move |tx| {
-        let (scope, books, ctx) = (scope.clone(), books.clone(), ctx.clone());
+    let tenant = ctx.subject_tenant_id();
+    let (body, version) = transaction(&state.db.db(), move |tx| {
+        let (scope, books) = (scope.clone(), books.clone());
         Box::pin(async move {
-            let tenant = ctx.subject_tenant_id();
             let m = price_book_entries::find(tx, &scope, tenant, id).await?;
             let version = preconditions::RowVersion::from_stored(m.version)
                 .map_err(CanonicalError::from)?
@@ -2283,10 +2288,11 @@ async fn get_entry(
                 .await?
                 .pop()
                 .ok_or_else(|| CanonicalError::internal("the read entry is gone").create())?;
-            Ok(response(StatusCode::OK, &body, Some(version))?)
+            Ok((body, version))
         })
     })
-    .await
+    .await?;
+    names::named(&state, &ctx, body, Some(version)).await
 }
 
 /// D-434: the money's grant, `price_book` read, judged a second time in the request: its scope
@@ -2359,24 +2365,24 @@ async fn list_entry_prices(
     let books = money_scope(&enforcer, &ctx).await?;
     let wanted = wanted_statuses(&uri)?;
     let today = time::OffsetDateTime::now_utc().date();
-    transaction(&state.db.db(), move |tx| {
-        let (scope, books, ctx, wanted) =
-            (scope.clone(), books.clone(), ctx.clone(), wanted.clone());
+    let tenant = ctx.subject_tenant_id();
+    let body = transaction(&state.db.db(), move |tx| {
+        let (scope, books, wanted) = (scope.clone(), books.clone(), wanted.clone());
         Box::pin(async move {
-            let body = price_book_entries::prices(
+            price_book_entries::prices(
                 tx,
                 &scope,
                 books.as_ref(),
-                ctx.subject_tenant_id(),
+                tenant,
                 id,
                 wanted.as_deref(),
                 today,
             )
-            .await?;
-            Ok(response(StatusCode::OK, &body, None)?)
+            .await
         })
     })
-    .await
+    .await?;
+    names::named(&state, &ctx, body, None).await
 }
 
 async fn patch_entry(

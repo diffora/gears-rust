@@ -255,7 +255,7 @@ pub(super) async fn patch(
 }
 /// `GET /plan-items/{id}` (D-434): the item with its revision's number and state and its plan,
 /// its version as the `ETag` a following PATCH sends back as If-Match. The state is the one the
-/// revision reads today among its plan's revisions (D-447).
+/// revision reads today among its plan's revisions (D-447). The door names its actors (D-519).
 /// # Errors
 /// 404 for an item the tenant does not hold.
 pub(super) async fn get(
@@ -263,7 +263,7 @@ pub(super) async fn get(
     scope: &AccessScope,
     tenant: Uuid,
     id: Uuid,
-) -> Result<Response, DoorError> {
+) -> Result<(super::dto::PricingPlanItemReadDto, u64), DoorError> {
     let m = plan_item_repo::find(tx, scope, tenant, id)
         .await?
         .ok_or_else(|| support::missing_what("plan_item"))?;
@@ -280,16 +280,15 @@ pub(super) async fn get(
     let version = crate::api::rest::preconditions::RowVersion::from_stored(m.version)
         .map_err(CanonicalError::from)?
         .get();
-    Ok(support::response(
-        StatusCode::OK,
-        &super::dto::PricingPlanItemReadDto {
+    Ok((
+        super::dto::PricingPlanItemReadDto {
             item: m.try_into()?,
             plan_id: r.plan_id,
             rev_no: r.rev_no,
             state,
         },
-        Some(version),
-    )?)
+        version,
+    ))
 }
 enum Begun {
     Replay(Receipt),

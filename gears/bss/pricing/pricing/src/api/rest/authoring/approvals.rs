@@ -778,7 +778,7 @@ async fn proposals(
     Ok(out)
 }
 
-/// `GET /price-books/{id}/publish-changes`.
+/// `GET /price-books/{id}/publish-changes`: the body, whose actors the door names (D-519).
 /// # Errors
 /// Returns a missing book or storage failure.
 pub async fn publish_list(
@@ -786,7 +786,7 @@ pub async fn publish_list(
     scope: &AccessScope,
     tenant: Uuid,
     book: Uuid,
-) -> Result<Response, DoorError> {
+) -> Result<PricingPublishChanges, DoorError> {
     let model = book_repo::find(tx, scope, tenant, book)
         .await?
         .ok_or_else(support::missing)?;
@@ -794,12 +794,11 @@ pub async fn publish_list(
     let entries: BTreeSet<Uuid> = prices.iter().map(|r| r.entry.id).collect();
     let plans = crate::infra::prices::plans_reading(tx, tenant, &entries, plans::today()).await?;
     let impact = crate::infra::prices::impact_of(prices.len(), entries.len(), &plans);
-    let body = PricingPublishChanges {
+    Ok(PricingPublishChanges {
         book: PriceBookDto::from(model),
         prices,
         impact,
-    };
-    Ok(support::response(StatusCode::OK, &body, None)?)
+    })
 }
 
 /// `POST /price-books/{id}/publish-changes`: the ticked drafts (all when omitted), their pair
@@ -968,23 +967,14 @@ pub struct UnitListRequest {
 /// `GET /approval-units`: one page in submission order (D-458), oldest or newest first (D-470),
 /// each unit with every generation's decisions, whether the caller `ctx` may approve it (D-471)
 /// and, unless the request declines it, the same live impact as the card. The tenant and the
-/// reader both come from `ctx`, so they cannot be swapped (the phase 9 review's R7). The page, its units' items, their
-/// decisions and the plans their impact names are read set-based: a fixed number of statements
-/// whatever the page's size, and no plan read without the impact.
+/// reader both come from `ctx`, so they cannot be swapped (the phase 9 review's R7). The page, its
+/// units' items, their decisions and the plans their impact names are read set-based: a fixed
+/// number of statements whatever the page's size, and no plan read without the impact.
+///
+/// The page is a value. The HTTP door names its actors (D-519) and answers it; the inbox reads it
+/// without parsing a response body back out of JSON.
 /// # Errors
 /// Returns a cursor the pager refuses (400) or storage failures.
-pub async fn list_units(
-    tx: &DbTx<'_>,
-    scope: &AccessScope,
-    ctx: &SecurityContext,
-    request: &UnitListRequest,
-) -> Result<Response, DoorError> {
-    let listed = read_unit_page(tx, scope, ctx, request).await?;
-    Ok(support::response(StatusCode::OK, &listed, None)?)
-}
-
-/// The list door's page, as a value. The HTTP door wraps it; the inbox reads it without parsing
-/// the response body back out of JSON.
 pub async fn read_unit_page(
     tx: &DbTx<'_>,
     scope: &AccessScope,
@@ -1105,7 +1095,7 @@ pub async fn count_units(
 }
 /// `GET /approval-units/{id}`: the stored snapshot, the decisions, the live impact and whether
 /// the caller `ctx` may approve it (D-471). The tenant and the reader both come from `ctx` (the
-/// phase 9 review's R9).
+/// phase 9 review's R9). The door names its actors (D-519).
 /// # Errors
 /// Returns a missing unit or storage failure.
 pub async fn get_unit(
@@ -1115,7 +1105,7 @@ pub async fn get_unit(
     id: Uuid,
     approve_scope: &AccessScope,
     submit_scope: &AccessScope,
-) -> Result<Response, DoorError> {
+) -> Result<PricingApprovalUnitDto, DoorError> {
     let (tenant, reader) = (ctx.subject_tenant_id(), ctx.subject_id());
     let store = PricingApprovalStore {
         scope: scope.clone(),
@@ -1135,7 +1125,7 @@ pub async fn get_unit(
     )?;
     dto.impact = Some(kind.impact(tx, tenant, &items).await?);
     name_books(tx, tenant, std::slice::from_mut(&mut dto)).await?;
-    Ok(support::response(StatusCode::OK, &dto, None)?)
+    Ok(dto)
 }
 
 /// The subject a pending unit is judged by, chosen by its stored kind: for `prices`, its book,

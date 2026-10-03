@@ -296,11 +296,13 @@ async fn get_plan(
     )
     .await
     .map_err(authz_failure)?;
-    transaction(&state.db.db(), move |tx| {
-        let (scope, ctx) = (scope.clone(), ctx.clone());
-        Box::pin(async move { plans::get(tx, &scope, ctx.subject_tenant_id(), id).await })
+    let tenant = ctx.subject_tenant_id();
+    let (body, version) = transaction(&state.db.db(), move |tx| {
+        let scope = scope.clone();
+        Box::pin(async move { plans::get(tx, &scope, tenant, id).await })
     })
-    .await
+    .await?;
+    super::names::named(&state, &ctx, body, Some(version)).await
 }
 async fn patch_plan(
     Extension(state): Extension<Arc<AuthoringState>>,
@@ -419,13 +421,13 @@ async fn get_revision(
     .map_err(authz_failure)?;
     // D-440: the sale-date price is money, judged after plan read and before the revision's 404.
     let books = super::money_scope(&enforcer, &ctx).await?;
-    transaction(&state.db.db(), move |tx| {
-        let (scope, books, ctx) = (scope.clone(), books.clone(), ctx.clone());
-        Box::pin(async move {
-            plans::get_revision(tx, &scope, books.as_ref(), ctx.subject_tenant_id(), id).await
-        })
+    let tenant = ctx.subject_tenant_id();
+    let (body, version) = transaction(&state.db.db(), move |tx| {
+        let (scope, books) = (scope.clone(), books.clone());
+        Box::pin(async move { plans::get_revision(tx, &scope, books.as_ref(), tenant, id).await })
     })
-    .await
+    .await?;
+    super::names::named(&state, &ctx, body, Some(version)).await
 }
 async fn get_reservations(
     Extension(state): Extension<Arc<AuthoringState>>,
@@ -739,11 +741,13 @@ async fn get_item(
     )
     .await
     .map_err(authz_failure)?;
-    transaction(&state.db.db(), move |tx| {
-        let (scope, ctx) = (scope.clone(), ctx.clone());
-        Box::pin(async move { plan_items::get(tx, &scope, ctx.subject_tenant_id(), id).await })
+    let tenant = ctx.subject_tenant_id();
+    let (body, version) = transaction(&state.db.db(), move |tx| {
+        let scope = scope.clone();
+        Box::pin(async move { plan_items::get(tx, &scope, tenant, id).await })
     })
-    .await
+    .await?;
+    super::names::named(&state, &ctx, body, Some(version)).await
 }
 async fn patch_item(
     Extension(state): Extension<Arc<AuthoringState>>,

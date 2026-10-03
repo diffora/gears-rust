@@ -508,7 +508,7 @@ fn list_failure(error: plan_repo::PlanListError) -> DoorError {
         plan_repo::PlanListError::Repo(error) => DoorError::Repo(error),
     }
 }
-/// `GET /plans/{id}`: the plan and its version.
+/// `GET /plans/{id}`: the plan and its version. The door names its actors (D-519).
 /// # Errors
 /// 404 for a plan the tenant does not hold.
 pub(super) async fn get(
@@ -516,14 +516,10 @@ pub(super) async fn get(
     scope: &AccessScope,
     tenant: Uuid,
     id: Uuid,
-) -> Result<Response, DoorError> {
+) -> Result<(PricingPlanDto, u64), DoorError> {
     let m = find_plan(tx, scope, tenant, id).await?;
     let version = etag(m.version)?;
-    Ok(support::response(
-        StatusCode::OK,
-        &plan_body(tx, tenant, m).await?,
-        Some(version),
-    )?)
+    Ok((plan_body(tx, tenant, m).await?, version))
 }
 /// `PATCH /plans/{id}`: rename at the version the caller read.
 /// # Errors
@@ -903,7 +899,7 @@ async fn clone_in(
 /// D-480 (sale date, entry summaries, carried SKUs). `books` is the caller's `price_book` read,
 /// `None` without that grant: an entry of a book it does not admit has a null sale-date price.
 /// The money's 503 is the handler's, before this read, so a missing revision is 404 only after
-/// the policy can judge (D-440).
+/// the policy can judge (D-440). The door names its actors (D-519).
 /// # Errors
 /// 404 for a revision the tenant does not hold.
 pub(super) async fn get_revision(
@@ -912,14 +908,10 @@ pub(super) async fn get_revision(
     books: Option<&AccessScope>,
     tenant: Uuid,
     id: Uuid,
-) -> Result<Response, DoorError> {
+) -> Result<(dto::PricingPlanRevisionReadDto, u64), DoorError> {
     let m = find_revision(tx, scope, tenant, id).await?;
     let version = etag(m.version)?;
-    Ok(support::response(
-        StatusCode::OK,
-        &revision_read(tx, books, tenant, m).await?,
-        Some(version),
-    )?)
+    Ok((revision_read(tx, books, tenant, m).await?, version))
 }
 /// `GET /plan-revisions/{id}/reservations` (D-480): each item's reference, under plan read. Two
 /// statements: the revision's find (404 when the tenant does not hold it) and its items.
