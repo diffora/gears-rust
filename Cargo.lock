@@ -2287,13 +2287,21 @@ dependencies = [
 name = "cf-gears-bss-rest"
 version = "0.0.0"
 dependencies = [
+ "async-trait",
  "aws-lc-rs",
  "axum",
  "base64 0.22.1",
+ "cf-gears-account-management-sdk",
+ "cf-gears-toolkit",
+ "cf-gears-toolkit-canonical-errors",
+ "cf-gears-toolkit-odata",
+ "cf-gears-toolkit-security",
+ "futures-util",
  "http",
  "serde",
  "serde_json",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
