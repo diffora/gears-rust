@@ -81,7 +81,7 @@
 | P-D-258 | H | A published usage SKU keeps its metering | DECIDED 2026-10-02 · Owner, 2026-10-02; run 9.13; amends P-D-232, P-D-251 |
 | P-D-259 | H | A usage SKU sells a derived usage type, and its unit is that type's | DECIDED 2026-10-02 · Owner, 2026-10-02; run 9.13; amends P-D-207, P-D-229, P-D-232, P-D-251 |
 | P-D-261 | M | The SKU, derived-type and category lists answer 304 | DECIDED 2026-10-03 · Owner, 2026-10-03 (asks 56, 57); extends P-D-247 |
-| P-D-262 | M | Every actor id a read shows carries its current name (twin of pricing D-519) | DECIDED 2026-10-03 · Owner, 2026-10-02 (ask 32: names on the server, through AM); extends P-D-213, P-D-224, P-D-231 |
+| P-D-262 | M | Every actor id a read shows carries its current name (twin of pricing D-519) | DECIDED 2026-10-03 · Owner, 2026-10-02 (ask 32: names on the server, through AM); extends P-D-213, P-D-224, P-D-231; amended 2026-10-03 (one lookup per inbox card) |
 | P-D-263 | M | A retired SKU or category can be archived, and its list hides it by default (twin of pricing D-522) | DECIDED 2026-10-03 · Owner, 2026-10-03 ("archived"; ask 58b); extends P-D-208, P-D-210, P-D-211, P-D-215 |
 | P-D-264 | M | A text function on `lifecycle` filters by the lifecycles it matches | DECIDED 2026-10-03 · Owner, 2026-10-03 ("yes, add it"); amends P-D-249 |
 
@@ -2087,6 +2087,16 @@ Management read per id of its own.
   actor reads `"System"` without a call, a failing directory leaves every name null on a 200, a rename shows on the
   next read, a page of SKUs by four authors makes one call for the four, a write answer's names are null, and a hub
   without AM reads null names.
+
+**Amended 2026-10-03 (branch review).** The inbox card is named once.
+
+- The card door's read and its names are two steps: `approval_units::card` reads the card, and the REST door fills its
+  names. The inbox source answers the card from `card`, unnamed, and the approvals inbox names it (AP-D-11). One inbox
+  card read makes one lookup, not two.
+- The source declares this gear's `SYSTEM_ACTORS`, the nil id and pricing's system actor, through
+  `ApprovalSourceV1::system_actors`. The inbox names them "System" as products does.
+- The tests: `actor_names_tests::an_inbox_card_read_makes_one_lookup` and
+  `the_source_declares_the_system_actors_this_gear_names`.
 
 **Source:** Owner, 2026-10-02 (ask 32: "there was already code that resolves the names through AM; do it that way on
 the server"). Twin of pricing D-519. Extends P-D-213, P-D-224 and P-D-231.

@@ -274,6 +274,15 @@ impl ActorNames {
         }
     }
 
+    /// These names with `more` system actors beside the gear's own: a facade adds the system
+    /// actors its sources declare, for one answer.
+    #[must_use]
+    pub fn with_system_ids(&self, more: impl IntoIterator<Item = Uuid>) -> Self {
+        let mut names = self.clone();
+        names.system_ids.extend(more);
+        names
+    }
+
     /// The name of every id, in one bounded set of lookups.
     ///
     /// The caller has already authorized and loaded the records the ids come

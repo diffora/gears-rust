@@ -61,10 +61,9 @@ impl People {
     }
 }
 
-/// The fixture's doors and the derived types' over the fixture's database, naming actors through
-/// `people`.
-fn named_app(f: &Fixture, people: Arc<People>) -> Router {
-    let state = Arc::new(crate::api::rest::ApiState {
+/// The fixture's state over its database, naming actors through `people`.
+fn named_state(f: &Fixture, people: Arc<People>) -> Arc<crate::api::rest::ApiState> {
+    Arc::new(crate::api::rest::ApiState {
         db: f.state.db.clone(),
         sink: f.state.sink.clone(),
         usage_type_catalog: f.state.usage_type_catalog.clone(),
@@ -74,7 +73,13 @@ fn named_app(f: &Fixture, people: Arc<People>) -> Router {
         reference_principals: f.state.reference_principals.clone(),
         hub: f.state.hub.clone(),
         actor_names: ActorNames::with_directory(people, &crate::api::rest::SYSTEM_ACTORS),
-    });
+    })
+}
+
+/// The fixture's doors and the derived types' over the fixture's database, naming actors through
+/// `people`.
+fn named_app(f: &Fixture, people: Arc<People>) -> Router {
+    let state = named_state(f, people);
     let openapi = toolkit::api::OpenApiRegistryImpl::new();
     routes(state.clone(), &openapi)
         .merge(crate::api::rest::derived_usage_types::router(
@@ -389,4 +394,77 @@ async fn a_page_of_skus_by_several_authors_makes_one_directory_call() {
             .map(|n| format!("Author {n}"));
         named(row, "created_by", expected.as_deref());
     }
+}
+
+/// The approvals inbox over this gear's source alone, naming actors through `people`, as the
+/// facade names them.
+fn named_inbox(f: &Fixture, people: Arc<People>) -> Router {
+    use bss_approvals_sdk::ApprovalSourceV1;
+    let source = Arc::new(
+        crate::api::rest::approval_units::inbox_source::ProductsApprovalSource::new(
+            named_state(f, people.clone()),
+            flat_in_enforcer(f.tenant),
+        ),
+    );
+    let hub = Arc::new(toolkit::ClientHub::new());
+    hub.register_scoped::<dyn ApprovalSourceV1>(
+        toolkit::client_hub::ClientScope::new("products"),
+        source,
+    );
+    let state = bss_approvals::api::ApiState::new(vec!["products".into()], hub).with_actor_names(
+        ActorNames::with_directory(people, &bss_approvals::api::SYSTEM_ACTORS),
+    );
+    bss_approvals::api::rest::router(Arc::new(state), &toolkit::api::OpenApiRegistryImpl::new())
+}
+
+/// AP-D-11, P-D-262: an inbox card read makes ONE lookup. This gear's source answers the card
+/// unnamed and the inbox names its submitter, its voter and the live SKU's creator once.
+#[tokio::test]
+async fn an_inbox_card_read_makes_one_lookup() {
+    let w = world().await;
+    let inbox = named_inbox(&w.f, w.people.clone());
+    let before = w.people.calls();
+    let response = inbox
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("/bss-approvals/v1/approval-units/{}", w.unit))
+                .extension(w.f.author.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let card: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        w.people.calls() - before,
+        1,
+        "one lookup per inbox card: {card}"
+    );
+    named(&card, "submitted_by", Some("Ann Author"));
+    named(&card["decisions"][0], "actor", Some("Rob Reviewer"));
+    named(&card["subject_live"], "created_by", Some("Ann Author"));
+}
+
+/// AP-D-11, P-D-262: this gear's source declares the actors its reads name "System", pricing's
+/// system actor among them, so the inbox names them as this gear does.
+#[tokio::test]
+async fn the_source_declares_the_system_actors_this_gear_names() {
+    use bss_approvals_sdk::ApprovalSourceV1;
+    let f = Fixture::new(1).await;
+    let source = crate::api::rest::approval_units::inbox_source::ProductsApprovalSource::new(
+        f.state.clone(),
+        flat_in_enforcer(f.tenant),
+    );
+    assert_eq!(source.system_actors(), crate::api::rest::SYSTEM_ACTORS);
+    assert!(
+        source
+            .system_actors()
+            .contains(&bss_products_sdk::PRICING_SYSTEM_ACTOR)
+    );
+    assert!(source.system_actors().contains(&Uuid::nil()));
 }

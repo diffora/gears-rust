@@ -7,7 +7,8 @@ use std::sync::Arc;
 use toolkit::ClientHub;
 
 /// The actors that are not people (AP-D-11): the nil id of the platform's system context. A read
-/// names it "System" and never asks Account Management. The owning gears refuse their own system
+/// names it "System" and never asks Account Management, as it does the actors each configured
+/// source declares (`ApprovalSourceV1::system_actors`). The owning gears refuse their own system
 /// actors at every door, so none submits or votes on a unit the inbox lists.
 pub const SYSTEM_ACTORS: [uuid::Uuid; 1] = [uuid::Uuid::nil()];
 

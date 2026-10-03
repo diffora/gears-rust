@@ -491,8 +491,9 @@ This gear implements the approvals inbox's source port, `bss_approvals_sdk::Appr
 init in the ClientHub as `dyn ApprovalSourceV1`, scoped `products` (P-D-250). The inbox gear asks it as the caller and
 merges its pages with pricing's by P-D-227's order, `(submitted_at, id)`. The source calls this gear's own doors: the
 list's read (`approval_units::page_of`) with a `CursorV1` it builds from the inbox's key, so the keyset is the pager's
-compare; the counts door on the plain connection; the card door, whose 404 is a miss and whose `impact_live` is the
-inbox's `subject_live`; and the vote door through the approval-unit router under the gear's enforcer and the
+compare; the counts door on the plain connection; the card door's read before its names (`approval_units::card`),
+whose 404 is a miss and whose `impact_live` is the inbox's `subject_live`, so the inbox names the card in one lookup and
+the source declares this gear's system actors to it (P-D-262, approvals AP-D-11); and the vote door through the approval-unit router under the gear's enforcer and the
 platform's error layer, so the grant, the replay endpoint and the answer's bytes are the door's. A `sku_change` or
 `sku_retire` unit's impact is pricing's `SkuUsage` of its SKU, from ONE `SkuUsageV1::usage` call per page, null when
 the port refuses, cannot answer or is absent; never `usage_sets`. A kind products does not record, and any `book_id`,
