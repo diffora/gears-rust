@@ -105,7 +105,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-466 | M | Each check row names its items and its blocking prices | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 5); phase 9 plan rev 2 (decision 7); extends D-408; amended by the phase 9 review (fix run 9.5d-2) |
 | D-467 | H | A plan item is a SKU and its entry: no treatment, no included quantity, no minimum quantity | DECIDED 2026-09-30 · Owner, 2026-09-30 (the included quantity, then the treatment, then qty_min removed); phase 9 plan rev 2 (run 9.2); amends D-388, D-394, D-407, D-413, D-419, D-420, D-421, D-439; amended by the phase 9 review (G, fix run 9.5d-1); amended by D-512 |
 | D-468 | M | A new plan's code follows a declared rule | DECIDED 2026-09-30 · Owner, 2026-09-30 (ask 39, "do it"); phase 9 run 9.2 scope addition; extends D-456, D-457 |
-| D-469 | M | The served contract declares every door's 503, every ETag it sets and the refusals of the plan doors | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 2); phase 9 plan rev 2 (M1 and W1, binding; decisions 8 and 9; L8); extended by D-470; amended by the phase 9 review (fix run 9.5d-2); amended by D-512 |
+| D-469 | M | The served contract declares every door's 503, every ETag it sets and the refusals of the plan doors | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 2); phase 9 plan rev 2 (M1 and W1, binding; decisions 8 and 9; L8); extended by D-470; amended by the phase 9 review (fix run 9.5d-2); amended by D-512; extended by D-518 |
 | D-470 | M | The approval units are counted by state and kind, list newest first on request, and skip the live impact on request | DECIDED 2026-09-30 · Owner, 2026-09-30 (the approvals option 1, "ok"); phase 9 plan rev 2 (decision 10; plan review M3, M4, L11); amends D-458, extends D-469; amended by the phase 9 review (C, R32; fix run 9.5d-1; I, fix run 9.5d-2); amended by D-490 |
 | D-471 | M | A unit says whether its reader may approve it | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 4, "ok"); phase 9 plan rev 2 (decision 11; W2; plan review M2); amended by the phase 9 review (E, fix run 9.5d-1) |
 | D-472 | M | An entry names its next price | DECIDED 2026-10-01 · Owner, 2026-09-30 (validation 3 item 7, "ok"); phase 9 plan rev 2 (decision 12; plan review M5, L7); amends D-434, D-440; amended by D-473 |
@@ -138,6 +138,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-515 | M | A plan row's book carries its id and validity | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 67); amends D-485 |
 | D-516 | M | A named book carries its identity beside its id | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 54); amends D-460, D-408 |
 | D-517 | M | Entries can be read by id | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 68); amends D-486 |
+| D-518 | M | The plan list, the plan counts, the book list and the settings answer 304 | DECIDED 2026-10-03 · Owner, 2026-10-03 (asks 56, 57); extends D-469 |
 
 ## Entries
 
@@ -1164,7 +1165,9 @@ D-470 extends this entry: the approval-unit counts are one op more, so the censu
 
 The phase 9 review (fix run 9.5d-2; R27, R28): tests/read_contract.rs measures the writes as it measures the reads. Each of the 30 write ops is called on a live fixture with what its success needs, and exactly those that declare an ETag on a success answer set one; module_test's census is no longer the only check of the writes. tests/served_contract.rs fails on the text of an op the spec does not serve, so a check that a text does not name a code reads a text that is there.
 
-**Source:** Owner, 2026-09-30 (validation 3 item 2, approved); phase 9 plan rev 2 (M1 and W1, binding: 503 on every op; decisions 8 and 9; L8: the contracts notes correct served texts to match the code). Extended by D-470. Amended by the phase 9 review (fix run 9.5d-2).
+D-518 extends this entry: the plan list, the plan counts and the book list declare a weak ETag of their JSON body on their 200 and their 304, and the settings read declares its version ETag on its 304 too. module_test counts 34 ETag declarations, not 27.
+
+**Source:** Owner, 2026-09-30 (validation 3 item 2, approved); phase 9 plan rev 2 (M1 and W1, binding: 503 on every op; decisions 8 and 9; L8: the contracts notes correct served texts to match the code). Extended by D-470. Amended by the phase 9 review (fix run 9.5d-2). Extended by D-518.
 
 #### D-470 [M] The approval units are counted by state and kind, list newest first on request, and skip the live impact on request
 
@@ -2088,3 +2091,16 @@ A screen that shows a revision, or a price unit, had only the book's id. It coul
 - **The test.** `tests/sku_reads.rs`: the named entries, an omitted id, another tenant, the money grant, and the refused shapes.
 
 **Source:** Owner, 2026-10-02 (ask 68). Amends D-486.
+
+#### D-518 [M] The plan list, the plan counts, the book list and the settings answer 304
+
+**Status:** DECIDED 2026-10-03.
+
+- **The three list reads.** `GET /plans`, `GET /plans/counts` and `GET /price-books` answer a weak `ETag` of the JSON body they serve: `W/"` plus 22 base64url characters of its SHA-256. They also send `Cache-Control: private, no-cache`.
+- **The tag is the caller's own body.** It is not a row version. A body that differs per caller has a different tag, so a `304` never gives one caller the view of another caller. The book list carries no price, so its body does not change with the money grant.
+- **The settings.** `GET /settings` is one document. Its strong `ETag` stays the row version (`"0"`, `"1"`, …) that a `PUT` sends back as `If-Match`; it gets no weak tag. An `If-None-Match` that matches that same tag is `304`. Both its answers send `Cache-Control: private, no-cache`.
+- **The comparison.** `If-None-Match` matches by weak comparison (RFC 9110), including `*` and a comma-separated list. A match is `304` with an empty body, the same `ETag` and the same `Cache-Control`. Only a `200` is turned into a `304`; an error passes through unchanged.
+- **What stays.** The strong `ETag` that the other single-resource reads serve for `If-Match` is unchanged. The statement counts of these reads are unchanged.
+- **The tests.** `tests/conditional_reads.rs`: the first read, the `304` on a repeated read, and a new tag after a write, for each of the four reads.
+
+**Source:** Owner, 2026-10-03 (asks 56 and 57). Extends D-469.

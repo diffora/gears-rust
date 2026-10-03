@@ -31,6 +31,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use bss_products_sdk::models::Category;
+use bss_rest::conditional_get::{PRIVATE_REVALIDATE, respond};
 use std::sync::Arc;
 use time::OffsetDateTime;
 use toolkit::api::{
@@ -126,7 +127,9 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
              `limit`; default 200, clamped at 200) and `cursor` (alias `$skiptoken`) from \
              `page_info`. Each item carries `sku_count`, the SKUs that are not retired naming it, \
              from one grouped count. Any other key, `$select` and `$count` are 400; a cursor \
-             replayed under another `$filter` is 400.",
+             replayed under another `$filter` is 400. A matching If-None-Match is 304 with an empty \
+             body; the 200 carries a weak ETag of its JSON and Cache-Control private, no-cache \
+             (P-D-261).",
         )
         .tag(TAG)
         .authenticated()
@@ -143,6 +146,7 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
             "Continuation from page_info (alias $skiptoken)",
             "string",
         )
+        .param(super::preconditions::if_none_match_param())
         .handler(list_categories)
         .with_odata_filter::<CategoryListField>()
         .with_odata_orderby::<CategoryOrderField>()
@@ -151,6 +155,14 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
             StatusCode::OK,
             "One page of categories, by sort order then code unless ordered otherwise.",
         )
+        .response_header(super::preconditions::weak_etag_header())
+        .response_header(super::preconditions::revalidate_header())
+        .no_content_response(
+            StatusCode::NOT_MODIFIED,
+            "The If-None-Match tag matches this body",
+        )
+        .response_header(super::preconditions::weak_etag_header())
+        .response_header(super::preconditions::revalidate_header())
         .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
@@ -364,9 +376,10 @@ async fn list_categories(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
+    headers: HeaderMap,
     query: RawQuery,
     odata: Result<OData, CanonicalError>,
-) -> Result<Json<Page<ProductsCategoryItem>>, CanonicalError> {
+) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     // Authorization first, then the query (a 403 before a 400).
     let scope = scope(&enforcer, &ctx, actions::READ).await?;
@@ -403,21 +416,25 @@ async fn list_categories(
     let counts = repo::count_live_skus_by_category(&conn, tenant, None)
         .await
         .map_err(|e| repo_error_to_canonical(&e))?;
-    Ok(Json(Page {
-        items: page
-            .items
-            .into_iter()
-            .map(|c| {
-                let sku_count = counts.get(&c.id).copied().unwrap_or(0);
-                Ok(ProductsCategoryItem {
-                    category: c.try_into()?,
-                    sku_count,
+    Ok(respond(
+        &headers,
+        &Page {
+            items: page
+                .items
+                .into_iter()
+                .map(|c| {
+                    let sku_count = counts.get(&c.id).copied().unwrap_or(0);
+                    Ok(ProductsCategoryItem {
+                        category: c.try_into()?,
+                        sku_count,
+                    })
                 })
-            })
-            .collect::<Result<_, RepoError>>()
-            .map_err(|e| repo_error_to_canonical(&e))?,
-        page_info: page.page_info,
-    }))
+                .collect::<Result<_, RepoError>>()
+                .map_err(|e| repo_error_to_canonical(&e))?,
+            page_info: page.page_info,
+        },
+        PRIVATE_REVALIDATE,
+    ))
 }
 /// One category with its `ETag` and `sku_count` (P-D-215).
 /// @cpt-cf-bss-products-fr-category-flat

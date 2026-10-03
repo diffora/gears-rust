@@ -14,6 +14,7 @@
   - [AP-D-6 The inbox requires the caller's Idempotency-Key](#ap-d-6-the-inbox-requires-the-callers-idempotency-key)
   - [AP-D-7 The inbox unit carries whether the caller may reject or withdraw it](#ap-d-7-the-inbox-unit-carries-whether-the-caller-may-reject-or-withdraw-it)
   - [AP-D-8 The inbox publishes `$orderby` through the toolkit](#ap-d-8-the-inbox-publishes-orderby-through-the-toolkit)
+  - [AP-D-10 The list and the counts answer 304](#ap-d-10-the-list-and-the-counts-answer-304)
 
 <!-- /toc -->
 
@@ -22,13 +23,14 @@
 | ID | Priority | Decision | Status / source |
 | --- | --- | --- | --- |
 | AP-D-1 | H | The inbox is a facade and has no authorization resource | DECIDED 2026-10-01 |
-| AP-D-2 | H | The merge, the cursor, the narrowing and `book_id` | DECIDED 2026-10-01 · amended by Run 2 (pricing D-490, products P-D-250); amended by AP-D-5, AP-D-8; amended 2026-10-02 (source names, kind counts) |
+| AP-D-2 | H | The merge, the cursor, the narrowing and `book_id` | DECIDED 2026-10-01 · amended by Run 2 (pricing D-490, products P-D-250); amended by AP-D-5, AP-D-8; amended 2026-10-02 (source names, kind counts); extended by AP-D-10 |
 | AP-D-3 | H | Grants and owner resolution | DECIDED 2026-10-01 · amended by AP-D-5 |
 | AP-D-4 | H | Votes and idempotency | DECIDED 2026-10-01 · amended by Run 2 (pricing D-490, products P-D-250); amended by AP-D-6 |
 | AP-D-5 | H | A down source is omitted and the walk does not resume it | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 60); amends AP-D-2, AP-D-3 |
 | AP-D-6 | H | The inbox requires the caller's Idempotency-Key | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 61); amends AP-D-4 |
 | AP-D-7 | M | The inbox unit carries whether the caller may reject or withdraw it | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 63) |
 | AP-D-8 | M | The inbox publishes `$orderby` through the toolkit | DECIDED 2026-10-02 · amends AP-D-2 |
+| AP-D-10 | M | The list and the counts answer 304 | DECIDED 2026-10-03 · Owner, 2026-10-03 (asks 56, 57); extends AP-D-2 |
 
 ## Entries
 
@@ -51,6 +53,8 @@ The cursor carries its order outside the narrowing hash. `$orderby` with a curso
 A kind outside a gear's closed set is an empty page and zero counts, computed in the source. `book_id` on products is that same empty set. `book_id` on pricing remains the alias of `ref_id`: it keeps `prices` units of that book and no `plan_revision`, whose reference is the revision. A state or id the door would refuse is that refusal for the whole read.
 
 A source added to the configuration later starts from an empty key. A removed source's key is ignored.
+
+AP-D-10 extends this entry: the list and the counts answer a weak `ETag` of their JSON and `304` on a matching `If-None-Match`.
 
 Run 2 amends this entry (pricing D-490, products P-D-250). Each real source builds the pager's own `CursorV1` from its key and reads through its gear's list read, so the keyset is the pager's column compare. A kind that no gear records, such as `bogus`, is therefore an empty page and zero counts from every source: the inbox answers 200 with no unit and every readable source named `ok`, never 400.
 
@@ -120,3 +124,15 @@ A query the inbox cannot parse is 400 `INVALID_QUERY_PARAMS` on the field `query
 The list declares `$orderby` with `.with_odata_orderby::<InboxOrderField>()`. The served contract therefore carries `x-odata-orderby` for `submitted_at asc` and `submitted_at desc`. The door still accepts only `submitted_at`, ascending or descending, and refuses any other order with 400 `INVALID_ORDERBY_FIELD`. The query struct does not rename a field to `$orderby`.
 
 **Source:** Phase 9 review fix (architecture lints DE0802 and DE0803). Amends AP-D-2.
+
+### AP-D-10 The list and the counts answer 304
+
+**Status:** DECIDED 2026-10-03.
+
+- **The two reads.** `GET /bss-approvals/v1/approval-units` and `GET /bss-approvals/v1/approval-units/counts` answer a weak `ETag` of the JSON body they serve: `W/"` plus 22 base64url characters of its SHA-256. They also send `Cache-Control: private, no-cache`: the browser keeps the answer and must revalidate it.
+- **The comparison.** `If-None-Match` matches that tag by weak comparison (RFC 9110), including `*` and a comma-separated list. A match is `304` with an empty body, the same `ETag` and the same `Cache-Control`. Only a `200` is turned into a `304`. A refusal, such as `403` when every source forbids the caller or `503 SOURCE_UNAVAILABLE`, passes through unchanged and carries no tag.
+- **The tag is the caller's own body.** The body includes `sources`, so a source that goes from `ok` to `forbidden` or `unavailable` changes the tag even when no unit changed. The units are the ones the caller's sources answered, so a `304` never gives one caller the view of another caller.
+- **What stays.** The card and the three votes are not conditional. The votes still return the owning gear's answer unchanged (AP-D-4).
+- **The tests.** `api/rest/doors_tests.rs`: `the_list_and_the_counts_answer_304_until_a_source_status_changes`, `a_refused_list_is_not_conditional` and `the_list_and_the_counts_declare_the_conditional_get`.
+
+**Source:** Owner, 2026-10-03 (asks 56 and 57). Extends AP-D-2. The shared helper is `cf-gears-bss-rest` (pricing D-518, products P-D-261).

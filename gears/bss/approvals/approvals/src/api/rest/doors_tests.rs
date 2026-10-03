@@ -919,3 +919,142 @@ async fn an_anonymous_caller_is_401() {
         bytes(call(&app, "GET", "/bss-approvals/v1/approval-units", b"", false).await).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
+
+/// One GET as the test caller, with an optional `If-None-Match`.
+async fn get_tagged(
+    app: &Router,
+    uri: &str,
+    tag: Option<&str>,
+) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+    let mut request = Request::builder()
+        .method("GET")
+        .uri(uri)
+        .body(Body::empty())
+        .unwrap();
+    request.extensions_mut().insert(test_support::caller());
+    if let Some(tag) = tag {
+        request
+            .headers_mut()
+            .insert(axum::http::header::IF_NONE_MATCH, tag.parse().unwrap());
+    }
+    bytes(app.clone().oneshot(request).await.unwrap()).await
+}
+
+fn header_text(headers: &axum::http::HeaderMap, name: axum::http::HeaderName) -> String {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// AP-D-10: the merged page and the summed counts answer a weak `ETag` of their JSON and
+/// `Cache-Control: private, no-cache`; the same GET with that tag is 304 with an empty body. A
+/// source that goes from ok to unavailable changes the body, so it changes the tag.
+#[tokio::test]
+async fn the_list_and_the_counts_answer_304_until_a_source_status_changes() {
+    use axum::http::header::{CACHE_CONTROL, ETAG};
+    let pricing = Arc::new(Fake::serving(vec![
+        test_support::unit("pricing", 1, 1),
+        test_support::unit("pricing", 3, 3),
+    ]));
+    let products = Arc::new(Fake::serving(vec![test_support::unit("products", 2, 2)]));
+    let app = inbox(
+        &["pricing", "products"],
+        &[("pricing", pricing), ("products", products.clone())],
+    );
+    let paths = [
+        "/bss-approvals/v1/approval-units",
+        "/bss-approvals/v1/approval-units/counts",
+    ];
+    let mut tags = Vec::new();
+    for path in paths {
+        let (status, headers, body) = get_tagged(&app, path, None).await;
+        assert_eq!(status, StatusCode::OK, "{path}");
+        assert!(!body.is_empty(), "{path}");
+        let tag = header_text(&headers, ETAG);
+        assert!(tag.starts_with("W/\""), "{path}: {tag}");
+        assert_eq!(header_text(&headers, CACHE_CONTROL), "private, no-cache");
+        for sent in [tag.clone(), format!("\"other\", {tag}"), "*".to_owned()] {
+            let (status, again, body) = get_tagged(&app, path, Some(&sent)).await;
+            assert_eq!(status, StatusCode::NOT_MODIFIED, "{path}: {sent}");
+            assert!(body.is_empty(), "{path}: {sent}");
+            assert_eq!(header_text(&again, ETAG), tag, "{path}: {sent}");
+            assert_eq!(
+                header_text(&again, CACHE_CONTROL),
+                "private, no-cache",
+                "{path}: {sent}"
+            );
+        }
+        tags.push(tag);
+    }
+    *products.mode.lock().unwrap() = Mode::Unavailable;
+    for (path, old) in paths.into_iter().zip(tags) {
+        let (status, headers, body) = get_tagged(&app, path, Some(&old)).await;
+        assert_eq!(status, StatusCode::OK, "{path}");
+        let answer: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(answer["sources"][1]["status"], "unavailable", "{path}");
+        let fresh = header_text(&headers, ETAG);
+        assert!(fresh.starts_with("W/\""), "{path}: {fresh}");
+        assert_ne!(fresh, old, "{path}");
+        assert_eq!(header_text(&headers, CACHE_CONTROL), "private, no-cache");
+    }
+}
+
+/// AP-D-10: a refusal is never turned into a 304 and carries no tag.
+#[tokio::test]
+async fn a_refused_list_is_not_conditional() {
+    let pricing = Arc::new(Fake::serving(Vec::new()));
+    *pricing.mode.lock().unwrap() = Mode::Unavailable;
+    let app = inbox(&["pricing"], &[("pricing", pricing)]);
+    for path in [
+        "/bss-approvals/v1/approval-units",
+        "/bss-approvals/v1/approval-units/counts",
+    ] {
+        let (status, headers, _) = get_tagged(&app, path, Some("*")).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{path}");
+        assert!(headers.get(axum::http::header::ETAG).is_none(), "{path}");
+    }
+}
+
+/// AP-D-10: the served spec declares `If-None-Match`, the `ETag` and `Cache-Control` of the 200,
+/// and the 304 with both headers, on the list and the counts.
+#[tokio::test]
+async fn the_list_and_the_counts_declare_the_conditional_get() {
+    let registry = OpenApiRegistryImpl::new();
+    let _router = router(
+        Arc::new(ApiState {
+            sources: Vec::new(),
+            hub: Arc::new(ClientHub::new()),
+        }),
+        &registry,
+    );
+    let spec = registry
+        .build_openapi(&OpenApiInfo::default())
+        .expect("openapi");
+    let json = serde_json::to_value(&spec).unwrap();
+    for path in [
+        "/bss-approvals/v1/approval-units",
+        "/bss-approvals/v1/approval-units/counts",
+    ] {
+        let op = &json["paths"][path]["get"];
+        let parameter = op["parameters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|param| param["name"] == "If-None-Match")
+            .unwrap_or_else(|| panic!("{path}: If-None-Match"));
+        assert_eq!(parameter["in"], "header", "{path}");
+        assert_eq!(parameter["required"], false, "{path}");
+        for status in ["200", "304"] {
+            let headers = &op["responses"][status]["headers"];
+            assert!(headers.get("ETag").is_some(), "{path} {status}: {headers}");
+            assert!(
+                headers.get("Cache-Control").is_some(),
+                "{path} {status}: {headers}"
+            );
+        }
+    }
+    let card = &json["paths"]["/bss-approvals/v1/approval-units/{id}"]["get"]["responses"];
+    assert!(card.get("304").is_none(), "the card is not conditional");
+}

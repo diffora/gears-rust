@@ -805,3 +805,70 @@ pub fn header(name: &str) -> toolkit::api::operation_builder::ParamSpec {
         .required(true)
         .description("Required authoring precondition")
 }
+/// `If-None-Match` on a list read (D-518). A match is 304; the header is optional.
+#[must_use]
+pub fn if_none_match() -> toolkit::api::operation_builder::ParamSpec {
+    toolkit::api::operation_builder::ParamSpec::header("If-None-Match")
+        .required(false)
+        .description("A weak ETag from an earlier read of this answer, or *. A match is 304.")
+}
+/// The weak `ETag` of the JSON body (D-518). It is not the version a write sends as `If-Match`.
+#[must_use]
+pub fn weak_etag_header() -> toolkit::api::operation_builder::ResponseHeaderSpec {
+    use toolkit::api::operation_builder::{ResponseHeaderSpec, ResponseHeaderType};
+    ResponseHeaderSpec::new(
+        "ETag",
+        "Weak tag of this JSON body",
+        ResponseHeaderType::String,
+    )
+}
+/// `Cache-Control: private, no-cache` (D-518): the browser stores the answer and must revalidate it.
+#[must_use]
+pub fn revalidate_header() -> toolkit::api::operation_builder::ResponseHeaderSpec {
+    use toolkit::api::operation_builder::{ResponseHeaderSpec, ResponseHeaderType};
+    ResponseHeaderSpec::new(
+        "Cache-Control",
+        "private, no-cache",
+        ResponseHeaderType::String,
+    )
+}
+/// `If-None-Match` on a single document that keeps its strong version tag (D-518): the tag a
+/// `PUT` sends back as `If-Match`, compared here by weak comparison.
+#[must_use]
+pub fn if_none_match_version() -> toolkit::api::operation_builder::ParamSpec {
+    toolkit::api::operation_builder::ParamSpec::header("If-None-Match")
+        .required(false)
+        .description("The ETag of an earlier read, or *. A match is 304.")
+}
+/// D-518: a single document revalidates on its strong version tag. `answer` is the read's 200
+/// with that `ETag`. It gains `Cache-Control: private, no-cache`, and it becomes a 304 with an
+/// empty body, the same `ETag` and that `Cache-Control` when an `If-None-Match` of `request`
+/// matches the tag by weak comparison. Any other answer passes through untouched.
+#[must_use]
+pub fn revalidate_version(request: &HeaderMap, mut answer: Response) -> Response {
+    use axum::http::{HeaderValue, header};
+    use bss_rest::conditional_get::{PRIVATE_REVALIDATE, matches_if_none_match};
+    if answer.status() != StatusCode::OK {
+        return answer;
+    }
+    let cache = HeaderValue::from_static(PRIVATE_REVALIDATE.cache_control);
+    answer
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, cache.clone());
+    let Some(tag) = answer.headers().get(header::ETAG).cloned() else {
+        return answer;
+    };
+    let matched = request
+        .get_all(header::IF_NONE_MATCH)
+        .iter()
+        .any(|candidate| matches_if_none_match(Some(candidate), &tag));
+    if !matched {
+        return answer;
+    }
+    let mut not_modified = Response::new(axum::body::Body::empty());
+    *not_modified.status_mut() = StatusCode::NOT_MODIFIED;
+    let headers = not_modified.headers_mut();
+    headers.insert(header::ETAG, tag);
+    headers.insert(header::CACHE_CONTROL, cache);
+    not_modified
+}

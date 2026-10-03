@@ -183,7 +183,7 @@ Every DoD below is required for this feature's delivery phase. Constraints: `cpt
 
 - [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-book-currency-validity`
 
-Books have tenant-unique codes, one immutable currency and optional nonempty validity. Versioned metadata edits preserve money identity (spec §5, D-384). Every book read carries the book's stats from four grouped statements, one per source (D-441), and the book list pages on the toolkit's OData pager, searched by q and sku_id (D-442). A book carries an optional description of at most 2000 characters, and a book no entry and no plan revision names is deleted under If-Match with an audit row; otherwise 409 BOOK_HAS_ENTRIES, BOOK_IN_PLAN or BOOK_IN_PLAN_HISTORY, in that order (D-444).
+Books have tenant-unique codes, one immutable currency and optional nonempty validity. Versioned metadata edits preserve money identity (spec §5, D-384). Every book read carries the book's stats from four grouped statements, one per source (D-441), and the book list pages on the toolkit's OData pager, searched by q and sku_id (D-442). The book list answers 304 when If-None-Match matches a weak ETag of its JSON, and sends Cache-Control: private, no-cache (D-518). A book carries an optional description of at most 2000 characters, and a book no entry and no plan revision names is deleted under If-Match with an audit row; otherwise 409 BOOK_HAS_ENTRIES, BOOK_IN_PLAN or BOOK_IN_PLAN_HISTORY, in that order (D-444).
 
 Requirement: `cpt-cf-bss-pricing-fr-price-book`; PRD AC #2.
 
@@ -214,7 +214,7 @@ Requirement: `cpt-cf-bss-pricing-fr-dimension-registry`; PRD AC #1.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-settings-defaults`
 
-Tenant timing, rounding, GL, tax and per-type invoice templates are stored and exposed. SKU timing overrides tenant timing at binding; settings permissions and optimistic versioning apply (spec §5). The rounding is one of five modes, half_even for a tenant that never wrote its settings (D-437); the settings offer the currencies a new book may take and say who wrote them last and when (D-438).
+Tenant timing, rounding, GL, tax and per-type invoice templates are stored and exposed. SKU timing overrides tenant timing at binding; settings permissions and optimistic versioning apply (spec §5). The rounding is one of five modes, half_even for a tenant that never wrote its settings (D-437); the settings offer the currencies a new book may take and say who wrote them last and when (D-438). GET /settings keeps its version as the strong ETag a PUT sends back as If-Match; an If-None-Match that matches it is 304, and the read sends Cache-Control: private, no-cache (D-518).
 
 Requirement: `cpt-cf-bss-pricing-fr-settings`; PRD AC #13.
 

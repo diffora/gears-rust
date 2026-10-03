@@ -48,6 +48,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use bss_products_sdk::derived::{DerivedUsageDeclaration, MeterId};
+use bss_rest::conditional_get::{PRIVATE_SHORT, respond};
 use std::sync::Arc;
 use toolkit::api::{
     OpenApiRegistry,
@@ -156,7 +157,9 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
              (alias `limit`; default 50, clamped at 200) and `cursor` (alias `$skiptoken`) from \
              `page_info`, as the SKU list pages. Asks `sku:read` (O-3). Any other key, \
              `$filter`, `$orderby` and `$select` are 400 UNSUPPORTED_QUERY_PARAM; a malformed \
-             cursor, or one another list cut, is 400.",
+             cursor, or one another list cut, is 400. A matching If-None-Match is 304 with an empty \
+             body; the 200 carries a weak ETag of its JSON and Cache-Control private, max-age=60 \
+             (P-D-261).",
         )
         .tag(TAG)
         .authenticated()
@@ -173,12 +176,21 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
             "Continuation from page_info (alias $skiptoken)",
             "string",
         )
+        .param(super::preconditions::if_none_match_param())
         .handler(list_derived_usage_types)
         .json_response_with_schema::<Page<ProductsDerivedUsageTypeItem>>(
             openapi,
             StatusCode::OK,
             "One page of derived usage types, by code.",
         )
+        .response_header(super::preconditions::weak_etag_header())
+        .response_header(super::preconditions::short_cache_header())
+        .no_content_response(
+            StatusCode::NOT_MODIFIED,
+            "The If-None-Match tag matches this body",
+        )
+        .response_header(super::preconditions::weak_etag_header())
+        .response_header(super::preconditions::short_cache_header())
         .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
@@ -626,9 +638,10 @@ async fn list_derived_usage_types(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
+    headers: HeaderMap,
     query: RawQuery,
     odata: Result<OData, CanonicalError>,
-) -> Result<Json<Page<ProductsDerivedUsageTypeItem>>, CanonicalError> {
+) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     // Authorization first, then the query (a 403 before a 400).
     let scope = read_scope(&enforcer, &ctx).await?.tenant_only();
@@ -675,10 +688,14 @@ async fn list_derived_usage_types(
         })
         .collect::<Result<_, RepoError>>()
         .map_err(|e| stored_row_error(&e))?;
-    Ok(Json(Page {
-        items,
-        page_info: page.page_info,
-    }))
+    Ok(respond(
+        &headers,
+        &Page {
+            items,
+            page_info: page.page_info,
+        },
+        PRIVATE_SHORT,
+    ))
 }
 
 /// @cpt-cf-bss-products-fr-derived-usage-type

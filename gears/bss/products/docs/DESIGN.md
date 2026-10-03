@@ -344,7 +344,9 @@ history's `action` and `unit_kind`, a unit's `kind` and `ref_type`, a reference'
 written, P-D-231) stay `string`.
 Responses use toolkit RFC-9457 `Problem` with domain `code`, `field` and `message`; stale-generation
 responses additionally expose the current generation. All doors use authenticated OperationBuilder
-registration and standardized errors.
+registration and standardized errors. `GET /skus`, `GET /skus/counts` and `GET /categories` answer 304 when
+`If-None-Match` matches a weak ETag of the JSON body, and send `Cache-Control: private, no-cache`.
+`GET /derived-usage-types` does the same with `Cache-Control: private, max-age=60` (P-D-261).
 
 | Surface | Routes | Contract |
 | --- | --- | --- |

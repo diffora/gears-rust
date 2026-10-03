@@ -10,6 +10,7 @@ use axum::extract::{Extension, Path, Query};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use bss_approvals_sdk::{VoteAction, VoteRequest};
+use bss_rest::conditional_get::{PRIVATE_REVALIDATE, respond};
 use serde::Deserialize;
 use toolkit_canonical_errors::{CanonicalError, ForeignPassthrough};
 use toolkit_odata::errors::OdataError;
@@ -73,8 +74,9 @@ pub(super) struct CardQuery {
 pub(super) async fn list_units(
     Extension(state): Extension<Arc<ApiState>>,
     ctx: Option<Extension<SecurityContext>>,
+    headers: HeaderMap,
     query: Result<Query<ListQuery>, QueryRejection>,
-) -> Result<Json<InboxUnitListDto>, CanonicalError> {
+) -> Result<Response, CanonicalError> {
     let ctx = caller(ctx)?;
     let Query(query) = bad_query(query)?;
     let (query, orderby) = query.take_order()?;
@@ -89,18 +91,21 @@ pub(super) async fn list_units(
         impact: query.impact,
     })?;
     let listed = read::list_page(&state.hub, &state.sources, &ctx, &prepared).await?;
-    Ok(Json(InboxUnitListDto {
+    let page = InboxUnitListDto {
         items: listed.units.into_iter().map(Into::into).collect(),
         next_cursor: listed.next_cursor,
         sources: listed.sources.into_iter().map(Into::into).collect(),
-    }))
+    };
+    // AP-D-10: a weak tag of the merged page, sources included; a match is 304.
+    Ok(respond(&headers, &page, PRIVATE_REVALIDATE))
 }
 
 pub(super) async fn count_units(
     Extension(state): Extension<Arc<ApiState>>,
     ctx: Option<Extension<SecurityContext>>,
+    headers: HeaderMap,
     query: Result<Query<CountsQuery>, QueryRejection>,
-) -> Result<Json<InboxCountsDto>, CanonicalError> {
+) -> Result<Response, CanonicalError> {
     let ctx = caller(ctx)?;
     let Query(query) = bad_query(query)?;
     let narrowing = bss_approvals_sdk::SourceNarrowing {
@@ -110,10 +115,9 @@ pub(super) async fn count_units(
         book_id: query.book_id,
     };
     let counted = read::count_all(&state.hub, &state.sources, &ctx, &narrowing).await?;
-    Ok(Json(InboxCountsDto::from_counts(
-        counted.counts,
-        counted.sources,
-    )))
+    let body = InboxCountsDto::from_counts(counted.counts, counted.sources);
+    // AP-D-10: a weak tag of the summed counts, sources included; a match is 304.
+    Ok(respond(&headers, &body, PRIVATE_REVALIDATE))
 }
 
 pub(super) async fn get_unit(
