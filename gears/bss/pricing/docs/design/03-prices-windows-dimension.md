@@ -133,7 +133,7 @@ cross-gear read for transactional local ownership/version guards. Approved money
 
 ## 7. Events & Alarms
 
-PricesPublished is emitted only by successful prices apply, together with ApprovalUnitDecided; it lists the unit's prices, never a cancel or end row (D-520, D-521). Proven lost receipts emit PriceBookEntryReferenceLost with tenant, entry, SKU and reservation identity. Pending confirmation/release depth and last failures remain observable; retry is bounded and restart-safe.
+PricesPublished is emitted only by successful prices apply, together with ApprovalUnitDecided; it lists every price whose window or state the apply changed, each with its `state`: the unit's prices, each predecessor whose end moved, a cancelled price (`cancelled`) and an ended price with its new end; never a cancel or end row (D-520, D-521). Proven lost receipts emit PriceBookEntryReferenceLost with tenant, entry, SKU and reservation identity. Pending confirmation/release depth and last failures remain observable; retry is bounded and restart-safe.
 
 Audit and outbox inserts use the same mutation transaction; retry is lifecycle-managed and observes shutdown.
 

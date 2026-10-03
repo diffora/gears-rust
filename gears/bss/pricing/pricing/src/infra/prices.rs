@@ -172,6 +172,10 @@ pub struct PricesSubject {
     /// What `collect` gathers for the synchronous `snapshot` (D-408): the plans reading the
     /// unit's entries and each entry SKU's current descriptors, both outside `after`.
     review: Arc<Mutex<Review>>,
+    /// The approved prices outside the unit whose window or state the last `apply` changed: the
+    /// predecessors it re-closed or re-opened, and the prices it cancelled or ended. The event
+    /// lists them with the unit's prices (D-520, D-521).
+    moved: Arc<Mutex<BTreeSet<Uuid>>>,
 }
 
 /// The reviewer's information about a unit that is never fingerprinted content.
@@ -499,7 +503,18 @@ impl PricesSubject {
             release: Release::Draft,
             refused: Arc::default(),
             review: Arc::default(),
+            moved: Arc::default(),
         }
+    }
+    /// The approved prices outside the unit whose window or state the last `apply` changed, in
+    /// ascending id: re-closed or re-opened predecessors, cancelled and ended prices (D-520,
+    /// D-521). Empty before an apply.
+    #[must_use]
+    pub fn moved(&self) -> BTreeSet<Uuid> {
+        self.moved
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
     /// The Products refusal that ended the last judgement, if any; the door answers it as is.
     #[must_use]
@@ -973,13 +988,18 @@ impl<'a> ApprovalSubject<DbTx<'a>> for PricesSubject {
     }
     /// Re-judge every touched chain, then approve, re-close predecessors, cancel and end the
     /// prices the unit's changes name (D-520, D-521) and mark `keep_for_bound`; any refusal rolls
-    /// the whole unit back as `APPLY_REFUSED`.
+    /// the whole unit back as `APPLY_REFUSED`. The prices outside the unit whose window or state
+    /// moved are kept for the event ([`Self::moved`]).
     async fn apply(
         &self,
         tx: &DbTx<'a>,
         unit: &Unit,
         items: &[ItemRef],
     ) -> Result<(), ApprovalError> {
+        self.moved
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
         let models = self.load_all(tx, items.iter().map(|i| i.item_id)).await?;
         if let Some(m) = models
             .iter()
@@ -990,6 +1010,7 @@ impl<'a> ApprovalSubject<DbTx<'a>> for PricesSubject {
                 detail: format!("price {}", m.id),
             });
         }
+        let mut moved = BTreeSet::new();
         // Entries in ascending id: two batches over the same entries meet in one order.
         for (price_book_entry_id, prices) in by_entry(models) {
             let judged = self
@@ -1067,6 +1088,7 @@ impl<'a> ApprovalSubject<DbTx<'a>> for PricesSubject {
                     )
                     .await
                     .map_err(contended)?;
+                    moved.insert(stored.id);
                     continue;
                 }
                 let Some(chain) = normalised(stored.id) else {
@@ -1090,9 +1112,14 @@ impl<'a> ApprovalSubject<DbTx<'a>> for PricesSubject {
                     )
                     .await
                     .map_err(contended)?;
+                    moved.insert(stored.id);
                 } else if chain.effective_to != stored.effective_to
                     || keep_for_bound != stored.keep_for_bound
                 {
+                    // Only a moved end is news for the event; a new `keep_for_bound` mark is not.
+                    if chain.effective_to != stored.effective_to {
+                        moved.insert(stored.id);
+                    }
                     price_repo::set_window(
                         tx,
                         &self.scope(),
@@ -1128,6 +1155,7 @@ impl<'a> ApprovalSubject<DbTx<'a>> for PricesSubject {
                 .map_err(storage)?;
             }
         }
+        *self.moved.lock().unwrap_or_else(PoisonError::into_inner) = moved;
         Ok(())
     }
     async fn unlock(

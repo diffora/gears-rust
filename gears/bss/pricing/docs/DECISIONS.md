@@ -135,8 +135,8 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-512 | H | A plan item may wait for its entry in a draft | DECIDED 2026-10-02 · Owner, 2026-10-02; amends D-407, D-413, D-420, D-467, D-469 |
 | D-513 | M | A usage policy's single-valued fields default on input | DECIDED 2026-10-02 · Owner, 2026-10-02; amends D-502; amended by D-514 |
 | D-514 | H | A usage rating policy is its rating rules and the entry stores the SKU revision | DECIDED 2026-10-02 · Owner, 2026-10-02; amends D-502, D-503, D-504, D-513 |
-| D-520 | H | A scheduled price is cancelled through the prices unit | DECIDED 2026-10-03 · Owner, 2026-10-03; asks 19, 58a; amends D-390, D-393, D-422 |
-| D-521 | H | A live price is ended through the prices unit | DECIDED 2026-10-03 · Owner, 2026-10-03; ask 58a; amends D-390, D-393 |
+| D-520 | H | A scheduled price is cancelled through the prices unit | DECIDED 2026-10-03 · Owner, 2026-10-03; asks 19, 58a; amends D-390, D-393, D-422; amended 2026-10-03 (the event, the reads, the binding guard) |
+| D-521 | H | A live price is ended through the prices unit | DECIDED 2026-10-03 · Owner, 2026-10-03; ask 58a; amends D-390, D-393; amended 2026-10-03 (the event) |
 
 ## Entries
 
@@ -2061,9 +2061,18 @@ A cancel is a new item kind of the existing prices unit, not a new engine. The o
 - **The state.** `pricing_price.state` gains `cancelled`, which is terminal. A cancelled price leaves every chain: normalisation, `WINDOW_OVERLAP` and every read of the price in force skip it. Normalisation then recomputes the end of the price before it onto the next start that remains, or leaves it open (D-390), and apply writes that end as it writes every re-closed predecessor.
 - **Guards,** at the door, at submit and again at apply. The named price is approved and starts after today, no other pending change names it, and it is not `keep_for_bound`. Refusals: 409 `PRICE_NOT_SCHEDULED` (not approved, or started, at the door or at submit), 409 `PRICE_ALREADY_STARTED` (started between submit and apply), 409 `PRICE_CHANGE_PENDING` (another pending change names it, or the same unit names it twice), 409 `PRICE_BOUND`. A refusal at apply rolls the whole unit back: the race keeps its own code, `PRICE_ALREADY_STARTED`, and any other guard met again there is 409 `APPLY_REFUSED` naming its code, as every apply refusal is.
 - **Storage.** Migration `m20261003_000022_price_cancel_and_end` adds `change_kind` (`set`, `cancel` or `end`, default `set`), `target_price_id` and `cancelled_by_unit_id`, and widens the state check with `cancelled`. SQLite rebuilds `pricing_price` with its indexes. An applied change keeps its price's start, so `pricing_price_approved_start` covers `change_kind = 'set'` only: one price per start, and a change never takes it.
-- **Readers.** `PricingPriceDto` serves `change_kind`, `target_price_id` and `cancelled_by_unit_id`; `PricingPriceState` and `PricingPriceStatus` gain `cancelled`. A change row shows its state as its status (draft, pending, rejected) and `superseded` once applied, so no status narrowing lists it as a price in force. The entry's price list and the export keep the cancelled price and every change row. GET /prices/{id} still answers a cancelled price by id, as stored (D-422); it answers 404 for a change row. The publish-changes listing shows a draft change with the price it names as its `before`, and the unit snapshot does the same. `PricesPublished` lists the unit's prices only, so a unit of changes alone publishes an empty list.
+- **Readers.** `PricingPriceDto` serves `change_kind`, `target_price_id` and `cancelled_by_unit_id`; `PricingPriceState` and `PricingPriceStatus` gain `cancelled`. A change row shows its state as its status (draft, pending, rejected) and `superseded` once applied, so no status narrowing lists it as a price in force. The entry's price list and the export keep the cancelled price and every change row. GET /prices/{id} still answers a cancelled price by id, as stored (D-422); it answers 404 for a change row. The publish-changes listing shows a draft change with the price it names as its `before`, and the unit snapshot does the same. `PricesPublished` lists every price whose window or state the apply changed (amended below).
 
-**Source:** Owner, 2026-10-02 and 2026-10-03 ("все ок сейчас будем писать план", "ок погнали"); asks 19 and 58a. Amends D-390, D-393 and D-422.
+**Amended 2026-10-03 (run Asks-B2b): the event lists what changed.** Before, `PricesPublished` listed the unit's prices only, so a unit of changes alone published an empty list, and a consumer learned of a cancel, an end or a re-closed predecessor only by reading the entry again. Now the event lists every price whose window or state the apply changed, each as the apply left it, in ascending price id:
+
+- each price of the unit, with the window its chain was approved with, as before;
+- each approved price before them whose end the chain moved: re-closed onto a new start, or re-opened onto the next start that remains, or to open-ended;
+- the price a `cancel` cancelled, with state `cancelled` and its stored window;
+- the price an `end` ended, with its new end.
+
+A price whose window did not move is not listed, and a new `keep_for_bound` mark alone is not news. A `cancel` or `end` row is a record of the change, not a price, so the event never lists it. Each listed price gains `state`, its stored state after the apply (`approved` or `cancelled`). The field is additive and optional: an event written before it has none, and none is not written. `effective_to` already carries an end, so no other field is added.
+
+**Source:** Owner, 2026-10-02 and 2026-10-03 ("все ок сейчас будем писать план", "ок погнали"); asks 19 and 58a. Amends D-390, D-393 and D-422. The 2026-10-03 amendments: the controller's decisions on run Asks-B2's questions 1, 2 and 5.
 
 #### D-521 [H] A live price is ended through the prices unit
 
@@ -2075,5 +2084,7 @@ An end is the other new item kind of the prices unit (ask 58a). The operator end
 - **Apply.** The named price gets the new end and `closed_explicitly = true`, and the row becomes `approved`. D-390 still holds: an explicit end survives every later normalisation, and a successor that starts inside it still closes it at that start. A later cancel of the next price leaves the end where it is.
 - **Guards,** at the door, at submit and again at apply. The named price is approved and has not ended by today. The new end is after today, after the price's start, and no later than its current end: the next approved start, or its own explicit end, whichever is sooner. Refusals: 400 `END_DATE_INVALID` (a new end outside that range, or a date that does not parse), 409 `PRICE_CHANGE_PENDING` (another pending change names the price, or the same unit names it twice), 409 `PRICE_ALREADY_ENDED` (the price is not approved, or it has ended). An end that is no longer after today when the unit applies is 409 `APPLY_REFUSED` naming `END_DATE_INVALID`, and the unit applies nothing.
 - **Readers.** The ended price reads `closed_explicitly` with its new end; from that date the entry's price in force (`current_price`) and resolve find no price of that chain until its next start. The change row reads as D-520 describes.
+
+**Amended 2026-10-03 (run Asks-B2b): the event.** `PricesPublished` lists the ended price with its new end and state `approved`, as D-520's amendment lists every price whose window or state an apply changed. A unit of ends alone no longer publishes an empty list. A price after the ended one whose window did not move is not listed.
 
 **Source:** Owner, 2026-10-02 and 2026-10-03 ("все ок сейчас будем писать план", "ок погнали"); ask 58a. Amends D-390 and D-393.

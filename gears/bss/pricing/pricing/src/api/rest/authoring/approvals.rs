@@ -241,7 +241,7 @@ async fn published(
     now: OffsetDateTime,
 ) -> Result<(), DoorError> {
     match subject {
-        Subject::Prices(_) => prices_published(tx, outbox, cmd, store, id, now).await,
+        Subject::Prices(s) => prices_published(tx, outbox, cmd, store, s, id, now).await,
         Subject::PlanRevision(s) if s.published_now() => {
             plan_revision_published(tx, outbox, cmd, store, s, id, now).await
         }
@@ -281,27 +281,32 @@ async fn plan_revision_published(
     // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-apply:p1:inst-plans-revision-apply-3
     Ok(())
 }
-/// `PricesPublished` for an applied `prices` unit: every price with the window its chain was
-/// approved with. A `cancel` or `end` row is not a price, so the event does not list it
-/// (D-520, D-521).
+/// `PricesPublished` for an applied `prices` unit: every price whose window or state the apply
+/// changed, as the apply left it (D-520, D-521). These are the unit's prices with the window their
+/// chain was approved with, each price before them whose end the chain re-closed or re-opened,
+/// and each price the unit cancelled (`cancelled`) or ended (its new end). A `cancel` or `end` row
+/// is a record of the change, not a price, so the event never lists it.
 async fn prices_published(
     tx: &DbTx<'_>,
     outbox: &TxOutbox,
     cmd: &Command,
     store: &PricingApprovalStore,
+    subject: &PricesSubject,
     id: Uuid,
     now: OffsetDateTime,
 ) -> Result<(), DoorError> {
     let unit = load_unit(tx, store, id).await?;
     let scope = AccessScope::for_tenant(store.tenant_id);
-    let ids: Vec<Uuid> = store
+    let mut ids: BTreeSet<Uuid> = store
         .items(tx, unit.id)
         .await
         .map_err(approval_failure)?
         .iter()
         .map(|i| i.item_id)
         .collect();
-    // The unit's prices in ONE statement (PS-39).
+    ids.extend(subject.moved());
+    let ids: Vec<Uuid> = ids.into_iter().collect();
+    // The unit's prices and the prices it moved in ONE statement (PS-39).
     let mut found: BTreeMap<Uuid, entity::price::Model> =
         price_repo::find_many(tx, &scope, store.tenant_id, &ids)
             .await?
@@ -309,9 +314,9 @@ async fn prices_published(
             .map(|m| (m.id, m))
             .collect();
     let mut prices = Vec::new();
-    for item_id in ids {
-        let m = found.remove(&item_id).ok_or_else(|| {
-            RepoError::CorruptRow(format!("unit {} lost price {item_id}", unit.id))
+    for price_id in ids {
+        let m = found.remove(&price_id).ok_or_else(|| {
+            RepoError::CorruptRow(format!("unit {} lost price {price_id}", unit.id))
         })?;
         if !price_repo::is_price(&m) {
             continue;
@@ -323,9 +328,9 @@ async fn prices_published(
             effective_from: m.effective_from.to_string(),
             effective_to: m.effective_to.map(|d| d.to_string()),
             eligibility: m.eligibility,
+            state: Some(m.state),
         });
     }
-    prices.sort_by_key(|r| r.price_id);
     let event = PricesPublished {
         tenant_id: unit.tenant_id,
         book_id: unit.ref_id,

@@ -115,11 +115,29 @@ impl World {
         self.insert(version_no, from, Some(to), false).await
     }
 
+    /// An approved price whose end the next start set, as normalisation stores it: not an
+    /// explicit end.
+    async fn seed_closed(&self, version_no: i32, from: &str, to: &str) -> Uuid {
+        self.write(version_no, from, Some(to), false, false).await
+    }
+
     async fn insert(
         &self,
         version_no: i32,
         from: &str,
         to: Option<&str>,
+        keep_for_bound: bool,
+    ) -> Uuid {
+        self.write(version_no, from, to, to.is_some(), keep_for_bound)
+            .await
+    }
+
+    async fn write(
+        &self,
+        version_no: i32,
+        from: &str,
+        to: Option<&str>,
+        closed_explicitly: bool,
         keep_for_bound: bool,
     ) -> Uuid {
         let tenant = self.f.ctx.subject_tenant_id();
@@ -135,7 +153,7 @@ impl World {
         price.price_json = json!({"rate": "1.00"});
         price.effective_from = date(from);
         price.effective_to = to.map(date);
-        price.closed_explicitly = to.is_some();
+        price.closed_explicitly = closed_explicitly;
         price.keep_for_bound = keep_for_bound;
         price_repo::insert(&conn, &scope, price).await.unwrap().id
     }
@@ -246,6 +264,42 @@ impl World {
             })
             .filter(|e| e["type"] == PUBLISHED)
             .collect()
+    }
+
+    /// The prices of the one `PricesPublished` event in the outbox.
+    async fn announced(&self) -> Vec<Value> {
+        let events = self.published().await;
+        assert_eq!(events.len(), 1, "{events:?}");
+        events[0]["data"]["prices"].as_array().unwrap().clone()
+    }
+
+    /// One price as `PricesPublished` lists it: its window and its state after the apply.
+    fn listed(&self, id: &impl ToString, window: (&str, Option<&str>), state: &str) -> Value {
+        json!({
+            "priceId": id.to_string().trim_matches('"'),
+            "priceBookEntryId": self.entry,
+            "dimValue": null,
+            "effectiveFrom": window.0,
+            "effectiveTo": window.1,
+            "eligibility": "all",
+            "state": state,
+        })
+    }
+
+    /// A draft `set` price of the default chain, through its door.
+    async fn draft(&self, from: &str, key: &str) -> Value {
+        let (status, drafted, _) = self
+            .f
+            .call(
+                "POST",
+                &format!("/price-book-entries/{}/prices", self.entry),
+                json!({"price": {"rate": "2.00"}, "eligibility": "all", "effective_from": from}),
+                None,
+                Some(key),
+            )
+            .await;
+        assert_eq!(status, 201, "{drafted}");
+        drafted["items"][0]["id"].clone()
     }
 
     fn row<'a>(rows: &'a [Value], id: &impl ToString) -> &'a Value {
@@ -771,15 +825,93 @@ async fn withdraw_and_reject_leave_the_price_untouched_and_a_mixed_unit_applies_
     let applied = World::row(&rows, &set);
     assert_eq!(applied["state"], "approved");
     assert_eq!(applied["change_kind"], "set");
-    let events = world.published().await;
-    assert_eq!(events.len(), 1, "{events:?}");
-    let listed: Vec<&Value> = events[0]["data"]["prices"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|p| &p["priceId"])
-        .collect();
-    assert_eq!(listed, [&set], "a change row is not a published price");
+    let mut expected = vec![
+        world.listed(&set, ("2031-06-01", None), "approved"),
+        world.listed(&scheduled, ("2026-03-01", None), "cancelled"),
+    ];
+    expected.sort_by_key(|p| p["priceId"].as_str().unwrap().to_owned());
+    assert_eq!(
+        world.announced().await,
+        expected,
+        "the new price and the cancelled one; a change row is not a published price"
+    );
+}
+
+// ------------------------------------------------------------------ the event (D-520, D-521)
+
+/// A unit that only cancels publishes the cancelled price and the predecessor it re-opens; the
+/// price after them did not move and is not listed.
+#[tokio::test]
+async fn a_cancel_alone_publishes_the_cancelled_price_and_the_reopened_predecessor() {
+    let world = World::at("2026-02-15").await;
+    let a = world.seed_closed(1, "2026-01-01", "2026-03-01").await;
+    let b = world.seed_closed(2, "2026-03-01", "2026-05-01").await;
+    world.seed(3, "2026-05-01").await;
+    let change = world.change(b, "cancel", json!({}), "cancel").await;
+    let (status, receipt) = world.submit(&change["id"], "submit").await;
+    assert_eq!(status, 201, "{receipt}");
+    assert_eq!(receipt["applied"], true);
+    let mut expected = vec![
+        world.listed(&a, ("2026-01-01", Some("2026-05-01")), "approved"),
+        world.listed(&b, ("2026-03-01", Some("2026-05-01")), "cancelled"),
+    ];
+    expected.sort_by_key(|p| p["priceId"].as_str().unwrap().to_owned());
+    assert_eq!(world.announced().await, expected);
+}
+
+/// A unit that only ends publishes the ended price with its new end; the next price did not move
+/// and is not listed.
+#[tokio::test]
+async fn an_end_alone_publishes_the_ended_price_with_its_new_end() {
+    let world = World::at("2026-02-15").await;
+    let live = world.seed_closed(1, "2026-01-01", "2026-03-01").await;
+    world.seed(2, "2026-03-01").await;
+    let change = world
+        .change(live, "end", json!({"effective_to": "2026-02-20"}), "end")
+        .await;
+    let (status, receipt) = world.submit(&change["id"], "submit").await;
+    assert_eq!(status, 201, "{receipt}");
+    assert_eq!(
+        world.announced().await,
+        [world.listed(&live, ("2026-01-01", Some("2026-02-20")), "approved")]
+    );
+}
+
+/// A mixed unit publishes its new price, the price it cancels and the predecessor whose end moved
+/// onto the new price's start.
+#[tokio::test]
+async fn a_set_and_a_cancel_publish_the_new_price_the_cancelled_one_and_the_moved_predecessor() {
+    let world = World::at("2026-02-15").await;
+    let a = world.seed_closed(1, "2026-01-01", "2026-03-01").await;
+    let b = world.seed(2, "2026-03-01").await;
+    let set = world.draft("2031-06-01", "set").await;
+    let cancel = world.change(b, "cancel", json!({}), "cancel").await;
+    let (status, receipt) = world.publish(&[&set, &cancel["id"]], "publish").await;
+    assert_eq!(status, 201, "{receipt}");
+    assert_eq!(receipt["applied"], true);
+    let mut expected = vec![
+        world.listed(&a, ("2026-01-01", Some("2031-06-01")), "approved"),
+        world.listed(&b, ("2026-03-01", None), "cancelled"),
+        world.listed(&set, ("2031-06-01", None), "approved"),
+    ];
+    expected.sort_by_key(|p| p["priceId"].as_str().unwrap().to_owned());
+    assert_eq!(world.announced().await, expected);
+}
+
+/// A unit of prices alone also lists the predecessor its new price re-closes.
+#[tokio::test]
+async fn a_set_alone_publishes_the_predecessor_it_recloses() {
+    let world = World::at("2026-02-15").await;
+    let a = world.seed(1, "2026-01-01").await;
+    let set = world.draft("2031-06-01", "set").await;
+    let (status, receipt) = world.submit(&set, "submit").await;
+    assert_eq!(status, 201, "{receipt}");
+    let mut expected = vec![
+        world.listed(&a, ("2026-01-01", Some("2031-06-01")), "approved"),
+        world.listed(&set, ("2031-06-01", None), "approved"),
+    ];
+    expected.sort_by_key(|p| p["priceId"].as_str().unwrap().to_owned());
+    assert_eq!(world.announced().await, expected);
 }
 
 /// A change is not edited: its author deletes it and opens another.
