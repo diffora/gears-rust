@@ -2173,8 +2173,8 @@ fn archive_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
              audit row (D-522): `archived_at` and `archived_by` are set and the version moves. In \
              the same transaction each entry whose reference is confirmed or lost becomes \
              `released`, with a `release` op (reason book_archived) that releases its SKU \
-             reference in Products; the door drives those ops after the commit, and the ticker \
-             finishes what it does not. A SKU that only this book named then stops being \
+             reference in Products; the door drives those ops after the commit, at most 8 at once \
+             and for at most 3 s in all, and the ticker finishes what it does not. A SKU that only this book named then stops being \
              referenced, so it can be retired. The entries and prices stay and are read-only: an \
              entry create or PATCH, a price create, cancel, end or submit, and a plan item naming \
              an entry of the book are 409 BOOK_ARCHIVED. `GET /price-books` leaves an archived \
@@ -2204,7 +2204,8 @@ fn archive_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .description(
             "Clears a book's archive mark at the version the caller read (If-Match), with an audit \
              row (D-522). Each `released` entry gets a `rereserve` op, unless a release or a \
-             re-reservation of it is still open, and the door drives them after the commit. An \
+             re-reservation of it is still open, and the door drives them after the commit (at most \
+             8 at once, for at most 3 s in all; the ticker finishes the rest). An \
              entry whose SKU refuses the new reservation (retired, say) stays `released` and \
              read-only (409 ENTRY_REFERENCE_RELEASED), and the book is unarchived anyway: \
              `released_entries` lists the entries still released when the answer is built. \
@@ -2228,15 +2229,66 @@ fn archive_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .error_503(openapi)
         .register(router, openapi)
 }
-/// Drive each op an archive or an unarchive wrote, as the door's caller; an op the drive leaves
-/// unfinished is durable, and the ticker finishes it (D-522).
+/// How many reference ops an archive or an unarchive drives at once (D-522).
+const DRIVE_CONCURRENCY: usize = 8;
+/// How long an archive or an unarchive waits for all of its drives together (D-522).
+const DRIVE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(3);
+/// Drive the ops an archive or an unarchive wrote, as the door's caller, at most
+/// [`DRIVE_CONCURRENCY`] at once and under one [`DRIVE_DEADLINE`] for the whole door. Each op is
+/// durable: an op the door leaves unfinished, failed or cut off by the deadline, is the ticker's to
+/// finish (D-522). Each drive runs on a task of its own: a drive opens its own transactions, and
+/// toolkit-db refuses a connection to a task that is inside one.
 async fn drive_all(state: &Arc<AuthoringState>, ctx: &SecurityContext, ops: &[Uuid]) {
+    let deadline = tokio::time::Instant::now() + DRIVE_DEADLINE;
+    let mut queue = ops.iter().copied();
+    let mut running = tokio::task::JoinSet::new();
+    let mut finished = 0_usize;
+    loop {
+        let room = DRIVE_CONCURRENCY.saturating_sub(running.len());
+        for op in queue.by_ref().take(room) {
+            running.spawn(drive_one(state.clone(), ctx.clone(), op));
+        }
+        match tokio::time::timeout_at(deadline, running.join_next()).await {
+            Ok(Some(joined)) => {
+                finished += 1;
+                deferred(joined);
+            }
+            // Every op is driven, or the deadline passed.
+            Ok(None) | Err(_) => break,
+        }
+    }
+    let left = ops.len().saturating_sub(finished);
+    if left > 0 {
+        tracing::warn!(
+            left,
+            total = ops.len(),
+            deadline_ms = DRIVE_DEADLINE.as_millis(),
+            "pricing book archive reference work left to the ticker at the door's deadline"
+        );
+    }
+    // Dropping the set aborts the drives still running; their ops stay durable.
+}
+/// One op of [`drive_all`], driven to its end as the door's caller.
+async fn drive_one(
+    state: Arc<AuthoringState>,
+    ctx: SecurityContext,
+    op: Uuid,
+) -> (Uuid, Result<(), CanonicalError>) {
     use crate::infra::reference_work::{self, Caller, WallClock};
-    for op in ops {
-        if let Err(error) =
-            reference_work::drive(state, ctx, *op, Arc::new(WallClock), Caller::Door).await
-        {
+    let driven = reference_work::drive(&state, &ctx, op, Arc::new(WallClock), Caller::Door)
+        .await
+        .map(drop);
+    (op, driven)
+}
+/// Log a drive of [`drive_all`] that did not finish its op: the ticker finishes it.
+fn deferred(joined: Result<(Uuid, Result<(), CanonicalError>), tokio::task::JoinError>) {
+    match joined {
+        Ok((_, Ok(()))) => {}
+        Ok((op, Err(error))) => {
             tracing::warn!(op_id=%op, error=%error, diagnostic=error.diagnostic().unwrap_or_default(), "pricing book archive reference work deferred to the ticker");
+        }
+        Err(error) => {
+            tracing::warn!(error=%error, "pricing book archive reference drive did not finish; the ticker finishes its op");
         }
     }
 }

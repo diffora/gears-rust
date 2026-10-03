@@ -142,7 +142,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-519 | M | Every actor id a read shows carries its current name | DECIDED 2026-10-03 · Owner, 2026-10-02 (ask 32: names on the server, through AM); extends D-438, D-460, D-461 |
 | D-520 | H | A scheduled price is cancelled through the prices unit | DECIDED 2026-10-03 · Owner, 2026-10-03; asks 19, 58a; amends D-390, D-393, D-422; amended 2026-10-03 (the event, the reads, the binding guard) |
 | D-521 | H | A live price is ended through the prices unit | DECIDED 2026-10-03 · Owner, 2026-10-03; ask 58a; amends D-390, D-393; amended 2026-10-03 (the event) |
-| D-522 | H | A finished book can be archived, and archiving it releases its entries' SKU references (twin of products P-D-263) | DECIDED 2026-10-03 · Owner, 2026-10-03 ("archived"; ask 58b); amends D-408, D-444; extends D-407, D-442; amended 2026-10-03 (the submit's 409) |
+| D-522 | H | A finished book can be archived, and archiving it releases its entries' SKU references (twin of products P-D-263) | DECIDED 2026-10-03 · Owner, 2026-10-03 ("archived"; ask 58b); amends D-408, D-444; extends D-407, D-442; amended 2026-10-03 (the submit's 409, the door's drive) |
 
 ## Entries
 
@@ -2249,5 +2249,7 @@ A finished price book stayed on the Price Books screen for ever, and its entries
 - **The tests.** `tests/book_archive.rs` (ask 58, the refusals, the read-only doors, the unarchive, the release after a failed drive, a re-reservation that meets an archived book), `tests/postgres_book_archive.rs` (the migration up and down, the doors on Postgres), the migration's `_tests.rs` on SQLite, and products' `tests/book_archive_e2e.rs`, where both gears run: the archive releases the reference in Products, which then retires the SKU and archives it.
 
 **Amended 2026-10-03 (branch review, finding 2): the submit answers 409.** The prices unit refused a submit or a publish-changes of a released entry's price with `BOOK_ARCHIVED` or `ENTRY_REFERENCE_RELEASED`, and the door mapped both through its catch-all to 400. The entry above and the archive door said 409. Both codes are now 409, as `ENTRY_REFERENCE_LOST` is. The submit and publish-changes doors name them among their refusals. `tests/book_archive.rs` asserts the 409 and that the draft stays a draft, on an archived book and after an unarchive that left the entry released.
+
+**Amended 2026-10-03 (branch review, finding 6): the door's drive is bounded.** The archive and the unarchive drove their reference ops one after another in the request, with no deadline, and nothing caps a book's entries. Now each door drives at most 8 ops at once, each on a task of its own, under one 3 s deadline for the whole door. At the deadline the door answers; the drives still running stop, and their ops stay durable for the ticker, as a failed drive's do. The door logs how many it left. `tests/book_archive.rs`: with Products stalling every release far past the deadline, the archive answers within seconds, its releases open, and the ticker finishes them.
 
 **Source:** Owner, 2026-10-03 ("archived"; ask 58b). Twin of products P-D-263. Amends D-408 and D-444; extends D-407 and D-442. The 2026-10-03 amendments: the branch review of the backlog asks.

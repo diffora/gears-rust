@@ -616,6 +616,52 @@ async fn unarchive_rereserves_the_live_skus_and_lists_the_others() {
     draft(&f, e1).await;
 }
 
+/// The door drives its ops a few at a time under one deadline for the whole door and leaves the
+/// rest to the ticker (D-522, review RF-P item 3): with Products stalling every release far past
+/// that deadline, the archive still answers within seconds, its entries `released` and their
+/// releases open, and the ticker finishes them once Products answers.
+#[tokio::test]
+async fn the_archive_answers_within_its_deadline_while_products_stalls() {
+    let (f, catalog) = plan_support::setup().await;
+    let book = new_book(&f, "stalled").await;
+    let entries = [
+        door_entry(&f, book, catalog.sku(SkuType::Recurring)).await,
+        door_entry(&f, book, catalog.sku(SkuType::Recurring)).await,
+    ];
+    catalog.stall_releases_ms.store(15_000, Ordering::SeqCst);
+    let started = std::time::Instant::now();
+    archive(&f, book).await;
+    let took = started.elapsed();
+    assert!(
+        took < std::time::Duration::from_secs(10),
+        "the door answered after {took:?}"
+    );
+    for entry in entries {
+        assert_eq!(reference_state(&f, entry).await, "released");
+        assert_eq!(held(&catalog, entry), ReferenceState::Confirmed, "{entry}");
+        let ops = ops_for(&f, entry).await;
+        let release = ops.iter().find(|op| op.kind == "release").unwrap();
+        assert_eq!(release.state, "releasing", "{release:?}");
+    }
+    assert_eq!(
+        catalog.releases(),
+        0,
+        "no release answered within the deadline"
+    );
+
+    catalog.stall_releases_ms.store(0, Ordering::SeqCst);
+    Ticker::new(f.state.clone(), Arc::new(Later), 10, 100)
+        .tick()
+        .await
+        .unwrap();
+    for entry in entries {
+        assert_eq!(held(&catalog, entry), ReferenceState::Released, "{entry}");
+        let ops = ops_for(&f, entry).await;
+        let release = ops.iter().find(|op| op.kind == "release").unwrap();
+        assert_eq!(release.state, "done", "{release:?}");
+    }
+}
+
 /// The release survives a failed drive: with Products down the archive still answers 200, its
 /// entry reads `released`, and the ticker finishes the release once Products answers.
 #[tokio::test]
