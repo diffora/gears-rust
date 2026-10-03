@@ -310,6 +310,59 @@ async fn ask_58_a_finished_book_archives_and_releases_its_sku_references() {
     assert_eq!(tag, "\"2\"");
 }
 
+/// A release op's reason is read through its work record, as the drive reads it (D-522, review
+/// RF-P item 5): a reason outside the closed set, or a work record that does not decode, is a
+/// corrupt row, a 500 that does not echo it, never a free string or a silent null. The row
+/// restored reads `book_archived` again.
+#[tokio::test]
+async fn a_release_op_of_a_poisoned_work_record_is_a_corrupt_row() {
+    use sea_orm::{ConnectionTrait, Database};
+    let (f, catalog) = plan_support::setup().await;
+    let book = new_book(&f, "poisoned").await;
+    let entry = door_entry(&f, book, catalog.sku(SkuType::Recurring)).await;
+    archive(&f, book).await;
+    let release = ops_for(&f, entry)
+        .await
+        .into_iter()
+        .find(|op| op.kind == "release")
+        .unwrap();
+    let stored = release.outcome.clone().unwrap();
+    assert!(stored.contains("\"book_archived\""), "{stored}");
+    let hex = release.op_id.simple().to_string().to_uppercase();
+    let row = format!("WHERE op_id = '{}' OR hex(op_id) = '{hex}'", release.op_id);
+    let raw = Database::connect(&f.dsn).await.unwrap();
+    for poison in [
+        stored.replace("\"book_archived\"", "\"shelved\""),
+        "{".to_owned(),
+    ] {
+        let written = raw
+            .execute_unprepared(&format!(
+                "UPDATE pricing_reference_op SET outcome = '{poison}' {row}"
+            ))
+            .await
+            .unwrap();
+        assert_eq!(written.rows_affected(), 1);
+        let (s, b, _) = f.call("GET", "/reference-ops", json!({}), None, None).await;
+        assert_eq!(s, 500, "{poison}: {b}");
+        assert!(!b.to_string().contains("shelved"), "{b}");
+    }
+    raw.execute_unprepared(&format!(
+        "UPDATE pricing_reference_op SET outcome = '{stored}' {row}"
+    ))
+    .await
+    .unwrap();
+    raw.close().await.unwrap();
+    let (s, journal, _) = f.call("GET", "/reference-ops", json!({}), None, None).await;
+    assert_eq!(s, 200, "{journal}");
+    let read = journal["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|op| op["kind"] == "release")
+        .unwrap();
+    assert_eq!(read["reason"], "book_archived", "{journal}");
+}
+
 /// The refusals: a missing If-Match is 400, a stale one 409 `STALE_REVISION`, an unknown book 404;
 /// a plan revision that is not superseded is `BOOK_IN_PLAN`, a pending price `BOOK_HAS_PENDING`.
 /// A refused archive writes nothing.
