@@ -137,7 +137,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-514 | H | A usage rating policy is its rating rules and the entry stores the SKU revision | DECIDED 2026-10-02 · Owner, 2026-10-02; amends D-502, D-503, D-504, D-513 |
 | D-515 | M | A plan row's book carries its id and validity | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 67); amends D-485 |
 | D-516 | M | A named book carries its identity beside its id | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 54); amends D-460, D-408 |
-| D-517 | M | Entries can be read by id | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 68); amends D-486 |
+| D-517 | M | Entries can be read by id | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 68); amends D-486; amended 2026-10-03 (the filter's length and its declaration) |
 | D-518 | M | The plan list, the plan counts, the book list and the settings answer 304 | DECIDED 2026-10-03 · Owner, 2026-10-03 (asks 56, 57); extends D-469 |
 | D-519 | M | Every actor id a read shows carries its current name | DECIDED 2026-10-03 · Owner, 2026-10-02 (ask 32: names on the server, through AM); extends D-438, D-460, D-461 |
 | D-520 | H | A scheduled price is cancelled through the prices unit | DECIDED 2026-10-03 · Owner, 2026-10-03; asks 19, 58a; amends D-390, D-393, D-422; amended 2026-10-03 (the event, the reads, the binding guard) |
@@ -2112,7 +2112,13 @@ A screen that shows a revision, or a price unit, had only the book's id. It coul
 - **What stays.** Prices are shown only to a caller who also holds `price_book` read (D-434, D-440). Without that grant the entries are listed and `current_price` and `next_price` are null. The read is tenant scoped. The SKU read's keys, order, page and seven statements are unchanged.
 - **The test.** `tests/sku_reads.rs`: the named entries, an omitted id, another tenant, the money grant, and the refused shapes.
 
-**Source:** Owner, 2026-10-02 (ask 68). Amends D-486.
+**Amended 2026-10-03 (branch review, finding 1): the filter's length and its declaration.** The read takes the raw `$filter` itself, so the toolkit OData extractor's length budget never ran, and the 200-id limit was judged only after the whole expression was parsed. The route also published the OData field table, `id: eq|ne|in`, although the read refuses `ne`.
+
+- **The length.** A `$filter` longer than the toolkit's `MAX_FILTER_LEN` (8192 bytes) is 400 `QUERY_INVALID` before it is parsed. A filter of exactly that length is still read.
+- **The declaration.** `$filter` is declared as a plain query parameter. Its description names the two accepted shapes, `id eq <id>` and `id in (<id>, ...)`, the 200 ids and the 8192 bytes. The route publishes no `x-odata-filter`. The architecture lint DE0802 asks for `with_odata_filter`, which publishes the toolkit's operator table for a uuid field (`eq|ne|in`), so this one route's registration is exempt from it, as products' browse door is.
+- **The tests.** `tests/sku_reads.rs`: a well-formed filter one byte over the limit is refused, one at the limit is read, and the served contract declares the filter as above.
+
+**Source:** Owner, 2026-10-02 (ask 68). Amends D-486. The 2026-10-03 amendment: the branch review of the backlog asks.
 
 #### D-518 [M] The plan list, the plan counts, the book list and the settings answer 304
 

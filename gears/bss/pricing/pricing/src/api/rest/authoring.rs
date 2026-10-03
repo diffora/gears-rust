@@ -428,6 +428,12 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .standard_errors(openapi)
         .error_503(openapi)
         .register(router, openapi);
+    // D-517: `$filter` is declared by hand. This read accepts `id eq` and `id in` only, and
+    // `with_odata_filter` publishes the toolkit's operator table for a uuid field, `eq|ne|in`, so
+    // the contract would offer `ne`, which the read refuses. The exemption from DE0802 sits on this
+    // one route's statement, so the other routes registered here keep the rule (products' browse
+    // door declares its free `$filter` the same way).
+    #[allow(unknown_lints, de0802_use_odata_ext)]
     let router = OperationBuilder::get("/bss-pricing/v1/price-book-entries")
         .operation_id("bss_pricing.list_sku_entries")
         .summary("Where a SKU is priced")
@@ -451,7 +457,7 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
              cursor carries the order and a hash of the plain keys, so a continuation sends no \
              $orderby. `$filter` is `id in (...)` of at most 200 ids, or `id eq` one id, and \
              replaces sku_id; another \
-             field, `or`, `ne`, or more than 200 ids is refused. Refusals: 400 QUERY_INVALID without \
+             field, `or`, `ne`, more than 200 ids, or a filter longer than 8192 bytes is refused. Refusals: 400 QUERY_INVALID without \
              exactly one well-formed sku_id and without that filter, for a repeated key, for any \
              other key, for $select or $count, for sku_id beside $filter, for a malformed \
              book_id, currency, status, changing or limit, or for more than 50 book ids; 400 \
@@ -467,7 +473,13 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
             false,
             "The SKU whose entries are listed. Required unless $filter=id in (...) is sent",
         )
-        .with_odata_filter::<price_book_entries::EntryIdField>()
+        .query_param(
+            "$filter",
+            false,
+            "`id eq <id>` or `id in (<id>, ...)`: 1 to 200 distinct price book entry ids, at most \
+             8192 bytes; replaces sku_id and takes no other key. Another field, `ne`, `or` or \
+             any other shape is 400 QUERY_INVALID",
+        )
         .query_param(
             "book_id",
             false,
