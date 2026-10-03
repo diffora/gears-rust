@@ -81,6 +81,10 @@ impl From<DecisionKind> for InboxDecisionKindDto {
 #[toolkit_macros::api_dto(response)]
 pub struct InboxDecisionDto {
     pub actor: Uuid,
+    /// The current name of `actor` (AP-D-11): its display name, else first and last name, else
+    /// username, from Account Management under the caller's rights. Null when no name is
+    /// available now.
+    pub actor_name: Option<String>,
     pub generation: i32,
     pub decision: InboxDecisionKindDto,
     pub note: Option<String>,
@@ -94,6 +98,7 @@ impl From<InboxDecision> for InboxDecisionDto {
     fn from(decision: InboxDecision) -> Self {
         Self {
             actor: decision.actor,
+            actor_name: None,
             generation: decision.generation,
             decision: decision.decision.into(),
             note: decision.note,
@@ -119,6 +124,10 @@ pub struct InboxUnitDto {
     pub quorum_required: u32,
     pub common_effective_date: Option<String>,
     pub submitted_by: Uuid,
+    /// The current name of `submitted_by` (AP-D-11): its display name, else first and last name, else
+    /// username, from Account Management under the caller's rights. Null when no name is
+    /// available now.
+    pub submitted_by_name: Option<String>,
     #[serde(with = "time::serde::rfc3339")]
     #[schema(value_type = String)]
     pub submitted_at: OffsetDateTime,
@@ -155,6 +164,7 @@ impl From<InboxUnit> for InboxUnitDto {
             quorum_required: unit.quorum_required,
             common_effective_date: unit.common_effective_date,
             submitted_by: unit.submitted_by,
+            submitted_by_name: None,
             submitted_at: unit.submitted_at,
             submit_note: unit.submit_note,
             decided_at: unit.decided_at,
@@ -272,4 +282,37 @@ impl InboxCountsDto {
             sources: sources.into_iter().map(Into::into).collect(),
         }
     }
+}
+
+bss_rest::actor_fields!(InboxDecisionDto { actor => actor_name } []);
+bss_rest::actor_fields!(InboxUnitListDto {}[items]);
+
+/// A unit names its submitter and its voters (AP-D-11), and, when its gear's live subject
+/// carries a creator and a `created_by_name` (a products SKU), that creator too.
+impl bss_rest::actor_names::ActorFields for InboxUnitDto {
+    fn actor_ids(&self, ids: &mut Vec<Uuid>) {
+        ids.push(self.submitted_by);
+        self.decisions.actor_ids(ids);
+        ids.extend(live_creator(self.subject_live.as_ref()));
+    }
+    fn fill_names(&mut self, names: &bss_rest::actor_names::Names) {
+        self.submitted_by_name = bss_rest::actor_names::label(names, self.submitted_by);
+        self.decisions.fill_names(names);
+        if let Some(id) = live_creator(self.subject_live.as_ref())
+            && let Some(serde_json::Value::Object(live)) = self.subject_live.as_mut()
+        {
+            live.insert(
+                "created_by_name".to_owned(),
+                bss_rest::actor_names::label(names, id)
+                    .map_or(serde_json::Value::Null, serde_json::Value::String),
+            );
+        }
+    }
+}
+
+/// The creator of a live subject that names one beside a `created_by_name`.
+fn live_creator(live: Option<&serde_json::Value>) -> Option<Uuid> {
+    let live = live?;
+    live.get("created_by_name")?;
+    live.get("created_by")?.as_str()?.parse().ok()
 }

@@ -185,10 +185,10 @@ fn inbox(names: &[&str], fakes: &[(&str, Arc<Fake>)]) -> Router {
     for (name, fake) in fakes {
         register(name, fake.clone(), &hub);
     }
-    let state = Arc::new(ApiState {
-        sources: names.iter().map(|name| (*name).to_owned()).collect(),
+    let state = Arc::new(ApiState::new(
+        names.iter().map(|name| (*name).to_owned()).collect(),
         hub,
-    });
+    ));
     router(state, &OpenApiRegistryImpl::new())
 }
 
@@ -755,10 +755,7 @@ async fn a_vote_without_an_idempotency_key_is_refused() {
 async fn the_vote_spec_does_not_declare_412() {
     let registry = OpenApiRegistryImpl::new();
     let _router = router(
-        Arc::new(ApiState {
-            sources: Vec::new(),
-            hub: Arc::new(ClientHub::new()),
-        }),
+        Arc::new(ApiState::new(Vec::new(), Arc::new(ClientHub::new()))),
         &registry,
     );
     let spec = registry
@@ -1023,10 +1020,7 @@ async fn a_refused_list_is_not_conditional() {
 async fn the_list_and_the_counts_declare_the_conditional_get() {
     let registry = OpenApiRegistryImpl::new();
     let _router = router(
-        Arc::new(ApiState {
-            sources: Vec::new(),
-            hub: Arc::new(ClientHub::new()),
-        }),
+        Arc::new(ApiState::new(Vec::new(), Arc::new(ClientHub::new()))),
         &registry,
     );
     let spec = registry
@@ -1057,4 +1051,202 @@ async fn the_list_and_the_counts_declare_the_conditional_get() {
     }
     let card = &json["paths"]["/bss-approvals/v1/approval-units/{id}"]["get"]["responses"];
     assert!(card.get("304").is_none(), "the card is not conditional");
+}
+
+// ------------------------------------------------------------------ AP-D-11 actor names
+
+/// The people the directory knows, every lookup it answered, and whether it is down.
+#[derive(Default)]
+struct People {
+    names: Mutex<std::collections::BTreeMap<Uuid, String>>,
+    calls: Mutex<Vec<Vec<Uuid>>>,
+    down: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait]
+impl bss_rest::actor_names::ActorDirectory for People {
+    async fn list_users(
+        &self,
+        _ctx: &toolkit_security::SecurityContext,
+        query: bss_rest::actor_names::ListUsersQuery,
+    ) -> Result<toolkit_odata::Page<bss_rest::actor_names::IdpUser>, CanonicalError> {
+        let ids = bss_rest::actor_names::queried_ids(&query);
+        self.calls.lock().unwrap().push(ids.clone());
+        if self.down.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(CanonicalError::service_unavailable().create());
+        }
+        let names = self.names.lock().unwrap();
+        let users = ids
+            .iter()
+            .filter_map(|id| {
+                names.get(id).map(|name| {
+                    bss_rest::actor_names::IdpUser::new(*id, "login").with_display_name(name)
+                })
+            })
+            .collect();
+        Ok(toolkit_odata::Page::new(
+            users,
+            toolkit_odata::PageInfo {
+                next_cursor: None,
+                prev_cursor: None,
+                limit: 200,
+            },
+        ))
+    }
+}
+
+impl People {
+    fn know(&self, id: Uuid, name: &str) {
+        self.names.lock().unwrap().insert(id, name.to_owned());
+    }
+    fn calls(&self) -> usize {
+        self.calls.lock().unwrap().len()
+    }
+}
+
+/// A pricing unit submitted by 3 with a vote by 4, and a products unit submitted by 5 whose live
+/// SKU was created by 6; the inbox names them through `people`.
+fn named_inbox(people: Arc<People>) -> Router {
+    let mut priced = test_support::unit("pricing", 1, 1);
+    priced.decisions = vec![bss_approvals_sdk::InboxDecision {
+        actor: Uuid::from_u128(4),
+        generation: 1,
+        decision: bss_approvals_sdk::DecisionKind::Approve,
+        note: None,
+        at: test_support::at(2),
+        stale: false,
+    }];
+    let mut sku = test_support::unit("products", 3, 2);
+    sku.submitted_by = Uuid::from_u128(5);
+    sku.subject_live = Some(serde_json::json!({
+        "id": Uuid::from_u128(8),
+        "created_by": Uuid::from_u128(6),
+        "created_by_name": null,
+    }));
+    let hub = Arc::new(ClientHub::new());
+    register("pricing", Arc::new(Fake::serving(vec![priced])), &hub);
+    register("products", Arc::new(Fake::serving(vec![sku])), &hub);
+    let state = ApiState::new(vec!["pricing".into(), "products".into()], hub).with_actor_names(
+        bss_rest::actor_names::ActorNames::with_directory(people, &crate::api::SYSTEM_ACTORS),
+    );
+    router(Arc::new(state), &OpenApiRegistryImpl::new())
+}
+
+fn known_people() -> Arc<People> {
+    let people = Arc::new(People::default());
+    for (id, name) in [(3, "Sam"), (4, "Vic"), (5, "Pat"), (6, "Cid")] {
+        people.know(Uuid::from_u128(id), name);
+    }
+    people
+}
+
+/// One read as the test caller: 200, its body and its `ETag`, and one directory lookup.
+async fn named_read(
+    app: &Router,
+    people: &People,
+    uri: &str,
+    tag: Option<&str>,
+) -> (StatusCode, serde_json::Value, String) {
+    let before = people.calls();
+    let mut request = Request::builder()
+        .method("GET")
+        .uri(uri)
+        .body(Body::empty())
+        .unwrap();
+    request.extensions_mut().insert(test_support::caller());
+    if let Some(tag) = tag {
+        request
+            .headers_mut()
+            .insert("If-None-Match", tag.parse().unwrap());
+    }
+    let (status, headers, body) = bytes(app.clone().oneshot(request).await.unwrap()).await;
+    assert_eq!(people.calls() - before, 1, "{uri}: one lookup per read");
+    let etag = headers
+        .get("etag")
+        .map(|value| value.to_str().unwrap().to_owned())
+        .unwrap_or_default();
+    let json = if body.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_slice(&body).unwrap()
+    };
+    (status, json, etag)
+}
+
+/// The `*_name` sibling of `field` on `value`: present, and the given text or null.
+#[track_caller]
+fn named(value: &serde_json::Value, field: &str, expected: Option<&str>) {
+    let key = format!("{field}_name");
+    let got = value
+        .get(&key)
+        .unwrap_or_else(|| panic!("{key} is missing: {value}"));
+    assert_eq!(
+        got,
+        &expected.map_or(serde_json::Value::Null, |name| serde_json::json!(name)),
+        "{key}: {value}"
+    );
+}
+
+/// The inbox's list and card with the names each is expected to carry, all or none.
+async fn inbox_reads(app: &Router, people: &People, known: bool) {
+    let name = |text: &'static str| known.then_some(text);
+    let (status, page, _) = named_read(app, people, "/bss-approvals/v1/approval-units", None).await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    let items = page["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2, "{page}");
+    let products = items.iter().find(|u| u["source"] == "products").unwrap();
+    let pricing = items.iter().find(|u| u["source"] == "pricing").unwrap();
+    named(pricing, "submitted_by", name("Sam"));
+    named(&pricing["decisions"][0], "actor", name("Vic"));
+    named(products, "submitted_by", name("Pat"));
+    named(&products["subject_live"], "created_by", name("Cid"));
+    let card_uri = format!("/bss-approvals/v1/approval-units/{}", Uuid::from_u128(2));
+    let (status, card, _) = named_read(app, people, &card_uri, None).await;
+    assert_eq!(status, StatusCode::OK, "{card}");
+    named(&card, "submitted_by", name("Pat"));
+    named(&card["subject_live"], "created_by", name("Cid"));
+}
+
+#[tokio::test]
+async fn the_inbox_names_its_submitters_and_voters_in_one_lookup() {
+    let people = known_people();
+    let app = named_inbox(people.clone());
+    inbox_reads(&app, &people, true).await;
+    let mut asked = people.calls.lock().unwrap()[0].clone();
+    asked.sort_unstable();
+    assert_eq!(
+        asked,
+        [3, 4, 5, 6].map(Uuid::from_u128),
+        "the merged page's actors, once each"
+    );
+}
+
+#[tokio::test]
+async fn an_unavailable_directory_leaves_the_names_null_on_a_200() {
+    let people = known_people();
+    people.down.store(true, std::sync::atomic::Ordering::SeqCst);
+    let app = named_inbox(people.clone());
+    inbox_reads(&app, &people, false).await;
+}
+
+#[tokio::test]
+async fn a_renamed_submitter_changes_the_list_tag() {
+    let people = known_people();
+    let app = named_inbox(people.clone());
+    let uri = "/bss-approvals/v1/approval-units";
+    let (_, _, first) = named_read(&app, &people, uri, None).await;
+    let (status, _, again) = named_read(&app, &people, uri, Some(&first)).await;
+    assert_eq!(status, StatusCode::NOT_MODIFIED);
+    assert_eq!(again, first);
+    people.know(Uuid::from_u128(3), "Samantha");
+    let (status, page, renamed) = named_read(&app, &people, uri, Some(&first)).await;
+    assert_eq!(status, StatusCode::OK, "a rename is a new body");
+    assert_ne!(renamed, first);
+    let pricing = page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|u| u["source"] == "pricing")
+        .unwrap();
+    named(pricing, "submitted_by", Some("Samantha"));
 }

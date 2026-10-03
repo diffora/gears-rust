@@ -91,12 +91,14 @@ pub(super) async fn list_units(
         impact: query.impact,
     })?;
     let listed = read::list_page(&state.hub, &state.sources, &ctx, &prepared).await?;
-    let page = InboxUnitListDto {
+    let mut page = InboxUnitListDto {
         items: listed.units.into_iter().map(Into::into).collect(),
         next_cursor: listed.next_cursor,
         sources: listed.sources.into_iter().map(Into::into).collect(),
     };
-    // AP-D-10: a weak tag of the merged page, sources included; a match is 304.
+    // AP-D-11: the merged page's submitters and voters in one lookup.
+    state.actor_names.fill(&ctx, &mut page).await;
+    // AP-D-10: a weak tag of the merged page, sources and names included; a match is 304.
     Ok(respond(&headers, &page, PRIVATE_REVALIDATE))
 }
 
@@ -136,7 +138,10 @@ pub(super) async fn get_unit(
         query.impact.unwrap_or(true),
     )
     .await?;
-    Ok(Json(unit.into()))
+    let mut card = InboxUnitDto::from(unit);
+    // AP-D-11: the submitter, the voters and the live subject's creator in one lookup.
+    state.actor_names.fill(&ctx, &mut card).await;
+    Ok(Json(card))
 }
 
 pub(super) async fn approve(

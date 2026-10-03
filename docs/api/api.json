@@ -6417,6 +6417,13 @@
             "format": "uuid",
             "type": "string"
           },
+          "actor_name": {
+            "description": "The current name of `actor` (AP-D-11): its display name, else first and last name, else\nusername, from Account Management under the caller's rights. Null when no name is\navailable now.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "at": {
             "type": "string"
           },
@@ -6645,6 +6652,13 @@
           "submitted_by": {
             "format": "uuid",
             "type": "string"
+          },
+          "submitted_by_name": {
+            "description": "The current name of `submitted_by` (AP-D-11): its display name, else first and last name, else\nusername, from Account Management under the caller's rights. Null when no name is\navailable now.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
