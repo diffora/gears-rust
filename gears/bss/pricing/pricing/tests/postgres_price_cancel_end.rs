@@ -1,13 +1,21 @@
-//! D-520 on Postgres: 000022 adds the cancel and end columns, widens `state`, narrows the
-//! approved-start index to prices, and reverses.
+//! D-520 and D-521 on Postgres: 000022 adds the cancel and end columns, widens `state`, narrows
+//! the approved-start index to prices, and reverses; and a cancel and an end apply through the
+//! prices unit on the native engine.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
+mod entry_support;
 mod pg_support;
 
+use bss_pricing::infra::clock::Clock;
+use bss_pricing::infra::storage::repo::{price_book_entry_repo, price_repo};
 use bss_pricing::module::BssPricingGear;
+use entry_support::{Script, app_for, policy_support, request, state_with_clock, user_of};
 use pg_support::Pg;
 use sea_orm::{ConnectionTrait, DatabaseBackend, Statement};
 use sea_orm_migration::SchemaManager;
+use serde_json::{Value, json};
+use std::sync::Arc;
 use toolkit::contracts::DatabaseCapability;
+use toolkit_db::{DBProvider, DbError, secure::AccessScope};
 use uuid::Uuid;
 
 const MIGRATION: &str = "m20261003_000022_price_cancel_and_end";
@@ -262,4 +270,160 @@ async fn postgres_adds_cancel_and_end_and_round_trips() {
     )
     .await;
     assert_eq!(again, vec!["change_kind"]);
+}
+
+struct Fixed(time::OffsetDateTime);
+impl Clock for Fixed {
+    fn now(&self) -> time::OffsetDateTime {
+        self.0
+    }
+}
+fn day(s: &str) -> time::Date {
+    time::Date::parse(s, &time::format_description::well_known::Iso8601::DATE).unwrap()
+}
+
+/// The chain on Postgres: A → B → C; cancelling B re-opens A onto C, and ending C keeps its
+/// explicit end. Each applied change keeps its price's start, which the narrowed approved-start
+/// index allows, while a second price on a taken start is still refused.
+#[tokio::test]
+#[ignore = "needs the Postgres harness"]
+async fn postgres_a_cancel_and_an_end_apply_through_the_unit() {
+    let pg = Pg::applied().await;
+    let tenant = Uuid::new_v4();
+    let db = DBProvider::<DbError>::new(pg.db().await);
+    let today = time::OffsetDateTime::new_utc(day("2026-02-15"), time::Time::MIDNIGHT);
+    let state = state_with_clock(
+        db.clone(),
+        Arc::new(Script::default()),
+        Arc::new(Fixed(today)),
+    )
+    .await;
+    let app = app_for(state, tenant);
+    let author = user_of(tenant);
+    let call = |method: &'static str, path: String, body: Value, key: Option<&'static str>| {
+        let (app, author) = (app.clone(), author.clone());
+        async move {
+            let (status, body, _) = request(&app, &author, method, &path, body, None, key).await;
+            (status, body)
+        }
+    };
+    let (s, book) = call(
+        "POST",
+        "/price-books".into(),
+        json!({"code":"standard","name":"Standard","currency":"EUR"}),
+        Some("book"),
+    )
+    .await;
+    assert_eq!(s, 201, "{book}");
+    let (s, entry) = call(
+        "POST",
+        format!("/price-books/{}/entries", book["id"].as_str().unwrap()),
+        json!({"usage_rating_policy":policy_support::input(),"sku_id":Uuid::new_v4(),"model":"per_unit"}),
+        Some("entry"),
+    )
+    .await;
+    assert_eq!(s, 201, "{entry}");
+    let (_, _, tag) = request(
+        &app,
+        &author,
+        "GET",
+        "/approval-policy",
+        json!({}),
+        None,
+        None,
+    )
+    .await;
+    let (s, _, _) = request(
+        &app,
+        &author,
+        "PUT",
+        "/approval-policy",
+        json!({"quorum":0}),
+        Some(&tag),
+        None,
+    )
+    .await;
+    assert_eq!(s, 200);
+    let entry: Uuid = entry["id"].as_str().unwrap().parse().unwrap();
+    let scope = AccessScope::for_tenant(tenant);
+    let conn = db.conn().unwrap();
+    let stored = price_book_entry_repo::find(&conn, &scope, tenant, entry)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut chain = Vec::new();
+    for (version_no, from) in [(1, "2026-01-01"), (2, "2026-03-01"), (3, "2026-05-01")] {
+        let mut price = entry_support::price(&stored);
+        price.version_no = version_no;
+        price.state = "approved".into();
+        price.effective_from = day(from);
+        chain.push(price_repo::insert(&conn, &scope, price).await.unwrap().id);
+    }
+    let [a, b, c] = chain[..] else {
+        unreachable!("three prices")
+    };
+    let (s, cancel) = call(
+        "POST",
+        format!("/prices/{b}/cancel"),
+        json!({}),
+        Some("cancel"),
+    )
+    .await;
+    assert_eq!(s, 201, "{cancel}");
+    let (s, receipt) = call(
+        "POST",
+        format!("/prices/{}/submit", cancel["id"].as_str().unwrap()),
+        json!({}),
+        Some("submit-cancel"),
+    )
+    .await;
+    assert_eq!(s, 201, "{receipt}");
+    assert_eq!(receipt["applied"], true);
+    let (s, end) = call(
+        "POST",
+        format!("/prices/{c}/end"),
+        json!({"effective_to": "2026-06-01"}),
+        Some("end"),
+    )
+    .await;
+    assert_eq!(s, 201, "{end}");
+    let (s, receipt) = call(
+        "POST",
+        format!("/prices/{}/submit", end["id"].as_str().unwrap()),
+        json!({}),
+        Some("submit-end"),
+    )
+    .await;
+    assert_eq!(s, 201, "{receipt}");
+    assert_eq!(receipt["applied"], true);
+    let rows = price_repo::for_entry(&conn, &scope, tenant, entry)
+        .await
+        .unwrap();
+    let row = |id: Uuid| rows.iter().find(|r| r.id == id).unwrap();
+    assert_eq!(row(a).effective_to, Some(day("2026-05-01")));
+    assert!(!row(a).closed_explicitly);
+    assert_eq!(row(b).state, "cancelled");
+    assert!(row(b).cancelled_by_unit_id.is_some());
+    assert_eq!(row(c).effective_to, Some(day("2026-06-01")));
+    assert!(row(c).closed_explicitly);
+    let applied: Vec<_> = rows
+        .iter()
+        .filter(|r| r.change_kind != "set")
+        .map(|r| (r.change_kind.as_str(), r.state.as_str(), r.effective_from))
+        .collect();
+    assert_eq!(
+        applied,
+        [
+            ("cancel", "approved", day("2026-03-01")),
+            ("end", "approved", day("2026-05-01")),
+        ]
+    );
+    let mut twin = entry_support::price(&stored);
+    twin.version_no = 9;
+    twin.state = "approved".into();
+    twin.effective_from = day("2026-05-01");
+    assert!(
+        price_repo::insert(&conn, &scope, twin).await.is_err(),
+        "one price per approved start"
+    );
 }

@@ -211,6 +211,8 @@ impl Harness {
             ("POST", "/bss-pricing/v1/price-book-entries/{id}/prices"),
             ("PATCH", "/bss-pricing/v1/prices/{id}"),
             ("DELETE", "/bss-pricing/v1/prices/{id}"),
+            ("POST", "/bss-pricing/v1/prices/{id}/cancel"),
+            ("POST", "/bss-pricing/v1/prices/{id}/end"),
             ("POST", "/bss-pricing/v1/prices/{id}/submit"),
             ("GET", "/bss-pricing/v1/price-books/{id}/publish-changes"),
             ("POST", "/bss-pricing/v1/price-books/{id}/publish-changes"),
@@ -280,6 +282,8 @@ impl Harness {
 // POST /price-book-entries/{id}/prices price:author false true
 // PATCH /prices/{id} price:author true false
 // DELETE /prices/{id} price:author true false
+// POST /prices/{id}/cancel price:author false true
+// POST /prices/{id}/end price:author false true
 
 // Run-4 approvals: method | path | resource:action | If-Match | Idempotency-Key
 // POST /prices/{id}/submit price:submit false true

@@ -510,6 +510,89 @@ async fn a_pin_foreign_to_the_revision_or_not_approved_is_400_pin_foreign() {
     );
 }
 
+/// D-520, D-521: a cancelled price leaves its chain, and an applied `cancel` or `end` row is a
+/// record, not a price. Neither is resolved, bound or pinned; the cancelled price stays readable
+/// by id and the change row does not.
+#[tokio::test]
+async fn a_cancelled_price_and_a_change_row_are_never_resolved_or_pinned() {
+    let w = world().await;
+    let cancelled = put(
+        &w.f,
+        w.entry,
+        Row {
+            price: flat("40.00"),
+            from: "2026-10-01",
+            state: "cancelled",
+            version_no: 2,
+            ..Row::default()
+        },
+    )
+    .await;
+    let cancel = put(
+        &w.f,
+        w.entry,
+        Row {
+            price: flat("40.00"),
+            from: "2026-10-01",
+            version_no: 3,
+            change_kind: "cancel",
+            target: Some(cancelled),
+            ..Row::default()
+        },
+    )
+    .await;
+    let end = put(
+        &w.f,
+        w.entry,
+        Row {
+            to: Some("2026-12-01"),
+            version_no: 4,
+            change_kind: "end",
+            target: Some(w.price),
+            ..Row::default()
+        },
+    )
+    .await;
+    for date in ["2026-10-05", "2026-12-05"] {
+        let (s, b) = resolve(
+            &w.f,
+            &format!("plan_revision_id={}&date={date}", w.revision),
+        )
+        .await;
+        assert_eq!(s, 200, "{b}");
+        let binding = &b["items"][0]["chains"][0]["binding"];
+        assert_eq!(binding["price_id"], json!(w.price), "{date}: {b}");
+        assert_eq!(binding["price"], flat("30.00"), "{date}");
+        assert_eq!(binding["effective_to"], json!(null), "{date}");
+    }
+    for pin in [cancelled, cancel, end] {
+        let (s, b) = resolve(
+            &w.f,
+            &format!("plan_revision_id={}&date=2026-10-05&pins={pin}", w.revision),
+        )
+        .await;
+        assert_eq!(s, 400, "{pin}: {b}");
+        assert!(text(&b).contains("PIN_FOREIGN"), "{pin}: {b}");
+    }
+    let (s, b, _) =
+        w.f.call(
+            "GET",
+            &format!("/prices/{cancelled}"),
+            json!({}),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(b["price"], flat("40.00"));
+    for change in [cancel, end] {
+        let (s, b, _) =
+            w.f.call("GET", &format!("/prices/{change}"), json!({}), None, None)
+                .await;
+        assert_eq!(s, 404, "{change}: {b}");
+    }
+}
+
 #[tokio::test]
 async fn two_pins_for_one_item_and_value_or_more_than_a_thousand_pins_are_refused() {
     let w = world().await;
@@ -1382,6 +1465,51 @@ async fn exactly_the_writes_that_declare_an_etag_answer_one() {
     writes
         .call(f, &me, delete, &last, json!({}), Some(&tag))
         .await;
+    let scheduled = {
+        use bss_pricing::infra::storage::repo::{price_book_entry_repo, price_repo};
+        use toolkit_db::secure::AccessScope;
+        let tenant = f.ctx.subject_tenant_id();
+        let scope = AccessScope::for_tenant(tenant);
+        let conn = f.db.conn().unwrap();
+        let stored = price_book_entry_repo::find(&conn, &scope, tenant, entry)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut ids = Vec::new();
+        for (version_no, from) in [(20, "2031-08-01"), (21, "2031-09-01")] {
+            let mut price = plan_support::entry_support::price(&stored);
+            price.version_no = version_no;
+            price.state = "approved".into();
+            price.price_json = json!({"rate": "1.00"});
+            price.effective_from =
+                time::Date::parse(from, &time::format_description::well_known::Iso8601::DATE)
+                    .unwrap();
+            ids.push(price_repo::insert(&conn, &scope, price).await.unwrap().id);
+        }
+        ids
+    };
+    let cancel = ("POST", "/prices/{id}/cancel");
+    writes
+        .call(
+            f,
+            &me,
+            cancel,
+            &format!("/prices/{}/cancel", scheduled[0]),
+            json!({}),
+            None,
+        )
+        .await;
+    let end = ("POST", "/prices/{id}/end");
+    writes
+        .call(
+            f,
+            &me,
+            end,
+            &format!("/prices/{}/end", scheduled[1]),
+            json!({"effective_to": "2031-10-01"}),
+            None,
+        )
+        .await;
     let submit = ("POST", "/prices/{id}/submit");
     let mut units = Vec::new();
     for draft in &drafts[..2] {
@@ -1512,7 +1640,7 @@ async fn exactly_the_writes_that_declare_an_etag_answer_one() {
         unmeasured.is_empty(),
         "every write op is measured: {unmeasured:?}"
     );
-    assert_eq!(measured.len(), 30, "the 30 write ops of the 56");
+    assert_eq!(measured.len(), 32, "the 32 write ops of the 58");
 }
 
 // ------------------------------------------------------------------ phase 4 review F1: what was refused

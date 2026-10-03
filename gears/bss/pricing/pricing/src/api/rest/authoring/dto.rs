@@ -1,9 +1,9 @@
 //! Pricing authoring wire contracts, with unique `OpenAPI` names and `snake_case` fields. A closed
 //! set on a response is its `enum` (D-439); a request keeps `string`, so its door's code refuses.
 use crate::api::rest::closed_sets::{
-    PricingApprovalKind, PricingBillingTiming, PricingChargeKind, PricingDecisionKind,
-    PricingEligibility, PricingEntryReferenceState, PricingItemReferenceState, PricingModel,
-    PricingPeriod, PricingPlanChange, PricingPriceState, PricingPriceStatus,
+    PricingApprovalKind, PricingBillingTiming, PricingChangeKind, PricingChargeKind,
+    PricingDecisionKind, PricingEligibility, PricingEntryReferenceState, PricingItemReferenceState,
+    PricingModel, PricingPeriod, PricingPlanChange, PricingPriceState, PricingPriceStatus,
     PricingReferenceOpKind, PricingReferenceOpRefKind, PricingReferenceOpState,
     PricingRevisionState, PricingSkuEntryStatus, PricingUnitState, PricingVoteOutcome,
 };
@@ -353,7 +353,17 @@ pub struct PricingPriceDto {
     pub paired_price_id: Option<Uuid>,
     pub return_of_price_id: Option<Uuid>,
     pub state: PricingPriceState,
+    /// `set` for a price; `cancel` or `end` for a row that asks to cancel or end the approved
+    /// price `target_price_id` names (D-520, D-521). Such a row carries that price's money
+    /// unchanged and is never a price in force.
+    pub change_kind: PricingChangeKind,
+    /// The approved price a `cancel` or `end` row names; null on a `set` row.
+    pub target_price_id: Option<Uuid>,
+    /// The unit that cancelled this price, when `state` is `cancelled` (D-520).
+    pub cancelled_by_unit_id: Option<Uuid>,
     /// Display state of matrix row 10: an approved price shows where its window stands today.
+    /// A cancelled price shows `cancelled` (D-520). A `cancel` or `end` row shows its state, and
+    /// `superseded` once applied (D-520, D-521).
     pub status: PricingPriceStatus,
     pub pending_unit_id: Option<Uuid>,
     pub approved_by_unit_id: Option<Uuid>,
@@ -381,12 +391,19 @@ impl PricingPriceDto {
     pub fn at(m: entity::price::Model, model: &str, today: time::Date) -> Result<Self, RepoError> {
         let id = m.id;
         let state = PricingPriceState::stored(&m.state, &format_args!("price {id} state"))?;
-        let status = crate::domain::price::window_display(
-            state.into(),
-            m.effective_from,
-            m.effective_to,
-            today,
-        )
+        let change_kind =
+            PricingChangeKind::stored(&m.change_kind, &format_args!("price {id} change_kind"))?;
+        // D-520, D-521: a cancel or an end has no window of its own.
+        let status = if change_kind == PricingChangeKind::Set {
+            crate::domain::price::window_display(
+                state.into(),
+                m.effective_from,
+                m.effective_to,
+                today,
+            )
+        } else {
+            crate::domain::price::change_display(state.into())
+        }
         .into();
         Ok(Self {
             id,
@@ -409,6 +426,9 @@ impl PricingPriceDto {
             paired_price_id: m.paired_price_id,
             return_of_price_id: m.return_of_price_id,
             state,
+            change_kind,
+            target_price_id: m.target_price_id,
+            cancelled_by_unit_id: m.cancelled_by_unit_id,
             status,
             pending_unit_id: m.pending_unit_id,
             approved_by_unit_id: m.approved_by_unit_id,
@@ -1415,6 +1435,15 @@ pub struct PricingPriceCreate {
     pub effective_from: String,
     pub temporary_until: Option<String>,
     pub note: Option<String>,
+}
+/// `POST /prices/{id}/end` (D-521).
+#[toolkit_macros::api_dto(request)]
+#[derive(Clone, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PricingPriceEnd {
+    /// The new end, `YYYY-MM-DD`, exclusive: after today, after the price's start, and no later
+    /// than its current end.
+    pub effective_to: String,
 }
 #[toolkit_macros::api_dto(request)]
 #[derive(Clone)]

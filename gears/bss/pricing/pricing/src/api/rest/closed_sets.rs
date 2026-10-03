@@ -7,7 +7,7 @@
 //! CHECK forbids one — is `CorruptRow` naming the row, a 500, never a panic.
 use crate::domain::{
     plan::{ReferenceState as ItemReference, RevisionState},
-    price::{DisplayStatus, Eligibility, PriceState},
+    price::{ChangeKind, DisplayStatus, Eligibility, PriceState},
     price_book_entry::{ChargeKind, Model, OpState, ReferenceState as EntryReference},
     reference_op::OpKind,
     resolve::Source,
@@ -104,6 +104,14 @@ closed_set!(
         Approved => "approved",
         Rejected => "rejected",
         Cancelled => "cancelled",
+    }
+);
+closed_set!(
+    /// What a price row asks the prices unit to do (D-520, D-521). `set` is a price.
+    PricingChangeKind from ChangeKind {
+        Set => "set",
+        Cancel => "cancel",
+        End => "end",
     }
 );
 closed_set!(

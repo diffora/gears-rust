@@ -394,6 +394,8 @@ async fn every_route_denies_authorization_before_preconditions_or_disclosure() {
         ("POST", format!("/price-book-entries/{id}/prices")),
         ("PATCH", format!("/prices/{id}")),
         ("DELETE", format!("/prices/{id}")),
+        ("POST", format!("/prices/{id}/cancel")),
+        ("POST", format!("/prices/{id}/end")),
         ("POST", format!("/prices/{id}/submit")),
         ("GET", format!("/price-books/{id}/publish-changes")),
         ("POST", format!("/price-books/{id}/publish-changes")),
@@ -700,6 +702,8 @@ async fn authorization_labels_actions_and_cross_tenant_reads_are_pinned() {
         ),
         ("PATCH", format!("/prices/{id}"), "price", "author"),
         ("DELETE", format!("/prices/{id}"), "price", "author"),
+        ("POST", format!("/prices/{id}/cancel"), "price", "author"),
+        ("POST", format!("/prices/{id}/end"), "price", "author"),
         ("POST", format!("/prices/{id}/submit"), "price", "submit"),
         (
             "GET",
@@ -838,8 +842,9 @@ async fn authorization_labels_actions_and_cross_tenant_reads_are_pinned() {
             )
         })
         .collect();
-    // 56: run 9.7's batch checks read (D-482) and run 9.8b's plans counts (D-485), one each.
-    assert_eq!(table.len(), 56);
+    // 58: run 9.7's batch checks read (D-482), run 9.8b's plans counts (D-485), and the
+    // cancel and end doors (D-520, D-521).
+    assert_eq!(table.len(), 58);
     assert_eq!(rows.len(), table.len(), "one row per route");
     assert_eq!(
         rows, f.registered,

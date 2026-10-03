@@ -26,6 +26,15 @@ where
 }
 
 #[test]
+fn change_kind_is_set_cancel_or_end() {
+    macro_rules! tokens {
+        ($t:ident) => {
+            round_trips($t::ALL, $t::as_str, $t::stored)
+        };
+    }
+    assert_eq!(tokens!(PricingChangeKind), ["set", "cancel", "end"]);
+}
+#[test]
 fn each_set_carries_its_stored_tokens_on_the_wire() {
     macro_rules! tokens {
         ($t:ident) => {

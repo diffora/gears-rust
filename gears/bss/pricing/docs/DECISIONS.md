@@ -26,10 +26,10 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-387 | H | Tier bands are half-open | DECIDED 2026-09-25 · §5 tier bands; §10 |
 | D-388 | H | Minimum fee is per price per subscription per period | DECIDED 2026-09-25 · §2 decision 13; §5; amended by D-467 |
 | D-389 | H | Descriptors bind from durable SKU versions | DECIDED 2026-09-25 · §2 decision 14; §2.2; §7.1 |
-| D-390 | H | Windows normalize per chain and preserve usage structure | DECIDED 2026-09-25 · §2 decision 16; §5 |
+| D-390 | H | Windows normalize per chain and preserve usage structure | DECIDED 2026-09-25 · §2 decision 16; §5; amended by D-520, D-521 |
 | D-391 | H | Temporary changes keep pair identity or resume fallback | DECIDED 2026-09-25 · §5 temporary pairs; amended by D-443 |
 | D-392 | H | Publish changes is a selected book batch | DECIDED 2026-09-25 · §2 decision 7; §6; §8 |
-| D-393 | H | One unit engine, quorum and generations | DECIDED 2026-09-25 · §2 decision 8; §2.2; §6; extended by D-459 |
+| D-393 | H | One unit engine, quorum and generations | DECIDED 2026-09-25 · §2 decision 8; §2.2; §6; extended by D-459; amended by D-520, D-521 |
 | D-394 | H | Plans are versioned structure bound to one book | DECIDED 2026-09-25 · §5 plans; §6; §8; amended by D-450, D-467 |
 | D-395 | H | Promotions are versioned and migrations are requests | DECIDED 2026-09-25 · §5; §6; §11 phase 3 |
 | D-396 | H | One replay store and optimistic conditional writes | DECIDED 2026-09-25 · §2.2; §3 items 23 and 27; §7.2 |
@@ -58,7 +58,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-419 | H | Resolve answers one revision on one date, with the caller's pins | DECIDED 2026-09-26 · Phase 4 plan rev 3 (Run 4.2); spec §7.1; plan review M4 b, L4, L7; amended by D-454, D-467 |
 | D-420 | H | The matrix and the walk: a binding is always in force | DECIDED 2026-09-26 · Phase 4 plan rev 3 (Run 4.2); owner, 2026-09-26 (no promotion rule; rule 4 as recommended); spec §2.4, §5, §7.1; plan review H2, M4, L1; amended by D-467, D-512 |
 | D-421 | H | The binding carries resolved invoice inputs with their source | DECIDED 2026-09-26 · Phase 4 plan rev 3 (Run 4.2); PRD AC #13; plan review H3, L7; amended by D-467 |
-| D-422 | H | The pinned price read serves approved money forever | DECIDED 2026-09-26 · Phase 4 plan rev 3 (Run 4.2); spec §7.1; plan review H4 |
+| D-422 | H | The pinned price read serves approved money forever | DECIDED 2026-09-26 · Phase 4 plan rev 3 (Run 4.2); spec §7.1; plan review H4; amended by D-520 |
 | D-423 | H | Both gears refuse a legacy or stale schema at boot | DECIDED 2026-09-26 · Phase 4 plan rev 2 (Run 4.1); plan review H1, M1, M2, L6 |
 | D-424 | H | Resolve reads SKU versions as pricing's system actor | DECIDED 2026-09-26 · Phase 4 review, fix run 8 (docs M1); amends D-421; amended 2026-10-02 (phase 9 review F1) |
 | D-425 | H | The binding says where it ends for its holder | DECIDED 2026-09-26 · Phase 4 review, fix run 8 (contract C-1, docs M2); amends D-420 |
@@ -135,6 +135,8 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-512 | H | A plan item may wait for its entry in a draft | DECIDED 2026-10-02 · Owner, 2026-10-02; amends D-407, D-413, D-420, D-467, D-469 |
 | D-513 | M | A usage policy's single-valued fields default on input | DECIDED 2026-10-02 · Owner, 2026-10-02; amends D-502; amended by D-514 |
 | D-514 | H | A usage rating policy is its rating rules and the entry stores the SKU revision | DECIDED 2026-10-02 · Owner, 2026-10-02; amends D-502, D-503, D-504, D-513 |
+| D-520 | H | A scheduled price is cancelled through the prices unit | DECIDED 2026-10-03 · Owner, 2026-10-03; asks 19, 58a; amends D-390, D-393, D-422 |
+| D-521 | H | A live price is ended through the prices unit | DECIDED 2026-10-03 · Owner, 2026-10-03; ask 58a; amends D-390, D-393 |
 
 ## Entries
 
@@ -180,7 +182,9 @@ Prices do not freeze GL, tax, invoice descriptors, metering or timing. Consumers
 
 On approval, sort approved prices within each (price_book_entry_id, dim_value), set predecessor effective_to to successor effective_from, and enforce one approved start per chain. The default tail stays open; a value tail may explicitly end and resume default fallback. Re-read chains transactionally, with serializable Postgres isolation. Usage successors cannot change package size or SKU metering as of each price's start (D-402): CHAIN_MODEL_CHANGED at submit, revalidated at apply. The model cannot change on a chain at all: it is the entry's (D-427).
 
-**Source:** §2 decision 16; §5.
+**Amended by D-520 and D-521.** A chain is its `set` rows: a `cancel` or `end` row is never in it, and only a `set` row takes an approved start. A cancelled price leaves the chain, so the end of the price before it is recomputed onto the next start that remains, or left open. An end written by D-521 is explicit: it is kept, and a successor that starts inside it still closes it at that start.
+
+**Source:** §2 decision 16; §5. Amended by D-520 and D-521.
 
 #### D-391 [H] Temporary changes keep pair identity or resume fallback
 
@@ -199,6 +203,8 @@ List all draft book prices with full predecessor, proposed content and impact, p
 #### D-393 [H] One unit engine, quorum and generations
 
 bss-approval owns the shared engine shape; pricing owns prefixed tables and subjects. Quorum is tenant policy with kind overrides and fail-safe one when * is absent. No materiality. Submitter and all item authors are excluded from approval; an item's author is its price's creator, the only principal who may edit it (D-404). Votes carry generation; drift commits refreshed items/snapshot/hash, increments generation and marks prior decisions stale (UNIT_STALE). Conditional unit version yields UNIT_CONTENDED on lost races. Quorum zero, reject and withdraw all write terminal audit and ApprovalUnitDecided. See ADR-0003.
+
+**Amended by D-520 and D-521.** A prices unit's item is still a price row, and its `change_kind` says what it asks: `set` (a price, as before), `cancel` (cancel the approved price `target_price_id` names) or `end` (end that price at the row's `effective_to`). A unit may mix them, and one unit names a price once. Every kind is submitted, withdrawn, rejected and approved the same way, under the same separation of duties, quorum and generations. Withdraw and reject leave the named price untouched; apply cancels or ends it and approves the row as its record.
 
 D-459 extends this entry: the engine's approve rules (the terminal state, the separation of duties, the duplicate vote and which votes count) are one exported function, approve_eligibility. The engine judges a vote through it, and so does every read that shows a unit's vote count or whether its caller may approve.
 
@@ -452,6 +458,8 @@ Read precisely: settings.invoice_line_templates is keyed by SKU type (recurring,
 **Status:** DECIDED 2026-09-26.
 
 GET /bss-pricing/v1/prices/{id} (label price, action read), spec §7.1's /pricing/v1/prices/{id} below the gear's base, answers an APPROVED price of the tenant whatever its window (closed, followed by a later price, keep_for_bound) with its entry's SKU, charge kind, period, book and currency. It returns only stored facts: no status or other value computed from today, and no authoring internals (version, pending_unit_id, note, created_by). A draft, pending or rejected price, an unknown id and another tenant's id are 404, with the same body.
+
+**Amended by D-520.** A cancelled price is still answered by id, with its money as approved; it was never in force, so no pin or binding names it. A `cancel` or `end` row is not a price and is the same 404.
 
 **Source:** Phase 4 plan rev 3 (Run 4.2); spec §7.1; plan review H4 (no value computed from today).
 
@@ -2041,3 +2049,31 @@ The owner did not want the policy to copy the SKU's meter, unit and accrual vers
 - **Readers.** Resolve still serves `meter` and `sku_version`. `AcceptedBinding.meter` is the dated SKU's usage type, absent for a non-usage binding, and it is not part of the digest. The entry DTO serves `usage_sku_version`. A plan revision's fingerprint keeps the policy id, version and digest, and the SKU revision when one was recorded. The approval snapshot shows the rules and that revision. A unit pending before the digest moved answers 400 `UNIT_STALE` on its first vote and records no vote; the next generation applies.
 
 **Source:** Owner, 2026-10-02 ("не хочу дубликатов", "можем хранить ревизию SKU и не дублировать?", "да ок пишем"). Amends D-502, D-503, D-504 and D-513.
+
+#### D-520 [H] A scheduled price is cancelled through the prices unit
+
+**Status:** DECIDED 2026-10-03.
+
+A cancel is a new item kind of the existing prices unit, not a new engine. The operator cancels an approved price that has not started yet (ask 19), and the price before it in the chain is open again up to the next price that stays.
+
+- **The row.** `POST /prices/{id}/cancel` (no body, price author, Idempotency-Key) creates a draft price row with `change_kind = cancel` and `target_price_id` naming the price, and answers 201 with it. The row brings no new money. It copies the named price's money, chain and start without change, and it is never a price of the chain: no chain, normalisation, overlap rule, count, price in force, next price, resolve, pin or binding reads it. A draft change is deleted, not edited: PATCH answers 409 `PRICE_NOT_DRAFT`, and DELETE removes it.
+- **The unit.** The author submits the row as any draft price: `POST /prices/{id}/submit` on the row, or the book's publish-changes, alone or with prices. Separation of duties, quorum and generations are the engine's, unchanged (D-393). Withdraw and reject leave the named price untouched. On apply the named price becomes `cancelled` and records `cancelled_by_unit_id`, and the row itself becomes `approved`: it is the record of the change. One unit may mix prices and changes, and it applies all of them or none.
+- **The state.** `pricing_price.state` gains `cancelled`, which is terminal. A cancelled price leaves every chain: normalisation, `WINDOW_OVERLAP` and every read of the price in force skip it. Normalisation then recomputes the end of the price before it onto the next start that remains, or leaves it open (D-390), and apply writes that end as it writes every re-closed predecessor.
+- **Guards,** at the door, at submit and again at apply. The named price is approved and starts after today, no other pending change names it, and it is not `keep_for_bound`. Refusals: 409 `PRICE_NOT_SCHEDULED` (not approved, or started, at the door or at submit), 409 `PRICE_ALREADY_STARTED` (started between submit and apply), 409 `PRICE_CHANGE_PENDING` (another pending change names it, or the same unit names it twice), 409 `PRICE_BOUND`. A refusal at apply rolls the whole unit back: the race keeps its own code, `PRICE_ALREADY_STARTED`, and any other guard met again there is 409 `APPLY_REFUSED` naming its code, as every apply refusal is.
+- **Storage.** Migration `m20261003_000022_price_cancel_and_end` adds `change_kind` (`set`, `cancel` or `end`, default `set`), `target_price_id` and `cancelled_by_unit_id`, and widens the state check with `cancelled`. SQLite rebuilds `pricing_price` with its indexes. An applied change keeps its price's start, so `pricing_price_approved_start` covers `change_kind = 'set'` only: one price per start, and a change never takes it.
+- **Readers.** `PricingPriceDto` serves `change_kind`, `target_price_id` and `cancelled_by_unit_id`; `PricingPriceState` and `PricingPriceStatus` gain `cancelled`. A change row shows its state as its status (draft, pending, rejected) and `superseded` once applied, so no status narrowing lists it as a price in force. The entry's price list and the export keep the cancelled price and every change row. GET /prices/{id} still answers a cancelled price by id, as stored (D-422); it answers 404 for a change row. The publish-changes listing shows a draft change with the price it names as its `before`, and the unit snapshot does the same. `PricesPublished` lists the unit's prices only, so a unit of changes alone publishes an empty list.
+
+**Source:** Owner, 2026-10-02 and 2026-10-03 ("все ок сейчас будем писать план", "ок погнали"); asks 19 and 58a. Amends D-390, D-393 and D-422.
+
+#### D-521 [H] A live price is ended through the prices unit
+
+**Status:** DECIDED 2026-10-03.
+
+An end is the other new item kind of the prices unit (ask 58a). The operator ends an approved price that is live or scheduled on a date, and the chain then has no price in force from that date until its next start.
+
+- **The row.** `POST /prices/{id}/end` with `{ "effective_to": "YYYY-MM-DD" }` (price author, Idempotency-Key) creates a draft row with `change_kind = end`, `target_price_id` and the new end, and answers 201 with it. It is the same kind of row as a cancel (D-520): it brings no new money, it is never a price of the chain, and it is submitted, withdrawn, rejected and approved like any draft price.
+- **Apply.** The named price gets the new end and `closed_explicitly = true`, and the row becomes `approved`. D-390 still holds: an explicit end survives every later normalisation, and a successor that starts inside it still closes it at that start. A later cancel of the next price leaves the end where it is.
+- **Guards,** at the door, at submit and again at apply. The named price is approved and has not ended by today. The new end is after today, after the price's start, and no later than its current end: the next approved start, or its own explicit end, whichever is sooner. Refusals: 400 `END_DATE_INVALID` (a new end outside that range, or a date that does not parse), 409 `PRICE_CHANGE_PENDING` (another pending change names the price, or the same unit names it twice), 409 `PRICE_ALREADY_ENDED` (the price is not approved, or it has ended). An end that is no longer after today when the unit applies is 409 `APPLY_REFUSED` naming `END_DATE_INVALID`, and the unit applies nothing.
+- **Readers.** The ended price reads `closed_explicitly` with its new end; from that date the entry's price in force (`current_price`) and resolve find no price of that chain until its next start. The change row reads as D-520 describes.
+
+**Source:** Owner, 2026-10-02 and 2026-10-03 ("все ок сейчас будем писать план", "ок погнали"); ask 58a. Amends D-390 and D-393.

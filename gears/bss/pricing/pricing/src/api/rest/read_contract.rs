@@ -102,11 +102,10 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .operation_id("bss_pricing.get_price")
         .summary("Read a pinned price")
         .description(
-            "Returns an approved price of the tenant with its original money whatever its window \
-             (closed, followed by a later price, kept for bound subscriptions), with its entry's \
-             SKU, charge kind, period, book and currency: stored facts only. A draft, pending, \
-             rejected, unknown or foreign price is one and the same 404; an id that is not an id \
-             is 400 ID_INVALID.",
+            "Returns an approved price of the tenant, or a cancelled one (D-520), with its \
+             original money whatever its window, with its entry's SKU, charge kind, period, book \
+             and currency: stored facts only. A draft, pending, rejected, unknown or foreign \
+             price is one and the same 404; an id that is not an id is 400 ID_INVALID.",
         )
         .tag("Pricing")
         .authenticated()

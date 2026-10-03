@@ -127,6 +127,19 @@ pub fn window_display(
         PriceState::Approved => DisplayStatus::Active,
     }
 }
+/// A `cancel` or `end` row's display state (D-520, D-521). It has no window of its own: a draft,
+/// pending or rejected change shows its state, and an applied one shows `superseded`, so no
+/// window narrowing lists it as a price in force.
+#[must_use]
+pub fn change_display(state: PriceState) -> DisplayStatus {
+    match state {
+        PriceState::Draft => DisplayStatus::Draft,
+        PriceState::Pending => DisplayStatus::Pending,
+        PriceState::Rejected => DisplayStatus::Rejected,
+        PriceState::Cancelled => DisplayStatus::Cancelled,
+        PriceState::Approved => DisplayStatus::Superseded,
+    }
+}
 /// Approved prices of exactly one chain, ordered by start and version.
 #[must_use]
 pub fn approved_prices<'a>(

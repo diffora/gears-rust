@@ -1,4 +1,5 @@
-//! Draft prices: a single price, a temporary pair or one explicitly closed price; draft-only edits.
+//! Draft prices: a single price, a temporary pair or one explicitly closed price; draft-only edits;
+//! and the draft `cancel` or `end` of an approved price (D-520, D-521).
 //!
 //! @cpt-dod:cpt-cf-bss-pricing-dod-temporary-pair:p1
 //! @cpt-dod:cpt-cf-bss-pricing-dod-price-pending-guard:p1
@@ -12,7 +13,7 @@ use crate::{
         price::{self, Eligibility, Price, PriceState},
     },
     infra::{
-        prices::PriceBookEntryContext,
+        prices::{Change, PriceBookEntryContext},
         storage::{
             RepoError,
             entity::{self, price_book_entry},
@@ -137,6 +138,141 @@ async fn live_entry(
         return Err(support::conflict("ENTRY_REFERENCE_LOST").into());
     }
     Ok(entry)
+}
+
+/// What `POST /prices/{id}/cancel` and `POST /prices/{id}/end` ask (D-520, D-521).
+#[derive(Clone, Copy, Debug)]
+pub struct ChangeRequest {
+    /// The approved price to cancel or end.
+    pub target: Uuid,
+    pub kind: price::ChangeKind,
+    /// An end's new end; `None` for a cancel.
+    pub end: Option<time::Date>,
+    /// The day the guards judge on: the door's clock.
+    pub today: time::Date,
+}
+
+/// `POST /prices/{id}/cancel` and `POST /prices/{id}/end` (D-520, D-521): a draft `cancel` or
+/// `end` row that names the approved price, under the create's bounded retry (the entry's next
+/// `version_no`). The author submits it as any draft price, alone or with the book's other
+/// drafts; the guards run here, at submit and again at apply.
+/// # Errors
+/// Returns the canonical refusal of the last attempt.
+pub async fn open_change(
+    db: &toolkit_db::Db,
+    scope: AccessScope,
+    ctx: SecurityContext,
+    correlation: Uuid,
+    request: ChangeRequest,
+    key: String,
+    digest: Vec<u8>,
+) -> Result<Response, CanonicalError> {
+    let mut attempt = 1;
+    loop {
+        let (scope, ctx, key, digest) = (scope.clone(), ctx.clone(), key.clone(), digest.clone());
+        let result = support::transaction_door(db, move |tx| {
+            let (scope, ctx, key, digest) =
+                (scope.clone(), ctx.clone(), key.clone(), digest.clone());
+            Box::pin(async move {
+                open_change_in(tx, &scope, &ctx, correlation, request, &key, &digest).await
+            })
+        })
+        .await;
+        match result {
+            Err(DoorError::Repo(RepoError::Conflict {
+                code: repo::PRICE_VERSION_TAKEN,
+            })) if attempt < VERSION_ATTEMPTS => attempt += 1,
+            other => return other.map_err(Into::into),
+        }
+    }
+}
+
+async fn open_change_in(
+    tx: &impl DBRunner,
+    scope: &AccessScope,
+    ctx: &SecurityContext,
+    correlation: Uuid,
+    request: ChangeRequest,
+    key: &str,
+    digest: &[u8],
+) -> Result<Response, DoorError> {
+    let tenant = ctx.subject_tenant_id();
+    let kind = request.kind.as_str();
+    let endpoint = format!("/bss-pricing/v1/prices/{}/{kind}", request.target);
+    if let Some(replay) = support::claim(tx, tenant, &endpoint, key, digest).await? {
+        return Ok(replay);
+    }
+    let target = price_repo::find(tx, scope, tenant, request.target)
+        .await?
+        .ok_or_else(|| support::missing_what("price"))?;
+    let pc = PriceBookEntryContext::load(
+        tx,
+        tenant,
+        &live_entry(tx, scope, tenant, target.price_book_entry_id).await?,
+    )
+    .await?;
+    let chain = approved_of(&pc.domain_prices()?);
+    let change = Change {
+        id: Uuid::nil(),
+        kind: request.kind,
+        target: target.id,
+        end: request.end,
+    };
+    crate::infra::prices::guard_change(&change, &chain, &pc.prices, request.today, false)
+        .map_err(support::approval_failure)?;
+    let now = crate::infra::storage::stored_now();
+    // The row names the price and carries its money and chain unchanged: it is not a price of
+    // its own, and no chain, count or resolve reads it as one.
+    let row = entity::price::Model {
+        id: Uuid::now_v7(),
+        tenant_id: tenant,
+        price_book_entry_id: target.price_book_entry_id,
+        version_no: next_version(&pc.prices)?,
+        dim_value: target.dim_value.clone(),
+        price_json: target.price_json.clone(),
+        min_fee: target.min_fee.clone(),
+        eligibility: target.eligibility.clone(),
+        effective_from: target.effective_from,
+        effective_to: request.end,
+        keep_for_bound: false,
+        closed_explicitly: false,
+        temporary_until: None,
+        paired_price_id: None,
+        return_of_price_id: None,
+        state: PriceState::Draft.as_str().into(),
+        change_kind: kind.into(),
+        target_price_id: Some(target.id),
+        cancelled_by_unit_id: None,
+        pending_unit_id: None,
+        approved_by_unit_id: None,
+        note: None,
+        created_by: ctx.subject_id(),
+        approved_at: None,
+        version: 1,
+        created_at: now,
+        updated_at: now,
+    };
+    let stored = price_repo::insert(tx, &AccessScope::for_tenant(tenant), row).await?;
+    support::audit(
+        tx,
+        ctx,
+        correlation,
+        &format!("price.{kind}"),
+        stored.id,
+        stored.version,
+    )
+    .await?;
+    let body = PricingPriceDto::at(stored, pc.model.as_str(), request.today)?;
+    support::answer(
+        tx,
+        tenant,
+        &endpoint,
+        key,
+        StatusCode::CREATED,
+        &body,
+        Some(1),
+    )
+    .await
 }
 
 /// Create under a bounded retry: the `(price_book_entry_id, version_no)` unique index arbitrates
@@ -354,7 +490,9 @@ async fn patch_in(
     let m = price_repo::find(tx, scope, tenant, id)
         .await?
         .ok_or_else(|| support::missing_what("price"))?;
-    if !unlocked_draft(&m) {
+    // D-520, D-521: a cancel or an end is not an editable price; its author deletes it and opens
+    // another.
+    if !unlocked_draft(&m) || !price_repo::is_price(&m) {
         return Err(support::conflict("PRICE_NOT_DRAFT").into());
     }
     own_draft(&m, ctx)?;

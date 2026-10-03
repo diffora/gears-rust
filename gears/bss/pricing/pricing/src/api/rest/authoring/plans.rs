@@ -1633,6 +1633,9 @@ fn entry_of(
     stored: &[price::Model],
 ) -> Result<plan::Entry, DoorError> {
     let bad = |what: &str| corrupt(format!("entry {} {what}", e.id));
+    // A `cancel` or `end` is not a price: it never covers an item, pending or applied
+    // (D-520, D-521).
+    let stored: Vec<&price::Model> = stored.iter().filter(|m| price_repo::is_price(m)).collect();
     let pending = stored
         .iter()
         .filter(|p| p.state == PriceState::Pending.as_str())

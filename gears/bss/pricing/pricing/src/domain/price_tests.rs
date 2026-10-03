@@ -882,3 +882,16 @@ fn ending_before_the_next_start_closes_there_and_past_it_is_invalid() {
         "END_DATE_INVALID"
     );
 }
+/// D-520, D-521: a cancel or end row has no window of its own. It shows its state, and once
+/// applied it is `superseded`, whatever the dates it copied: never a price in force.
+#[test]
+fn a_change_row_shows_its_state_and_superseded_once_applied() {
+    for (state, shown) in [
+        (PriceState::Draft, DisplayStatus::Draft),
+        (PriceState::Pending, DisplayStatus::Pending),
+        (PriceState::Rejected, DisplayStatus::Rejected),
+        (PriceState::Approved, DisplayStatus::Superseded),
+    ] {
+        assert_eq!(change_display(state), shown, "{state:?}");
+    }
+}

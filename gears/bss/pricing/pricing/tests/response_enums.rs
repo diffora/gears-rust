@@ -15,6 +15,7 @@ const MODEL: &[&str] = &["flat", "per_unit", "graduated", "volume", "package"];
 const ENTRY_REFERENCE: &[&str] = &["confirmation_pending", "confirmed", "lost"];
 const ELIGIBILITY: &[&str] = &["all", "new"];
 const PRICE_STATE: &[&str] = &["draft", "pending", "approved", "rejected", "cancelled"];
+const CHANGE_KIND: &[&str] = &["set", "cancel", "end"];
 const PRICE_STATUS: &[&str] = &[
     "draft",
     "pending",
@@ -61,6 +62,7 @@ const CLOSED: &[Closed] = &[
     ("PricingPriceDto", "model", MODEL, false),
     ("PricingPriceDto", "eligibility", ELIGIBILITY, false),
     ("PricingPriceDto", "state", PRICE_STATE, false),
+    ("PricingPriceDto", "change_kind", CHANGE_KIND, false),
     ("PricingPriceDto", "status", PRICE_STATUS, false),
     ("PricingSkuEntryDto", "status", SKU_ENTRY_STATUS, false),
     (

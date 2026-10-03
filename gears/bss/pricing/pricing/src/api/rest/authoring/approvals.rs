@@ -282,7 +282,8 @@ async fn plan_revision_published(
     Ok(())
 }
 /// `PricesPublished` for an applied `prices` unit: every price with the window its chain was
-/// approved with.
+/// approved with. A `cancel` or `end` row is not a price, so the event does not list it
+/// (D-520, D-521).
 async fn prices_published(
     tx: &DbTx<'_>,
     outbox: &TxOutbox,
@@ -312,6 +313,9 @@ async fn prices_published(
         let m = found.remove(&item_id).ok_or_else(|| {
             RepoError::CorruptRow(format!("unit {} lost price {item_id}", unit.id))
         })?;
+        if !price_repo::is_price(&m) {
+            continue;
+        }
         prices.push(PublishedPrice {
             price_id: m.id,
             price_book_entry_id: m.price_book_entry_id,
@@ -641,11 +645,17 @@ async fn proposals(
         .await?,
     );
     let mut stored: BTreeMap<Uuid, entity::price::Model> = BTreeMap::new();
+    // The chains are prices only; a draft `cancel` or `end` is listed beside them (D-520, D-521).
     let mut prices = Vec::new();
+    let mut changes = Vec::new();
     for p in &entries {
         let model = price_book_entry_repo::model_of(p)?;
         for m in grouped.remove(&p.id).unwrap_or_default() {
-            prices.push(price_repo::to_domain(&m, model)?);
+            if price_repo::is_price(&m) {
+                prices.push(price_repo::to_domain(&m, model)?);
+            } else {
+                changes.push(price_repo::to_domain(&m, model)?);
+            }
             stored.insert(m.id, m);
         }
     }
@@ -655,7 +665,10 @@ async fn proposals(
         entries.iter().map(|p| (p.id, p)).collect();
     let owners: Vec<(Uuid, Uuid)> = entries.iter().map(|p| (p.id, p.book_id)).collect();
     let mut out = Vec::new();
-    for r in price::proposed_prices(book, &owners, &prices) {
+    let mut drafts = price::proposed_prices(book, &owners, &prices);
+    drafts.extend(price::proposed_prices(book, &owners, &changes));
+    drafts.sort_by_key(|r| (r.effective_from, r.price_book_entry_id, r.version_no));
+    for r in drafts {
         let Some(m) = stored.get(&r.id) else {
             continue;
         };
@@ -667,11 +680,14 @@ async fn proposals(
             .copied()
             .cloned()
             .ok_or_else(|| RepoError::CorruptRow(format!("price {} has no entry", r.id)))?;
-        let before = price::in_force_before(&prices, r)
-            .and_then(|b| stored.get(&b.id))
-            .cloned()
-            .map(|b| PricingPriceDto::of(b, &entry.model))
-            .transpose()?;
+        // A price's `before` is its predecessor; a change's is the price it names.
+        let before = match m.target_price_id {
+            Some(target) => stored.get(&target),
+            None => price::in_force_before(&prices, r).and_then(|b| stored.get(&b.id)),
+        }
+        .cloned()
+        .map(|b| PricingPriceDto::of(b, &entry.model))
+        .transpose()?;
         let price = PricingPriceDto::of(m.clone(), &entry.model)?;
         let policy = policies.get(&entry.id).cloned();
         let entry = PricingPriceBookEntryDto::from_stored(entry, policy)?;
