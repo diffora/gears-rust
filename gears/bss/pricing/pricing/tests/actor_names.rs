@@ -1,7 +1,10 @@
 //! Actor names on the reads (D-519): every actor id a read shows carries a `*_name` sibling,
 //! resolved through Account Management in one lookup per response. A failing directory leaves
 //! the names null and the read 200; a write answer carries no name.
-#![allow(clippy::expect_used, clippy::unwrap_used, clippy::too_many_lines)]
+#![expect(
+    clippy::unwrap_used,
+    reason = "a test's fixtures and reads fail the test where they fail"
+)]
 mod plan_support;
 use bss_pricing::infra::storage::{entity::plan_item, repo::plan_item_repo};
 use bss_products_sdk::{PRICING_SYSTEM_ACTOR, models::SkuType};

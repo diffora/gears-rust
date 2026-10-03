@@ -66,8 +66,9 @@ pub enum PriceModel {
 
 /// Where a price read by id stands (D-520). A cancelled price was cancelled before it started: it
 /// was never in force, so no resolve, pin or binding returns it, and only the price read by id
-/// serves it.
+/// serves it. More states may be added: a consumer's match keeps a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PriceState {
     /// Approved, whatever its window: open, closed or followed by a later price.
     Approved,
