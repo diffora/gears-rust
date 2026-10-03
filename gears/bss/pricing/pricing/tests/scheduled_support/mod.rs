@@ -291,6 +291,8 @@ pub async fn seed(db: Db, tenant: Uuid) -> Family {
             version: 1,
             created_at: at(9),
             updated_at: at(9),
+            archived_at: None,
+            archived_by: None,
         },
     )
     .await

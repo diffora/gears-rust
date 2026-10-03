@@ -579,7 +579,11 @@ fn tally_pricing(
         t.mismatch
             .add(format!("{name} - the entry prices another SKU"), &it);
     }
-    if e.reference_state == EntryReferenceState::Lost {
+    // D-522: a released entry (its book archived) holds no reference either.
+    if matches!(
+        e.reference_state,
+        EntryReferenceState::Lost | EntryReferenceState::Released
+    ) {
         t.entry_lost.add(name, &it);
     }
     // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-2

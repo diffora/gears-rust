@@ -391,6 +391,8 @@ TABLE pricing_price
   FK return_of_price_id -> pricing_price.id
   FK target_price_id -> pricing_price.id
 TABLE pricing_price_book
+  COLUMN archived_at TEXT NULL DEFAULT - PK 0
+  COLUMN archived_by TEXT NULL DEFAULT - PK 0
   COLUMN code TEXT NOT NULL DEFAULT - PK 0
   COLUMN created_at TEXT NOT NULL DEFAULT - PK 0
   COLUMN currency char(3) NOT NULL DEFAULT - PK 0

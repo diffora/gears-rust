@@ -257,6 +257,7 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .standard_errors(openapi)
         .error_503(openapi)
         .register(router, openapi);
+    let router = archive_routes(router, openapi);
     let router = entry_list::register(router, openapi);
     let router = OperationBuilder::get("/bss-pricing/v1/price-books/{id}/export")
         .operation_id("bss_pricing.export_book")
@@ -2063,8 +2064,9 @@ async fn get_book(
     .map_err(authz_failure)?;
     let backend = state.db.db().backend();
     let today = time::OffsetDateTime::now_utc().date();
-    transaction(&state.db.db(), move |tx| {
-        let (scope, ctx) = (scope.clone(), ctx.clone());
+    let tx_ctx = ctx.clone();
+    let read = transaction(&state.db.db(), move |tx| {
+        let (scope, ctx) = (scope.clone(), tx_ctx.clone());
         Box::pin(async move {
             let tenant = ctx.subject_tenant_id();
             let m = books::find(tx, &scope, tenant, id).await?;
@@ -2076,10 +2078,13 @@ async fn get_book(
                 .await?
                 .pop()
                 .ok_or_else(|| CanonicalError::internal("the read book is gone").create())?;
-            Ok(response(StatusCode::OK, &body, Some(version))?)
+            Ok((body, version))
         })
     })
-    .await
+    .await?;
+    // D-522: the archiving actor's name (D-519), after the transaction.
+    let (body, version) = read;
+    names::named(&state, &ctx, body, Some(version)).await
 }
 async fn patch_book(
     Extension(state): Extension<Arc<AuthoringState>>,
@@ -2142,6 +2147,170 @@ async fn delete_book(
         )
     })
     .await
+}
+/// The archive mark of a finished book (D-522): `archive` and `unarchive`.
+fn archive_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
+    let router = OperationBuilder::post("/bss-pricing/v1/price-books/{id}/archive")
+        .operation_id("bss_pricing.archive_book")
+        .summary("Archive a finished price book")
+        .description(
+            "Marks a finished book archived at the version the caller read (If-Match), with an \
+             audit row (D-522): `archived_at` and `archived_by` are set and the version moves. In \
+             the same transaction each entry whose reference is confirmed or lost becomes \
+             `released`, with a `release` op (reason book_archived) that releases its SKU \
+             reference in Products; the door drives those ops after the commit, and the ticker \
+             finishes what it does not. A SKU that only this book named then stops being \
+             referenced, so it can be retired. The entries and prices stay and are read-only: an \
+             entry create or PATCH, a price create, cancel, end or submit, and a plan item naming \
+             an entry of the book are 409 BOOK_ARCHIVED. `GET /price-books` leaves an archived \
+             book out unless asked `archived eq true`; a read by id, the export and the consumer \
+             reads ignore the mark. Archiving an archived book answers it unchanged. Refusals, in \
+             order: 403 without the book write grant; 400 for a missing or malformed If-Match; 404 \
+             for a book the tenant does not hold; 409 STALE_REVISION; 409 BOOK_IN_PLAN (a plan \
+             with a draft, pending, scheduled or published revision on the book; superseded ones \
+             do not refuse it); 409 BOOK_HAS_PENDING (a prices unit of the book in review: a \
+             pending price, cancel or end); 409 \
+             ENTRY_CONFIRMATION_PENDING (an entry's reference is being confirmed).",
+        )
+        .tag("Pricing")
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "Price book id")
+        .param(header("If-Match"))
+        .handler(archive_book)
+        .json_response_with_schema::<PriceBookDto>(openapi, StatusCode::OK, "Response")
+        .response_header(etag())
+        .standard_errors(openapi)
+        .error_503(openapi)
+        .register(router, openapi);
+    OperationBuilder::post("/bss-pricing/v1/price-books/{id}/unarchive")
+        .operation_id("bss_pricing.unarchive_book")
+        .summary("Unarchive a price book")
+        .description(
+            "Clears a book's archive mark at the version the caller read (If-Match), with an audit \
+             row (D-522). Each `released` entry gets a `rereserve` op, unless a release or a \
+             re-reservation of it is still open, and the door drives them after the commit. An \
+             entry whose SKU refuses the new reservation (retired, say) stays `released` and \
+             read-only (409 ENTRY_REFERENCE_RELEASED), and the book is unarchived anyway: \
+             `released_entries` lists the entries still released when the answer is built. \
+             Unarchiving a book that is not archived answers it unchanged. Refusals: 403 without \
+             the book write grant; 400 for a missing or malformed If-Match; 404; 409 \
+             STALE_REVISION.",
+        )
+        .tag("Pricing")
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "Price book id")
+        .param(header("If-Match"))
+        .handler(unarchive_book)
+        .json_response_with_schema::<dto::PricingPriceBookUnarchiveDto>(
+            openapi,
+            StatusCode::OK,
+            "Response",
+        )
+        .response_header(etag())
+        .standard_errors(openapi)
+        .error_503(openapi)
+        .register(router, openapi)
+}
+/// Drive each op an archive or an unarchive wrote, as the door's caller; an op the drive leaves
+/// unfinished is durable, and the ticker finishes it (D-522).
+async fn drive_all(state: &Arc<AuthoringState>, ctx: &SecurityContext, ops: &[Uuid]) {
+    use crate::infra::reference_work::{self, Caller, WallClock};
+    for op in ops {
+        if let Err(error) =
+            reference_work::drive(state, ctx, *op, Arc::new(WallClock), Caller::Door).await
+        {
+            tracing::warn!(op_id=%op, error=%error, diagnostic=error.diagnostic().unwrap_or_default(), "pricing book archive reference work deferred to the ticker");
+        }
+    }
+}
+async fn archive_book(
+    Extension(state): Extension<Arc<AuthoringState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    ctx: Option<Extension<SecurityContext>>,
+    Path(id): Path<Uuid>,
+    corr: Option<Extension<correlation::CorrelationId>>,
+    headers: HeaderMap,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(ctx)?;
+    // The book-write grant on the book, as its PATCH and DELETE ask it.
+    let scope = authz::access_scope(
+        &enforcer,
+        &ctx,
+        &resource_types::PRICE_BOOK,
+        actions::AUTHOR,
+        Some(OwnerTenant(ctx.subject_tenant_id())),
+        Some(ResourceRef(id)),
+    )
+    .await
+    .map_err(authz_failure)?;
+    let correlation = correlation::require_correlation(corr)?;
+    let version = preconditions::if_match(&headers)?.get();
+    let backend = state.db.db().backend();
+    let tx_ctx = ctx.clone();
+    let marked = transaction(&state.db.db(), move |tx| {
+        let (scope, ctx) = (scope.clone(), tx_ctx.clone());
+        Box::pin(async move {
+            books::archive(tx, &scope, &ctx, correlation, backend, id, version).await
+        })
+    })
+    .await?;
+    drive_all(&state, &ctx, &marked.ops).await;
+    let version = preconditions::RowVersion::from_stored(marked.book.version)
+        .map_err(CanonicalError::from)?
+        .get();
+    response(
+        StatusCode::OK,
+        &PriceBookDto::from(marked.book),
+        Some(version),
+    )
+}
+async fn unarchive_book(
+    Extension(state): Extension<Arc<AuthoringState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    ctx: Option<Extension<SecurityContext>>,
+    Path(id): Path<Uuid>,
+    corr: Option<Extension<correlation::CorrelationId>>,
+    headers: HeaderMap,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(ctx)?;
+    // The book-write grant on the book, as its PATCH and DELETE ask it.
+    let scope = authz::access_scope(
+        &enforcer,
+        &ctx,
+        &resource_types::PRICE_BOOK,
+        actions::AUTHOR,
+        Some(OwnerTenant(ctx.subject_tenant_id())),
+        Some(ResourceRef(id)),
+    )
+    .await
+    .map_err(authz_failure)?;
+    let correlation = correlation::require_correlation(corr)?;
+    let version = preconditions::if_match(&headers)?.get();
+    let tx_ctx = ctx.clone();
+    let marked = transaction(&state.db.db(), move |tx| {
+        let (scope, ctx) = (scope.clone(), tx_ctx.clone());
+        Box::pin(async move { books::unarchive(tx, &scope, &ctx, correlation, id, version).await })
+    })
+    .await?;
+    drive_all(&state, &ctx, &marked.ops).await;
+    let tenant = ctx.subject_tenant_id();
+    let released_entries = transaction(&state.db.db(), move |tx| {
+        Box::pin(async move { books::released_entries(tx, tenant, id).await })
+    })
+    .await?;
+    let version = preconditions::RowVersion::from_stored(marked.book.version)
+        .map_err(CanonicalError::from)?
+        .get();
+    response(
+        StatusCode::OK,
+        &dto::PricingPriceBookUnarchiveDto {
+            book: marked.book.into(),
+            released_entries,
+        },
+        Some(version),
+    )
 }
 async fn export_book(
     Extension(state): Extension<Arc<AuthoringState>>,

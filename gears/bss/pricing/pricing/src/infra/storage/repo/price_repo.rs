@@ -44,6 +44,12 @@ pub async fn insert(
             code: "ENTRY_REFERENCE_LOST",
         });
     }
+    // D-522: a released entry (its book archived, or not re-reserved since) takes no price.
+    if entry.reference_state == ReferenceState::Released.as_str() {
+        return Err(RepoError::Conflict {
+            code: "ENTRY_REFERENCE_RELEASED",
+        });
+    }
     let active = e::ActiveModel {
         id: Set(m.id),
         tenant_id: Set(m.tenant_id),

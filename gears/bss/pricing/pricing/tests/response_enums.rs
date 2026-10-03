@@ -12,7 +12,7 @@ pub mod rest_support;
 const CHARGE_KIND: &[&str] = &["recurring", "usage", "one_time"];
 const PERIOD: &[&str] = &["month", "year"];
 const MODEL: &[&str] = &["flat", "per_unit", "graduated", "volume", "package"];
-const ENTRY_REFERENCE: &[&str] = &["confirmation_pending", "confirmed", "lost"];
+const ENTRY_REFERENCE: &[&str] = &["confirmation_pending", "confirmed", "lost", "released"];
 const ELIGIBILITY: &[&str] = &["all", "new"];
 const PRICE_STATE: &[&str] = &["draft", "pending", "approved", "rejected", "cancelled"];
 const CHANGE_KIND: &[&str] = &["set", "cancel", "end"];
@@ -32,7 +32,7 @@ const REVISION: &[&str] = &["draft", "pending", "scheduled", "published", "super
 /// How a plan's list row is changing (D-485).
 const PLAN_CHANGE: &[&str] = &["none", "draft", "pending", "scheduled"];
 const RESOLVED_REVISION: &[&str] = &["published", "superseded", "scheduled"];
-const OP_KIND: &[&str] = &["create", "delete", "rereserve", "attach"];
+const OP_KIND: &[&str] = &["create", "delete", "rereserve", "attach", "release"];
 const OP_STATE: &[&str] = &["reserving", "written", "cancelling", "releasing", "done"];
 const OP_REF_KIND: &[&str] = &["price_book_entry", "plan_item"];
 const UNIT_STATE: &[&str] = &["pending", "approved", "rejected", "withdrawn"];

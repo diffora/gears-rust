@@ -633,6 +633,42 @@ pub async fn set_reference(
         .map_err(|e| driver_failure("update price book entry reference".into(), e))?;
     matched(result.rows_affected, "STALE_REVISION")
 }
+/// Mark every `confirmed` or `lost` entry of `book` `released` (D-522: its book is archived), in
+/// ONE statement: each gets a new version. The caller has read those entries and writes their
+/// release ops in the same transaction.
+/// # Errors
+/// Returns typed database failures.
+pub async fn release_book(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    book: Uuid,
+    now: time::OffsetDateTime,
+) -> Result<u64, RepoError> {
+    use crate::domain::price_book_entry::ReferenceState;
+    let result = e::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            e::Column::ReferenceState,
+            Expr::value(ReferenceState::Released.as_str()),
+        )
+        .col_expr(e::Column::Version, Expr::col(e::Column::Version).add(1_i64))
+        .col_expr(e::Column::UpdatedAt, Expr::value(now))
+        .filter(
+            Condition::all()
+                .add(e::Column::TenantId.eq(tenant))
+                .add(e::Column::BookId.eq(book))
+                .add(e::Column::ReferenceState.is_in([
+                    ReferenceState::Confirmed.as_str(),
+                    ReferenceState::Lost.as_str(),
+                ])),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure("release a book's price book entries".into(), e))?;
+    Ok(result.rows_affected)
+}
 /// Delete an entry after the caller has removed its drafts, with the release op in the same transaction.
 /// # Errors
 /// Refuses a stale version or any remaining price; preserves database failures.

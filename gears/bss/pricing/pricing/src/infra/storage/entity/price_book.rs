@@ -18,6 +18,11 @@ pub struct Model {
     pub version: i64,
     pub created_at: TimeDateTimeWithTimeZone,
     pub updated_at: TimeDateTimeWithTimeZone,
+    /// Set while the book is archived (D-522): a mark, not a state. Its entries' references are
+    /// released and its entries and prices are read-only.
+    pub archived_at: Option<TimeDateTimeWithTimeZone>,
+    /// Who archived it; set with [`Self::archived_at`].
+    pub archived_by: Option<Uuid>,
 }
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {}

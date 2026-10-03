@@ -639,6 +639,24 @@ impl PricesSubject {
                 format!("entry {price_book_entry_id}"),
             ));
         }
+        // D-522: a released entry's prices are not submitted or applied: `BOOK_ARCHIVED` while
+        // its book is archived, else `ENTRY_REFERENCE_RELEASED` (an unarchive left it released).
+        if entry.reference_state
+            == crate::domain::price_book_entry::ReferenceState::Released.as_str()
+        {
+            let archived = book_repo::find(tx, &self.scope(), self.tenant_id, self.book_id)
+                .await
+                .map_err(storage)?
+                .is_some_and(|book| book.archived_at.is_some());
+            return Err(invalid(
+                if archived {
+                    "BOOK_ARCHIVED"
+                } else {
+                    "ENTRY_REFERENCE_RELEASED"
+                },
+                format!("entry {price_book_entry_id}"),
+            ));
+        }
         self.meter_observations.check(&entry).map_err(|error| {
             *self.refused.lock().unwrap_or_else(PoisonError::into_inner) = Some(error);
             invalid("METER_POLICY_REFUSED", format!("entry {}", entry.id))

@@ -173,6 +173,8 @@ async fn seeded() -> Lite {
             version: 1,
             created_at: now,
             updated_at: now,
+            archived_at: None,
+            archived_by: None,
         },
     )
     .await

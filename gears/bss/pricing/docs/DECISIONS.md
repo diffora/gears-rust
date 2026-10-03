@@ -44,7 +44,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-405 | M | Publish changes completes a selected pair | DECIDED 2026-09-25 · Phase 2 plan and reconciliation row 23; Phase 2 review (docs F4) |
 | D-406 | H | A temporary window is not crossed | DECIDED 2026-09-25 · Phase 2 second review (behaviour MEDIUM-2) |
 | D-407 | H | Plan items are reserved references; items are a sub-resource | DECIDED 2026-09-25 · Phase 3 plan rev 2; plan review HIGH 2; owner, 2026-09-25 (kind plan_item only); deviation from spec §7.2; amended by D-467, D-512 |
-| D-408 | H | Plan checks read every SKU fresh; descriptors are information, never content | DECIDED 2026-09-25 · Phase 3 plan rev 2; plan review MEDIUM 6; phase 2 "owed to phase 3"; amended by D-453, D-465, D-482, D-516; extended by D-466 |
+| D-408 | H | Plan checks read every SKU fresh; descriptors are information, never content | DECIDED 2026-09-25 · Phase 3 plan rev 2; plan review MEDIUM 6; phase 2 "owed to phase 3"; amended by D-453, D-465, D-482, D-516, D-522; extended by D-466 |
 | D-409 | H | Promotions are deferred (owner, 2026-09-25) | DECIDED 2026-09-25 · Owner, 2026-09-25, during Run 3.1; Phase 3 plan rev 3; spec §2.4 |
 | D-410 | H | Migration requests and plan retirement are deferred (owner, 2026-09-25) | DECIDED 2026-09-25 · Owner, 2026-09-25, during Run 3.1; spec §11 phase 3 |
 | D-411 | H | The sold-as bundle and plan grants are deferred (owner, 2026-09-25) | DECIDED 2026-09-25 · Owner, 2026-09-25, during Run 3.1; spec §5 plan_revision |
@@ -78,9 +78,9 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-439 | M | Closed sets are enums on the responses; requests keep strings and their codes (twin of products P-D-217) | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amended by D-467 and the phase 9 review (C, fix run 9.5d-1) |
 | D-440 | M | An entry's prices, its price in force and its approved prices by date | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amends D-428, D-434; extended by D-456; amended by D-472, D-473 |
 | D-441 | M | Every book read carries its stats | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amended by D-453 |
-| D-442 | M | The book list pages on the toolkit's OData pager, searched by q and sku_id | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2 |
+| D-442 | M | The book list pages on the toolkit's OData pager, searched by q and sku_id | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; extended by D-522 |
 | D-443 | M | A temporary draft's dates move, and its pair follows | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amends D-391 |
-| D-444 | M | A book has a description, and an unused book can be deleted | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amended by D-453 |
+| D-444 | M | A book has a description, and an unused book can be deleted | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amended by D-453, D-522 |
 | D-445 | L | An approval unit carries its submitter's note (twin of products P-D-219) | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amended by D-464 |
 | D-446 | M | A plan revision can be stored scheduled: the state, its index and its migration | DECIDED 2026-09-29 · Owner, 2026-09-28; phase 8 plan rev 2 |
 | D-447 | M | A scheduled revision takes effect on its date: the effective state is derived | DECIDED 2026-09-29 · Owner, 2026-09-28; phase 8 plan rev 2 |
@@ -142,6 +142,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-519 | M | Every actor id a read shows carries its current name | DECIDED 2026-10-03 · Owner, 2026-10-02 (ask 32: names on the server, through AM); extends D-438, D-460, D-461 |
 | D-520 | H | A scheduled price is cancelled through the prices unit | DECIDED 2026-10-03 · Owner, 2026-10-03; asks 19, 58a; amends D-390, D-393, D-422; amended 2026-10-03 (the event, the reads, the binding guard) |
 | D-521 | H | A live price is ended through the prices unit | DECIDED 2026-10-03 · Owner, 2026-10-03; ask 58a; amends D-390, D-393; amended 2026-10-03 (the event) |
+| D-522 | H | A finished book can be archived, and archiving it releases its entries' SKU references (twin of products P-D-263) | DECIDED 2026-10-03 · Owner, 2026-10-03 ("archived"; ask 58b); amends D-408, D-444; extends D-407, D-442 |
 
 ## Entries
 
@@ -335,7 +336,9 @@ D-466 extends this entry: each check row names the items that turn it red and th
 
 D-482 amends this entry: checks, submit and apply read their item SKUs in one `skus_for_write` (products P-D-245), not one `sku_for_write` per SKU. A SKU Products no longer knows is still left out, so the checks show it unavailable. The checks doors read the stored context on a connection, as a set (`stored_contexts`).
 
-**Source:** Phase 3 plan rev 2; plan review MEDIUM 6; phase 2 "owed to phase 3" (fresh SKU reads, current descriptors in snapshots). Amended by D-453, D-465, D-482; extended by D-466.
+D-522 amends this entry: an entry whose reference is `released` (its book archived) holds no reference, so the checks count an item that names one as they count an item on a `lost` entry (`ENTRY_REFERENCE_LOST`), and no item create or PATCH names it: 409 `BOOK_ARCHIVED` while its book is archived, 409 `ENTRY_REFERENCE_RELEASED` after an unarchive could not re-reserve it.
+
+**Source:** Phase 3 plan rev 2; plan review MEDIUM 6; phase 2 "owed to phase 3" (fresh SKU reads, current descriptors in snapshots). Amended by D-453, D-465, D-482, D-522; extended by D-466.
 
 #### D-409 [H] Promotions are deferred (owner, 2026-09-25)
 
@@ -725,6 +728,8 @@ D-480 amends this entry: `$filter` names `id` as well (`eq` and `in`). A malform
 
 **Source:** Owner, 2026-09-28; phase 7 plan rev 2 (ask 15; plan review M2, M6, L3). Amended by D-480.
 
+**Extended by D-522 (2026-10-03).** `$filter` names `archived`: an archived book is left out unless the filter asks `archived eq true`, and the page's statement count is unchanged.
+
 #### D-443 [M] A temporary draft's dates move, and its pair follows
 
 **Status:** DECIDED 2026-09-28.
@@ -754,7 +759,9 @@ The Price Books screen shows a book's description and deletes a book that nothin
 - **A lost race.** A row that a concurrent writer adds after the door's reads meets the book's foreign key: Postgres waits for that writer and fails the delete on the key it names, and the entry's key is 409 BOOK_HAS_ENTRIES, a revision's 409 BOOK_IN_PLAN, never a 500. On SQLite one writer holds the database for the whole transaction, so the door's reads see every row. An entry create in flight loses cleanly the other way: its Tx B finds no book (BOOK_NOT_FOUND), which cancels the op and releases the reservation.
 - **What stays.** The book's audit rows stay. A decided unit (rejected or withdrawn) that named the book stays readable: its card and the unit list answer with its ref_id, its decisions and the impact of its stored items, without the book. An approved unit's prices keep their entries, so its book is never deleted. Like a deleted draft SKU's create (P-D-206), the book create's Idempotency-Key still replays its 201 for a day, naming the deleted book; the code is free again.
 
-**Source:** Owner, 2026-09-28; phase 7 plan rev 2 (ask 16; plan review L1, L8); phase 7 review (behaviour lens: the stats predict the delete). Amended by D-453.
+D-522 amends this entry: a finished book need not be deleted to leave the screen. `POST /price-books/{id}/archive` hides it and releases its entries' SKU references. A revision that is only superseded does not refuse an archive, though it still refuses the delete (`BOOK_IN_PLAN_HISTORY`). An archived book with entries is still refused its delete (`BOOK_HAS_ENTRIES`).
+
+**Source:** Owner, 2026-09-28; phase 7 plan rev 2 (ask 16; plan review L1, L8); phase 7 review (behaviour lens: the stats predict the delete). Amended by D-453, D-522.
 
 #### D-445 [L] An approval unit carries its submitter's note (twin of products P-D-219)
 
@@ -2217,3 +2224,22 @@ An end is the other new item kind of the prices unit (ask 58a). The operator end
 **Amended 2026-10-03 (run Asks-B2b): the event.** `PricesPublished` lists the ended price with its new end and state `approved`, as D-520's amendment lists every price whose window or state an apply changed. A unit of ends alone no longer publishes an empty list. A price after the ended one whose window did not move is not listed.
 
 **Source:** Owner, 2026-10-02 and 2026-10-03 ("все ок сейчас будем писать план", "ок погнали"); ask 58a. Amends D-390 and D-393.
+
+#### D-522 [H] A finished book can be archived, and archiving it releases its entries' SKU references (twin of products P-D-263)
+
+**Status:** DECIDED 2026-10-03.
+
+A finished price book stayed on the Price Books screen for ever, and its entries kept their SKU references live in Products. So a SKU that only a finished book named stayed `SKU_REFERENCED` and could not be retired (ask 58).
+
+- **A mark, not a state.** `pricing_price_book` gains `archived_at` and `archived_by`, both null until the book is archived (`m20261003_000023_book_archive`). Nothing that reads a revision's state, a price's state or the stats changes.
+- **The doors.** `POST /price-books/{id}/archive` and `POST /price-books/{id}/unarchive`, under the book write grant (price_book author) and If-Match against the book's version, each with an audit row (`price_book.archive`, `price_book.unarchive`) and a new version. A book already in the asked state is answered as it is, and nothing is written.
+- **Which book is archived.** The refusals come in this order: 403 without the grant; 400 for a missing or malformed If-Match; 404; 409 `STALE_REVISION`; 409 `BOOK_IN_PLAN` while a plan has a draft, pending, scheduled or published revision on the book (`plan_revision_repo::plans_on_books`, the read the stats and the delete use); 409 `BOOK_HAS_PENDING` while a `prices` unit of the book is in review (a pending price, cancel or end; the read the stats' `pending_units` count); 409 `ENTRY_CONFIRMATION_PENDING` while an entry's reference is being confirmed, as the entry delete refuses it. Superseded revisions do not refuse an archive: they are history.
+- **The release (ask 58).** In the archive's transaction every entry whose reference is `confirmed` or `lost` becomes `released` (one statement), and each gets a reference op of the new kind `release`, in state `releasing`, for its reservation, with the reason `book_archived` in its work record. The op is the `delete` op's release path: `observe_release` calls Products' `release`. The door drives the ops after the commit; an op it cannot finish is durable, and the ticker finishes it after the in-flight grace. Once Products has released them, its `SKU_REFERENCED` no longer counts the book, so the SKU can be retired and then archived (products P-D-263). `GET /reference-ops` shows each op's `reason`: `book_archived` for a `release`, null for every other op.
+- **`released`.** The entry's `reference_state` gains `released` (on SQLite the entry, price and plan item tables are rebuilt; the reference op table too, for the kind). The reconciliation scans `confirmed` and `lost` entries only, so it never re-reserves a released one. A re-reservation that a SKU refuses leaves a released entry `released`: it is not lost, and no `PriceBookEntryReferenceLost` is announced.
+- **Read-only.** An archived book's entries and prices stay, and are read-only: an entry create or PATCH, a price create or PATCH, a cancel, an end, a submit or an apply of a price, and a plan item create or PATCH naming one of its entries are 409 `BOOK_ARCHIVED` (a submit and an apply answer it as the prices unit answers `ENTRY_REFERENCE_LOST`). A re-reservation or a create whose write meets an archived book is refused `BOOK_ARCHIVED` and cancelled, which releases its new reservation. A delete still runs: it adds no money and no reference. The plan checks count an item on a `released` entry as they count one on a `lost` entry.
+- **Unarchive.** The mark is cleared, and each `released` entry gets a `rereserve` op unless a release or a re-reservation of it is still open; the door drives them after the commit. An entry whose SKU refuses the new reservation (retired, say) stays `released`, and the book is unarchived anyway. The answer, `PricingPriceBookUnarchiveDto`, is the book and `released_entries`: the entries still released when it is built. Such an entry stays read-only, 409 `ENTRY_REFERENCE_RELEASED`, until an archive and an unarchive re-reserve it.
+- **Lists hide archived books.** `GET /price-books`, its search and its `sku_id` picker leave an archived book out. `$filter` names `archived`, a boolean: `archived eq true` keeps only the archived books, `archived eq false` is the default made explicit, and any other use of it is 400 (`bss_rest::archived`, which products' lists share). The list keeps its five statements (`tests/book_reads.rs`). A read by id, the export, publish-changes and the consumer reads ignore the mark. The book answers carry `archived_at`, `archived_by` and `archived_by_name` (D-519).
+- **No automatic archive.** Archiving is always an operator's act.
+- **The tests.** `tests/book_archive.rs` (ask 58, the refusals, the read-only doors, the unarchive, the release after a failed drive, a re-reservation that meets an archived book), `tests/postgres_book_archive.rs` (the migration up and down, the doors on Postgres), the migration's `_tests.rs` on SQLite, and products' `tests/book_archive_e2e.rs`, where both gears run: the archive releases the reference in Products, which then retires the SKU and archives it.
+
+**Source:** Owner, 2026-10-03 ("archived"; ask 58b). Twin of products P-D-263. Amends D-408 and D-444; extends D-407 and D-442.

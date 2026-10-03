@@ -3,9 +3,9 @@ use super::price_book_entry::OpState;
 use uuid::Uuid;
 
 // What an op does: a create reserves before its write, a delete releases after its removal, a
-// rereserve replaces a released receipt, and an attach reserves after a copied item's write
-// (D-413).
-string_enum!(OpKind {Create=>"create", Delete=>"delete", Rereserve=>"rereserve", Attach=>"attach"});
+// rereserve replaces a released receipt, an attach reserves after a copied item's write
+// (D-413), and a release lets an archived book's entry go (D-522).
+string_enum!(OpKind {Create=>"create", Delete=>"delete", Rereserve=>"rereserve", Attach=>"attach", Release=>"release"});
 // The reference an op works for, spelled as Products spells the reference kind (D-407).
 string_enum!(RefKind {Entry=>"price_book_entry", PlanItem=>"plan_item"});
 /// Durable protocol state; request metadata belongs to the persistence adapter.

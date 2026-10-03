@@ -18,6 +18,8 @@ fn declared_paths() -> Routes {
         ("GET", "/bss-pricing/v1/price-books/{id}"),
         ("PATCH", "/bss-pricing/v1/price-books/{id}"),
         ("DELETE", "/bss-pricing/v1/price-books/{id}"),
+        ("POST", "/bss-pricing/v1/price-books/{id}/archive"),
+        ("POST", "/bss-pricing/v1/price-books/{id}/unarchive"),
         ("GET", "/bss-pricing/v1/price-books/{id}/entries"),
         ("GET", "/bss-pricing/v1/price-books/{id}/export"),
         ("GET", "/bss-pricing/v1/settings"),
@@ -76,6 +78,8 @@ fn if_match_routes() -> Routes {
         ("PATCH", "/bss-pricing/v1/price-book-entries/{id}"),
         ("PATCH", "/bss-pricing/v1/price-books/{id}"),
         ("DELETE", "/bss-pricing/v1/price-books/{id}"),
+        ("POST", "/bss-pricing/v1/price-books/{id}/archive"),
+        ("POST", "/bss-pricing/v1/price-books/{id}/unarchive"),
         ("PUT", "/bss-pricing/v1/settings"),
         ("PUT", "/bss-pricing/v1/dimension-keys"),
         ("PATCH", "/bss-pricing/v1/prices/{id}"),
@@ -129,7 +133,7 @@ async fn the_registered_route_set_is_exactly_the_declared_paths() {
         .collect();
     assert_eq!(registered, declared_paths());
     assert_eq!(census::source_routes(), registered);
-    assert_eq!(registered.len(), 58);
+    assert_eq!(registered.len(), 60);
     assert!(router.has_routes());
 }
 
@@ -188,7 +192,8 @@ fn every_precondition_reading_route_is_in_the_precondition_census() {
         idempotency_key_routes()
     );
     for (needle, control, production) in [
-        ("preconditions::if_match(", 1, 13),
+        // + 2: the book's archive and unarchive (D-522).
+        ("preconditions::if_match(", 1, 15),
         ("preconditions::idempotency_key(", 1, 16),
         ("Query<", 1, 0),
         // + 1: plan_items::delete answers 204 below its door; + 16: the plan and revision doors
@@ -215,8 +220,10 @@ fn every_precondition_reading_route_is_in_the_precondition_census() {
         // `respond`); + 3: the settings read's 304 registration and `revalidate_version`'s 200
         // check and 304 answer; + 3: the cancel and end draft doors (D-520, D-521); - 11: D-519's
         // twelve reads that name their actors answer their 200 through the one `names::named`
-        // (`StatusCode::OK` once), not each from its own function.
-        ("StatusCode::", 2, 107),
+        // (`StatusCode::OK` once), not each from its own function; + 3: the book's archive and
+        // unarchive (D-522), two registrations and two 200 answers, while the book read answers
+        // through `names::named` now.
+        ("StatusCode::", 2, 110),
     ] {
         assert_eq!(census::count_in_functions(census::CONTROL, needle), control);
         assert_eq!(census::production_count(needle), production, "{needle}");
@@ -268,6 +275,9 @@ fn etag_routes() -> Routes {
         // D-469: the write answers that set one (run 9.2's census).
         ("POST", "/bss-pricing/v1/price-books"),
         ("PATCH", "/bss-pricing/v1/price-books/{id}"),
+        // D-522: the archive mark moves the book's version.
+        ("POST", "/bss-pricing/v1/price-books/{id}/archive"),
+        ("POST", "/bss-pricing/v1/price-books/{id}/unarchive"),
         ("PUT", "/bss-pricing/v1/settings"),
         ("PUT", "/bss-pricing/v1/dimension-keys"),
         ("PATCH", "/bss-pricing/v1/dimension-keys"),
@@ -323,7 +333,7 @@ async fn every_operation_has_a_human_summary_and_a_description() {
         assert_ne!(description, summary, "{id}");
         described += 1;
     }
-    assert_eq!(described, 58);
+    assert_eq!(described, 60);
 }
 
 /// Every answer that sets an `ETag` declares the header on its success response, and nothing else
@@ -362,9 +372,10 @@ async fn every_answer_that_sets_an_etag_declares_it() {
         })
         .count();
     assert_eq!(
-        anywhere, 36,
+        anywhere, 38,
         "only the success answer of those ops declares it, plus the 304 of the three list reads \
-         and of the settings read, and the 201 of the cancel and end drafts"
+         and of the settings read, the 201 of the cancel and end drafts, and the 200 of the book's \
+         archive and unarchive"
     );
 }
 

@@ -163,7 +163,7 @@ fn gear_chain_is_the_guard_coord_then_twenty_two_ordered_unique_migrations() {
         .iter()
         .map(|m| m.name().to_owned())
         .collect();
-    assert_eq!(names.len(), 24);
+    assert_eq!(names.len(), 25);
     let mut sorted = names.clone();
     sorted.sort();
     sorted.dedup();
@@ -184,6 +184,7 @@ fn gear_chain_is_the_guard_coord_then_twenty_two_ordered_unique_migrations() {
     assert_eq!(names[21], "m20261002_000020_plan_summary");
     assert_eq!(names[22], "m20261002_000021_policy_references_sku");
     assert_eq!(names[23], "m20261003_000022_price_cancel_and_end");
+    assert_eq!(names[24], "m20261003_000023_book_archive");
 }
 
 /// D-446: 000017 widens the revision state CHECK and adds the scheduled index. It replays without

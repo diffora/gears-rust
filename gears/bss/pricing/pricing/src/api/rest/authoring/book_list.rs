@@ -51,6 +51,8 @@ pub enum BookFilterField {
     Currency,
     ValidFrom,
     ValidUntil,
+    /// The archive mark (D-522): `archived eq true` lists only the archived books.
+    Archived,
 }
 impl BookFilterField {
     const fn field(self) -> BookListField {
@@ -61,6 +63,7 @@ impl BookFilterField {
             Self::Currency => BookListField::Currency,
             Self::ValidFrom => BookListField::ValidFrom,
             Self::ValidUntil => BookListField::ValidUntil,
+            Self::Archived => BookListField::Archived,
         }
     }
 }
@@ -72,6 +75,7 @@ impl FilterField for BookFilterField {
         Self::Currency,
         Self::ValidFrom,
         Self::ValidUntil,
+        Self::Archived,
     ];
     fn name(&self) -> &'static str {
         self.field().name()
@@ -127,7 +131,9 @@ pub(super) fn register(router: Router, openapi: &dyn OpenApiRegistry) -> Router 
              or published revision on it and those that name it only through superseded revisions, \
              its prices by state (the approved ones also as scheduled, active and superseded \
              today), its prices units in review and its last change. OData `$filter` over id, \
-             code, name, currency, valid_from and valid_until (`eq null`: open on that side); \
+             code, name, currency, valid_from and valid_until (`eq null`: open on that side), and \
+             archived: an archived book is left out unless asked `archived eq true` (D-522), and \
+             `archived` compares with `eq` or `ne` and a boolean, joined only by top-level `and`; \
              `$orderby` \
              over code and name (tie-break id; default code); `$top` (alias `limit`; default 200, \
              clamped at 500) and `cursor` (alias `$skiptoken`) from `page_info`. `q` is a \
@@ -280,6 +286,8 @@ async fn list_books(
     if let Some(expr) = odata.filter.as_deref() {
         convert_expr_to_filter_node::<BookFilterField>(expr)
             .map_err(|e| ODataError::InvalidFilter(e.to_string()))?;
+        // D-522: an `archived` term the list cannot take apart is 400 before any read.
+        bss_rest::archived::take_archived(expr.clone()).map_err(ODataError::InvalidFilter)?;
     }
     for key in &odata.order.0 {
         if BookOrderField::from_name(&key.field).is_none() {
@@ -300,17 +308,14 @@ async fn list_books(
     let tenant = ctx.subject_tenant_id();
     let backend = state.db.db().backend();
     let today = time::OffsetDateTime::now_utc().date();
-    transaction(&state.db.db(), move |tx| {
-        let (scope, filter, odata, headers) = (
-            scope.clone(),
-            filter.clone(),
-            odata.clone(),
-            headers.clone(),
-        );
-        Box::pin(async move {
-            let page = books::page(tx, &scope, tenant, backend, &filter, &odata, today).await?;
-            Ok(respond(&headers, &page, PRIVATE_REVALIDATE))
-        })
+    let mut page = transaction(&state.db.db(), move |tx| {
+        let (scope, filter, odata) = (scope.clone(), filter.clone(), odata.clone());
+        Box::pin(
+            async move { books::page(tx, &scope, tenant, backend, &filter, &odata, today).await },
+        )
     })
-    .await
+    .await?;
+    // D-522: the page's archiving actors in one lookup (D-519); the weak tag covers their names.
+    state.actor_names.fill(&ctx, &mut page.items).await;
+    Ok(respond(&headers, &page, PRIVATE_REVALIDATE))
 }

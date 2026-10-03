@@ -6,7 +6,8 @@ use bss_products_sdk::models::SkuType;
 
 string_enum!(ChargeKind {Recurring=>"recurring", Usage=>"usage", OneTime=>"one_time"});
 string_enum!(Model {Flat=>"flat", PerUnit=>"per_unit", Graduated=>"graduated", Volume=>"volume", Package=>"package"});
-string_enum!(ReferenceState {ConfirmationPending=>"confirmation_pending", Confirmed=>"confirmed", Lost=>"lost"});
+// `released`: the reference of an archived book's entry, released in Products (D-522).
+string_enum!(ReferenceState {ConfirmationPending=>"confirmation_pending", Confirmed=>"confirmed", Lost=>"lost", Released=>"released"});
 string_enum!(OpState {Reserving=>"reserving", Written=>"written", Cancelling=>"cancelling", Releasing=>"releasing", Done=>"done"});
 
 /// Derive charge kind from the current, freshly read SKU type.

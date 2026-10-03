@@ -63,7 +63,7 @@ Holding multiple permissions never bypasses separation of duties.
 - [PRD](../PRD.md), especially the numbered acceptance criteria referenced below.
 - [DESIGN](../DESIGN.md), §3 model, API contracts, transaction sequences and DDL.
 - [Slice 02](../design/02-books-entries.md), including API, data and event obligations.
-- [DECISIONS](../DECISIONS.md), D-384–D-444; spec means `docs/superpowers/specs/2026-09-24-pricebook-model-design.md` in the main checkout.
+- [DECISIONS](../DECISIONS.md), D-384–D-444, D-522; spec means `docs/superpowers/specs/2026-09-24-pricebook-model-design.md` in the main checkout.
 - Source: spec §2 decisions 4–8, 13–17, §2.2, §5–§8, §10, §12–§13; the phase 2 plan supplies delivery boundaries and D-399/D-400.
 
 D-502 binds an immutable UsageRatingPolicy to each new usage entry. The create requires
@@ -183,7 +183,7 @@ Every DoD below is required for this feature's delivery phase. Constraints: `cpt
 
 - [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-book-currency-validity`
 
-Books have tenant-unique codes, one immutable currency and optional nonempty validity. Versioned metadata edits preserve money identity (spec §5, D-384). Every book read carries the book's stats from four grouped statements, one per source (D-441), and the book list pages on the toolkit's OData pager, searched by q and sku_id (D-442). The book list answers 304 when If-None-Match matches a weak ETag of its JSON, and sends Cache-Control: private, no-cache (D-518). A book carries an optional description of at most 2000 characters, and a book no entry and no plan revision names is deleted under If-Match with an audit row; otherwise 409 BOOK_HAS_ENTRIES, BOOK_IN_PLAN or BOOK_IN_PLAN_HISTORY, in that order (D-444).
+Books have tenant-unique codes, one immutable currency and optional nonempty validity. Versioned metadata edits preserve money identity (spec §5, D-384). Every book read carries the book's stats from four grouped statements, one per source (D-441), and the book list pages on the toolkit's OData pager, searched by q and sku_id (D-442). The book list answers 304 when If-None-Match matches a weak ETag of its JSON, and sends Cache-Control: private, no-cache (D-518). A book carries an optional description of at most 2000 characters, and a book no entry and no plan revision names is deleted under If-Match with an audit row; otherwise 409 BOOK_HAS_ENTRIES, BOOK_IN_PLAN or BOOK_IN_PLAN_HISTORY, in that order (D-444). A finished book is archived under If-Match with an audit row: refused 409 BOOK_IN_PLAN while a revision that is not superseded names it, BOOK_HAS_PENDING while a prices unit of it is in review (a pending price, cancel or end), ENTRY_CONFIRMATION_PENDING while an entry's reference is being confirmed. In the same transaction each confirmed or lost entry becomes `released` with a `release` op (reason book_archived) that releases its SKU reference in Products after the commit, the ticker finishing what the door does not; from then on the book's entries and prices are read-only (409 BOOK_ARCHIVED), and the book list hides it unless asked `archived eq true`. An unarchive re-reserves each released entry, and an entry whose SKU refuses stays released and read-only (409 ENTRY_REFERENCE_RELEASED), listed in the answer's `released_entries` (D-522).
 
 Requirement: `cpt-cf-bss-pricing-fr-price-book`; PRD AC #2.
 

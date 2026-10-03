@@ -1615,6 +1615,17 @@ async fn exactly_the_writes_that_declare_an_etag_answer_one() {
     writes
         .call(f, &me, delete, &revision_path, json!({}), Some(&tag))
         .await;
+    // D-522: a book of its own, archived and unarchived at its tags.
+    let shelved = plan_support::book(f, "census-archive").await;
+    let shelved_path = format!("/price-books/{shelved}");
+    for action in ["archive", "unarchive"] {
+        let tag = etag_of(f, &shelved_path).await;
+        let template = format!("/price-books/{{id}}/{action}");
+        let path = format!("{shelved_path}/{action}");
+        writes
+            .call(f, &me, ("POST", &template), &path, json!({}), Some(&tag))
+            .await;
+    }
     // The census: every write op of the production routers, measured against its declaration.
     let registry = toolkit::api::OpenApiRegistryImpl::new();
     let _mounted = bss_pricing::api::rest::authoring::router(w.f.state.clone(), &registry).merge(
@@ -1652,7 +1663,7 @@ async fn exactly_the_writes_that_declare_an_etag_answer_one() {
         unmeasured.is_empty(),
         "every write op is measured: {unmeasured:?}"
     );
-    assert_eq!(measured.len(), 32, "the 32 write ops of the 58");
+    assert_eq!(measured.len(), 34, "the 34 write ops of the 60");
 }
 
 // ------------------------------------------------------------------ phase 4 review F1: what was refused

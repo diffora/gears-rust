@@ -363,6 +363,8 @@ impl Writer<'_> {
                 version: 1,
                 created_at: created(),
                 updated_at: created(),
+                archived_at: None,
+                archived_by: None,
             },
         )
         .await

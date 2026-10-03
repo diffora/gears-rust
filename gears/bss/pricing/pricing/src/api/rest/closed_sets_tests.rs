@@ -52,7 +52,7 @@ fn each_set_carries_its_stored_tokens_on_the_wire() {
     );
     assert_eq!(
         tokens!(PricingEntryReferenceState),
-        ["confirmation_pending", "confirmed", "lost"]
+        ["confirmation_pending", "confirmed", "lost", "released"]
     );
     assert_eq!(tokens!(PricingEligibility), ["all", "new"]);
     assert_eq!(
@@ -85,7 +85,7 @@ fn each_set_carries_its_stored_tokens_on_the_wire() {
     );
     assert_eq!(
         tokens!(PricingReferenceOpKind),
-        ["create", "delete", "rereserve", "attach"]
+        ["create", "delete", "rereserve", "attach", "release"]
     );
     assert_eq!(
         tokens!(PricingReferenceOpState),

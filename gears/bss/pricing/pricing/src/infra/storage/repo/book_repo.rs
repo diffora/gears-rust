@@ -37,6 +37,8 @@ pub async fn insert(
         version: Set(m.version),
         created_at: Set(m.created_at),
         updated_at: Set(m.updated_at),
+        archived_at: Set(m.archived_at),
+        archived_by: Set(m.archived_by),
     };
     e::Entity::insert(active.clone())
         .secure()
@@ -129,6 +131,33 @@ pub async fn update(
         .map_err(|e| map_unique("update price_book".into(), e))?;
     matched(result.rows_affected, "STALE_REVISION")
 }
+/// Write the archive mark (D-522) at the version the caller read: `Some(actor)` archives the book
+/// now, `None` unarchives it. The mark is a write of its own (`version` + 1, `updated_at`).
+/// # Errors
+/// `STALE_REVISION` when no row matched (another version, or gone); database failures keep their
+/// type.
+pub async fn set_archived(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    id: Uuid,
+    version: i64,
+    archived_by: Option<Uuid>,
+    now: time::OffsetDateTime,
+) -> Result<(), RepoError> {
+    let result = e::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(e::Column::ArchivedAt, Expr::value(archived_by.map(|_| now)))
+        .col_expr(e::Column::ArchivedBy, Expr::value(archived_by))
+        .col_expr(e::Column::UpdatedAt, Expr::value(now))
+        .col_expr(e::Column::Version, Expr::col(e::Column::Version).add(1_i64))
+        .filter(key(tenant, id).add(e::Column::Version.eq(version)))
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure("mark price_book archived".into(), e))?;
+    matched(result.rows_affected, "STALE_REVISION")
+}
 /// The book's foreign keys, by the name Postgres gives them, and the conflict a delete that meets
 /// each one is (D-444): an entry's is `BOOK_HAS_ENTRIES`, a plan revision's `BOOK_IN_PLAN`.
 const REFERENCED_BY: [(&str, &str); 2] = [
@@ -181,8 +210,8 @@ pub const BOOK_PAGE: LimitCfg = LimitCfg {
 };
 
 /// Every field of the book list's pager: the filter fields the door publishes (`id`, `code`,
-/// `name`, `currency`, `valid_from`, `valid_until`) and the order fields (`code`, `name` and the
-/// tie-break `id`).
+/// `name`, `currency`, `valid_from`, `valid_until`, `archived`) and the order fields (`code`,
+/// `name` and the tie-break `id`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BookListField {
     Id,
@@ -191,6 +220,9 @@ pub enum BookListField {
     Currency,
     ValidFrom,
     ValidUntil,
+    /// The archive mark (D-522): taken out of the `$filter` before the pager
+    /// ([`bss_rest::archived::take_archived`]), never compared as a column.
+    Archived,
 }
 impl FilterField for BookListField {
     const FIELDS: &'static [Self] = &[
@@ -200,6 +232,7 @@ impl FilterField for BookListField {
         Self::Currency,
         Self::ValidFrom,
         Self::ValidUntil,
+        Self::Archived,
     ];
     fn name(&self) -> &'static str {
         match self {
@@ -209,6 +242,7 @@ impl FilterField for BookListField {
             Self::Currency => "currency",
             Self::ValidFrom => "valid_from",
             Self::ValidUntil => "valid_until",
+            Self::Archived => bss_rest::archived::ARCHIVED,
         }
     }
     fn kind(&self) -> FieldKind {
@@ -216,6 +250,7 @@ impl FilterField for BookListField {
             Self::Id => FieldKind::Uuid,
             Self::Code | Self::Name | Self::Currency => FieldKind::String,
             Self::ValidFrom | Self::ValidUntil => FieldKind::Date,
+            Self::Archived => FieldKind::Bool,
         }
     }
     /// The two validity dates may be unset: only they compare with `null`.
@@ -246,7 +281,19 @@ impl FieldToColumn<BookListField> for BookListMapping {
             BookListField::Currency => e::Column::Currency,
             BookListField::ValidFrom => e::Column::ValidFrom,
             BookListField::ValidUntil => e::Column::ValidUntil,
+            BookListField::Archived => e::Column::ArchivedAt,
         }
+    }
+    /// `archived` never reaches the pager: the list takes its terms out first (D-522).
+    fn map_value(
+        field: BookListField,
+        _op: toolkit_odata::filter::FilterOp,
+        value: &toolkit_odata::filter::ODataValue,
+    ) -> Result<toolkit_odata::filter::ODataValue, String> {
+        if field == BookListField::Archived {
+            return Err(bss_rest::archived::ARCHIVED_FILTER_REFUSED.to_owned());
+        }
+        Ok(value.clone())
     }
     fn is_orderable(field: BookListField) -> bool {
         field.orderable()
@@ -262,6 +309,7 @@ impl ODataFieldMapping<BookListField> for BookListMapping {
             BookListField::Currency => sea_orm::Value::String(Some(model.currency.clone())),
             BookListField::ValidFrom => sea_orm::Value::TimeDate(model.valid_from),
             BookListField::ValidUntil => sea_orm::Value::TimeDate(model.valid_until),
+            BookListField::Archived => sea_orm::Value::Bool(Some(model.archived_at.is_some())),
         }
     }
 }
@@ -292,6 +340,20 @@ fn text_condition(text: &str, backend: sea_orm::DbBackend) -> Condition {
     )
 }
 
+/// The archive-mark condition of the list (D-522): the books without a mark by default, only the
+/// marked ones for `archived eq true`, and none for two terms that disagree.
+fn archive_mark(kept: bss_rest::archived::Archived) -> Condition {
+    use bss_rest::archived::Archived;
+    let column = e::Column::ArchivedAt;
+    match kept {
+        Archived::Hidden => Condition::all().add(column.is_null()),
+        Archived::Only => Condition::all().add(column.is_not_null()),
+        Archived::Neither => Condition::all()
+            .add(column.is_null())
+            .add(column.is_not_null()),
+    }
+}
+
 /// A list read refused or failed.
 #[derive(Debug)]
 pub enum BookListError {
@@ -303,7 +365,8 @@ pub enum BookListError {
 
 /// One page of the tenant's books under `scope` (D-442): `filter`'s narrowing, then the query's
 /// `$filter`, cursor and order (`code` when it names none), tie-broken by `id`; `$top` defaults
-/// to 200 and is clamped at 500. ONE statement.
+/// to 200 and is clamped at 500. ONE statement. An archived book is left out unless the filter
+/// asks `archived eq true` (D-522).
 /// # Errors
 /// [`BookListError::Query`] for a value, order field or cursor the pager refuses;
 /// [`BookListError::Repo`] for storage.
@@ -316,13 +379,20 @@ pub async fn page(
     query: &ODataQuery,
 ) -> Result<Page<e::Model>, BookListError> {
     let mut query = query.clone();
+    let (rest, archived) = bss_rest::archived::take_archived_opt(query.filter.take().map(|f| *f))
+        .map_err(|message| {
+        BookListError::Query(toolkit_odata::Error::InvalidFilter(message))
+    })?;
+    query.filter = rest.map(Box::new);
     if query.cursor.is_none() && query.order.0.is_empty() {
         query.order = ODataOrderBy(vec![OrderKey {
             field: BookListField::Code.name().to_owned(),
             dir: SortDir::Asc,
         }]);
     }
-    let mut c = Condition::all().add(e::Column::TenantId.eq(tenant));
+    let mut c = Condition::all()
+        .add(e::Column::TenantId.eq(tenant))
+        .add(archive_mark(archived));
     if let Some(text) = filter.text.as_deref() {
         c = c.add(text_condition(text, backend));
     }
