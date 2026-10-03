@@ -164,6 +164,35 @@ async fn postgres_000023_widens_the_checks_adds_the_mark_and_reverses() {
     let widened = checks(&pg).await;
     assert!(widened[0].contains("'released'"), "{widened:?}");
     assert!(widened[1].contains("'release'"), "{widened:?}");
+    // The archive mark is set and cleared as a pair.
+    for (sql, what) in [
+        (
+            format!(
+                "UPDATE bss.pricing_price_book SET archived_at = now() WHERE id = {}",
+                q(BOOK)
+            ),
+            "an archive time with no archiver",
+        ),
+        (
+            format!(
+                "UPDATE bss.pricing_price_book SET archived_by = {} WHERE id = {}",
+                q(AUTHOR),
+                q(BOOK)
+            ),
+            "an archiver with no archive time",
+        ),
+    ] {
+        assert!(try_exec(&pg, &sql).await.is_err(), "{what}: {sql}");
+    }
+    exec(
+        &pg,
+        &format!(
+            "UPDATE bss.pricing_price_book SET archived_at = now(), archived_by = {} WHERE id = {}",
+            q(AUTHOR),
+            q(BOOK)
+        ),
+    )
+    .await;
     exec(
         &pg,
         &format!(

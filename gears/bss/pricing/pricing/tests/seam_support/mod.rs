@@ -63,6 +63,12 @@ pub async fn put(f: &Fixture, entry: Uuid, row: Row) -> Uuid {
     } else {
         None
     };
+    // A cancelled price names the unit that cancelled it (the pairing CHECK of 000022).
+    let cancelled_by_unit_id = if row.state == "cancelled" {
+        Some(plan_support::unit_of_kind(f, "prices").await)
+    } else {
+        None
+    };
     price_repo::insert(
         &f.db.conn().unwrap(),
         &scope(f),
@@ -84,7 +90,7 @@ pub async fn put(f: &Fixture, entry: Uuid, row: Row) -> Uuid {
             return_of_price_id: None,
             change_kind: row.change_kind.into(),
             target_price_id: row.target,
-            cancelled_by_unit_id: None,
+            cancelled_by_unit_id,
             state: row.state.into(),
             pending_unit_id,
             approved_by_unit_id: None,

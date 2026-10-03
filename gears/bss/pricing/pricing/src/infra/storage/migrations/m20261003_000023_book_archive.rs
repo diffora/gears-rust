@@ -4,7 +4,9 @@
 //! A forward migration: the shipped chain is frozen. It makes three changes.
 //!
 //! - `pricing_price_book` gains `archived_at` and `archived_by`, both null until the book is
-//!   archived. Both engines add them in place.
+//!   archived, and set and cleared together: `(archived_at IS NULL) = (archived_by IS NULL)`.
+//!   Both engines add them in place; on `SQLite` the CHECK rides on `archived_by`'s column, which
+//!   `down` therefore drops first.
 //! - The entry's `reference_state` CHECK gains `released`: the reference of an archived book's
 //!   entry, released in Products.
 //! - The reference op's `kind` CHECK gains `release`: the op that releases that reference.
@@ -14,9 +16,12 @@
 //! effect, so dropping a parent that still has child rows fails. The `SQLite` arm therefore
 //! rebuilds the entry's family as `m20260930_000018` does, without a PRAGMA: the entry, and the two
 //! tables that reference it, `pricing_price` (its shape of `m20261003_000022`) and
-//! `pricing_plan_item` (its shape of `m20260930_000018`). Nothing references a price but another
-//! price, so a price's self references (`paired_price_id`, `return_of_price_id`,
-//! `target_price_id`) are copied after every row exists, as 000022 copies them. The children go
+//! `pricing_plan_item` (its shape of `m20260930_000018`), with 000022's two pairing CHECKs. Nothing
+//! references a price but another price. A change's `target_price_id` is copied with its row, so
+//! the pairing holds on insert: `SQLite` checks an immediate foreign key at the end of the
+//! statement, so a change copied before the price it names is no violation. The pair references
+//! (`paired_price_id`, `return_of_price_id`) are copied after every row exists, as 000022 copies
+//! them. The children go
 //! before the parent, the new tables are renamed (`ALTER TABLE … RENAME` rewrites the references
 //! to the final names), and the entry's key index, its two `usage_sku_version` triggers
 //! (`m20261002_000021`) and the price's two indexes are created again with their text. The plan
@@ -34,6 +39,8 @@ const PG_UP: &[&str] = &[
     "ALTER TABLE bss.pricing_price_book \
      ADD COLUMN IF NOT EXISTS archived_at timestamptz, \
      ADD COLUMN IF NOT EXISTS archived_by uuid",
+    "ALTER TABLE bss.pricing_price_book ADD CONSTRAINT pricing_price_book_archive_mark_check \
+     CHECK ((archived_at IS NULL) = (archived_by IS NULL))",
     "ALTER TABLE bss.pricing_price_book_entry \
      DROP CONSTRAINT IF EXISTS pricing_price_book_entry_reference_state_check",
     "ALTER TABLE bss.pricing_price_book_entry \
@@ -53,6 +60,8 @@ const PG_DOWN: &[&str] = &[
     "ALTER TABLE bss.pricing_price_book_entry \
      ADD CONSTRAINT pricing_price_book_entry_reference_state_check \
      CHECK (reference_state IN ('confirmation_pending','confirmed','lost'))",
+    "ALTER TABLE bss.pricing_price_book \
+     DROP CONSTRAINT IF EXISTS pricing_price_book_archive_mark_check",
     "ALTER TABLE bss.pricing_price_book DROP COLUMN IF EXISTS archived_at, \
      DROP COLUMN IF EXISTS archived_by",
 ];
@@ -120,16 +129,19 @@ fn price_table(table: &str, entry: &str) -> String {
   approved_at text, version integer NOT NULL DEFAULT 1,
   created_at text NOT NULL, updated_at text NOT NULL,
   UNIQUE (price_book_entry_id, version_no), CHECK (dim_value IS NULL OR dim_value <> ''),
-  CHECK (effective_to IS NULL OR effective_from < effective_to)
+  CHECK (effective_to IS NULL OR effective_from < effective_to),
+  CHECK ((change_kind = 'set') = (target_price_id IS NULL)),
+  CHECK ((state = 'cancelled') = (cancelled_by_unit_id IS NOT NULL))
 )"
     )
 }
 
-/// The columns copied with the rows; the three self references follow once every row exists.
+/// The columns copied with the rows, a change's `target_price_id` among them (its pairing CHECK
+/// holds on insert); the two pair references follow once every row exists.
 const PRICE_COLUMNS: &str = "id, tenant_id, price_book_entry_id, version_no, dim_value, price_json, \
 min_fee, eligibility, effective_from, effective_to, keep_for_bound, closed_explicitly, \
-temporary_until, state, change_kind, cancelled_by_unit_id, pending_unit_id, approved_by_unit_id, \
-note, created_by, approved_at, version, created_at, updated_at";
+temporary_until, state, change_kind, target_price_id, cancelled_by_unit_id, pending_unit_id, \
+approved_by_unit_id, note, created_by, approved_at, version, created_at, updated_at";
 
 /// The plan item table of `m20260930_000018`, named `table`, its entry `entry`.
 fn item_table(table: &str, entry: &str) -> String {
@@ -190,8 +202,7 @@ fn sqlite_rebuild(states: &str, kinds: &str, suffix: &str) -> Vec<String> {
         format!(
             "UPDATE {price} SET \
              paired_price_id = (SELECT p.paired_price_id FROM pricing_price p WHERE p.id = {price}.id), \
-             return_of_price_id = (SELECT p.return_of_price_id FROM pricing_price p WHERE p.id = {price}.id), \
-             target_price_id = (SELECT p.target_price_id FROM pricing_price p WHERE p.id = {price}.id)"
+             return_of_price_id = (SELECT p.return_of_price_id FROM pricing_price p WHERE p.id = {price}.id)"
         ),
         item_table(&item, &entry),
         format!(
@@ -219,7 +230,9 @@ fn sqlite_rebuild(states: &str, kinds: &str, suffix: &str) -> Vec<String> {
 fn sqlite_up() -> Vec<String> {
     let mut statements = vec![
         "ALTER TABLE pricing_price_book ADD COLUMN archived_at text".to_owned(),
-        "ALTER TABLE pricing_price_book ADD COLUMN archived_by text".to_owned(),
+        "ALTER TABLE pricing_price_book ADD COLUMN archived_by text \
+         CHECK ((archived_at IS NULL) = (archived_by IS NULL))"
+            .to_owned(),
     ];
     statements.extend(sqlite_rebuild(STATES_AFTER, KINDS_AFTER, "d522"));
     statements
@@ -227,9 +240,10 @@ fn sqlite_up() -> Vec<String> {
 
 fn sqlite_down() -> Vec<String> {
     let mut statements = sqlite_rebuild(STATES_BEFORE, KINDS_BEFORE, "d522_old");
+    // `archived_by` first: it carries the CHECK that names `archived_at`.
     statements.extend([
-        "ALTER TABLE pricing_price_book DROP COLUMN archived_at".to_owned(),
         "ALTER TABLE pricing_price_book DROP COLUMN archived_by".to_owned(),
+        "ALTER TABLE pricing_price_book DROP COLUMN archived_at".to_owned(),
     ]);
     statements
 }

@@ -732,8 +732,10 @@ CREATE TABLE bss.pricing_price_book (
 );
 -- m20260928_000015 (D-444): the book's description, at most 2000 characters (judged by the door).
 ALTER TABLE bss.pricing_price_book ADD COLUMN description text;
--- m20261003_000023 (D-522): the archive mark, null until the book is archived.
+-- m20261003_000023 (D-522): the archive mark, null until the book is archived, set and cleared as a pair.
 ALTER TABLE bss.pricing_price_book ADD COLUMN archived_at timestamptz, ADD COLUMN archived_by uuid;
+ALTER TABLE bss.pricing_price_book ADD CONSTRAINT pricing_price_book_archive_mark_check
+  CHECK ((archived_at IS NULL) = (archived_by IS NULL));
 CREATE TABLE bss.pricing_approval_policy (
   tenant_id uuid NOT NULL, kind text NOT NULL, quorum integer NOT NULL CHECK (quorum >= 0),
   PRIMARY KEY (tenant_id, kind)
@@ -818,6 +820,10 @@ CREATE INDEX pricing_price_chain
   ON bss.pricing_price (price_book_entry_id, dim_value, effective_from) WHERE state = 'approved';
 -- Migration m20261003_000022 adds change_kind, target_price_id and cancelled_by_unit_id, widens
 -- state with cancelled, and limits pricing_price_approved_start to change_kind = 'set' (D-520).
+-- Two CHECKs pair them: a change names its price and a price names none,
+-- CHECK ((change_kind = 'set') = (target_price_id IS NULL)); a cancelled price names the unit
+-- that cancelled it and no other row names one,
+-- CHECK ((state = 'cancelled') = (cancelled_by_unit_id IS NOT NULL)).
 CREATE TABLE bss.pricing_reference_op (
   op_id uuid PRIMARY KEY, tenant_id uuid NOT NULL,
   -- `release`: m20261003_000023 (D-522), an archived book's entry lets its reference go.

@@ -1,5 +1,6 @@
-//! D-520 on SQLite: 000022 rebuilds `pricing_price`, keeps its indexes and a mutual pair, and
-//! widens `state` with `cancelled`. `down` restores the previous shape.
+//! D-520 on SQLite: 000022 rebuilds `pricing_price`, keeps its indexes and a mutual pair, widens
+//! `state` with `cancelled`, and pairs a change with the price it names and a cancelled price with
+//! the unit that cancelled it. `down` restores the previous shape.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use super::Migration;
@@ -16,6 +17,7 @@ const PRICE_B: Uuid = Uuid::from_u128(0x2211);
 const PAIR_A: Uuid = Uuid::from_u128(0x2220);
 const PAIR_B: Uuid = Uuid::from_u128(0x2221);
 const AUTHOR: Uuid = Uuid::from_u128(0x2230);
+const UNIT: Uuid = Uuid::from_u128(0x2250);
 
 fn x(id: Uuid) -> String {
     format!("X'{}'", id.simple())
@@ -91,6 +93,21 @@ fn seed() -> Vec<String> {
             x(PAIR_B)
         ),
     ]
+}
+
+/// A pending prices unit of the book: the unit a cancelled price names.
+fn unit() -> String {
+    format!(
+        "INSERT INTO pricing_approval_unit (id, tenant_id, kind, ref_type, ref_id, state, \
+         common_effective_date, quorum_required, generation, submitted_by, submitted_at, \
+         decided_at, decided_note, snapshot, snapshot_hash, version) VALUES ({}, {}, 'prices', \
+         'price_book', {}, 'pending', NULL, 1, 1, {}, '2026-01-01T00:00:00Z', NULL, NULL, '{{}}', \
+         'h', 1)",
+        x(UNIT),
+        x(TENANT),
+        x(BOOK),
+        x(AUTHOR)
+    )
 }
 
 async fn index_sql(db: &sea_orm::DatabaseConnection) -> Vec<String> {
@@ -171,10 +188,48 @@ async fn sqlite_rebuilds_the_price_keeps_the_chain_and_round_trips() {
     )
     .await;
     assert_eq!(pair, vec![PAIR_B.simple().to_string().to_uppercase()]);
+    // The pairings: a change names its price and a price names none; a cancelled price names the
+    // unit that cancelled it, and only a cancelled price names one.
+    exec(&db, &unit()).await;
+    for (sql, what) in [
+        (
+            format!(
+                "UPDATE pricing_price SET change_kind = 'cancel' WHERE id = {}",
+                x(PRICE_B)
+            ),
+            "a change that names no price",
+        ),
+        (
+            format!(
+                "UPDATE pricing_price SET target_price_id = {} WHERE id = {}",
+                x(PRICE_A),
+                x(PRICE_B)
+            ),
+            "a price that names another",
+        ),
+        (
+            format!(
+                "UPDATE pricing_price SET state = 'cancelled' WHERE id = {}",
+                x(PRICE_B)
+            ),
+            "a cancelled price that names no unit",
+        ),
+        (
+            format!(
+                "UPDATE pricing_price SET cancelled_by_unit_id = {} WHERE id = {}",
+                x(UNIT),
+                x(PRICE_B)
+            ),
+            "a unit on a price that is not cancelled",
+        ),
+    ] {
+        assert!(try_exec(&db, &sql).await.is_err(), "{what}: {sql}");
+    }
     exec(
         &db,
         &format!(
-            "UPDATE pricing_price SET state = 'cancelled' WHERE id = {}",
+            "UPDATE pricing_price SET state = 'cancelled', cancelled_by_unit_id = {} WHERE id = {}",
+            x(UNIT),
             x(PRICE_B)
         ),
     )
@@ -200,7 +255,7 @@ async fn sqlite_rebuilds_the_price_keeps_the_chain_and_round_trips() {
     exec(
         &db,
         &format!(
-            "UPDATE pricing_price SET state = 'approved', change_kind = 'end', target_price_id = {} WHERE id = {}",
+            "UPDATE pricing_price SET state = 'approved', cancelled_by_unit_id = NULL, change_kind = 'end', target_price_id = {} WHERE id = {}",
             x(PRICE_A),
             x(PRICE_B)
         ),

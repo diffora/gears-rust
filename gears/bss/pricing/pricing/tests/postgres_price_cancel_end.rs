@@ -28,6 +28,7 @@ const PRICE_B: Uuid = Uuid::from_u128(0x2211);
 const PAIR_A: Uuid = Uuid::from_u128(0x2220);
 const PAIR_B: Uuid = Uuid::from_u128(0x2221);
 const AUTHOR: Uuid = Uuid::from_u128(0x2230);
+const UNIT: Uuid = Uuid::from_u128(0x2250);
 
 fn q(id: Uuid) -> String {
     format!("'{id}'")
@@ -198,10 +199,59 @@ async fn postgres_adds_cancel_and_end_and_round_trips() {
     )
     .await;
     assert_eq!(pair, vec![PAIR_B.to_string()]);
+    // The pairings: a change names its price and a price names none; a cancelled price names the
+    // unit that cancelled it, and only a cancelled price names one.
     exec(
         &pg,
         &format!(
-            "UPDATE bss.pricing_price SET state = 'cancelled' WHERE id = {}",
+            "INSERT INTO bss.pricing_approval_unit (id,tenant_id,kind,ref_type,ref_id,state,common_effective_date,quorum_required,generation,submitted_by,submitted_at,decided_at,decided_note,snapshot,snapshot_hash,version) \
+             VALUES ({},{},'prices','price_book',{},'pending',NULL,1,1,{},now(),NULL,NULL,'{{}}'::jsonb,'seed',1)",
+            q(UNIT),
+            q(TENANT),
+            q(BOOK),
+            q(AUTHOR)
+        ),
+    )
+    .await;
+    for (sql, what) in [
+        (
+            format!(
+                "UPDATE bss.pricing_price SET change_kind = 'cancel' WHERE id = {}",
+                q(PRICE_B)
+            ),
+            "a change that names no price",
+        ),
+        (
+            format!(
+                "UPDATE bss.pricing_price SET target_price_id = {} WHERE id = {}",
+                q(PRICE_A),
+                q(PRICE_B)
+            ),
+            "a price that names another",
+        ),
+        (
+            format!(
+                "UPDATE bss.pricing_price SET state = 'cancelled' WHERE id = {}",
+                q(PRICE_B)
+            ),
+            "a cancelled price that names no unit",
+        ),
+        (
+            format!(
+                "UPDATE bss.pricing_price SET cancelled_by_unit_id = {} WHERE id = {}",
+                q(UNIT),
+                q(PRICE_B)
+            ),
+            "a unit on a price that is not cancelled",
+        ),
+    ] {
+        assert!(try_exec(&pg, &sql).await.is_err(), "{what}: {sql}");
+    }
+    exec(
+        &pg,
+        &format!(
+            "UPDATE bss.pricing_price SET state = 'cancelled', cancelled_by_unit_id = {} WHERE id = {}",
+            q(UNIT),
             q(PRICE_B)
         ),
     )
@@ -231,7 +281,7 @@ async fn postgres_adds_cancel_and_end_and_round_trips() {
     exec(
         &pg,
         &format!(
-            "UPDATE bss.pricing_price SET state = 'approved', change_kind = 'end', target_price_id = {} WHERE id = {}",
+            "UPDATE bss.pricing_price SET state = 'approved', cancelled_by_unit_id = NULL, change_kind = 'end', target_price_id = {} WHERE id = {}",
             q(PRICE_A),
             q(PRICE_B)
         ),
