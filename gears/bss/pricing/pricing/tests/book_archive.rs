@@ -616,6 +616,48 @@ async fn unarchive_rereserves_the_live_skus_and_lists_the_others() {
     draft(&f, e1).await;
 }
 
+/// An unarchive that committed is answered as committed (D-522, review RF-P item 4): when the read
+/// of the entries still released fails after the commit, the door answers the unarchived book with
+/// `released_entries` null, and logs the failure; it neither fails nor invents a list. A retry
+/// under the old tag then meets the committed version.
+#[tokio::test]
+async fn an_unarchive_answers_its_book_when_the_released_entries_cannot_be_read() {
+    let (f, catalog) = plan_support::setup().await;
+    let book = new_book(&f, "unread").await;
+    let entry = door_entry(&f, book, catalog.sku(SkuType::Recurring)).await;
+    archive(&f, book).await;
+    // While the door drives the re-reservation, the entry's row stops decoding: the read of the
+    // released entries after the drive fails.
+    let hex = entry.simple().to_string().to_uppercase();
+    *catalog.on_reserve_sql.lock().unwrap() = Some((
+        String::from(&f.dsn),
+        format!(
+            "UPDATE pricing_price_book_entry SET created_at = 'not a time' \
+             WHERE id = '{entry}' OR hex(id) = '{hex}'"
+        ),
+    ));
+    let tag = book_tag(&f, book).await;
+    let (s, b, new_tag) = mark(&f, book, "unarchive", Some(&tag)).await;
+    assert_eq!(s, 200, "the unarchive committed: {b}");
+    assert!(
+        catalog.on_reserve_sql.lock().unwrap().is_none(),
+        "the drive met the hook"
+    );
+    assert!(b["archived_at"].is_null(), "{b}");
+    assert!(
+        b["released_entries"].is_null(),
+        "not read, not invented: {b}"
+    );
+    assert_eq!(new_tag, "\"3\"");
+    refused(
+        &mark(&f, book, "unarchive", Some(&tag)).await,
+        409,
+        "STALE_REVISION",
+    );
+    let (s, again, _) = mark(&f, book, "unarchive", Some(&new_tag)).await;
+    assert_eq!(s, 200, "an unarchived book is answered as it is: {again}");
+}
+
 /// The door drives its ops a few at a time under one deadline for the whole door and leaves the
 /// rest to the ticker (D-522, review RF-P item 3): with Products stalling every release far past
 /// that deadline, the archive still answers within seconds, its entries `released` and their

@@ -2208,7 +2208,8 @@ fn archive_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
              8 at once, for at most 3 s in all; the ticker finishes the rest). An \
              entry whose SKU refuses the new reservation (retired, say) stays `released` and \
              read-only (409 ENTRY_REFERENCE_RELEASED), and the book is unarchived anyway: \
-             `released_entries` lists the entries still released when the answer is built. \
+             `released_entries` lists the entries still released when the answer is built, or is \
+             null when they could not be read after the unarchive committed. \
              Unarchiving a book that is not archived answers it unchanged. Refusals: 403 without \
              the book write grant; 400 for a missing or malformed If-Match; 404; 409 \
              STALE_REVISION.",
@@ -2363,10 +2364,19 @@ async fn unarchive_book(
     .await?;
     drive_all(&state, &ctx, &marked.ops).await;
     let tenant = ctx.subject_tenant_id();
-    let released_entries = transaction(&state.db.db(), move |tx| {
+    // The unarchive has committed: a failed read of the entries still released does not make it an
+    // error. The answer says it does not know them (null) rather than invent a list.
+    let released_entries = match transaction(&state.db.db(), move |tx| {
         Box::pin(async move { books::released_entries(tx, tenant, id).await })
     })
-    .await?;
+    .await
+    {
+        Ok(ids) => Some(ids),
+        Err(error) => {
+            tracing::warn!(book_id=%id, error=%error, diagnostic=error.diagnostic().unwrap_or_default(), "pricing book unarchived; its released entries could not be read for the answer");
+            None
+        }
+    };
     let version = preconditions::RowVersion::from_stored(marked.book.version)
         .map_err(CanonicalError::from)?
         .get();

@@ -66,7 +66,9 @@ impl From<entity::price_book::Model> for PriceBookDto {
 pub struct PricingPriceBookUnarchiveDto {
     #[serde(flatten)]
     pub book: PriceBookDto,
-    pub released_entries: Vec<Uuid>,
+    /// The entries still `released` when the answer is built; null when they could not be read
+    /// after the unarchive committed (the book's entry list says which).
+    pub released_entries: Option<Vec<Uuid>>,
 }
 #[toolkit_macros::api_dto(response)]
 pub struct PricingPriceBookEntryDto {
