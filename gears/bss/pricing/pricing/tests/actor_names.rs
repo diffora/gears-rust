@@ -338,8 +338,6 @@ async fn every_read_names_its_actors_in_one_lookup() {
             .iter()
             .all(|ids| !ids.contains(&PRICING_SYSTEM_ACTOR))
     );
-    // Rob is not the author of anything; his name is read only where he acted.
-    assert_ne!(w.rob.subject_id(), w.f.ctx.subject_id());
 }
 
 #[tokio::test]
@@ -357,6 +355,108 @@ async fn a_renamed_actor_reads_the_new_name_on_the_next_read() {
     w.people.know(w.f.ctx.subject_id(), "Ann Married");
     let after = w.read(&format!("/plans/{}", w.plan), true).await;
     named(&after, "created_by", Some("Ann Married"));
+}
+
+/// A conditional read of the plan list: the status, the body and the weak tag.
+async fn revalidate(w: &World, path: &str, tag: Option<&str>) -> (u16, Value, String) {
+    use axum::{
+        body::Body,
+        http::{Request, header},
+    };
+    use tower::ServiceExt;
+    let mut request = Request::builder()
+        .method("GET")
+        .uri(format!("/bss-pricing/v1{path}"))
+        .extension(w.f.ctx.clone());
+    if let Some(tag) = tag {
+        request = request.header(header::IF_NONE_MATCH, tag);
+    }
+    let response =
+        w.f.app
+            .clone()
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+    let status = response.status().as_u16();
+    let etag = response
+        .headers()
+        .get(header::ETAG)
+        .map_or("", |v| v.to_str().unwrap())
+        .to_owned();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body = if bytes.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&bytes).unwrap()
+    };
+    (status, body, etag)
+}
+
+/// D-518, D-519 (review RF-P item 9): the plan list's weak tag covers the names. A repeated read
+/// under its tag is 304; after a rename the same tag reads 200 with the new name and a new tag,
+/// never a stale 304 that keeps the old name.
+#[tokio::test]
+async fn a_rename_changes_the_plan_lists_tag() {
+    let w = world().await;
+    let (s, first, tag) = revalidate(&w, "/plans", None).await;
+    assert_eq!(s, 200, "{first}");
+    named(&first["items"][0], "created_by", Some("Ann Author"));
+    assert!(tag.starts_with("W/"), "{tag}");
+    let (s, _, same) = revalidate(&w, "/plans", Some(&tag)).await;
+    assert_eq!(s, 304, "nothing changed");
+    assert_eq!(same, tag);
+    w.people.know(w.f.ctx.subject_id(), "Ann Married");
+    let (s, renamed, new_tag) = revalidate(&w, "/plans", Some(&tag)).await;
+    assert_eq!(s, 200, "a rename is a new body: {renamed}");
+    assert_ne!(new_tag, tag);
+    named(&renamed["items"][0], "created_by", Some("Ann Married"));
+}
+
+/// D-519, D-522 (review RF-P item 9): an archived book names its archiver on the archived list and
+/// on its read by id; the archive's own answer names nobody, and a failing directory leaves the
+/// name null on a 200.
+#[tokio::test]
+async fn an_archived_book_names_its_archiver() {
+    let w = world().await;
+    let shelved = book(&w.f, "shelved").await;
+    let (_, _, tag) =
+        w.f.call(
+            "GET",
+            &format!("/price-books/{shelved}"),
+            json!({}),
+            None,
+            None,
+        )
+        .await;
+    let (s, archived, _) =
+        w.f.call_as(
+            &w.rob,
+            "POST",
+            &format!("/price-books/{shelved}/archive"),
+            json!({}),
+            Some(&tag),
+            None,
+        )
+        .await;
+    assert_eq!(s, 200, "{archived}");
+    assert_eq!(
+        archived["archived_by"],
+        json!(w.rob.subject_id()),
+        "{archived}"
+    );
+    named(&archived, "archived_by", None);
+    let list = "/price-books?$filter=archived%20eq%20true";
+    let by_id = format!("/price-books/{shelved}");
+    for (down, expected) in [(false, Some("Rob Reviewer")), (true, None)] {
+        w.people.down.store(down, Ordering::SeqCst);
+        let page = w.read(list, true).await;
+        assert_eq!(page["items"].as_array().unwrap().len(), 1, "{page}");
+        named(&page["items"][0], "archived_by", expected);
+        let one = w.read(&by_id, true).await;
+        named(&one, "archived_by", expected);
+    }
 }
 
 #[tokio::test]

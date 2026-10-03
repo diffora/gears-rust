@@ -1410,19 +1410,40 @@ async fn price_book_entries_can_be_read_by_id() {
         .map(|_| Uuid::new_v4().to_string())
         .collect::<Vec<_>>()
         .join(",");
-    for (expr, said) in [
-        ("code eq 'EUR'", "code"),
-        (&format!("id in ({left}) or id in ({right})"), "or"),
-        (&format!("id in ({too_many})"), "200"),
-        ("id ne 00000000-0000-0000-0000-000000000001", "in"),
+    // Each refusal by its own description (review RF-P item 9): the problem's `type` URI already
+    // holds "or" and "in", so a substring of the whole body told the refusals apart from nothing.
+    let unparsed = "the filter is `id in (...)`, at most 200 ids: ";
+    for (expr, said, whole) in [
+        ("code eq 'EUR'", unparsed, false),
+        (
+            &format!("id in ({left}) or id in ({right})"),
+            "`or` is not accepted; the filter is `id in (...)`",
+            true,
+        ),
+        (
+            &format!("id in ({too_many})"),
+            "`id in (...)` lists at most 200 ids",
+            true,
+        ),
+        (
+            "id ne 00000000-0000-0000-0000-000000000001",
+            "the filter is `id in (...)`, at most 200 ids",
+            true,
+        ),
     ] {
         let (s, body, _) = get(&f, &filter_query(expr)).await;
         assert_eq!(s, 400, "{expr}: {body}");
-        assert!(body.to_string().contains("QUERY_INVALID"), "{expr}: {body}");
-        assert!(
-            body.to_string().contains(said),
-            "{expr}: want {said} in {body}"
-        );
+        let violation = &body["context"]["field_violations"][0];
+        assert_eq!(violation["reason"], "QUERY_INVALID", "{expr}: {body}");
+        let description = violation["description"].as_str().unwrap();
+        if whole {
+            assert_eq!(description, said, "{expr}: {body}");
+        } else {
+            assert!(
+                description.starts_with(said) && description.len() > said.len(),
+                "{expr}: the parser's own cause follows {said:?}: {body}"
+            );
+        }
     }
     let (s, both, _) = get(
         &f,

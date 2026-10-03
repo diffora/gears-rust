@@ -322,10 +322,9 @@ async fn postgres_a_book_archives_releases_lists_and_unarchives() {
     )
     .await;
     assert_eq!(read["reference_state"], "released", "{read}");
-    assert_eq!(
-        catalog.refs.lock().unwrap()[&entry].1,
-        ReferenceState::Released
-    );
+    // The guard is dropped before the assertion runs (review RF-P item 9).
+    let held = { catalog.refs.lock().unwrap()[&entry].1 };
+    assert_eq!(held, ReferenceState::Released);
     let (_, list, _) = call("GET", "/price-books".into(), json!({}), None).await;
     assert_eq!(list["items"], json!([]), "{list}");
     let (_, list, _) = call(

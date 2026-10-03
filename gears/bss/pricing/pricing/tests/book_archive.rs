@@ -22,7 +22,9 @@ use bss_pricing::infra::{
     storage::repo::{price_book_entry_repo, price_repo},
 };
 use bss_products_sdk::models::{Lifecycle, ReferenceState, SkuType};
-use plan_support::{Catalog, Fixture, entry_support, id_of, item, ops_for, plan, publish, scope};
+use plan_support::{
+    Catalog, Fixture, entry_support, id_of, item, ops_for, plan, publish, raw, scope,
+};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -361,6 +363,147 @@ async fn a_release_op_of_a_poisoned_work_record_is_a_corrupt_row() {
         .find(|op| op["kind"] == "release")
         .unwrap();
     assert_eq!(read["reason"], "book_archived", "{journal}");
+}
+
+/// Set an entry's stored reference state, as a confirmation in flight or a lost reference leaves it.
+async fn stored_reference(f: &Fixture, entry: Uuid, state: &str) {
+    let hex = entry.simple().to_string().to_uppercase();
+    raw(
+        f,
+        &format!(
+            "UPDATE pricing_price_book_entry SET reference_state = '{state}' \
+             WHERE id = '{entry}' OR hex(id) = '{hex}'"
+        ),
+    )
+    .await;
+}
+
+/// D-522 (review RF-P item 9): an entry whose reference is being confirmed refuses the archive,
+/// 409 `ENTRY_CONFIRMATION_PENDING`, and nothing is written; a `lost` entry is released as a
+/// confirmed one is, through a `release` op.
+#[tokio::test]
+async fn a_confirmation_in_flight_refuses_the_archive_and_a_lost_entry_is_released() {
+    let (f, catalog) = plan_support::setup().await;
+    let book = new_book(&f, "lossy").await;
+    let pending = door_entry(&f, book, catalog.sku(SkuType::Recurring)).await;
+    let lost = door_entry(&f, book, catalog.sku(SkuType::Recurring)).await;
+    stored_reference(&f, pending, "confirmation_pending").await;
+    stored_reference(&f, lost, "lost").await;
+    let tag = book_tag(&f, book).await;
+    refused(
+        &mark(&f, book, "archive", Some(&tag)).await,
+        409,
+        "ENTRY_CONFIRMATION_PENDING",
+    );
+    assert_eq!(
+        book_tag(&f, book).await,
+        tag,
+        "the refused archive wrote nothing"
+    );
+    assert_eq!(reference_state(&f, lost).await, "lost");
+    assert!(
+        ops_for(&f, lost)
+            .await
+            .iter()
+            .all(|op| op.kind != "release"),
+        "no release op"
+    );
+
+    stored_reference(&f, pending, "confirmed").await;
+    archive(&f, book).await;
+    assert_eq!(reference_state(&f, lost).await, "released");
+    let ops = ops_for(&f, lost).await;
+    let release = ops.iter().find(|op| op.kind == "release").unwrap();
+    assert_eq!(release.state, "done", "{release:?}");
+    assert_eq!(held(&catalog, lost), ReferenceState::Released);
+}
+
+/// D-522 (review RF-P item 9): an unarchive makes no `rereserve` op for an entry whose release is
+/// still open. Once the ticker finishes that release, the entry stays `released` in the unarchived
+/// book, read-only, until another archive and unarchive re-reserve it.
+#[tokio::test]
+async fn an_unarchive_skips_an_entry_whose_release_is_still_open() {
+    let (f, catalog) = plan_support::setup().await;
+    let book = new_book(&f, "early").await;
+    let entry = door_entry(&f, book, catalog.sku(SkuType::Recurring)).await;
+    catalog.down.store(true, Ordering::SeqCst);
+    archive(&f, book).await;
+    let release = ops_for(&f, entry)
+        .await
+        .into_iter()
+        .find(|op| op.kind == "release")
+        .unwrap();
+    assert_eq!(release.state, "releasing", "{release:?}");
+    let tag = book_tag(&f, book).await;
+    let (s, b, _) = mark(&f, book, "unarchive", Some(&tag)).await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(b["released_entries"], json!([entry]), "{b}");
+    let ops = ops_for(&f, entry).await;
+    assert!(
+        ops.iter().all(|op| op.kind != "rereserve"),
+        "no re-reservation while the release is open: {ops:?}"
+    );
+
+    catalog.down.store(false, Ordering::SeqCst);
+    Ticker::new(f.state.clone(), Arc::new(Later), 10, 100)
+        .tick()
+        .await
+        .unwrap();
+    assert_eq!(held(&catalog, entry), ReferenceState::Released);
+    assert_eq!(reference_state(&f, entry).await, "released");
+    let ops = ops_for(&f, entry).await;
+    assert!(ops.iter().all(|op| op.kind != "rereserve"), "{ops:?}");
+    refused(
+        &f.call(
+            "POST",
+            &format!("/price-book-entries/{entry}/prices"),
+            json!({"price": {"rate": "0.20"}, "eligibility": "all", "effective_from": future(50)}),
+            None,
+            Some("stranded-price"),
+        )
+        .await,
+        409,
+        "ENTRY_REFERENCE_RELEASED",
+    );
+}
+
+/// D-522 (review RF-P item 9): the `archived` term joins the rest of the book list's `$filter`,
+/// which still applies; two terms that disagree keep no book; and an `archived` term under `or`
+/// is 400 before any read.
+#[tokio::test]
+async fn the_archived_term_joins_the_rest_of_the_book_filter() {
+    let (f, _) = plan_support::setup().await;
+    let finished = new_book(&f, "finished").await;
+    new_book(&f, "other").await;
+    archive(&f, finished).await;
+    let filtered = |expr: &str| format!("?$filter={}", expr.replace(' ', "%20"));
+    for (expr, kept) in [
+        ("archived eq true and code eq 'finished'", vec!["finished"]),
+        ("archived eq true and code eq 'other'", vec![]),
+        ("code eq 'finished' and archived eq false", vec![]),
+        ("archived ne true and code eq 'other'", vec!["other"]),
+        ("archived eq true and archived eq false", vec![]),
+    ] {
+        assert_eq!(listed(&f, &filtered(expr)).await, kept, "{expr}");
+    }
+    let (s, b, _) = f
+        .call(
+            "GET",
+            &format!(
+                "/price-books{}",
+                filtered("archived eq true or code eq 'x'")
+            ),
+            json!({}),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(s, 400, "{b}");
+    assert_eq!(b["status"], 400, "a problem body: {b}");
+    assert!(
+        b.to_string().contains("joined only by top-level `and`"),
+        "it says which shapes `archived` takes: {b}"
+    );
 }
 
 /// The refusals: a missing If-Match is 400, a stale one 409 `STALE_REVISION`, an unknown book 404;

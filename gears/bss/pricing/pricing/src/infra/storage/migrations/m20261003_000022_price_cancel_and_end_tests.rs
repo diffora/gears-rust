@@ -18,6 +18,7 @@ const PAIR_A: Uuid = Uuid::from_u128(0x2220);
 const PAIR_B: Uuid = Uuid::from_u128(0x2221);
 const AUTHOR: Uuid = Uuid::from_u128(0x2230);
 const UNIT: Uuid = Uuid::from_u128(0x2250);
+const CHANGE: Uuid = Uuid::from_u128(0x2260);
 
 fn x(id: Uuid) -> String {
     format!("X'{}'", id.simple())
@@ -255,9 +256,44 @@ async fn sqlite_rebuilds_the_price_keeps_the_chain_and_round_trips() {
     exec(
         &db,
         &format!(
-            "UPDATE pricing_price SET state = 'approved', cancelled_by_unit_id = NULL, change_kind = 'end', target_price_id = {} WHERE id = {}",
-            x(PRICE_A),
+            "UPDATE pricing_price SET state = 'approved', cancelled_by_unit_id = NULL WHERE id = {}",
             x(PRICE_B)
+        ),
+    )
+    .await;
+    // An applied change keeps the start of the price it names (review RF-P item 9): `down` is
+    // refused on the approved-start index, and the runner's transaction leaves the schema as it was.
+    exec(
+        &db,
+        &format!(
+            "INSERT INTO pricing_price (id,tenant_id,price_book_entry_id,version_no,price_json,eligibility,effective_from,effective_to,state,change_kind,target_price_id,created_by,version,created_at,updated_at) VALUES ({},{},{},5,'{{}}','all','2026-01-01','2026-02-01','approved','end',{},{},1,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
+            x(CHANGE),
+            x(TENANT),
+            x(ENTRY),
+            x(PRICE_A),
+            x(AUTHOR)
+        ),
+    )
+    .await;
+    {
+        use sea_orm::TransactionTrait;
+        let txn = db.begin().await.unwrap();
+        let refused = Migration.down(&SchemaManager::new(&txn)).await;
+        txn.rollback().await.unwrap();
+        let refused = refused.expect_err("an applied change on its price's start refuses down");
+        assert!(
+            refused.to_string().contains("UNIQUE"),
+            "the approved-start index refuses it: {refused}"
+        );
+    }
+    assert_eq!(index_sql(&db).await, narrowed, "the schema is as it was");
+    assert!(columns(&db).await.iter().any(|c| c == "change_kind"));
+    // A draft change goes back as a plain row.
+    exec(
+        &db,
+        &format!(
+            "UPDATE pricing_price SET state = 'draft' WHERE id = {}",
+            x(CHANGE)
         ),
     )
     .await;
@@ -274,6 +310,15 @@ async fn sqlite_rebuilds_the_price_keeps_the_chain_and_round_trips() {
     )
     .await;
     assert_eq!(still, vec!["2026-01-01", "2026-03-01"]);
+    let plain = strings(
+        &db,
+        &format!(
+            "SELECT state || ' ' || effective_from AS v FROM pricing_price WHERE id = {}",
+            x(CHANGE)
+        ),
+    )
+    .await;
+    assert_eq!(plain, ["draft 2026-01-01"]);
     let cancelled = try_exec(
         &db,
         &format!(
