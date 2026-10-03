@@ -57,6 +57,8 @@ async fn the_default_settings_say_nobody_changed_them() {
             "version": 0,
             "updated_at": null,
             "updated_by": null,
+            // D-519: nobody wrote them, so nobody is named.
+            "updated_by_name": null,
         })
     );
 }

@@ -213,8 +213,10 @@ fn every_precondition_reading_route_is_in_the_precondition_census() {
         // plans counts (D-485), its registration and its 200 answer. D-518 kept the sum for the
         // three list reads (each registration's 304, each handler's 200 now answered by
         // `respond`); + 3: the settings read's 304 registration and `revalidate_version`'s 200
-        // check and 304 answer; + 3: the cancel and end draft doors (D-520, D-521).
-        ("StatusCode::", 2, 118),
+        // check and 304 answer; + 3: the cancel and end draft doors (D-520, D-521); - 11: D-519's
+        // twelve reads that name their actors answer their 200 through the one `names::named`
+        // (`StatusCode::OK` once), not each from its own function.
+        ("StatusCode::", 2, 107),
     ] {
         assert_eq!(census::count_in_functions(census::CONTROL, needle), control);
         assert_eq!(census::production_count(needle), production, "{needle}");

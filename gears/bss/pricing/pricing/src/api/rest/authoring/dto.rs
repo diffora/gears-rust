@@ -369,6 +369,10 @@ pub struct PricingPriceDto {
     pub approved_by_unit_id: Option<Uuid>,
     pub note: Option<String>,
     pub created_by: Uuid,
+    /// The current name of `created_by` (D-519): its display name, else first and last name, else
+    /// username, from Account Management under the caller's rights; "System" for a system actor.
+    /// Null when no name is available now, and on a write answer.
+    pub created_by_name: Option<String>,
     #[serde(with = "time::serde::rfc3339::option")]
     pub approved_at: Option<time::OffsetDateTime>,
     pub version: i64,
@@ -434,6 +438,7 @@ impl PricingPriceDto {
             approved_by_unit_id: m.approved_by_unit_id,
             note: m.note,
             created_by: m.created_by,
+            created_by_name: None,
             approved_at: m.approved_at,
             version: m.version,
             created_at: m.created_at,
@@ -560,6 +565,10 @@ pub struct PricingSettingsPut {
     pub invoice_line_templates: std::collections::BTreeMap<String, String>,
     /// Required (D-438): the currencies a NEW book may take, a full replace; `[]` is any.
     pub currencies: Vec<String>,
+    /// Ignored (D-519): the writer's name that `GET /settings` shows. It is accepted so that a
+    /// read's body without `version`, `updated_at` and `updated_by` stays a PUT body (D-438).
+    #[serde(default)]
+    pub updated_by_name: Option<String>,
 }
 #[toolkit_macros::api_dto(response)]
 pub struct PricingSettingsDto {
@@ -578,6 +587,10 @@ pub struct PricingSettingsDto {
     pub updated_at: Option<time::OffsetDateTime>,
     /// Who wrote them last; null before the first write and on a row written before D-438.
     pub updated_by: Option<Uuid>,
+    /// The current name of `updated_by` (D-519): its display name, else first and last name, else
+    /// username, from Account Management under the caller's rights; "System" for a system actor.
+    /// Null when `updated_by` is null, when no name is available now, and on a write answer.
+    pub updated_by_name: Option<String>,
 }
 
 #[toolkit_macros::api_dto(request)]
@@ -639,6 +652,10 @@ pub struct PricingPlanItemDto {
     pub reference_state: PricingItemReferenceState,
     pub version: i64,
     pub created_by: Uuid,
+    /// The current name of `created_by` (D-519): its display name, else first and last name, else
+    /// username, from Account Management under the caller's rights; "System" for a system actor.
+    /// Null when no name is available now, and on a write answer.
+    pub created_by_name: Option<String>,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: time::OffsetDateTime,
     #[serde(with = "time::serde::rfc3339")]
@@ -661,6 +678,7 @@ impl TryFrom<entity::plan_item::Model> for PricingPlanItemDto {
             )?,
             version: m.version,
             created_by: m.created_by,
+            created_by_name: None,
             created_at: m.created_at,
             updated_at: m.updated_at,
         })
@@ -735,6 +753,10 @@ pub struct PricingPlanRevisionHeader {
     pub published_at: Option<time::OffsetDateTime>,
     /// Its author (D-461): the one principal who edits it while it is a draft (D-404).
     pub created_by: Uuid,
+    /// The current name of `created_by` (D-519): its display name, else first and last name, else
+    /// username, from Account Management under the caller's rights; "System" for a system actor.
+    /// Null when no name is available now, and on a write answer.
+    pub created_by_name: Option<String>,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: time::OffsetDateTime,
     /// When it was submitted for approval (D-461): the submission of its pending unit, or of the
@@ -772,6 +794,7 @@ impl PricingPlanRevisionHeader {
             available_from: m.available_from.map(|d| d.to_string()),
             published_at: effective.published_at,
             created_by: m.created_by,
+            created_by_name: None,
             created_at: m.created_at,
             submitted_at,
             approved_at,
@@ -832,6 +855,10 @@ pub struct PricingPlanCurrent {
     pub sku_ids: Vec<Uuid>,
     /// Its author, who edits it while it is a draft (D-404); not the plan's.
     pub created_by: Uuid,
+    /// The current name of `created_by` (D-519): its display name, else first and last name, else
+    /// username, from Account Management under the caller's rights; "System" for a system actor.
+    /// Null when no name is available now, and on a write answer.
+    pub created_by_name: Option<String>,
     /// The book it prices on (D-485, D-515): that book's id, code, name, currency and validity.
     pub book: PricingPlanBook,
 }
@@ -895,6 +922,10 @@ pub struct PricingPlanDto {
     pub published_rev: Option<i32>,
     pub version: i64,
     pub created_by: Uuid,
+    /// The current name of `created_by` (D-519): its display name, else first and last name, else
+    /// username, from Account Management under the caller's rights; "System" for a system actor.
+    /// Null when no name is available now, and on a write answer.
+    pub created_by_name: Option<String>,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: time::OffsetDateTime,
     #[serde(with = "time::serde::rfc3339")]
@@ -958,6 +989,7 @@ impl PricingPlanDto {
                 item_count: u32::try_from(sku_ids.len()).unwrap_or(u32::MAX),
                 sku_ids,
                 created_by: row.created_by,
+                created_by_name: None,
                 book,
             })
         } else {
@@ -976,6 +1008,7 @@ impl PricingPlanDto {
             published_rev: plan::published_rev(m.published_rev, &stored, m.id, today),
             version: m.version,
             created_by: m.created_by,
+            created_by_name: None,
             created_at: m.created_at,
             updated_at: m.updated_at,
             last_activity_at: summary.last_activity_at,
@@ -1083,6 +1116,10 @@ pub struct PricingPlanRevisionDto {
     pub version: i64,
     /// The draft's author: the one principal who edits it and its items (D-404).
     pub created_by: Uuid,
+    /// The current name of `created_by` (D-519): its display name, else first and last name, else
+    /// username, from Account Management under the caller's rights; "System" for a system actor.
+    /// Null when no name is available now, and on a write answer.
+    pub created_by_name: Option<String>,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: time::OffsetDateTime,
     #[serde(with = "time::serde::rfc3339")]
@@ -1153,6 +1190,7 @@ impl PricingPlanRevisionDto {
             published_at: m.published_at,
             version: m.version,
             created_by: m.created_by,
+            created_by_name: None,
             created_at: m.created_at,
             updated_at: m.updated_at,
             submitted_at: None,
@@ -1525,6 +1563,10 @@ pub struct PricingPriceCreated {
 #[toolkit_macros::api_dto(response)]
 pub struct PricingDecisionDto {
     pub actor: Uuid,
+    /// The current name of `actor` (D-519): its display name, else first and last name, else
+    /// username, from Account Management under the caller's rights; "System" for a system actor.
+    /// Null when no name is available now, and on a write answer.
+    pub actor_name: Option<String>,
     pub generation: i32,
     pub decision: PricingDecisionKind,
     pub note: Option<String>,
@@ -1536,6 +1578,7 @@ impl From<bss_approval::Decision> for PricingDecisionDto {
     fn from(d: bss_approval::Decision) -> Self {
         Self {
             actor: d.actor,
+            actor_name: None,
             generation: d.generation,
             decision: d.verdict.into(),
             note: d.note,
@@ -1563,6 +1606,10 @@ pub struct PricingApprovalUnitDto {
     pub quorum_required: u32,
     pub common_effective_date: Option<String>,
     pub submitted_by: Uuid,
+    /// The current name of `submitted_by` (D-519): its display name, else first and last name, else
+    /// username, from Account Management under the caller's rights; "System" for a system actor.
+    /// Null when no name is available now, and on a write answer.
+    pub submitted_by_name: Option<String>,
     #[serde(with = "time::serde::rfc3339")]
     pub submitted_at: time::OffsetDateTime,
     /// The submitter's note (D-445), the unit shape products shares (P-D-219): the note a plan
@@ -1623,6 +1670,7 @@ impl PricingApprovalUnitDto {
             quorum_required: u.quorum_required,
             common_effective_date: u.common_effective_date.map(|d| d.to_string()),
             submitted_by: u.submitted_by,
+            submitted_by_name: None,
             submitted_at: u.submitted_at,
             submit_note: u.submit_note,
             decided_at: u.decided_at,

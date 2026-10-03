@@ -53,10 +53,8 @@ impl Gear for BssApprovalsGear {
             Err(error) => return Err(error).context("bss-approvals: invalid config"),
         };
         let sources = crate::config::checked_sources(cfg.sources)?;
-        self.runtime.store(Some(Arc::new(ApiState {
-            sources,
-            hub: ctx.client_hub(),
-        })));
+        self.runtime
+            .store(Some(Arc::new(ApiState::new(sources, ctx.client_hub()))));
         Ok(())
     }
 }

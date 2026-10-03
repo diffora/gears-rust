@@ -987,6 +987,7 @@ async fn second_app(
         fence_ttl_minutes: 30,
         reference_principals: f.state.reference_principals.clone(),
         hub: f.state.hub.clone(),
+        actor_names: f.state.actor_names.clone(),
     });
     routes(state, &toolkit::api::OpenApiRegistryImpl::new())
         .layer(axum::Extension(flat_in_enforcer(f.tenant)))
@@ -1777,9 +1778,16 @@ async fn the_card_and_the_receipts_read_the_item_authors_alone() {
 async fn the_sdk_sku_types_read_the_doors_json() {
     let f = Fixture::new(0).await;
     f.publish().await;
-    let card = f.card().await;
+    let mut card = f.card().await;
     let sku: bss_products_sdk::models::Sku = serde_json::from_value(card.clone()).unwrap();
     assert_eq!(sku.id, f.id);
+    // P-D-262: the door also names the creator, a read-side field the SDK model does not carry.
+    assert!(
+        card.as_object_mut()
+            .unwrap()
+            .remove("created_by_name")
+            .is_some()
+    );
     assert_eq!(serde_json::to_value(&sku).unwrap(), card);
     let (status, versions) = call(
         &f.app,
@@ -3511,6 +3519,9 @@ mod submit_note_tests;
 
 #[path = "caps_tests.rs"]
 mod caps_tests;
+
+#[path = "actor_names_tests.rs"]
+mod actor_names_tests;
 
 // ------------------------------------------------------------------ counts, the order (P-D-227)
 

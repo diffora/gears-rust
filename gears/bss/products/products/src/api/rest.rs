@@ -18,6 +18,7 @@ pub mod closed_sets;
 pub mod derived_usage_types;
 pub mod dto;
 pub(crate) mod governance;
+mod names;
 pub mod preconditions;
 pub mod references;
 mod replay;
@@ -51,6 +52,27 @@ pub struct ApiState {
     /// Where pricing registers its `SkuUsageV1` port (P-D-197), resolved at each SKU read: the
     /// two gears boot in either order.
     pub hub: std::sync::Arc<toolkit::ClientHub>,
+    /// The names of the actors a read shows (P-D-262), through Account Management when the hub
+    /// holds it: [`ApiState::names_from`] in production, a fake directory in tests.
+    pub actor_names: bss_rest::actor_names::ActorNames,
+}
+
+/// The actors that are not people (P-D-262): the nil id of the system's own acts (the orphan-fence
+/// expiry, P-D-189) and pricing's system actor. A read names them "System" and never asks Account
+/// Management.
+pub const SYSTEM_ACTORS: [uuid::Uuid; 2] = [
+    crate::infra::storage::repo::SYSTEM_ACTOR,
+    bss_products_sdk::PRICING_SYSTEM_ACTOR,
+];
+
+impl ApiState {
+    /// The actor names of a state over `hub`: Account Management, looked up at each read.
+    #[must_use]
+    pub fn names_from(
+        hub: &std::sync::Arc<toolkit::ClientHub>,
+    ) -> bss_rest::actor_names::ActorNames {
+        bss_rest::actor_names::ActorNames::from_hub(std::sync::Arc::clone(hub), &SYSTEM_ACTORS)
+    }
 }
 
 /// The caller of a REST door: 401 `AUTHENTICATION_REQUIRED` without a subject, a tenant or a

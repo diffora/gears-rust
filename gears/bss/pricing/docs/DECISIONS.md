@@ -74,7 +74,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-435 | M | An approval-policy override can be reset; the default cannot be deleted (twin of products P-D-216) | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | D-436 | M | Dimension values edit one at a time and show their use | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | D-437 | M | The default rounding is one of five modes; a tenant with no settings rounds half_even | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; the half_even default, Owner, 2026-09-28 |
-| D-438 | M | The settings offer currencies and say who changed them | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
+| D-438 | M | The settings offer currencies and say who changed them | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; extended by D-519 |
 | D-439 | M | Closed sets are enums on the responses; requests keep strings and their codes (twin of products P-D-217) | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amended by D-467 and the phase 9 review (C, fix run 9.5d-1) |
 | D-440 | M | An entry's prices, its price in force and its approved prices by date | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amends D-428, D-434; extended by D-456; amended by D-472, D-473 |
 | D-441 | M | Every book read carries its stats | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amended by D-453 |
@@ -96,8 +96,8 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-457 | M | Every text a request writes has an explicit length cap | DECIDED 2026-09-29 · Whole-branch review PS-09, PS-10, X-01 (fix run W1a); twin of a products decision in W1b; extended by D-468; amended 2026-10-02 (phase 9 review F1) |
 | D-458 | M | The approval-unit list pages and reads its page set-based | DECIDED 2026-09-29 · Owner, 2026-09-29 (dispositions O2, "2"); whole-branch review PS-13 (fix run W1a); amended by D-470 |
 | D-459 | M | One approve-eligibility predicate for the engine and its readers | DECIDED 2026-09-30 · Phase 9 plan rev 2 (W2, binding; plan review W2, L5); extends D-393; amended by the phase 9 review (E, fix run 9.5d-1) |
-| D-460 | M | The plans list names each plan's current revision and the one in effect | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 1); phase 9 plan rev 2 (decision 1; plan review M6, M7, W3, L4); amends D-434, D-453; amended by D-461, D-480, D-482, D-485, D-516 |
-| D-461 | M | A revision says who made it and when it was submitted and approved | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 7); phase 9 plan rev 2 (decision 2; plan review M6, M7, L1, L9); amends D-434, D-453, D-460 |
+| D-460 | M | The plans list names each plan's current revision and the one in effect | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 1); phase 9 plan rev 2 (decision 1; plan review M6, M7, W3, L4); amends D-434, D-453; amended by D-461, D-480, D-482, D-485, D-516; extended by D-519 |
+| D-461 | M | A revision says who made it and when it was submitted and approved | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 7); phase 9 plan rev 2 (decision 2; plan review M6, M7, L1, L9); amends D-434, D-453, D-460; extended by D-519 |
 | D-462 | M | A pending revision shows its vote progress under plan read | DECIDED 2026-09-30 · Owner, 2026-09-30 (O-9a, "yes"); phase 9 plan rev 2 (decision 4; plan review M7, L5); amended by the phase 9 review (E, fix run 9.5d-1) |
 | D-463 | M | A plan's sale date on create and clone | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 7); phase 9 plan rev 2 (decision 3; plan review L10); amends D-451, extends D-456 |
 | D-464 | L | A plan submit and a publish-changes carry the submitter's note | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 6); phase 9 plan rev 2 (decision 5; plan review L3); amends D-445; amended by the phase 9 review (fix run 9.5d-2) |
@@ -139,6 +139,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-516 | M | A named book carries its identity beside its id | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 54); amends D-460, D-408 |
 | D-517 | M | Entries can be read by id | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 68); amends D-486 |
 | D-518 | M | The plan list, the plan counts, the book list and the settings answer 304 | DECIDED 2026-10-03 · Owner, 2026-10-03 (asks 56, 57); extends D-469 |
+| D-519 | M | Every actor id a read shows carries its current name | DECIDED 2026-10-03 · Owner, 2026-10-02 (ask 32: names on the server, through AM); extends D-438, D-460, D-461 |
 | D-520 | H | A scheduled price is cancelled through the prices unit | DECIDED 2026-10-03 · Owner, 2026-10-03; asks 19, 58a; amends D-390, D-393, D-422; amended 2026-10-03 (the event, the reads, the binding guard) |
 | D-521 | H | A live price is ended through the prices unit | DECIDED 2026-10-03 · Owner, 2026-10-03; ask 58a; amends D-390, D-393; amended 2026-10-03 (the event) |
 
@@ -652,7 +653,9 @@ default_rounding is one of half_up, half_even, half_down, up and down. PUT /bss-
 
 Breaking: the PUT's body (currencies required), and a GET answer is a PUT body only without version, updated_at and updated_by.
 
-**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (asks 11f, 11g; plan review L6, L7).
+D-519 extends this entry: `GET /settings` also carries `updated_by_name`, the writer's current name through Account Management, null when it is not available now. The PUT answer's is null.
+
+**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (asks 11f, 11g; plan review L6, L7). Extended by D-519.
 
 #### D-439 [M] Closed sets are enums on the responses; requests keep strings and their codes (twin of products P-D-217)
 
@@ -1009,7 +1012,9 @@ D-485 amends this entry: current gains book { code, name, currency }, the book o
 
 D-516 amends this entry: each revision header gains book { id, code, name, currency } beside book_id. The book read is that same grouped statement, over every revision's book. A non-empty page stays five statements.
 
-**Source:** Owner, 2026-09-30 (validation 3 item 1); phase 9 plan rev 2 (decision 1; plan review M6, M7, W3, L4). Amends D-434 and D-453. Amended by D-461, D-480, D-485, D-516.
+D-519 extends this entry: the plan, `current` and each revision header carry `created_by_name` beside `created_by`, resolved after the page's statements in one Account Management lookup. A non-empty page stays five statements.
+
+**Source:** Owner, 2026-09-30 (validation 3 item 1); phase 9 plan rev 2 (decision 1; plan review M6, M7, W3, L4). Amends D-434 and D-453. Amended by D-461, D-480, D-485, D-516. Extended by D-519.
 
 #### D-461 [M] A revision says who made it and when it was submitted and approved
 
@@ -1025,8 +1030,10 @@ The plans screen shows who made each revision and when it was submitted and appr
 - **The write answers.** A write answers what it wrote (D-453). The submit receipt's revision carries its new unit's submitted_at, and approved_at when quorum 0 applied it at once; the copy, the revision PATCH and the unschedule answer a draft, with neither.
 - **The tests.** tests/plan_overview.rs: the header of a pending, a scheduled, a published and a superseded revision against its unit's own read, and of a draft back from a reject, a withdraw and an unschedule; the revision read agrees; created_by and created_at are the row's; the write answers; the list's four statements for 10 and 100 plans. Probes that took submitted_at from the approving unit only, and that dropped the instants from the receipt, were caught.
 
+D-519 extends this entry: on a read, the header's and the revision's `created_by` carry `created_by_name`, the author's current name; the write answers' is null.
+
 **Source:** Owner, 2026-09-30 (validation 3 item 7); phase 9 plan rev 2 (decision 2; plan review M6, M7, L1, L9). Amends D-434,
-D-453 and D-460 (GET /plans makes four statements, not three).
+D-453 and D-460 (GET /plans makes four statements, not three). Extended by D-519.
 
 #### D-462 [M] A pending revision shows its vote progress under plan read
 
@@ -2112,6 +2119,53 @@ A screen that shows a revision, or a price unit, had only the book's id. It coul
 - **The tests.** `tests/conditional_reads.rs`: the first read, the `304` on a repeated read, and a new tag after a write, for each of the four reads.
 
 **Source:** Owner, 2026-10-03 (asks 56 and 57). Extends D-469.
+
+#### D-519 [M] Every actor id a read shows carries its current name
+
+**Status:** DECIDED 2026-10-03.
+
+A screen showed `created_by`, `updated_by`, `actor` and `submitted_by` as ids. It had no way to name the person without
+an Account Management read per id of its own.
+
+- **The fields.** Beside each actor id the answer gains a sibling `<field>_name`, a string or null. The ids stay, so
+  nothing breaks. The nine fields are `created_by` on `PricingPriceDto`, `PricingPlanItemDto`,
+  `PricingPlanRevisionHeader`, `PricingPlanCurrent`, `PricingPlanDto` and `PricingPlanRevisionDto`; `updated_by` on
+  `PricingSettingsDto`; `actor` on `PricingDecisionDto`; and `submitted_by` on `PricingApprovalUnitDto`.
+- **The source.** `bss_rest::actor_names` reads AM's public user read, `list_users` with an id-set filter in the
+  caller's own tenant, with the caller's own context. AM decides which profiles the caller may see; pricing adds no
+  permission. The label is the display name, then first and last name, then the username. AM is a soft dependency:
+  the client is found in the client hub at each lookup, and pricing declares no gear dependency on it.
+- **One lookup per answer.** Each read builds its answer in its transaction, then collects every actor id of the whole
+  page or document and resolves them once, after the transaction. The ids are deduplicated and read in chunks of 200,
+  at most four chunks at once, inside one 2 s budget for the answer. No statement is added: the statement pins of
+  `tests/book_reads.rs` and the plan list are unchanged. No transaction waits on AM.
+- **Null.** A name is null when it is not available now: AM refused the profile to this caller, found no such user,
+  failed, did not answer within the budget, or is not deployed. The read never fails because of AM; it is still 200.
+- **System.** Pricing's system actor (`PRICING_SYSTEM_ACTOR`) and the nil id of the platform's system context read
+  `"System"`, and AM is not asked.
+- **The reads.** `GET /settings`, `GET /plans`, `GET /plans/{id}`, `GET /plan-revisions/{id}`, `GET /plan-items/{id}`,
+  `GET /approval-units`, `GET /approval-units/{id}`, `GET /price-book-entries` (by SKU or by id),
+  `GET /price-book-entries/{id}`, `GET /price-book-entries/{id}/prices`, `GET /price-books/{id}/entries`,
+  `GET /price-books/{id}/export` and `GET /price-books/{id}/publish-changes`.
+- **Writes name nobody.** A POST answer is stored as its Idempotency-Key's receipt and replayed, and a name must not be
+  stored. So no write answer names anyone: its `*_name` fields are null, and a read of the resource names the actors.
+- **The settings PUT.** A settings read is a PUT body without `version`, `updated_at` and `updated_by` (D-438), and the
+  PUT refuses an unknown field. So that this stays true, the PUT accepts `updated_by_name` and ignores it: nothing
+  breaks for a client that sends a read back.
+- **No storage, no cache.** Pricing stores no name and caches none. A renamed user reads the new name on the next read.
+- **Caching.** The names are part of the body. The weak `ETag` of `GET /plans` covers them (D-518), so a rename changes
+  the tag. `GET /settings` keeps its strong version tag (D-518): a rename does not change it, and a revalidation keeps
+  the copy the browser holds until the settings are written again. D-365 of the earlier register (commit `7da21fb75`)
+  named approval participants and answered `Cache-Control: private, no-store`. Under D-518 that becomes
+  `private, no-cache`: the reads D-518 covers revalidate, and the others keep the headers they had.
+- **The tests.** `tests/actor_names.rs`: every read above names its actors with one directory call, a system actor reads
+  `"System"` without a call, a failing directory leaves every name null on a 200, a rename shows on the next read, a
+  page of 50 plans by three authors makes one call for the three, a write answer's names are null, a settings read
+  stays a PUT body whose name is never written, and a hub without AM reads null names. `bss_rest`'s own tests pin the
+  chunks, the concurrency, the budget, the error mapping and the label order.
+
+**Source:** Owner, 2026-10-02 (ask 32: "there was already code that resolves the names through AM; do it that way on
+the server"). Ported from the approval participant names of commit `7da21fb75`. Extends D-438, D-460 and D-461.
 #### D-520 [H] A scheduled price is cancelled through the prices unit
 
 **Status:** DECIDED 2026-10-03.

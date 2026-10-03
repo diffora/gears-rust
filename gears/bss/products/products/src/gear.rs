@@ -411,6 +411,7 @@ impl Gear for BssProductsGear {
             fence_ttl_minutes: cfg.fence_ttl_minutes,
             reference_principals: cfg.reference_principals.clone(),
             hub: ctx.client_hub(),
+            actor_names: crate::api::rest::ApiState::names_from(&ctx.client_hub()),
         });
         register_products_client(&ctx.client_hub(), api_state.db.db(), Arc::clone(&enforcer));
         register_pricing_ports(&ctx.client_hub(), &api_state, &enforcer);

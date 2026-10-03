@@ -3886,6 +3886,13 @@
             "format": "uuid",
             "type": "string"
           },
+          "actor_name": {
+            "description": "The current name of `actor` (P-D-262): its display name, else first and last name, else\nusername, from Account Management under the caller's rights; \"System\" for a system actor.\nNull when no name is available now, and on a write answer.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "at": {
             "format": "date-time",
             "type": "string"
@@ -6410,6 +6417,13 @@
             "format": "uuid",
             "type": "string"
           },
+          "actor_name": {
+            "description": "The current name of `actor` (AP-D-11): its display name, else first and last name, else\nusername, from Account Management under the caller's rights. Null when no name is\navailable now.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "at": {
             "type": "string"
           },
@@ -6638,6 +6652,13 @@
           "submitted_by": {
             "format": "uuid",
             "type": "string"
+          },
+          "submitted_by_name": {
+            "description": "The current name of `submitted_by` (AP-D-11): its display name, else first and last name, else\nusername, from Account Management under the caller's rights. Null when no name is\navailable now.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -10853,6 +10874,13 @@
           "submitted_by": {
             "format": "uuid",
             "type": "string"
+          },
+          "submitted_by_name": {
+            "description": "The current name of `submitted_by` (D-519): its display name, else first and last name, else\nusername, from Account Management under the caller's rights; \"System\" for a system actor.\nNull when no name is available now, and on a write answer.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -11051,6 +11079,13 @@
           "actor": {
             "format": "uuid",
             "type": "string"
+          },
+          "actor_name": {
+            "description": "The current name of `actor` (D-519): its display name, else first and last name, else\nusername, from Account Management under the caller's rights; \"System\" for a system actor.\nNull when no name is available now, and on a write answer.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "at": {
             "format": "date-time",
@@ -11858,6 +11893,13 @@
             "format": "uuid",
             "type": "string"
           },
+          "created_by_name": {
+            "description": "The current name of `created_by` (D-519): its display name, else first and last name, else\nusername, from Account Management under the caller's rights; \"System\" for a system actor.\nNull when no name is available now, and on a write answer.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "item_count": {
             "description": "How many items it holds, every item counted (a legacy one without an entry too, D-467).",
             "format": "int32",
@@ -11913,6 +11955,13 @@
           "created_by": {
             "format": "uuid",
             "type": "string"
+          },
+          "created_by_name": {
+            "description": "The current name of `created_by` (D-519): its display name, else first and last name, else\nusername, from Account Management under the caller's rights; \"System\" for a system actor.\nNull when no name is available now, and on a write answer.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "current": {
             "oneOf": [
@@ -12106,6 +12155,13 @@
           "created_by": {
             "format": "uuid",
             "type": "string"
+          },
+          "created_by_name": {
+            "description": "The current name of `created_by` (D-519): its display name, else first and last name, else\nusername, from Account Management under the caller's rights; \"System\" for a system actor.\nNull when no name is available now, and on a write answer.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "id": {
             "format": "uuid",
@@ -12333,6 +12389,13 @@
             "format": "uuid",
             "type": "string"
           },
+          "created_by_name": {
+            "description": "The current name of `created_by` (D-519): its display name, else first and last name, else\nusername, from Account Management under the caller's rights; \"System\" for a system actor.\nNull when no name is available now, and on a write answer.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "id": {
             "format": "uuid",
             "type": "string"
@@ -12444,6 +12507,13 @@
             "description": "Its author (D-461): the one principal who edits it while it is a draft (D-404).",
             "format": "uuid",
             "type": "string"
+          },
+          "created_by_name": {
+            "description": "The current name of `created_by` (D-519): its display name, else first and last name, else\nusername, from Account Management under the caller's rights; \"System\" for a system actor.\nNull when no name is available now, and on a write answer.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "id": {
             "format": "uuid",
@@ -12986,6 +13056,13 @@
           "created_by": {
             "format": "uuid",
             "type": "string"
+          },
+          "created_by_name": {
+            "description": "The current name of `created_by` (D-519): its display name, else first and last name, else\nusername, from Account Management under the caller's rights; \"System\" for a system actor.\nNull when no name is available now, and on a write answer.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "dim_value": {
             "type": [
@@ -13847,6 +13924,13 @@
               "null"
             ]
           },
+          "updated_by_name": {
+            "description": "The current name of `updated_by` (D-519): its display name, else first and last name, else\nusername, from Account Management under the caller's rights; \"System\" for a system actor.\nNull when `updated_by` is null, when no name is available now, and on a write answer.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "version": {
             "format": "int64",
             "type": "integer"
@@ -13898,6 +13982,13 @@
               "type": "string"
             },
             "type": "object"
+          },
+          "updated_by_name": {
+            "description": "Ignored (D-519): the writer's name that `GET /settings` shows. It is accepted so that a\nread's body without `version`, `updated_at` and `updated_by` stays a PUT body (D-438).",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -14497,6 +14588,13 @@
             "format": "uuid",
             "type": "string"
           },
+          "created_by_name": {
+            "description": "The current name of `created_by` (P-D-262): its display name, else first and last name, else\nusername, from Account Management under the caller's rights; \"System\" for a system actor.\nNull when no name is available now, and on a write answer.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "id": {
             "format": "uuid",
             "type": "string"
@@ -14534,6 +14632,13 @@
           "created_by": {
             "format": "uuid",
             "type": "string"
+          },
+          "created_by_name": {
+            "description": "The current name of `created_by` (P-D-262): its display name, else first and last name, else\nusername, from Account Management under the caller's rights; \"System\" for a system actor.\nNull when no name is available now, and on a write answer.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "id": {
             "format": "uuid",
@@ -14607,6 +14712,13 @@
             "format": "uuid",
             "type": "string"
           },
+          "created_by_name": {
+            "description": "The current name of `created_by` (P-D-262): its display name, else first and last name, else\nusername, from Account Management under the caller's rights; \"System\" for a system actor.\nNull when no name is available now, and on a write answer.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "declaration": {
             "$ref": "#/components/schemas/ProductsDerivedDeclaration"
           },
@@ -14671,6 +14783,13 @@
           "created_by": {
             "format": "uuid",
             "type": "string"
+          },
+          "created_by_name": {
+            "description": "The current name of `created_by` (P-D-262): its display name, else first and last name, else\nusername, from Account Management under the caller's rights; \"System\" for a system actor.\nNull when no name is available now, and on a write answer.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "digest": {
             "type": "string"
@@ -14776,6 +14895,13 @@
           "actor": {
             "format": "uuid",
             "type": "string"
+          },
+          "actor_name": {
+            "description": "The current name of `actor` (P-D-262): its display name, else first and last name, else\nusername, from Account Management under the caller's rights; \"System\" for a system actor.\nNull when no name is available now.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "at": {
             "format": "date-time",
@@ -18854,6 +18980,13 @@
             "format": "uuid",
             "type": "string"
           },
+          "created_by_name": {
+            "description": "The current name of `created_by` (P-D-262): its display name, else first and last name, else\nusername, from Account Management under the caller's rights; \"System\" for a system actor.\nNull when no name is available now, and on a write answer.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "description": {
             "type": "string"
           },
@@ -20560,6 +20693,13 @@
           "submitted_by": {
             "format": "uuid",
             "type": "string"
+          },
+          "submitted_by_name": {
+            "description": "The current name of `submitted_by` (P-D-262): its display name, else first and last name, else\nusername, from Account Management under the caller's rights; \"System\" for a system actor.\nNull when no name is available now, and on a write answer.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [

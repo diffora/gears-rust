@@ -2,7 +2,7 @@
 name = "cf-gears-bss-rest"
 edition.workspace = true
 license.workspace = true
-description = "Shared HTTP helpers for the BSS gears: a weak ETag over a response body and 304 on If-None-Match"
+description = "Shared HTTP helpers for the BSS gears: a weak ETag over a response body, 304 on If-None-Match, and actor names through Account Management"
 
 [lib]
 name = "bss_rest"
@@ -15,8 +15,20 @@ base64 = { workspace = true }     # base64url of that digest
 serde = { workspace = true }      # Serialize bound on the response value
 serde_json = { workspace = true } # the exact JSON bytes the tag covers
 
+# Actor names: AM's public user read, found in the client hub when it is registered (a soft
+# dependency; no BSS gear depends on AM).
+account-management-sdk = { workspace = true }
+async-trait = { workspace = true }
+futures-util = { workspace = true }               # bounded concurrent lookups
+tokio = { workspace = true, features = ["time"] } # one budget per response
+toolkit = { workspace = true }                    # ClientHub
+toolkit-canonical-errors = { workspace = true }
+toolkit-odata = { workspace = true }              # Page, the shape AM answers
+toolkit-security = { workspace = true }           # SecurityContext
+uuid = { workspace = true }
+
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
 
 [lints]
 workspace = true

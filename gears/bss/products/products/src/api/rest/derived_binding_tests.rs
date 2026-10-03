@@ -206,6 +206,7 @@ impl F {
             fence_ttl_minutes: 30,
             reference_principals: state.reference_principals.clone(),
             hub: state.hub.clone(),
+            actor_names: state.actor_names.clone(),
         });
         let app = routes(leg_state, &toolkit::api::OpenApiRegistryImpl::new())
             .layer(axum::Extension(flat_in_enforcer(tenant)));

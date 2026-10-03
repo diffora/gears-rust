@@ -391,8 +391,12 @@ def _current(
 
 
 def _current_of(row: dict) -> dict:
-    """``current`` without its book identity, for the assertions that do not name the book."""
-    return {k: v for k, v in row["current"].items() if k != "book"}
+    """``current`` without its book identity and its author's name, for the assertions that name
+    neither. The name is always there (D-519): a string, or null when it is not available now, as
+    on every write answer."""
+    current = row["current"]
+    assert "created_by_name" in current, current
+    return {k: v for k, v in current.items() if k not in ("book", "created_by_name")}
 
 
 @pytest.mark.timeout(120)

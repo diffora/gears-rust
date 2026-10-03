@@ -374,7 +374,7 @@ async fn list(
     let page = unit_page(&filter, q.limit, q.cursor.as_deref(), q.orderby.as_deref())?;
     let approve_scope = g::grant_scope(&enforcer, &ctx, actions::APPROVE).await?;
     let submit_scope = g::grant_scope(&enforcer, &ctx, actions::SUBMIT).await?;
-    let list = page_of(
+    let mut list = page_of(
         &state,
         scope,
         &ctx,
@@ -384,6 +384,8 @@ async fn list(
         submit_scope,
     )
     .await?;
+    // P-D-262: the page's submitters and voters in one lookup, after the page's transaction.
+    state.actor_names.fill(&ctx, &mut list).await;
     Ok(Json(list).into_response())
 }
 /// The list door's read (P-D-224, P-D-228): one page under `scope` and `filter`, in the order
@@ -680,12 +682,13 @@ async fn get(
     let approve_scope = g::grant_scope(&enforcer, &ctx, actions::APPROVE).await?;
     let submit_scope = g::grant_scope(&enforcer, &ctx, actions::SUBMIT).await?;
     let ttl = state.fence_ttl_minutes;
-    let card = state
+    let caller = ctx.clone();
+    let mut card = state
         .db
         .db()
         .transaction_with_retry(category_tx_config(&state), contention_db_err, move |tx| {
             let scope = scope.clone();
-            let ctx = ctx.clone();
+            let ctx = caller.clone();
             let approve_scope = approve_scope.clone();
             let submit_scope = submit_scope.clone();
             Box::pin(async move {
@@ -731,6 +734,8 @@ async fn get(
         })
         .await
         .map_err(tx_to_canonical)?;
+    // P-D-262: the submitter, the voters and the live SKU's creator, after the transaction.
+    state.actor_names.fill(&ctx, &mut card).await;
     Ok(Json(card).into_response())
 }
 async fn load(

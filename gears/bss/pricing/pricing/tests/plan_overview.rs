@@ -821,6 +821,8 @@ async fn every_write_answer_carries_the_new_fields() {
         created["current"],
         json!({"revision_id":rev1,"rev_no":1,"state":"draft","item_count":0,"sku_ids":[],
                "created_by":f.ctx.subject_id(),
+               // D-519: a write answer names nobody; the reads do.
+               "created_by_name":null,
                "book":{"id":created["revisions"][0]["book_id"],"code":"pro","name":"pro",
                "currency":"EUR","valid_from":null,"valid_until":null}}),
         "the create answers its empty draft: {created}"

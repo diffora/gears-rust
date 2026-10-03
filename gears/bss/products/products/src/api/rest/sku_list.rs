@@ -675,20 +675,23 @@ async fn list_skus(
     // P-D-197: one call of pricing's usage port for the page, after the page's transaction.
     let ids: Vec<Uuid> = page.items.iter().map(|s| s.id).collect();
     let mut usage = super::usage::of(&state, &ctx, &ids).await;
+    let mut items: Vec<SkuListItem> = page
+        .items
+        .into_iter()
+        .map(|s| {
+            let counted = usage.remove(&s.id);
+            SkuListItem {
+                sku: s.into(),
+                usage: counted,
+            }
+        })
+        .collect();
+    // P-D-262: the page's creators in one lookup; the weak tag covers their names.
+    state.actor_names.fill(&ctx, &mut items).await;
     Ok(respond(
         &headers,
         &Page {
-            items: page
-                .items
-                .into_iter()
-                .map(|s| {
-                    let counted = usage.remove(&s.id);
-                    SkuListItem {
-                        sku: s.into(),
-                        usage: counted,
-                    }
-                })
-                .collect(),
+            items,
             page_info: page.page_info,
         },
         PRIVATE_REVALIDATE,

@@ -368,19 +368,14 @@ async fn list_plans(
     let (filter, odata) = prepared(&uri, LIST_PLAIN, odata, today)?;
     let tenant = ctx.subject_tenant_id();
     let backend = state.db.db().backend();
-    transaction(&state.db.db(), move |tx| {
-        let (scope, filter, odata, headers) = (
-            scope.clone(),
-            filter.clone(),
-            odata.clone(),
-            headers.clone(),
-        );
-        Box::pin(async move {
-            let body = plans::list(tx, &scope, tenant, backend, &filter, &odata).await?;
-            Ok(respond(&headers, &body, PRIVATE_REVALIDATE))
-        })
+    let mut body = transaction(&state.db.db(), move |tx| {
+        let (scope, filter, odata) = (scope.clone(), filter.clone(), odata.clone());
+        Box::pin(async move { plans::list(tx, &scope, tenant, backend, &filter, &odata).await })
     })
-    .await
+    .await?;
+    // D-519: the page's actors in one lookup, after the transaction; the tag covers the names.
+    state.actor_names.fill(&ctx, &mut body).await;
+    Ok(respond(&headers, &body, PRIVATE_REVALIDATE))
 }
 
 async fn count_plans(

@@ -86,7 +86,8 @@ async fn bound() -> (
         idempotency_retention_hours: 24,
         fence_ttl_minutes: 30,
         reference_principals: std::collections::BTreeMap::new(),
-        hub,
+        hub: Arc::clone(&hub),
+        actor_names: crate::api::rest::ApiState::names_from(&hub),
     });
     // Let the outbox's first reconcile pass run on the empty queue, so that only a wake, or the
     // reconciler's next pass a minute later, can move a row written after this.

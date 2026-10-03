@@ -93,6 +93,8 @@ The HTTP doors are:
 
 The list and the counts answer a weak `ETag` of the JSON body they serve, `sources` included, and `Cache-Control: private, no-cache`. An `If-None-Match` that matches it is 304 with an empty body and the same two headers. A source that changes status, for example from `ok` to `unavailable`, changes the body and so the tag. The card and the votes are not conditional (AP-D-10).
 
+The list and the card name each unit's submitter (`submitted_by_name`) and each decision's actor (`actor_name`), and a products unit's live SKU names its creator. The names come from Account Management's user read, under the caller's own rights, in one lookup per answer; a name is null when it is not available now, and the read never fails because of it. The names are part of the list's body, so a rename changes its tag (AP-D-11).
+
 Declared vote codes: 400 `GENERATION_REQUIRED`, `GENERATION_MISMATCH`, `UNIT_STALE`, `NOTE_REQUIRED`, `NOTE_TOO_LONG`, `BODY_UNEXPECTED`; 403 for the grant and `SOD_VIOLATION`; 404; 409 `DUPLICATE_VOTE`, `UNIT_ALREADY_DECIDED`, `IDEMPOTENCY_CONFLICT`; 503. The doors do not answer 412.
 
 ### 3.4 Internal Dependencies

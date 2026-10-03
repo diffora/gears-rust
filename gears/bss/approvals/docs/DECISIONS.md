@@ -15,6 +15,7 @@
   - [AP-D-7 The inbox unit carries whether the caller may reject or withdraw it](#ap-d-7-the-inbox-unit-carries-whether-the-caller-may-reject-or-withdraw-it)
   - [AP-D-8 The inbox publishes `$orderby` through the toolkit](#ap-d-8-the-inbox-publishes-orderby-through-the-toolkit)
   - [AP-D-10 The list and the counts answer 304](#ap-d-10-the-list-and-the-counts-answer-304)
+  - [AP-D-11 The inbox names its submitters and voters](#ap-d-11-the-inbox-names-its-submitters-and-voters)
 
 <!-- /toc -->
 
@@ -28,9 +29,10 @@
 | AP-D-4 | H | Votes and idempotency | DECIDED 2026-10-01 · amended by Run 2 (pricing D-490, products P-D-250); amended by AP-D-6 |
 | AP-D-5 | H | A down source is omitted and the walk does not resume it | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 60); amends AP-D-2, AP-D-3 |
 | AP-D-6 | H | The inbox requires the caller's Idempotency-Key | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 61); amends AP-D-4 |
-| AP-D-7 | M | The inbox unit carries whether the caller may reject or withdraw it | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 63) |
+| AP-D-7 | M | The inbox unit carries whether the caller may reject or withdraw it | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 63); extended by AP-D-11 |
 | AP-D-8 | M | The inbox publishes `$orderby` through the toolkit | DECIDED 2026-10-02 · amends AP-D-2 |
 | AP-D-10 | M | The list and the counts answer 304 | DECIDED 2026-10-03 · Owner, 2026-10-03 (asks 56, 57); extends AP-D-2 |
+| AP-D-11 | M | The inbox names its submitters and voters | DECIDED 2026-10-03 · Owner, 2026-10-02 (ask 32: names on the server, through AM); extends AP-D-7, AP-D-10 |
 
 ## Entries
 
@@ -115,7 +117,9 @@ A query the inbox cannot parse is 400 `INVALID_QUERY_PARAMS` on the field `query
 
 `InboxUnit` and `InboxUnitDto` carry `caller_can_reject` and `caller_can_withdraw` beside `caller_can_approve`. The owning gear judges them (products P-D-255, pricing D-497). The inbox copies the door's values and does not judge a grant of its own.
 
-**Source:** Owner, 2026-10-02 (ask 63, "все ок").
+AP-D-11 extends this entry: the unit also carries `submitted_by_name`, and each decision `actor_name`, resolved by the inbox itself.
+
+**Source:** Owner, 2026-10-02 (ask 63, "все ок"). Extended by AP-D-11.
 
 ### AP-D-8 The inbox publishes `$orderby` through the toolkit
 
@@ -135,4 +139,37 @@ The list declares `$orderby` with `.with_odata_orderby::<InboxOrderField>()`. Th
 - **What stays.** The card and the three votes are not conditional. The votes still return the owning gear's answer unchanged (AP-D-4).
 - **The tests.** `api/rest/doors_tests.rs`: `the_list_and_the_counts_answer_304_until_a_source_status_changes`, `a_refused_list_is_not_conditional` and `the_list_and_the_counts_declare_the_conditional_get`.
 
-**Source:** Owner, 2026-10-03 (asks 56 and 57). Extends AP-D-2. The shared helper is `cf-gears-bss-rest` (pricing D-518, products P-D-261).
+AP-D-11 extends this entry: the list's body carries the names of its submitters and voters, so a renamed user changes the tag.
+
+**Source:** Owner, 2026-10-03 (asks 56 and 57). Extends AP-D-2. The shared helper is `cf-gears-bss-rest` (pricing D-518, products P-D-261). Extended by AP-D-11.
+
+### AP-D-11 The inbox names its submitters and voters
+
+**Status:** DECIDED 2026-10-03.
+
+The inbox showed `submitted_by` and each decision's `actor` as ids. A reviewer had no way to name the person without
+an Account Management read per id of its own.
+
+- **The fields.** `InboxUnitDto.submitted_by_name` and `InboxDecisionDto.actor_name`, a string or null, beside the
+  ids, which stay. A products unit's `subject_live`, the live SKU, carries its creator's `created_by_name` too. The
+  SDK models (`InboxUnit`, `InboxDecision`) are unchanged: the names are resolved in the REST layer.
+- **The source.** `bss_rest::actor_names` reads AM's public user read, `list_users` with an id-set filter in the
+  caller's own tenant, with the caller's own context. AM decides which profiles the caller may see; the inbox adds no
+  permission. The label is the display name, then first and last name, then the username. AM is a soft dependency:
+  the client is found in the client hub at each lookup, and the inbox declares no gear dependency on it.
+- **One lookup per answer.** The list collects every actor id of the merged page, across its sources, and resolves
+  them once; the card does the same for its unit. The ids are deduplicated and read in chunks of 200, at most four
+  chunks at once, inside one 2 s budget.
+- **Null.** A name is null when it is not available now: AM refused the profile to this caller, found no such user,
+  failed, did not answer within the budget, or is not deployed. The read never fails because of AM.
+- **System.** The nil id of the platform's system context reads `"System"` without a lookup. The owning gears refuse
+  their own system actors at every door, so none submits or votes on a unit the inbox lists.
+- **Votes.** A vote returns the owning gear's answer unchanged (AP-D-4), and a gear's write answer names nobody
+  (pricing D-519, products P-D-262).
+- **Caching.** The names are part of the list's body, so its weak `ETag` covers them (AP-D-10): a rename changes the
+  tag. The card is not conditional. Nothing is stored or cached.
+- **The tests.** `api/rest/doors_tests.rs`: `the_inbox_names_its_submitters_and_voters_in_one_lookup`,
+  `an_unavailable_directory_leaves_the_names_null_on_a_200` and `a_renamed_submitter_changes_the_list_tag`.
+
+**Source:** Owner, 2026-10-02 (ask 32: "there was already code that resolves the names through AM; do it that way on
+the server"). Twin of pricing D-519 and products P-D-262. Extends AP-D-7 and AP-D-10.
