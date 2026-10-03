@@ -26,8 +26,8 @@ use super::authoring::{
     support::{self, DoorError, require_authenticated},
 };
 use super::closed_sets::{
-    PricingChargeKind, PricingEligibility, PricingModel, PricingPeriod,
-    PricingResolvedRevisionState,
+    PricingChargeKind, PricingEligibility, PricingModel, PricingPeriod, PricingPriceState,
+    PricingPriceStatus, PricingResolvedRevisionState,
 };
 use crate::{
     authz::{self, ResourceRef, actions, resource_types},
@@ -104,8 +104,10 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .description(
             "Returns an approved price of the tenant, or a cancelled one (D-520), with its \
              original money whatever its window, with its entry's SKU, charge kind, period, book \
-             and currency: stored facts only. A draft, pending, rejected, unknown or foreign \
-             price is one and the same 404; an id that is not an id is 400 ID_INVALID.",
+             and currency: stored facts only. A cancelled price carries status `cancelled`; an \
+             approved one carries no status, since its display status depends on the day \
+             (D-422). A draft, pending, rejected, unknown or foreign price is one and the same \
+             404; an id that is not an id is 400 ID_INVALID.",
         )
         .tag("Pricing")
         .authenticated()
@@ -175,7 +177,8 @@ async fn get_price(
     .map_err(|e| read_failure(e, price_conflict))?;
     support::response(StatusCode::OK, &body, None)
 }
-/// `GET /prices/{id}` below its door (D-422): an approved price of the tenant, as stored.
+/// `GET /prices/{id}` below its door (D-422): an approved price of the tenant, as stored, or a
+/// cancelled one, which says `cancelled` (D-520).
 /// # Errors
 /// One and the same 404 for a draft, pending or rejected price, an unknown id and another
 /// tenant's id.
@@ -216,6 +219,9 @@ fn render_price(snapshot: PriceSnapshot) -> Result<PricingPinnedPriceDto, DoorEr
         return_of_price_id: row.return_of_price_id,
         approved_by_unit_id: row.approved_by_unit_id,
         approved_at: row.approved_at,
+        status: (PricingPriceState::stored(&row.state, &format_args!("price {id} state"))?
+            == PricingPriceState::Cancelled)
+            .then_some(PricingPriceStatus::Cancelled),
     })
 }
 

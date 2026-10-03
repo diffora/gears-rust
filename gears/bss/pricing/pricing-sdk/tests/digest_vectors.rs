@@ -48,6 +48,7 @@ fn price(rate: &str) -> ImmutablePrice {
         minimum_fee: None,
         effective_from: time::Date::from_calendar_date(2026, time::Month::September, 1).unwrap(),
         ends_on: None,
+        state: read::PriceState::Approved,
     }
 }
 #[test]

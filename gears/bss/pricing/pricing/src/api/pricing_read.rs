@@ -24,8 +24,8 @@ use bss_pricing_sdk::{
     digest::{money_digest, template_digest},
     read::{
         AcceptedBinding, BindingSelection, ChargeKind, ImmutablePrice, IncompleteCommercialInputs,
-        PlanQuery, PriceModel, PriceQuery, PricingReadV1, ResolveQuery, ResolvedBindings,
-        ResolvedCell, RevisionRef, Tier,
+        PlanQuery, PriceModel, PriceQuery, PriceState, PricingReadV1, ResolveQuery,
+        ResolvedBindings, ResolvedCell, RevisionRef, Tier,
     },
     terms::{BillingCycle, BillingTiming, InputSource, InvoiceInputs, Rounding},
 };
@@ -229,9 +229,24 @@ fn immutable(
         ends_on: row
             .temporary_until
             .or_else(|| row.closed_explicitly.then_some(row.effective_to).flatten()),
+        state: price_state(row)?,
     };
     p.money_digest = money_digest(&p);
     Ok(p)
+}
+/// The stored state of a price the read serves: approved, or cancelled (D-520). The reads load no
+/// other state, so another one here is a corrupt row.
+fn price_state(
+    row: &crate::infra::storage::entity::price::Model,
+) -> Result<PriceState, CanonicalError> {
+    match row.state.parse::<crate::domain::price::PriceState>() {
+        Ok(crate::domain::price::PriceState::Approved) => Ok(PriceState::Approved),
+        Ok(crate::domain::price::PriceState::Cancelled) => Ok(PriceState::Cancelled),
+        _ => Err(corrupt(format!(
+            "price {}: state {} is not served",
+            row.id, row.state
+        ))),
+    }
 }
 fn project_price(s: &PriceSnapshot) -> Result<ImmutablePrice, CanonicalError> {
     let model = s.entry.model.parse().map_err(|_| {

@@ -11359,7 +11359,7 @@
         "type": "string"
       },
       "PricingPinnedPriceDto": {
-        "description": "`GET /prices/{id}`: one approved price as stored, served forever whatever its window (D-422),\nwith its entry's SKU, charge kind and period and its book's currency. Stored facts only: no\ndisplay status or other value computed from today, and no authoring internals.",
+        "description": "`GET /prices/{id}`: one approved price as stored, served forever whatever its window (D-422),\nwith its entry's SKU, charge kind and period and its book's currency, or a cancelled one\n(D-520). Stored facts only: no value computed from today, and no authoring internals.",
         "properties": {
           "approved_at": {
             "format": "date-time",
@@ -11463,6 +11463,17 @@
           "sku_id": {
             "format": "uuid",
             "type": "string"
+          },
+          "status": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PricingPriceStatus",
+                "description": "`cancelled` for a price cancelled before it started, the entry list's token (D-520): a\nstored fact, the same on every day. Absent on an approved price, whose display status\ndepends on the day, which this read never computes (D-422)."
+              }
+            ]
           },
           "temporary_until": {
             "type": [
@@ -43235,7 +43246,7 @@
         ]
       },
       "get": {
-        "description": "Returns an approved price of the tenant, or a cancelled one (D-520), with its original money whatever its window, with its entry's SKU, charge kind, period, book and currency: stored facts only. A draft, pending, rejected, unknown or foreign price is one and the same 404; an id that is not an id is 400 ID_INVALID.",
+        "description": "Returns an approved price of the tenant, or a cancelled one (D-520), with its original money whatever its window, with its entry's SKU, charge kind, period, book and currency: stored facts only. A cancelled price carries status `cancelled`; an approved one carries no status, since its display status depends on the day (D-422). A draft, pending, rejected, unknown or foreign price is one and the same 404; an id that is not an id is 400 ID_INVALID.",
         "operationId": "bss_pricing.get_price",
         "parameters": [
           {

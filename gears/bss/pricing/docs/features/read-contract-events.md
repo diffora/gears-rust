@@ -161,7 +161,7 @@ Requirement: `cpt-cf-bss-pricing-fr-resolve`; PRD AC #18.
 
 - [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-price-read-forever`
 
-The public price-id read serves original approved money after closure, supersession or keep_for_bound. Tenant scope remains enforced and no retention deletes a pinned fact (spec §7.1).
+The public price-id read serves original approved money after closure, supersession or keep_for_bound. A cancelled price is served with its money as approved and says so: `status: cancelled` on REST, `state` `Cancelled` in the SDK (D-520). Tenant scope remains enforced and no retention deletes a pinned fact (spec §7.1).
 
 Requirement: `cpt-cf-bss-pricing-fr-price-read`; PRD AC #19.
 

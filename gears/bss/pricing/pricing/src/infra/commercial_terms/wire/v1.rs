@@ -378,6 +378,8 @@ pub(super) struct ImmutablePrice {
     #[serde(with = "scalars::date_option")]
     pub ends_on: Option<Date>,
 }
+/// The frozen v1 price has no state: a binding's price is approved, because resolve never binds a
+/// cancelled price and a price a binding names is never cancelled (D-520).
 impl From<r::ImmutablePrice> for ImmutablePrice {
     fn from(v: r::ImmutablePrice) -> Self {
         Self {
@@ -403,6 +405,7 @@ impl From<ImmutablePrice> for r::ImmutablePrice {
             minimum_fee: v.minimum_fee,
             effective_from: v.effective_from,
             ends_on: v.ends_on,
+            state: r::PriceState::Approved,
         }
     }
 }

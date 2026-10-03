@@ -63,7 +63,7 @@ The plan's D-399 deviation removes the phase 2 SkuChanged listener; current SKU 
 | `cpt-cf-bss-pricing-fr-promotions` | A dated percentage promotion targets plans and recurring or recurring-plus-usage charges. | Promotions & Migrations; deferred by the owner (D-409); §3 and slice 06. |
 | `cpt-cf-bss-pricing-fr-migrations` | An approved migration_request records target plan/revision, subscription ids, next_renewal or explicit date, and the period-aware preview, then emits SubscriptionMigrationRequested. | Promotions & Migrations; deferred by the owner (D-410); §3 and slice 06. |
 | `cpt-cf-bss-pricing-fr-resolve` | GET /bss-pricing/v1/resolve (spec §7.1's /pricing/v1/resolve, D-419) accepts plan_revision_id, date, an optional item_id and optional pins (price_id, or price_id:dim_value for a default-chain price a value was bound to) and returns, for a published or superseded revision, or a scheduled one on or after its sale date (D-454), each item's full default/value chain matrix without totals; the active promotion (id, version) is deferred with promotions (D-409). | Read Contract & Events, phase 4; §3 and slice 07. |
-| `cpt-cf-bss-pricing-fr-price-read` | GET /bss-pricing/v1/prices/{id} (spec §7.1's /pricing/v1/prices/{id}, D-422) serves an approved price forever, including closed, superseded and keep_for_bound prices, with its entry's SKU, charge kind, period, model (D-427), book and currency: stored facts only, nothing computed from today. | Read Contract & Events, phase 4; §3 and slice 07. |
+| `cpt-cf-bss-pricing-fr-price-read` | GET /bss-pricing/v1/prices/{id} (spec §7.1's /pricing/v1/prices/{id}, D-422) serves an approved price forever, including closed, superseded and keep_for_bound prices, with its entry's SKU, charge kind, period, model (D-427), book and currency: stored facts only, nothing computed from today. A cancelled price is served too, with `status: cancelled`; an approved one carries no status (D-520). | Read Contract & Events, phase 4; §3 and slice 07. |
 | `cpt-cf-bss-pricing-fr-quote` | GET /pricing/v1/quote is the Studio preview with quantities, returning totals (no plan item is optional since D-467). | Not built (D-415); §3 and slice 07. |
 | `cpt-cf-bss-pricing-nfr-authz` | Every door authenticates and enforces deny-by-default pricing:read, author, submit, approve or settings through PolicyEnforcer. | Foundation, phase 2; §3 and slice 01. |
 | `cpt-cf-bss-pricing-nfr-audit` | Append tenant, actor, subject, correlation and before/after facts with each governed act. | Foundation, phase 2; §3 and slice 01. |
@@ -1105,7 +1105,7 @@ remaining typed arguments and output. Only the two commands take `meta: CommandM
 | Trait / method | Query | Output | Semantics |
 | --- | --- | --- | --- |
 | `PricingReadV1::resolve` | `ResolveQuery` | `ResolvedBindings` | SafeRead; dated preview |
-| `PricingReadV1::price` | `PriceQuery` | `ImmutablePrice` | SafeRead; immutable money |
+| `PricingReadV1::price` | `PriceQuery` | `ImmutablePrice` | SafeRead; immutable money; `state` `Approved` or `Cancelled` (D-520) |
 | `PricingReadV1::current_revision` | `PlanQuery` | `RevisionRef` | SafeRead; server-time due promotion |
 | `PricingAcceptanceV1::acceptance` | `AcceptanceQuery` | `AcceptanceReceipt` | SafeRead; retained receipt |
 | `PricingAcceptanceV1::hold` | `FulfilmentQuery`, `CommandMeta` | `HeldBindings` | IdempotentWrite; frozen first hold |

@@ -110,6 +110,8 @@ const CLOSED: &[Closed] = &[
     ("PricingPinnedPriceDto", "period", PERIOD, true),
     ("PricingPinnedPriceDto", "model", MODEL, false),
     ("PricingPinnedPriceDto", "eligibility", ELIGIBILITY, false),
+    // D-520, amended: `cancelled` on a cancelled price, absent on an approved one (D-422).
+    ("PricingPinnedPriceDto", "status", PRICE_STATUS, true),
 ];
 
 /// Response fields that stay `string` (D-439): no CHECK guards the stored set (`default_rounding`

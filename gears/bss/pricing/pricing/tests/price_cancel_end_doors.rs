@@ -395,6 +395,20 @@ async fn cancelling_a_scheduled_price_reopens_the_predecessor_on_the_next_start(
         status, 200,
         "a cancelled price stays readable by id: {by_id}"
     );
+    assert_eq!(
+        by_id["status"], "cancelled",
+        "the pinned read says so, with the list's token"
+    );
+    assert_eq!(by_id["price_id"], b.to_string());
+    let (status, live, _) = world
+        .f
+        .call("GET", &format!("/prices/{a}"), json!({}), None, None)
+        .await;
+    assert_eq!(status, 200, "{live}");
+    assert!(
+        live.get("status").is_none(),
+        "an approved price's display status depends on the day, which the pinned read never computes (D-422): {live}"
+    );
     let (status, _, _) = world
         .f
         .call(

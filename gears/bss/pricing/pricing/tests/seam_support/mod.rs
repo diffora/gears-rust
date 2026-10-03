@@ -343,6 +343,7 @@ pub fn vm_binding() -> bss_pricing_sdk::read::AcceptedBinding {
         minimum_fee: None,
         effective_from: date("2026-10-01"),
         ends_on: None,
+        state: PriceState::Approved,
     };
     price.money_digest = money_digest(&price);
     AcceptedBinding {

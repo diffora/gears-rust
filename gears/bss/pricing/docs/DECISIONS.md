@@ -459,7 +459,7 @@ Read precisely: settings.invoice_line_templates is keyed by SKU type (recurring,
 
 GET /bss-pricing/v1/prices/{id} (label price, action read), spec §7.1's /pricing/v1/prices/{id} below the gear's base, answers an APPROVED price of the tenant whatever its window (closed, followed by a later price, keep_for_bound) with its entry's SKU, charge kind, period, book and currency. It returns only stored facts: no status or other value computed from today, and no authoring internals (version, pending_unit_id, note, created_by). A draft, pending or rejected price, an unknown id and another tenant's id are 404, with the same body.
 
-**Amended by D-520.** A cancelled price is still answered by id, with its money as approved; it was never in force, so no pin or binding names it. A `cancel` or `end` row is not a price and is the same 404.
+**Amended by D-520.** A cancelled price is still answered by id, with its money as approved; it was never in force, so no pin or binding names it. It carries `status: cancelled`, a stored fact the same on every day; an approved price still carries no status (D-520's 2026-10-03 amendment). A `cancel` or `end` row is not a price and is the same 404.
 
 **Source:** Phase 4 plan rev 3 (Run 4.2); spec §7.1; plan review H4 (no value computed from today).
 
@@ -2071,6 +2071,12 @@ A cancel is a new item kind of the existing prices unit, not a new engine. The o
 - the price an `end` ended, with its new end.
 
 A price whose window did not move is not listed, and a new `keep_for_bound` mark alone is not news. A `cancel` or `end` row is a record of the change, not a price, so the event never lists it. Each listed price gains `state`, its stored state after the apply (`approved` or `cancelled`). The field is additive and optional: an event written before it has none, and none is not written. `effective_to` already carries an end, so no other field is added.
+
+**Amended 2026-10-03 (run Asks-B2b): a cancelled price says so where it is read.** Before, GET /prices/{id} and `PricingReadV1::price` served a cancelled price by id with no state, so the reader could not tell that it was cancelled.
+
+- **REST.** `PricingPinnedPriceDto` gains `status` from the closed set `PricingPriceStatus`, the entry list's set. A cancelled price carries `cancelled`, the token the list shows. The field is optional and absent on an approved price: its display status (scheduled, active, superseded) depends on the day, and D-422 keeps this read free of anything computed from today. So the consumer goldens of approved prices do not change.
+- **SDK.** `ImmutablePrice` gains `state: PriceState` (`Approved` or `Cancelled`), the read contract's own closed set. `price()` serves `Cancelled` for a cancelled price, with its money as approved. Resolve, pins and bindings never return a cancelled price, so a binding's price is always `Approved`. `state` is in neither digest, so no money digest or binding digest moves. The frozen v1 receipt wire carries no state and reads back `Approved`: a binding names an approved price, and a price that a binding names is never cancelled (the guard below).
+- A cancelled price is never the price in force (the chain exclusion above), and it stays readable by id.
 
 **Source:** Owner, 2026-10-02 and 2026-10-03 ("все ок сейчас будем писать план", "ок погнали"); asks 19 and 58a. Amends D-390, D-393 and D-422. The 2026-10-03 amendments: the controller's decisions on run Asks-B2's questions 1, 2 and 5.
 

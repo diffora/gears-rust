@@ -585,6 +585,18 @@ async fn a_cancelled_price_and_a_change_row_are_never_resolved_or_pinned() {
         .await;
     assert_eq!(s, 200, "{b}");
     assert_eq!(b["price"], flat("40.00"));
+    assert_eq!(b["status"], "cancelled", "{b}");
+    let (s, b, _) =
+        w.f.call(
+            "GET",
+            &format!("/prices/{}", w.price),
+            json!({}),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(s, 200, "{b}");
+    assert!(b.get("status").is_none(), "{b}");
     for change in [cancel, end] {
         let (s, b, _) =
             w.f.call("GET", &format!("/prices/{change}"), json!({}), None, None)
