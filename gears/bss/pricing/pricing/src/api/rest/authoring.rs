@@ -264,14 +264,24 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
             "Returns the tenant's billing defaults (timing, rounding, GL code, tax category), \
              invoice-line templates by SKU type and the currencies a new book may take (empty: \
              any), with who wrote them last and when, and its version as the ETag; the defaults \
-             apply, with no writer, until the settings are first written.",
+             apply, with no writer, until the settings are first written. An If-None-Match that \
+             matches that ETag by weak comparison is 304 with an empty body and the same ETag; \
+             both answers carry Cache-Control private, no-cache (D-518).",
         )
         .tag("Pricing")
         .authenticated()
         .no_license_required()
+        .param(support::if_none_match_version())
         .handler(get_settings)
         .json_response_with_schema::<PricingSettingsDto>(openapi, StatusCode::OK, "Response")
         .response_header(etag())
+        .response_header(support::revalidate_header())
+        .no_content_response(
+            StatusCode::NOT_MODIFIED,
+            "The If-None-Match tag matches the settings version",
+        )
+        .response_header(etag())
+        .response_header(support::revalidate_header())
         .standard_errors(openapi)
         .error_503(openapi)
         .register(router, openapi);
@@ -2000,6 +2010,7 @@ async fn get_settings(
     Extension(state): Extension<Arc<AuthoringState>>,
     Extension(enforcer): Extension<PolicyEnforcer>,
     ctx: Option<Extension<SecurityContext>>,
+    headers: HeaderMap,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(ctx)?;
     let scope = authz::access_scope(
@@ -2012,7 +2023,7 @@ async fn get_settings(
     )
     .await
     .map_err(authz_failure)?;
-    transaction(&state.db.db(), move |tx| {
+    let answer = transaction(&state.db.db(), move |tx| {
         let (scope, ctx) = (scope.clone(), ctx.clone());
         Box::pin(async move {
             let tenant = ctx.subject_tenant_id();
@@ -2023,7 +2034,9 @@ async fn get_settings(
             Ok(response(StatusCode::OK, &body, Some(version))?)
         })
     })
-    .await
+    .await?;
+    // D-518: the strong version tag stays; a matching If-None-Match is 304.
+    Ok(support::revalidate_version(&headers, answer))
 }
 async fn put_settings(
     Extension(state): Extension<Arc<AuthoringState>>,

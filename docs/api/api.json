@@ -44046,8 +44046,19 @@
     },
     "/bss-pricing/v1/settings": {
       "get": {
-        "description": "Returns the tenant's billing defaults (timing, rounding, GL code, tax category), invoice-line templates by SKU type and the currencies a new book may take (empty: any), with who wrote them last and when, and its version as the ETag; the defaults apply, with no writer, until the settings are first written.",
+        "description": "Returns the tenant's billing defaults (timing, rounding, GL code, tax category), invoice-line templates by SKU type and the currencies a new book may take (empty: any), with who wrote them last and when, and its version as the ETag; the defaults apply, with no writer, until the settings are first written. An If-None-Match that matches that ETag by weak comparison is 304 with an empty body and the same ETag; both answers carry Cache-Control private, no-cache (D-518).",
         "operationId": "bss_pricing.get_settings",
+        "parameters": [
+          {
+            "description": "The ETag of an earlier read, or *. A match is 304.",
+            "in": "header",
+            "name": "If-None-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -44059,6 +44070,29 @@
             },
             "description": "Response",
             "headers": {
+              "Cache-Control": {
+                "description": "private, no-cache",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "The version to send back as If-Match",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "The If-None-Match tag matches the settings version",
+            "headers": {
+              "Cache-Control": {
+                "description": "private, no-cache",
+                "schema": {
+                  "type": "string"
+                }
+              },
               "ETag": {
                 "description": "The version to send back as If-Match",
                 "schema": {

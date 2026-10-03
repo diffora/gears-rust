@@ -113,3 +113,44 @@ async fn the_book_list_answers_304_and_a_new_book_changes_the_tag() {
     assert_ne!(fresh.etag, old);
     assert_eq!(fresh.cache_control, "private, no-cache");
 }
+
+/// `GET /settings` is one document: its strong `ETag` stays the row version a `PUT` sends back as
+/// `If-Match`, and `If-None-Match` matches that same tag by weak comparison (D-518).
+#[tokio::test]
+async fn the_settings_answer_304_on_their_strong_version_tag() {
+    let (f, _) = setup().await;
+    let first = get(&f.app, &f.ctx, "/settings", None).await;
+    assert_eq!(
+        first.status,
+        200,
+        "{}",
+        String::from_utf8_lossy(&first.body)
+    );
+    assert_eq!(first.etag, "\"0\"", "the strong version tag is unchanged");
+    assert_eq!(first.cache_control, "private, no-cache");
+    for tag in ["\"0\"", "W/\"0\"", "\"9\", \"0\"", "*"] {
+        let again = get(&f.app, &f.ctx, "/settings", Some(tag)).await;
+        assert_eq!(again.status, 304, "{tag}");
+        assert!(again.body.is_empty(), "{tag}");
+        assert_eq!(again.etag, "\"0\"", "{tag}");
+        assert_eq!(again.cache_control, "private, no-cache", "{tag}");
+    }
+    let other = get(&f.app, &f.ctx, "/settings", Some("\"1\"")).await;
+    assert_eq!(other.status, 200, "an unrelated tag reads the body");
+    assert!(!other.body.is_empty());
+    let mut body: serde_json::Value = serde_json::from_slice(&first.body).unwrap();
+    for field in ["version", "updated_at", "updated_by"] {
+        body.as_object_mut().unwrap().remove(field);
+    }
+    body["currencies"] = serde_json::json!(["EUR"]);
+    let (s, b, tag) = f.call("PUT", "/settings", body, Some("\"0\""), None).await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(tag, "\"1\"");
+    let fresh = get(&f.app, &f.ctx, "/settings", Some(&first.etag)).await;
+    assert_eq!(fresh.status, 200, "the old tag no longer matches");
+    assert_eq!(fresh.etag, "\"1\"");
+    assert_eq!(fresh.cache_control, "private, no-cache");
+    let now = get(&f.app, &f.ctx, "/settings", Some("\"1\"")).await;
+    assert_eq!(now.status, 304);
+    assert_eq!(now.etag, "\"1\"");
+}

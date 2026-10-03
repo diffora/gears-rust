@@ -206,8 +206,11 @@ fn every_precondition_reading_route_is_in_the_precondition_census() {
         // (D-470), its registration and its 200 answer; + 4: run 9.6's reservations read and
         // effective-policy read (D-480, D-481), each registration and its 200 answer; + 2: run
         // 9.7's batch checks read (D-482), its registration and its 200 answer; + 2: run 9.8b's
-        // plans counts (D-485), its registration and its 200 answer.
-        ("StatusCode::", 2, 112),
+        // plans counts (D-485), its registration and its 200 answer. D-518 kept the sum for the
+        // three list reads (each registration's 304, each handler's 200 now answered by
+        // `respond`); + 3: the settings read's 304 registration and `revalidate_version`'s 200
+        // check and 304 answer.
+        ("StatusCode::", 2, 115),
     ] {
         assert_eq!(census::count_in_functions(census::CONTROL, needle), control);
         assert_eq!(census::production_count(needle), production, "{needle}");
@@ -318,7 +321,7 @@ async fn every_operation_has_a_human_summary_and_a_description() {
 /// Every answer that sets an `ETag` declares the header on its success response, and nothing else
 /// declares one: the eight reads and the nineteen write answers of D-469, each the version a
 /// following If-Match takes, plus the three list reads of D-518 (a weak tag of the JSON body,
-/// also declared on the 304).
+/// also declared on the 304) and the settings read's 304 (its strong version tag, D-518).
 #[tokio::test]
 async fn every_answer_that_sets_an_etag_declares_it() {
     let harness = rest_support::Harness::new().await.unwrap();
@@ -351,8 +354,9 @@ async fn every_answer_that_sets_an_etag_declares_it() {
         })
         .count();
     assert_eq!(
-        anywhere, 33,
-        "only the success answer of those ops declares it, plus the 304 of the three list reads"
+        anywhere, 34,
+        "only the success answer of those ops declares it, plus the 304 of the three list reads \
+         and of the settings read"
     );
 }
 

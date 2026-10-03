@@ -250,7 +250,9 @@ resolve, the price submit and publish-changes), never on a reject or an item PAT
 declares it: the eight reads and nineteen write answers (D-469), and the plan list, the plan counts
 and the book list, whose ETag is a weak tag of the JSON body and whose `Cache-Control` is
 `private, no-cache`. A matching `If-None-Match` on those three reads is 304 with an empty body
-(D-518). `GET /settings` keeps the strong version tag a `PUT` sends back as `If-Match`. POST requires Idempotency-Key; PATCH/PUT require If-Match. Queue reads return
+(D-518). `GET /settings` keeps the strong version tag a `PUT` sends back as `If-Match`; an
+`If-None-Match` that matches that tag is 304, and both answers send `Cache-Control: private,
+no-cache` (D-518). POST requires Idempotency-Key; PATCH/PUT require If-Match. Queue reads return
 stored snapshots and live impact: a prices unit's GET /approval-units item and GET /approval-units/{id}, and the GET
 publish-changes listing, carry the same impact object, {prices, entries, plans, subscriptions}: from phase 3, plans lists
 every plan revision, in any state, whose items name an entry of the unit or listing, as { plan_id, code, revision_id,
