@@ -765,6 +765,38 @@ async fn an_end_that_is_no_longer_after_today_is_refused_at_apply() {
     assert_eq!(World::row(&rows, &live)["closed_explicitly"], false);
 }
 
+/// A stored `end` row with no new end is a corrupt row, not a refusal of the author's date (review
+/// RF-P item 6): no door writes one, so the submit that reads it back answers 500, and nothing
+/// changes.
+#[tokio::test]
+async fn a_stored_end_without_its_date_is_a_corrupt_row() {
+    let world = World::at("2026-02-15").await;
+    let live = world.seed(1, "2026-01-01").await;
+    let change = world
+        .change(live, "end", json!({"effective_to": "2026-02-20"}), "end")
+        .await;
+    let id = change["id"].as_str().unwrap().parse::<Uuid>().unwrap();
+    let hex = id.simple().to_string().to_uppercase();
+    let written = Database::connect(&world.f.dsn)
+        .await
+        .unwrap()
+        .execute_raw(Statement::from_string(
+            DbBackend::Sqlite,
+            format!(
+                "UPDATE pricing_price SET effective_to = NULL WHERE id = '{id}' OR hex(id) = '{hex}'"
+            ),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(written.rows_affected(), 1);
+    let (status, body) = world.submit(&change["id"], "submit").await;
+    assert_eq!(status, 500, "{body}");
+    assert!(!code(&body).contains("END_DATE_INVALID"), "{body}");
+    let rows = world.prices().await;
+    assert_eq!(World::row(&rows, &live)["effective_to"], Value::Null);
+    assert_eq!(World::row(&rows, &change["id"])["state"], "draft");
+}
+
 // ------------------------------------------------------------------ the unit (D-393)
 
 /// Withdraw and reject leave the price untouched; a mixed unit applies its price and its cancel

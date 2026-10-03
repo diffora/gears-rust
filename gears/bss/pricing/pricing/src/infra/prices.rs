@@ -201,39 +201,81 @@ struct Judged {
     touched: BTreeSet<Option<String>>,
 }
 
-/// A `cancel` or `end` row as its guards read it (D-520, D-521).
+/// A `cancel` or `end` row as its guards read it (D-520, D-521). A price (`set`) is not a change,
+/// and only an end carries a new end.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Change {
-    /// The change row; nil at the door that has not written it yet.
-    pub id: Uuid,
-    pub kind: ChangeKind,
-    /// The approved price the change names.
-    pub target: Uuid,
-    /// An `end`'s new end, exclusive.
-    pub end: Option<Date>,
+pub enum Change {
+    /// Cancel the approved price `target`. `id` is the change row; nil at the door that has not
+    /// written it yet.
+    Cancel { id: Uuid, target: Uuid },
+    /// End the approved price `target` at `end`, exclusive. `id` as for a cancel.
+    End { id: Uuid, target: Uuid, end: Date },
 }
 impl Change {
+    /// The change row; nil at the door that has not written it yet.
+    #[must_use]
+    pub const fn id(&self) -> Uuid {
+        match *self {
+            Self::Cancel { id, .. } | Self::End { id, .. } => id,
+        }
+    }
+    /// The approved price the change names.
+    #[must_use]
+    pub const fn target(&self) -> Uuid {
+        match *self {
+            Self::Cancel { target, .. } | Self::End { target, .. } => target,
+        }
+    }
+    /// The stored `change_kind` of the row.
+    #[must_use]
+    pub const fn kind(&self) -> ChangeKind {
+        match self {
+            Self::Cancel { .. } => ChangeKind::Cancel,
+            Self::End { .. } => ChangeKind::End,
+        }
+    }
+    /// An end's new end; `None` for a cancel.
+    #[must_use]
+    pub const fn end(&self) -> Option<Date> {
+        match *self {
+            Self::Cancel { .. } => None,
+            Self::End { end, .. } => Some(end),
+        }
+    }
     /// The change a stored row asks for; `None` for a price (`set`).
     /// # Errors
-    /// A corrupt row: an unknown kind, or a change that names no price.
+    /// A corrupt row: an unknown kind, a change that names no price, or an end with no new end.
     pub fn of(m: &entity::price::Model) -> Result<Option<Self>, RepoError> {
         let kind: ChangeKind = m
             .change_kind
             .parse()
             .map_err(|_| RepoError::CorruptRow(format!("price {} change_kind", m.id)))?;
-        if kind == ChangeKind::Set {
-            return Ok(None);
+        let target = || {
+            m.target_price_id
+                .ok_or_else(|| RepoError::CorruptRow(format!("change {} names no price", m.id)))
+        };
+        match kind {
+            ChangeKind::Set => Ok(None),
+            ChangeKind::Cancel => Ok(Some(Self::Cancel {
+                id: m.id,
+                target: target()?,
+            })),
+            ChangeKind::End => Ok(Some(Self::End {
+                id: m.id,
+                target: target()?,
+                end: m
+                    .effective_to
+                    .ok_or_else(|| RepoError::CorruptRow(format!("end {} has no new end", m.id)))?,
+            })),
         }
-        let target = m
-            .target_price_id
-            .ok_or_else(|| RepoError::CorruptRow(format!("change {} names no price", m.id)))?;
-        Ok(Some(Self {
-            id: m.id,
-            kind,
-            target,
-            end: m.effective_to,
-        }))
     }
+}
+/// Where a change's guards run (D-520): at its door or at submit, or at the unit's apply, where a
+/// cancel's price that started since is the race's own code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stage {
+    Judge,
+    Apply,
 }
 
 fn invalid(code: &'static str, detail: impl Into<String>) -> ApprovalError {
@@ -292,10 +334,10 @@ fn after(r: &Price, note: Option<&str>) -> Value {
 fn change_after(m: &entity::price::Model, change: &Change) -> Value {
     json!({
         "price_book_entry_id": m.price_book_entry_id,
-        "change_kind": change.kind.as_str(),
-        "target_price_id": change.target,
+        "change_kind": change.kind().as_str(),
+        "target_price_id": change.target(),
         "dim_value": m.dim_value,
-        "effective_to": change.end.map(date),
+        "effective_to": change.end().map(date),
         "note": m.note,
     })
 }
@@ -618,7 +660,7 @@ impl PricesSubject {
         price_book_entry_id: Uuid,
         prices: &[entity::price::Model],
         shift: Option<Date>,
-        applying: bool,
+        stage: Stage,
     ) -> Result<Judged, ApprovalError> {
         let entry =
             price_book_entry_repo::find(tx, &self.scope(), self.tenant_id, price_book_entry_id)
@@ -740,19 +782,17 @@ impl PricesSubject {
         let mut touched: BTreeSet<Option<String>> =
             proposed.iter().map(|r| r.dim_value.clone()).collect();
         for change in &changes {
-            if !named.insert(change.target) {
-                return Err(invalid(
-                    "PRICE_CHANGE_PENDING",
-                    format!("price {}", change.target),
-                ));
+            let target = change.target();
+            if !named.insert(target) {
+                return Err(invalid("PRICE_CHANGE_PENDING", format!("price {target}")));
             }
-            let bound = change.kind == ChangeKind::Cancel
-                && acceptance_repo::binds_price(tx, &self.scope(), self.tenant_id, change.target)
+            let bound = matches!(change, Change::Cancel { .. })
+                && acceptance_repo::binds_price(tx, &self.scope(), self.tenant_id, target)
                     .await
                     .map_err(storage)?;
-            let ended = guard_change(change, &before, &pc.prices, today, applying, bound)?;
-            if let Some(target) = before.iter().find(|row| row.id == change.target) {
-                touched.insert(target.dim_value.clone());
+            let ended = guard_change(change, &before, &pc.prices, today, stage, bound)?;
+            if let Some(named) = before.iter().find(|row| row.id == target) {
+                touched.insert(named.dim_value.clone());
             }
             match ended {
                 Some(closed) => {
@@ -760,7 +800,7 @@ impl PricesSubject {
                         *slot = closed;
                     }
                 }
-                None => chain.retain(|row| row.id != change.target),
+                None => chain.retain(|row| row.id != target),
             }
         }
         price::normalize_windows(&mut chain);
@@ -789,35 +829,34 @@ impl PricesSubject {
 /// approved price that has not ended by today and that no other pending change names; its new
 /// end is after today, after the price's start and no later than its current end.
 /// # Errors
-/// A cancel: `PRICE_NOT_SCHEDULED` (not approved, or started; `PRICE_ALREADY_STARTED` when
-/// applying), `PRICE_CHANGE_PENDING`, `PRICE_BOUND` (a binding names it). An end: `PRICE_ALREADY_ENDED` (not approved,
-/// or ended), `PRICE_CHANGE_PENDING`, `END_DATE_INVALID`.
+/// A cancel: `PRICE_NOT_SCHEDULED` (not approved, or started; `PRICE_ALREADY_STARTED` at
+/// [`Stage::Apply`]), `PRICE_CHANGE_PENDING`, `PRICE_BOUND` (a binding names it). An end:
+/// `PRICE_ALREADY_ENDED` (not approved, or ended), `PRICE_CHANGE_PENDING`, `END_DATE_INVALID`.
 pub fn guard_change(
     change: &Change,
     chain: &[Price],
     stored: &[entity::price::Model],
     today: Date,
-    applying: bool,
+    stage: Stage,
     bound: bool,
 ) -> Result<Option<Price>, ApprovalError> {
-    let refuse = |code: &'static str| invalid(code, format!("price {}", change.target));
+    let named = change.target();
+    let refuse = |code: &'static str| invalid(code, format!("price {named}"));
     let target = chain
         .iter()
-        .find(|row| row.id == change.target && row.state == PriceState::Approved);
+        .find(|row| row.id == named && row.state == PriceState::Approved);
     let pending = stored.iter().any(|row| {
-        row.id != change.id
-            && row.target_price_id == Some(change.target)
+        row.id != change.id()
+            && row.target_price_id == Some(named)
             && row.state == PriceState::Pending.as_str()
     });
-    match change.kind {
-        ChangeKind::Set => Ok(None),
-        ChangeKind::Cancel => {
+    match *change {
+        Change::Cancel { .. } => {
             let target = target.ok_or_else(|| refuse("PRICE_NOT_SCHEDULED"))?;
             if target.effective_from <= today {
-                return Err(refuse(if applying {
-                    "PRICE_ALREADY_STARTED"
-                } else {
-                    "PRICE_NOT_SCHEDULED"
+                return Err(refuse(match stage {
+                    Stage::Judge => "PRICE_NOT_SCHEDULED",
+                    Stage::Apply => "PRICE_ALREADY_STARTED",
                 }));
             }
             if pending {
@@ -828,20 +867,19 @@ pub fn guard_change(
             }
             Ok(None)
         }
-        ChangeKind::End => {
+        Change::End { end, .. } => {
             if target.is_none_or(|t| t.effective_to.is_some_and(|end| end <= today)) {
                 return Err(refuse("PRICE_ALREADY_ENDED"));
             }
             if pending {
                 return Err(refuse("PRICE_CHANGE_PENDING"));
             }
-            let end = change
-                .end
-                .filter(|end| *end > today)
-                .ok_or_else(|| refuse("END_DATE_INVALID"))?;
-            price::end_price(chain, change.target, end)
+            if end <= today {
+                return Err(refuse("END_DATE_INVALID"));
+            }
+            price::end_price(chain, named, end)
                 .map(Some)
-                .map_err(|error| rule(error, change.target))
+                .map_err(|error| rule(error, named))
         }
     }
 }
@@ -913,8 +951,11 @@ impl<'a> ApprovalSubject<DbTx<'a>> for PricesSubject {
                     changes.push((m, change));
                 }
             }
-            for (_, change) in changes.iter().filter(|(_, c)| c.kind == ChangeKind::Cancel) {
-                chain.retain(|row| row.id != change.target);
+            for (_, change) in changes
+                .iter()
+                .filter(|(_, c)| matches!(c, Change::Cancel { .. }))
+            {
+                chain.retain(|row| row.id != change.target());
             }
             price::normalize_windows(&mut chain);
             for (m, r) in sets.iter().zip(&proposed) {
@@ -936,7 +977,10 @@ impl<'a> ApprovalSubject<DbTx<'a>> for PricesSubject {
                     item_type: ITEM_TYPE.into(),
                     item_id: m.id,
                     created_by: m.created_by,
-                    before: approved.iter().find(|r| r.id == change.target).map(before),
+                    before: approved
+                        .iter()
+                        .find(|r| r.id == change.target())
+                        .map(before),
                     after: change_after(m, &change),
                 });
             }
@@ -961,7 +1005,7 @@ impl<'a> ApprovalSubject<DbTx<'a>> for PricesSubject {
                 price_book_entry_id,
                 &prices,
                 self.common_effective_date,
-                false,
+                Stage::Judge,
             )
             .await?;
         }
@@ -1042,7 +1086,7 @@ impl<'a> ApprovalSubject<DbTx<'a>> for PricesSubject {
                     price_book_entry_id,
                     &prices,
                     unit.common_effective_date,
-                    true,
+                    Stage::Apply,
                 )
                 .await
                 .map_err(applied)?;
@@ -1081,8 +1125,8 @@ impl<'a> ApprovalSubject<DbTx<'a>> for PricesSubject {
                 judged
                     .changes
                     .iter()
-                    .filter(|c| c.kind == kind)
-                    .map(|c| c.target)
+                    .filter(|c| c.kind() == kind)
+                    .map(Change::target)
                     .collect()
             };
             let (cancelled, ended) = (changed(ChangeKind::Cancel), changed(ChangeKind::End));

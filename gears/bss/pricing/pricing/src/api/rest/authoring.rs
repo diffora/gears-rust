@@ -1141,9 +1141,10 @@ async fn cancel_price(
     let key = preconditions::idempotency_key(&headers)?;
     let digest = preconditions::request_digest(&support::empty_body(&body)?)?;
     let request = prices::ChangeRequest {
-        target: id,
-        kind: crate::domain::price::ChangeKind::Cancel,
-        end: None,
+        change: crate::infra::prices::Change::Cancel {
+            id: Uuid::nil(),
+            target: id,
+        },
         today: state.clock.now().date(),
     };
     prices::open_change(
@@ -1183,11 +1184,15 @@ async fn end_price(
     let digest = preconditions::request_digest(&payload)?;
     let input: dto::PricingPriceEnd = preconditions::parse_body(&body)?;
     let end = support::date(Some(input.effective_to), "effective_to")
-        .map_err(|_| support::invalid("effective_to", "END_DATE_INVALID"))?;
+        .ok()
+        .flatten()
+        .ok_or_else(|| support::invalid("effective_to", "END_DATE_INVALID"))?;
     let request = prices::ChangeRequest {
-        target: id,
-        kind: crate::domain::price::ChangeKind::End,
-        end,
+        change: crate::infra::prices::Change::End {
+            id: Uuid::nil(),
+            target: id,
+            end,
+        },
         today: state.clock.now().date(),
     };
     prices::open_change(
