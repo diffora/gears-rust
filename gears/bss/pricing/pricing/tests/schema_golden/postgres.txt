@@ -432,7 +432,7 @@ INDEX bss pricing_plan_revision_open CREATE UNIQUE INDEX pricing_plan_revision_o
 INDEX bss pricing_plan_revision_pkey CREATE UNIQUE INDEX pricing_plan_revision_pkey ON bss.pricing_plan_revision USING btree (id)
 INDEX bss pricing_plan_revision_published CREATE UNIQUE INDEX pricing_plan_revision_published ON bss.pricing_plan_revision USING btree (plan_id) WHERE (state = 'published'::text)
 INDEX bss pricing_plan_revision_scheduled CREATE UNIQUE INDEX pricing_plan_revision_scheduled ON bss.pricing_plan_revision USING btree (plan_id) WHERE (state = 'scheduled'::text)
-INDEX bss pricing_price_approved_start CREATE UNIQUE INDEX pricing_price_approved_start ON bss.pricing_price USING btree (price_book_entry_id, COALESCE(dim_value, ''::text), effective_from) WHERE (state = 'approved'::text)
+INDEX bss pricing_price_approved_start CREATE UNIQUE INDEX pricing_price_approved_start ON bss.pricing_price USING btree (price_book_entry_id, COALESCE(dim_value, ''::text), effective_from) WHERE ((state = 'approved'::text) AND (change_kind = 'set'::text))
 INDEX bss pricing_price_book_entry_key CREATE UNIQUE INDEX pricing_price_book_entry_key ON bss.pricing_price_book_entry USING btree (book_id, sku_id, charge_kind, COALESCE(period, ''::text), model, COALESCE(usage_policy_digest, ''::text))
 INDEX bss pricing_price_book_entry_pkey CREATE UNIQUE INDEX pricing_price_book_entry_pkey ON bss.pricing_price_book_entry USING btree (id)
 INDEX bss pricing_price_book_pkey CREATE UNIQUE INDEX pricing_price_book_pkey ON bss.pricing_price_book USING btree (id)

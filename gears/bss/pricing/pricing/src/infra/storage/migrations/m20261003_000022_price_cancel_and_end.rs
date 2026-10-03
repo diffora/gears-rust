@@ -8,7 +8,13 @@
 //! only: nothing else references it (the self references are copied after the rows exist, so a
 //! mutual pair survives). The rebuild keeps both indexes. The table has no triggers.
 //!
-//! `down()` restores the previous shape. A row whose `state` is `cancelled` cannot go back.
+//! An applied `cancel` or `end` row is `approved` and keeps the start of the price it names, so
+//! the approved-start index covers `change_kind = 'set'` only: one price per start, and a change
+//! record never takes that start (D-520).
+//!
+//! `down()` restores the previous shape. It fails on a database that holds a `cancelled` price
+//! (the state check) or an applied change (the approved-start index); a draft or pending change
+//! row goes back as a plain row.
 use sea_orm_migration::prelude::*;
 
 #[derive(DeriveMigrationName)]
@@ -29,6 +35,10 @@ const PG_UP: &[&str] = &[
     "ALTER TABLE bss.pricing_price DROP CONSTRAINT pricing_price_state_check",
     "ALTER TABLE bss.pricing_price ADD CONSTRAINT pricing_price_state_check \
      CHECK (state IN ('draft','pending','approved','rejected','cancelled'))",
+    "DROP INDEX bss.pricing_price_approved_start",
+    "CREATE UNIQUE INDEX pricing_price_approved_start \
+     ON bss.pricing_price (price_book_entry_id, coalesce(dim_value, ''), effective_from) \
+     WHERE state = 'approved' AND change_kind = 'set'",
 ];
 
 const PG_DOWN: &[&str] = &[
@@ -38,6 +48,10 @@ const PG_DOWN: &[&str] = &[
     "ALTER TABLE bss.pricing_price DROP CONSTRAINT pricing_price_change_kind_check",
     "ALTER TABLE bss.pricing_price DROP CONSTRAINT pricing_price_target_price_id_fkey",
     "ALTER TABLE bss.pricing_price DROP CONSTRAINT pricing_price_cancelled_by_unit_id_fkey",
+    "DROP INDEX bss.pricing_price_approved_start",
+    "CREATE UNIQUE INDEX pricing_price_approved_start \
+     ON bss.pricing_price (price_book_entry_id, coalesce(dim_value, ''), effective_from) \
+     WHERE state = 'approved'",
     "ALTER TABLE bss.pricing_price \
      DROP COLUMN change_kind, \
      DROP COLUMN target_price_id, \
@@ -100,7 +114,7 @@ fn sqlite_up() -> Vec<String> {
             .to_owned(),
         "DROP TABLE pricing_price".to_owned(),
         "ALTER TABLE pricing_price__d520 RENAME TO pricing_price".to_owned(),
-        "CREATE UNIQUE INDEX pricing_price_approved_start\n  ON pricing_price (price_book_entry_id, coalesce(dim_value, ''), effective_from) WHERE state = 'approved'"
+        "CREATE UNIQUE INDEX pricing_price_approved_start\n  ON pricing_price (price_book_entry_id, coalesce(dim_value, ''), effective_from) WHERE state = 'approved' AND change_kind = 'set'"
             .to_owned(),
         "CREATE INDEX pricing_price_chain\n  ON pricing_price (price_book_entry_id, dim_value, effective_from) WHERE state = 'approved'"
             .to_owned(),

@@ -29,7 +29,7 @@ const DESIGN_INDEXES: &[(&str, &str)] = &[
     ),
     (
         "pricing_price_approved_start",
-        "(price_book_entry_id, COALESCE(dim_value, ''::text), effective_from) WHERE (state = 'approved'::text)",
+        "(price_book_entry_id, COALESCE(dim_value, ''::text), effective_from) WHERE ((state = 'approved'::text) AND (change_kind = 'set'::text))",
     ),
     (
         "pricing_price_chain",

@@ -1,4 +1,5 @@
-//! D-520 on Postgres: 000022 adds the cancel and end columns, widens `state`, and reverses.
+//! D-520 on Postgres: 000022 adds the cancel and end columns, widens `state`, narrows the
+//! approved-start index to prices, and reverses.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 mod pg_support;
 
@@ -85,6 +86,14 @@ async fn step(pg: &Pg, down: bool) {
     }
 }
 
+async fn index_defs(pg: &Pg) -> Vec<String> {
+    strings(
+        pg,
+        "SELECT indexdef::text AS v FROM pg_indexes WHERE schemaname = 'bss' AND tablename = 'pricing_price' ORDER BY indexname",
+    )
+    .await
+}
+
 fn seed() -> Vec<String> {
     let price = |id, version, from, state| {
         format!(
@@ -134,7 +143,23 @@ async fn postgres_adds_cancel_and_end_and_round_trips() {
     for sql in seed() {
         exec(&pg, &sql).await;
     }
+    let indexes = index_defs(&pg).await;
     step(&pg, false).await;
+    let narrowed: Vec<String> = indexes
+        .iter()
+        .map(|def| {
+            if def.contains("pricing_price_approved_start") {
+                def.replace(
+                    "WHERE (state = 'approved'::text)",
+                    "WHERE ((state = 'approved'::text) AND (change_kind = 'set'::text))",
+                )
+            } else {
+                def.clone()
+            }
+        })
+        .collect();
+    assert_ne!(narrowed, indexes, "the approved start narrows");
+    assert_eq!(index_defs(&pg).await, narrowed);
     let cols = strings(
         &pg,
         "SELECT column_name::text AS v FROM information_schema.columns WHERE table_schema = 'bss' AND table_name = 'pricing_price'",
@@ -212,6 +237,7 @@ async fn postgres_adds_cancel_and_end_and_round_trips() {
     for name in ["change_kind", "target_price_id", "cancelled_by_unit_id"] {
         assert!(!restored.iter().any(|c| c == name), "{restored:?}");
     }
+    assert_eq!(index_defs(&pg).await, indexes, "down restores the index");
     let still = strings(
         &pg,
         "SELECT effective_from::text AS v FROM bss.pricing_price WHERE state = 'approved' ORDER BY version_no",

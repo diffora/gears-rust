@@ -101,6 +101,14 @@ async fn index_sql(db: &sea_orm::DatabaseConnection) -> Vec<String> {
     .await
 }
 
+async fn trigger_sql(db: &sea_orm::DatabaseConnection) -> Vec<String> {
+    strings(
+        db,
+        "SELECT sql AS v FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'pricing_price' ORDER BY name",
+    )
+    .await
+}
+
 async fn columns(db: &sea_orm::DatabaseConnection) -> Vec<String> {
     strings(
         db,
@@ -118,13 +126,30 @@ async fn sqlite_rebuilds_the_price_keeps_the_chain_and_round_trips() {
     }
     let indexes = index_sql(&db).await;
     assert_eq!(indexes.len(), 2, "{indexes:?}");
+    let triggers = trigger_sql(&db).await;
     let manager = SchemaManager::new(&db);
     Migration.up(&manager).await.unwrap();
     let cols = columns(&db).await;
     for name in ["change_kind", "target_price_id", "cancelled_by_unit_id"] {
         assert!(cols.iter().any(|c| c == name), "{cols:?}");
     }
-    assert_eq!(index_sql(&db).await, indexes);
+    // The rebuild keeps both indexes; only the approved start narrows to the `set` rows.
+    let narrowed: Vec<String> = indexes
+        .iter()
+        .map(|sql| {
+            if sql.contains("pricing_price_approved_start") {
+                format!("{sql} AND change_kind = 'set'")
+            } else {
+                sql.clone()
+            }
+        })
+        .collect();
+    assert_eq!(index_sql(&db).await, narrowed);
+    assert_eq!(
+        trigger_sql(&db).await,
+        triggers,
+        "the rebuild keeps every trigger"
+    );
     let kinds = strings(
         &db,
         "SELECT change_kind AS v FROM pricing_price ORDER BY version_no",
@@ -146,12 +171,6 @@ async fn sqlite_rebuilds_the_price_keeps_the_chain_and_round_trips() {
     )
     .await;
     assert_eq!(pair, vec![PAIR_B.simple().to_string().to_uppercase()]);
-    let triggers = strings(
-        &db,
-        "SELECT name AS v FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'pricing_price'",
-    )
-    .await;
-    assert!(triggers.is_empty(), "{triggers:?}");
     exec(
         &db,
         &format!(
@@ -193,6 +212,7 @@ async fn sqlite_rebuilds_the_price_keeps_the_chain_and_round_trips() {
         assert!(!restored.iter().any(|c| c == name), "{restored:?}");
     }
     assert_eq!(index_sql(&db).await, indexes);
+    assert_eq!(trigger_sql(&db).await, triggers);
     let still = strings(
         &db,
         "SELECT effective_from AS v FROM pricing_price WHERE state = 'approved' ORDER BY version_no",

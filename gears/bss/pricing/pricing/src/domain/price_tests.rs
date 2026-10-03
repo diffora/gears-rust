@@ -839,7 +839,7 @@ fn cancelling_a_scheduled_price_reopens_its_predecessor() {
 fn a_cancelled_price_is_outside_overlap_and_in_force() {
     let cancelled = price(2, "2026-03-01", None, PriceState::Cancelled);
     let draft = price(9, "2026-03-01", None, PriceState::Draft);
-    let errors = rules(&draft, &[cancelled.clone()], None);
+    let errors = rules(&draft, std::slice::from_ref(&cancelled), None);
     assert!(
         !errors.iter().any(|e| e.code == "WINDOW_OVERLAP"),
         "{errors:?}"

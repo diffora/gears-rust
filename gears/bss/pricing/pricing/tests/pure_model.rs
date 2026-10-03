@@ -41,9 +41,8 @@ fn enum_check_values_match_migration_text() {
     pin_both_dialects!(OpState, op, "state");
     // D-520 widened `state` and added `change_kind`. 000007 keeps the original four states.
     // Both new CHECKs are spelled once for Postgres and once for SQLite.
-    let widened = include_str!(
-        "../src/infra/storage/migrations/m20261003_000022_price_cancel_and_end.rs"
-    );
+    let widened =
+        include_str!("../src/infra/storage/migrations/m20261003_000022_price_cancel_and_end.rs");
     pin_both_dialects!(PriceState, widened, "state");
     pin_both_dialects!(ChangeKind, widened, "change_kind");
 }
