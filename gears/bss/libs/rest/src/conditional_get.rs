@@ -5,10 +5,11 @@
 
 use aws_lc_rs::digest::{SHA256, digest};
 use axum::body::Body;
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use http::{HeaderMap, HeaderValue, StatusCode, header};
+use toolkit_canonical_errors::CanonicalError;
 
 /// `Cache-Control` for one conditional read.
 #[derive(Clone, Copy, Debug)]
@@ -42,19 +43,30 @@ pub fn weak_etag(body: &[u8]) -> HeaderValue {
 /// `200` with the JSON body, `ETag` and `Cache-Control`, or `304` when `request`
 /// carries a matching `If-None-Match`.
 ///
-/// Only this `200` becomes a `304`. A value that cannot be serialized is `500`
-/// and is never conditional.
+/// Only this `200` becomes a `304`. A value that cannot be serialized is the
+/// canonical `500` `Problem` the doors declare, is never conditional, and is
+/// logged once with the value's type: no body and no error text.
 #[must_use]
 pub fn respond<T: serde::Serialize>(
     request: &HeaderMap,
     value: &T,
     cache: CacheHeaders,
 ) -> Response {
-    let Ok(body) = serde_json::to_vec(value) else {
-        return Response::builder()
-            .status(StatusCode::INTERNAL_SERVER_ERROR)
-            .body(Body::empty())
-            .unwrap_or_else(|_| Response::new(Body::empty()));
+    let body = match serde_json::to_vec(value) {
+        Ok(body) => body,
+        Err(error) => {
+            let response_type = std::any::type_name::<T>();
+            tracing::error!(
+                response_type,
+                category = ?error.classify(),
+                "conditional GET: the response did not serialize"
+            );
+            return CanonicalError::internal(format!(
+                "conditional GET: {response_type} did not serialize"
+            ))
+            .create()
+            .into_response();
+        }
     };
     let etag = weak_etag(&body);
     let matched = request

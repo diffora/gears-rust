@@ -108,3 +108,43 @@ async fn respond_answers_304_with_an_empty_body_or_200_with_the_json() {
         .expect("body");
     assert_eq!(fresh_body.as_ref(), body.as_ref());
 }
+
+/// A value whose `Serialize` always fails.
+struct Unserializable;
+
+impl serde::Serialize for Unserializable {
+    fn serialize<S: serde::Serializer>(&self, _serializer: S) -> Result<S::Ok, S::Error> {
+        Err(serde::ser::Error::custom("secret field text"))
+    }
+}
+
+/// A body that does not serialize is the canonical 500 `Problem`, never conditional, and one
+/// error line that names the type and carries no error text.
+#[tokio::test]
+#[tracing_test::traced_test]
+async fn a_value_that_does_not_serialize_is_the_canonical_500_problem() {
+    let mut star = HeaderMap::new();
+    star.insert(header::IF_NONE_MATCH, header("*"));
+    for request in [HeaderMap::new(), star] {
+        let response = respond(&request, &Unserializable, PRIVATE_REVALIDATE);
+        assert_eq!(response.status(), http::StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(response.headers().get(header::ETAG).is_none());
+        assert!(response.headers().get(header::CACHE_CONTROL).is_none());
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .expect("a Problem names its type"),
+            "application/problem+json"
+        );
+        let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .expect("body");
+        let problem: serde_json::Value = serde_json::from_slice(&body).expect("a Problem");
+        assert_eq!(problem["status"], 500, "{problem}");
+        assert!(!body.windows(6).any(|w| w == b"secret"), "{problem}");
+    }
+    assert!(logs_contain("did not serialize"));
+    assert!(logs_contain("Unserializable"));
+    assert!(!logs_contain("secret field text"));
+}
