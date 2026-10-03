@@ -160,6 +160,8 @@ async fn postgres_one_approved_start_per_chain_and_only_among_approved_prices() 
             version: 1,
             created_at: now,
             updated_at: now,
+            archived_at: None,
+            archived_by: None,
         },
     )
     .await

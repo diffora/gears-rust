@@ -87,7 +87,8 @@ fn entry_needed(entry: Option<Uuid>) -> Result<(), DoorError> {
     }
     Ok(())
 }
-/// The entry must exist, belong to the revision's book and price the item's SKU.
+/// The entry must exist, belong to the revision's book, price the item's SKU and hold its
+/// reference (D-522: `BOOK_ARCHIVED`, `ENTRY_REFERENCE_RELEASED`).
 async fn entry_fits(
     tx: &impl DBRunner,
     scope: &AccessScope,
@@ -104,7 +105,8 @@ async fn entry_fits(
     if e.sku_id != sku {
         return Err(support::invalid("price_book_entry_id", "ITEM_ENTRY_SKU_MISMATCH").into());
     }
-    Ok(())
+    // D-522: no item names an entry of an archived book, or one not re-reserved since.
+    support::writable_entry(tx, &e).await
 }
 
 /// `POST /plan-revisions/{id}/items` below its door: a replay answers from the key's store; then
@@ -369,6 +371,7 @@ pub async fn create(
                 refusal: None,
                 receipt: None,
                 outcome: None,
+                reason: None,
             };
             let op = reference_work::new_op(
                 &ctx,

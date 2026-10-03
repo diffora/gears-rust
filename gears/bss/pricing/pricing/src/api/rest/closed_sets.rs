@@ -85,11 +85,13 @@ closed_set!(
     }
 );
 closed_set!(
-    /// Where an entry's SKU reference stands with Products.
+    /// Where an entry's SKU reference stands with Products; `released` once its book is archived
+    /// (D-522).
     PricingEntryReferenceState from EntryReference {
         ConfirmationPending => "confirmation_pending",
         Confirmed => "confirmed",
         Lost => "lost",
+        Released => "released",
     }
 );
 closed_set!(
@@ -167,12 +169,13 @@ closed_set!(
     }
 );
 closed_set!(
-    /// What a reference op does (D-413).
+    /// What a reference op does (D-413); `release` lets an archived book's entry go (D-522).
     PricingReferenceOpKind from OpKind {
         Create => "create",
         Delete => "delete",
         Rereserve => "rereserve",
         Attach => "attach",
+        Release => "release",
     }
 );
 closed_set!(

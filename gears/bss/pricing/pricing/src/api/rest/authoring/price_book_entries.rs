@@ -258,8 +258,12 @@ pub(super) async fn create(
             }
             validate_template(input.invoice_line_override.as_deref())?;
             check_dimension(tx, &receipt_scope, tenant, input.dimension_key.as_deref()).await?;
-            if book_repo::find(tx, &scope, tenant, book).await?.is_none() {
+            let Some(found) = book_repo::find(tx, &scope, tenant, book).await? else {
                 return Err(support::missing().into());
+            };
+            // D-522: an archived book takes no entry.
+            if found.archived_at.is_some() {
+                return Err(support::conflict("BOOK_ARCHIVED").into());
             }
             let reference = Ref {
                 kind: RefKind::Entry,
@@ -278,6 +282,7 @@ pub(super) async fn create(
                 refusal: None,
                 receipt: None,
                 outcome: None,
+                reason: None,
             };
             let op = reference_work::new_op(
                 &ctx,
@@ -317,6 +322,8 @@ pub(super) async fn patch(
     let tenant = ctx.subject_tenant_id();
     let mut m = find(tx, scope, tenant, id).await?;
     support::check_version(version, m.version)?;
+    // D-522: a released entry (its book archived, or not re-reserved since) is not edited.
+    support::writable_entry(tx, &m).await?;
     // The entry is the authorized aggregate; its prices are read tenant-scoped, never through a
     // scope narrowed to the entry's id.
     let prices = price_repo::for_entry(tx, &AccessScope::for_tenant(tenant), tenant, id).await?;
@@ -425,6 +432,7 @@ pub(super) async fn delete(
                 refusal: None,
                 receipt: None,
                 outcome: None,
+                reason: None,
             };
             let op = reference_work::new_op(
                 &ctx,

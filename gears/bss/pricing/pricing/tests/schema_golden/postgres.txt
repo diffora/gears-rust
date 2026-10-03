@@ -171,6 +171,8 @@ COLUMN bss.pricing_price tenant_id uuid NOT NULL DEFAULT -
 COLUMN bss.pricing_price updated_at timestamp with time zone NOT NULL DEFAULT -
 COLUMN bss.pricing_price version bigint NOT NULL DEFAULT 1
 COLUMN bss.pricing_price version_no integer NOT NULL DEFAULT -
+COLUMN bss.pricing_price_book archived_at timestamp with time zone NULL DEFAULT -
+COLUMN bss.pricing_price_book archived_by uuid NULL DEFAULT -
 COLUMN bss.pricing_price_book code text NOT NULL DEFAULT -
 COLUMN bss.pricing_price_book created_at timestamp with time zone NOT NULL DEFAULT -
 COLUMN bss.pricing_price_book currency character(3) NOT NULL DEFAULT -
@@ -372,9 +374,9 @@ CONSTRAINT bss.pricing_price_book_entry pricing_price_book_entry_charge_kind_che
 CONSTRAINT bss.pricing_price_book_entry pricing_price_book_entry_check CHECK ((((charge_kind = 'recurring'::text) AND (period IS NOT NULL) AND (period = ANY (ARRAY['month'::text, 'year'::text]))) OR ((charge_kind = ANY (ARRAY['usage'::text, 'one_time'::text])) AND (period IS NULL))))
 CONSTRAINT bss.pricing_price_book_entry pricing_price_book_entry_model_check CHECK ((model = ANY (ARRAY['flat'::text, 'per_unit'::text, 'graduated'::text, 'volume'::text, 'package'::text])))
 CONSTRAINT bss.pricing_price_book_entry pricing_price_book_entry_pkey PRIMARY KEY (id)
-CONSTRAINT bss.pricing_price_book_entry pricing_price_book_entry_reference_state_check CHECK ((reference_state = ANY (ARRAY['confirmation_pending'::text, 'confirmed'::text, 'lost'::text])))
+CONSTRAINT bss.pricing_price_book_entry pricing_price_book_entry_reference_state_check CHECK ((reference_state = ANY (ARRAY['confirmation_pending'::text, 'confirmed'::text, 'lost'::text, 'released'::text])))
 CONSTRAINT bss.pricing_price_book_entry pricing_price_book_entry_tenant_id_dimension_key_fkey FOREIGN KEY (tenant_id, dimension_key) REFERENCES bss.pricing_dimension_key(tenant_id, key)
-CONSTRAINT bss.pricing_reference_op pricing_reference_op_kind_check CHECK ((kind = ANY (ARRAY['create'::text, 'delete'::text, 'rereserve'::text, 'attach'::text])))
+CONSTRAINT bss.pricing_reference_op pricing_reference_op_kind_check CHECK ((kind = ANY (ARRAY['create'::text, 'delete'::text, 'rereserve'::text, 'attach'::text, 'release'::text])))
 CONSTRAINT bss.pricing_reference_op pricing_reference_op_pkey PRIMARY KEY (op_id)
 CONSTRAINT bss.pricing_reference_op pricing_reference_op_ref_kind_check CHECK ((ref_kind = ANY (ARRAY['price_book_entry'::text, 'plan_item'::text])))
 CONSTRAINT bss.pricing_reference_op pricing_reference_op_state_check CHECK ((state = ANY (ARRAY['reserving'::text, 'written'::text, 'cancelling'::text, 'releasing'::text, 'done'::text])))

@@ -507,7 +507,8 @@ async fn legacy_published_usage_upgrades_without_inventing_policy_and_keeps_reso
                 || name.contains("000019")
                 || name.contains("000020")
                 || name.contains("000021")
-                || name.contains("000022"))
+                || name.contains("000022")
+                || name.contains("000023"))
         })
         .collect();
     run_migrations_for_testing(&db, prior).await.unwrap();
@@ -820,6 +821,7 @@ async fn only_unversioned_persisted_creates_can_recover_without_a_policy() {
             refusal: None,
             receipt: None,
             outcome: None,
+            reason: None,
         };
         let reservation = script
             .reserve(

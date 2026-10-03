@@ -31,6 +31,8 @@ fn book(tenant: Uuid) -> price_book::Model {
         version: 1,
         created_at: at(9),
         updated_at: at(9),
+        archived_at: None,
+        archived_by: None,
     }
 }
 fn entry(b: &price_book::Model) -> price_book_entry::Model {

@@ -67,6 +67,8 @@ pub async fn stored_book(f: &Fixture, code: &str, updated: time::OffsetDateTime)
             version: 1,
             created_at: updated,
             updated_at: updated,
+            archived_at: None,
+            archived_by: None,
         },
     )
     .await

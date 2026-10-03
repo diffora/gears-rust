@@ -202,6 +202,8 @@ impl Harness {
             ("GET", "/bss-pricing/v1/price-books/{id}"),
             ("PATCH", "/bss-pricing/v1/price-books/{id}"),
             ("DELETE", "/bss-pricing/v1/price-books/{id}"),
+            ("POST", "/bss-pricing/v1/price-books/{id}/archive"),
+            ("POST", "/bss-pricing/v1/price-books/{id}/unarchive"),
             ("GET", "/bss-pricing/v1/price-books/{id}/entries"),
             ("GET", "/bss-pricing/v1/price-books/{id}/export"),
             ("GET", "/bss-pricing/v1/settings"),

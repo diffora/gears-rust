@@ -51,6 +51,40 @@ pub async fn insert(
         .await
         .map_err(|e| driver_failure("insert op".into(), e))
 }
+/// Insert `ops` in the caller's transaction in as few statements as the dialect allows (D-522:
+/// an archive's release ops, one per entry).
+/// # Errors
+/// Returns scoped storage failures with their original database type.
+pub async fn insert_all(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    ops: Vec<e::Model>,
+) -> Result<(), RepoError> {
+    let models: Vec<e::ActiveModel> = ops
+        .into_iter()
+        .map(|m| e::ActiveModel {
+            op_id: Set(m.op_id),
+            tenant_id: Set(m.tenant_id),
+            kind: Set(m.kind),
+            ref_kind: Set(m.ref_kind),
+            ref_id: Set(m.ref_id),
+            sku_id: Set(m.sku_id),
+            reservation_id: Set(m.reservation_id),
+            idempotency_key: Set(m.idempotency_key),
+            state: Set(m.state),
+            outcome: Set(m.outcome),
+            attempts: Set(m.attempts),
+            next_attempt_at: Set(m.next_attempt_at),
+            last_error: Set(m.last_error),
+            created_by: Set(m.created_by),
+            created_at: Set(m.created_at),
+            updated_at: Set(m.updated_at),
+        })
+        .collect();
+    toolkit_db::secure::secure_insert_many::<e::Entity>(models, scope, runner)
+        .await
+        .map_err(|e| driver_failure("insert ops".into(), e))
+}
 /// Read one tenant's operation.
 /// # Errors
 /// Returns scoped database failures.
@@ -170,6 +204,40 @@ pub async fn page(
         .map_err(|e| driver_failure("reference op page".into(), e))
 }
 
+/// The references among `ref_ids` (of `ref_kind`) that have unfinished work of one of `kinds`,
+/// in ONE read: an unarchive re-reserves no entry whose release or re-reservation is still open
+/// (D-522).
+/// # Errors
+/// Returns typed scoped storage failures.
+pub async fn open_refs(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    ref_kind: RefKind,
+    ref_ids: &[Uuid],
+    kinds: &[OpKind],
+) -> Result<std::collections::BTreeSet<Uuid>, RepoError> {
+    if ref_ids.is_empty() || kinds.is_empty() {
+        return Ok(std::collections::BTreeSet::new());
+    }
+    Ok(e::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(e::Column::TenantId.eq(tenant))
+                .add(e::Column::RefKind.eq(ref_kind.as_str()))
+                .add(e::Column::RefId.is_in(ref_ids.iter().copied()))
+                .add(e::Column::Kind.is_in(kinds.iter().map(|k| k.as_str())))
+                .add(e::Column::State.ne(OpState::Done.as_str())),
+        )
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure("open reference ops".into(), e))?
+        .into_iter()
+        .map(|op| op.ref_id)
+        .collect())
+}
 /// Whether a reference already has unfinished work of `kind`: one re-reservation per
 /// reference. The guard is keyed by the reference's kind as well as its id.
 /// # Errors

@@ -711,6 +711,8 @@ impl ReferenceRegistryV1 for Script {
             created_by: Uuid::new_v4(),
             created_at: time::OffsetDateTime::now_utc(),
             updated_at: time::OffsetDateTime::now_utc(),
+            archived_at: None,
+            archived_by: None,
         })
     }
     async fn sku_version_as_of(

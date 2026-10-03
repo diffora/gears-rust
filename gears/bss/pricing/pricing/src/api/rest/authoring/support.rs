@@ -147,6 +147,34 @@ pub fn conflict_because(code: &str, detail: impl Into<String>) -> CanonicalError
         .with_reason(code)
         .create()
 }
+/// D-522: an entry whose reference was released is read-only. While its book is archived the
+/// refusal is 409 `BOOK_ARCHIVED`; an entry an unarchive could not re-reserve (its SKU refused) is
+/// 409 `ENTRY_REFERENCE_RELEASED`. Any other entry passes, with no read.
+/// # Errors
+/// The two refusals above; storage failures.
+pub async fn writable_entry(
+    tx: &impl DBRunner,
+    entry: &crate::infra::storage::entity::price_book_entry::Model,
+) -> Result<(), DoorError> {
+    use crate::domain::price_book_entry::ReferenceState;
+    if entry.reference_state != ReferenceState::Released.as_str() {
+        return Ok(());
+    }
+    let archived = repo::book_repo::find(
+        tx,
+        &AccessScope::for_tenant(entry.tenant_id),
+        entry.tenant_id,
+        entry.book_id,
+    )
+    .await?
+    .is_some_and(|book| book.archived_at.is_some());
+    Err(conflict(if archived {
+        "BOOK_ARCHIVED"
+    } else {
+        "ENTRY_REFERENCE_RELEASED"
+    })
+    .into())
+}
 pub fn missing() -> CanonicalError {
     PricingResource::not_found("Price book not found")
         .with_resource("price_book")

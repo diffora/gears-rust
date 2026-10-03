@@ -29,6 +29,15 @@ pub struct PriceBookDto {
     pub created_at: time::OffsetDateTime,
     #[serde(with = "time::serde::rfc3339")]
     pub updated_at: time::OffsetDateTime,
+    /// When the book was archived (D-522); null while it is not. The book list hides it unless
+    /// asked `archived eq true`; a read by id, the export and the consumer reads ignore the mark.
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub archived_at: Option<time::OffsetDateTime>,
+    /// Who archived it; null while it is not archived.
+    pub archived_by: Option<Uuid>,
+    /// The current name of `archived_by` (D-519); null when no name is available now, and on a
+    /// write answer.
+    pub archived_by_name: Option<String>,
 }
 impl From<entity::price_book::Model> for PriceBookDto {
     fn from(m: entity::price_book::Model) -> Self {
@@ -44,8 +53,20 @@ impl From<entity::price_book::Model> for PriceBookDto {
             version: m.version,
             created_at: m.created_at,
             updated_at: m.updated_at,
+            archived_at: m.archived_at,
+            archived_by: m.archived_by,
+            archived_by_name: None,
         }
     }
+}
+/// `POST /price-books/{id}/unarchive` (D-522): the book, listed again, and the entries still
+/// `released` after the door drove their re-reservations: their SKU refused a new reservation
+/// (retired, say), or Products has not answered yet. Each stays read-only until it is re-reserved.
+#[toolkit_macros::api_dto(response)]
+pub struct PricingPriceBookUnarchiveDto {
+    #[serde(flatten)]
+    pub book: PriceBookDto,
+    pub released_entries: Vec<Uuid>,
 }
 #[toolkit_macros::api_dto(response)]
 pub struct PricingPriceBookEntryDto {
@@ -1473,6 +1494,9 @@ pub struct PricingReferenceOpDto {
     #[serde(with = "time::serde::rfc3339")]
     pub next_attempt_at: time::OffsetDateTime,
     pub last_error: Option<String>,
+    /// Why the op releases its reference: `book_archived` for a `release` (D-522); null for every
+    /// other op.
+    pub reason: Option<String>,
 }
 impl TryFrom<entity::reference_op::Model> for PricingReferenceOpDto {
     type Error = RepoError;
@@ -1492,6 +1516,11 @@ impl TryFrom<entity::reference_op::Model> for PricingReferenceOpDto {
             attempts: op.attempts,
             next_attempt_at: op.next_attempt_at,
             last_error: op.last_error,
+            reason: op
+                .outcome
+                .as_deref()
+                .and_then(|work| serde_json::from_str::<serde_json::Value>(work).ok())
+                .and_then(|work| work.get("reason")?.as_str().map(str::to_owned)),
         })
     }
 }

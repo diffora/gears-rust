@@ -125,6 +125,8 @@ async fn seed_on(pg: &pg_support::Pg) -> Seed {
             version: 1,
             created_at: now(),
             updated_at: now(),
+            archived_at: None,
+            archived_by: None,
         },
     )
     .await

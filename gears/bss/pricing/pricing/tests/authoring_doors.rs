@@ -385,6 +385,8 @@ async fn every_route_denies_authorization_before_preconditions_or_disclosure() {
         ("GET", format!("/price-books/{id}")),
         ("PATCH", format!("/price-books/{id}")),
         ("DELETE", format!("/price-books/{id}")),
+        ("POST", format!("/price-books/{id}/archive")),
+        ("POST", format!("/price-books/{id}/unarchive")),
         ("GET", format!("/price-books/{id}/entries")),
         ("GET", format!("/price-books/{id}/export")),
         ("GET", "/settings".into()),
@@ -462,6 +464,8 @@ fn book(tenant: Uuid) -> price_book::Model {
         version: 1,
         created_at: at(9),
         updated_at: at(9),
+        archived_at: None,
+        archived_by: None,
     }
 }
 fn entry(b: &price_book::Model) -> price_book_entry::Model {
@@ -678,6 +682,19 @@ async fn authorization_labels_actions_and_cross_tenant_reads_are_pinned() {
             "price_book",
             "author",
         ),
+        // D-522: the archive mark is a book write.
+        (
+            "POST",
+            format!("/price-books/{id}/archive"),
+            "price_book",
+            "author",
+        ),
+        (
+            "POST",
+            format!("/price-books/{id}/unarchive"),
+            "price_book",
+            "author",
+        ),
         (
             "GET",
             format!("/price-books/{id}/entries"),
@@ -842,9 +859,9 @@ async fn authorization_labels_actions_and_cross_tenant_reads_are_pinned() {
             )
         })
         .collect();
-    // 58: run 9.7's batch checks read (D-482), run 9.8b's plans counts (D-485), and the
-    // cancel and end doors (D-520, D-521).
-    assert_eq!(table.len(), 58);
+    // 60: run 9.7's batch checks read (D-482), run 9.8b's plans counts (D-485), the cancel and
+    // end doors (D-520, D-521), and the book's archive and unarchive (D-522).
+    assert_eq!(table.len(), 60);
     assert_eq!(rows.len(), table.len(), "one row per route");
     assert_eq!(
         rows, f.registered,

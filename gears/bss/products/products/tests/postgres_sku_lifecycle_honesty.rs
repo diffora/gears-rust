@@ -275,6 +275,7 @@ async fn a_due_lifecycle_next_counts_and_filters_as_the_effective_lifecycle_on_p
             deprecated: 1,
             retired: 0,
             in_review: 0,
+            archived: 0,
         }
     );
     let filter = ODataQuery::default().with_filter(

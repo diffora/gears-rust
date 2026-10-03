@@ -87,7 +87,7 @@ impl FilterField for CategoryOrderField {
     }
 }
 
-/// Register the five category operations.
+/// Register the category operations.
 pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Router {
     let router = OperationBuilder::post(CATEGORIES)
         .operation_id("bss_products.create_category")
@@ -122,7 +122,9 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .summary("List categories")
         .description(
             "One page of the tenant's categories on the toolkit's OData (P-D-215): `$filter` over \
-             id, code, name, status (active or retired), is_default and sort_order; `$orderby` \
+             id, code, name, status (active or retired), is_default, sort_order and archived (an \
+             archived category is left out unless asked `archived eq true`, P-D-263; `archived` \
+             compares with `eq` or `ne` and a boolean, joined only by top-level `and`); `$orderby` \
              sort_order, code or name (tie-break id; default sort_order, then code); `$top` (alias \
              `limit`; default 200, clamped at 200) and `cursor` (alias `$skiptoken`) from \
              `page_info`. Each item carries `sku_count`, the SKUs that are not retired naming it, \
@@ -254,9 +256,72 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .error_500(openapi)
         .error_503(openapi)
         .register(router, openapi);
+    let router = archive_routes(router, openapi);
     router.layer(Extension(state))
 }
 
+/// The archive mark of a retired category (P-D-263): `archive` and `unarchive`.
+fn archive_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
+    let router = OperationBuilder::post(format!("{CATEGORIES}/{{id}}/archive"))
+        .operation_id("bss_products.archive_category")
+        .summary("Archive a retired category")
+        .description(
+            "Marks a retired category archived at the version the caller read (If-Match), with an \
+             audit row: `archived_at` and `archived_by` are set and the version moves (P-D-263). \
+             The mark is not a status: the category stays retired. `GET /categories` leaves an \
+             archived category out unless asked `archived eq true`; a read by id ignores the mark. \
+             Archiving an archived category answers it unchanged. Refusals: 403 without category \
+             author; 400 for a missing or malformed If-Match; 404; 409 STALE_REVISION, or \
+             CATEGORY_NOT_RETIRED for a category that is not retired.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "Category id")
+        .param(if_match_param())
+        .handler(archive_category)
+        .json_response_with_schema::<ProductsCategoryDto>(
+            openapi,
+            StatusCode::OK,
+            "The archived category; ETag carries its version.",
+        )
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_404(openapi)
+        .error_409(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(router, openapi);
+    OperationBuilder::post(format!("{CATEGORIES}/{{id}}/unarchive"))
+        .operation_id("bss_products.unarchive_category")
+        .summary("Unarchive a category")
+        .description(
+            "Clears a category's archive mark at the version the caller read (If-Match), with an \
+             audit row; the category is listed again, still retired (P-D-263). Unarchiving a \
+             category that is not archived answers it unchanged. Refusals: 403 without category \
+             author; 400 for a missing or malformed If-Match; 404; 409 STALE_REVISION.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "Category id")
+        .param(if_match_param())
+        .handler(unarchive_category)
+        .json_response_with_schema::<ProductsCategoryDto>(
+            openapi,
+            StatusCode::OK,
+            "The unarchived category; ETag carries its version.",
+        )
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_404(openapi)
+        .error_409(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(router, openapi)
+}
 /// Compile category access through the PDP before validation or storage. The call site names
 /// the action it asks (`actions::READ` or `actions::AUTHOR`), not a `bool` (RS-54); a write
 /// anchors to the subject's tenant.
@@ -416,21 +481,24 @@ async fn list_categories(
     let counts = repo::count_live_skus_by_category(&conn, tenant, None)
         .await
         .map_err(|e| repo_error_to_canonical(&e))?;
+    let mut items: Vec<ProductsCategoryItem> = page
+        .items
+        .into_iter()
+        .map(|c| {
+            let sku_count = counts.get(&c.id).copied().unwrap_or(0);
+            Ok(ProductsCategoryItem {
+                category: c.try_into()?,
+                sku_count,
+            })
+        })
+        .collect::<Result<_, RepoError>>()
+        .map_err(|e| repo_error_to_canonical(&e))?;
+    // P-D-262: the page's archiving actors in one lookup; the weak tag covers their names.
+    state.actor_names.fill(&ctx, &mut items).await;
     Ok(respond(
         &headers,
         &Page {
-            items: page
-                .items
-                .into_iter()
-                .map(|c| {
-                    let sku_count = counts.get(&c.id).copied().unwrap_or(0);
-                    Ok(ProductsCategoryItem {
-                        category: c.try_into()?,
-                        sku_count,
-                    })
-                })
-                .collect::<Result<_, RepoError>>()
-                .map_err(|e| repo_error_to_canonical(&e))?,
+            items,
             page_info: page.page_info,
         },
         PRIVATE_REVALIDATE,
@@ -465,12 +533,15 @@ async fn get_category(
         .unwrap_or(0);
     let version = c.version;
     let category = c.try_into().map_err(|e| repo_error_to_canonical(&e))?;
+    let mut item = ProductsCategoryItem {
+        category,
+        sku_count,
+    };
+    // P-D-262: the archiving actor's name, in one lookup.
+    state.actor_names.fill(&ctx, &mut item).await;
     Ok((
         [(header::ETAG, etag(InternalRevision::new(version)))],
-        Json(ProductsCategoryItem {
-            category,
-            sku_count,
-        }),
+        Json(item),
     )
         .into_response())
 }
@@ -670,6 +741,111 @@ async fn retire_category(
         .await
         .map_err(tx_to_canonical)?;
     Ok(retired)
+}
+/// `POST /categories/{id}/archive` (P-D-263).
+/// @cpt-cf-bss-products-fr-category-flat
+async fn archive_category(
+    Extension(state): Extension<Arc<ApiState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Response, CanonicalError> {
+    mark_archived(&state, &enforcer, extension_ctx, id, &headers, true).await
+}
+/// `POST /categories/{id}/unarchive` (P-D-263).
+/// @cpt-cf-bss-products-fr-category-flat
+async fn unarchive_category(
+    Extension(state): Extension<Arc<ApiState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Response, CanonicalError> {
+    mark_archived(&state, &enforcer, extension_ctx, id, &headers, false).await
+}
+/// Set (`archive`) or clear a category's archive mark (P-D-263) under category author, at the
+/// version the caller read, with an audit row in the same transaction. Only a retired category
+/// takes the mark (409 `CATEGORY_NOT_RETIRED`); a stale tag is judged first, as on the PATCH. A
+/// category already in the asked state is answered as it is, and nothing is written.
+async fn mark_archived(
+    state: &Arc<ApiState>,
+    enforcer: &PolicyEnforcer,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    id: Uuid,
+    headers: &HeaderMap,
+    archive: bool,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    let tenant_id = ctx.subject_tenant_id();
+    let actor = ctx.subject_id();
+    let scope_tx = scope(enforcer, &ctx, actions::AUTHOR).await?;
+    let expected = if_match(headers)?.get();
+    let now = crate::infra::storage::stored_now();
+    let marked = state
+        .db
+        .db()
+        .transaction_with_retry::<Category, TxError, _, _>(
+            category_tx_config(state),
+            contention_db_err,
+            move |tx| {
+                let scope = scope_tx.clone();
+                Box::pin(async move {
+                    let current = repo::find_category(tx, &scope, tenant_id, id)
+                        .await
+                        .map_err(TxError::Repo)?
+                        .ok_or(TxError::Refused(DomainError::NotFound {
+                            what: "category",
+                            id,
+                        }))?;
+                    if current.version != expected {
+                        return Err(TxError::Refused(DomainError::StaleRevision {
+                            expected,
+                            found: current.version,
+                        }));
+                    }
+                    if archive && current.status != RETIRED {
+                        return Err(TxError::Refused(DomainError::Conflict {
+                            code: "CATEGORY_NOT_RETIRED",
+                            detail: "only a retired category is archived; retire it first".into(),
+                        }));
+                    }
+                    if current.archived_at.is_some() == archive {
+                        return Ok(current);
+                    }
+                    let c = match repo::set_category_archived(
+                        tx,
+                        &scope,
+                        tenant_id,
+                        id,
+                        expected,
+                        archive.then_some(actor),
+                        now,
+                    )
+                    .await
+                    .map_err(TxError::Repo)?
+                    {
+                        HeadWrite::Written(c) => c,
+                        HeadWrite::Unmatched => {
+                            return Err(TxError::Refused(DomainError::StaleRevision {
+                                expected,
+                                found: current.version,
+                            }));
+                        }
+                    };
+                    let action = if archive {
+                        "category.archive"
+                    } else {
+                        "category.unarchive"
+                    };
+                    audit(tx, &scope, tenant_id, actor, action, &c, now).await?;
+                    Ok(c)
+                })
+            },
+        )
+        .await
+        .map_err(tx_to_canonical)?;
+    response(StatusCode::OK, marked)
 }
 /// Clear the tenant's other default before a write that sets one (P-D-218): the move is one
 /// transaction, and the old holder's write is audited as every category write is.

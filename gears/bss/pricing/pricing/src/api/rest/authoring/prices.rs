@@ -137,6 +137,8 @@ async fn live_entry(
     if entry.reference_state == crate::domain::price_book_entry::ReferenceState::Lost.as_str() {
         return Err(support::conflict("ENTRY_REFERENCE_LOST").into());
     }
+    // D-522: an archived book's entries take no new money and no change.
+    support::writable_entry(tx, &entry).await?;
     Ok(entry)
 }
 

@@ -30,6 +30,8 @@ async fn postgres_unique_codes_and_price_decimal_roundtrip() {
         version: 1,
         created_at: now,
         updated_at: now,
+        archived_at: None,
+        archived_by: None,
     };
     book_repo::insert(&conn, &scope, b.clone()).await.unwrap();
     assert!(matches!(

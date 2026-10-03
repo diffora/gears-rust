@@ -77,6 +77,8 @@ pub enum SkuFilterField {
     CategoryId,
     PendingUnitId,
     RetirePending,
+    /// The archive mark (P-D-263): `archived eq true` lists only the archived SKUs.
+    Archived,
 }
 impl SkuFilterField {
     const fn field(self) -> SkuListField {
@@ -89,6 +91,7 @@ impl SkuFilterField {
             Self::CategoryId => SkuListField::CategoryId,
             Self::PendingUnitId => SkuListField::PendingUnitId,
             Self::RetirePending => SkuListField::RetirePending,
+            Self::Archived => SkuListField::Archived,
         }
     }
 }
@@ -102,6 +105,7 @@ impl FilterField for SkuFilterField {
         Self::CategoryId,
         Self::PendingUnitId,
         Self::RetirePending,
+        Self::Archived,
     ];
     fn name(&self) -> &'static str {
         self.field().name()
@@ -156,12 +160,15 @@ pub(crate) fn register(router: Router, openapi: &dyn OpenApiRegistry) -> Router 
         .summary("List, filter and search SKUs")
         .description(
             "One page of the tenant's SKUs (P-D-210). OData `$filter` over id, code, name, \
-             lifecycle, retire_pending, type, category_id (`eq null`: no category) and \
-             pending_unit_id (`ne null`: in review). `lifecycle` compares the effective lifecycle \
-             with `eq`, `ne` or `in`, or with `contains`, `startswith` or `endswith` as the `in` \
-             of the lifecycle tokens the text matches, case-sensitively (none matching keeps \
-             nothing; P-D-264), at the top level or joined by `and`; a `lifecycle` term under \
-             `or` or `not` is 400. \
+             lifecycle, retire_pending, archived, type, category_id (`eq null`: no category) and \
+             pending_unit_id (`ne null`: in review). An archived SKU is left out unless the \
+             filter asks `archived eq true`, which lists only the archived ones; `archived eq \
+             false` is the default made explicit (P-D-263). `archived` compares with `eq` or `ne` \
+             and a boolean, joined only by top-level `and`; any other use of it is 400. \
+             `lifecycle` compares the effective lifecycle with `eq`, `ne` or `in`, or with \
+             `contains`, `startswith` or `endswith` as the `in` of the lifecycle tokens the text \
+             matches, case-sensitively (none matching keeps nothing; P-D-264), at the top level \
+             or joined by `and`; a `lifecycle` term under `or` or `not` is 400. \
              `$orderby` over code, name, updated_at (tie-break id; default \
              code); `$top` (alias `limit`; default 50, clamped at 200) and `cursor` (alias \
              `$skiptoken`) from `page_info`. `q` is a case-insensitive substring of the code, \
@@ -261,10 +268,11 @@ pub(crate) fn register(router: Router, openapi: &dyn OpenApiRegistry) -> Router 
         .summary("Count SKUs by lifecycle and in review")
         .description(
             "The list's tab counts (P-D-211): every SKU, each lifecycle, and those in review \
-             (`pending_unit_id` set), narrowed like the list by `q`, `priced`, `in_plan` and \
-             `$filter`. Top-level `lifecycle` terms (`eq`, `ne`, `in`, `contains`, `startswith` \
-             or `endswith`, and those joined by `and`) are dropped (P-D-264). A `lifecycle` term \
-             under `or` or `not` is 400. `$orderby`, `$top`/`limit`, \
+             (`pending_unit_id` set), none of them archived, and the archived SKUs in `archived` \
+             (P-D-263), narrowed like the list by `q`, `priced`, `in_plan` and `$filter`. \
+             Top-level `lifecycle` terms (`eq`, `ne`, `in`, `contains`, `startswith` or \
+             `endswith`, and those joined by `and`) and top-level `archived` comparisons are \
+             dropped (P-D-264). A `lifecycle` term under `or` or `not` is 400. `$orderby`, `$top`/`limit`, \
              `cursor`/`$skiptoken` and `$select` are 400. The picker keys `priced_in`, `not_priced_in` (at most one of the \
              two) and `not_in_revision` narrow the counts as they narrow the list (P-D-246): 403 \
              USAGE_FORBIDDEN when pricing refuses the caller (a revision takes plan read beside \
@@ -511,15 +519,21 @@ pub(super) fn params(
 }
 
 /// The `$filter`, checked the way the pager will read it: only [`SkuFilterField`]s (`null` only
-/// on a nullable one), and each value through the mapping (a closed value). The condition it
-/// becomes, for a count.
+/// on a nullable one), its `archived` terms ones the list can take apart (P-D-263), and each other
+/// value through the mapping (a closed value). The condition the rest becomes, for a count.
 fn checked_filter(filter: Option<&Expr>) -> Result<Option<sea_orm::Condition>, CanonicalError> {
     let Some(expr) = filter else {
         return Ok(None);
     };
     convert_expr_to_filter_node::<SkuFilterField>(expr)
         .map_err(|e| ODataError::InvalidFilter(e.to_string()))?;
-    let node = convert_expr_to_filter_node::<SkuListField>(expr)
+    // P-D-263: the `archived` terms leave before the pager's reading; the list applies them on the
+    // mark, and the counts count both sides.
+    let (rest, _) = repo::take_archived(Some(expr.clone()))?;
+    let Some(rest) = rest else {
+        return Ok(None);
+    };
+    let node = convert_expr_to_filter_node::<SkuListField>(&rest)
         .map_err(|e| ODataError::InvalidFilter(e.to_string()))?;
     let condition = filter_node_to_condition::<SkuListField, SkuListMapping>(&node)
         .map_err(ODataError::InvalidFilter)?;
