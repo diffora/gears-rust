@@ -361,6 +361,9 @@ pub fn approval_failure(error: bss_approval::ApprovalError) -> DoorError {
         A::InvalidSubmit { code, field, .. } => match code {
             "PRICE_NOT_DRAFT"
             | "ENTRY_REFERENCE_LOST"
+            // D-522: a released entry's prices, as its doors answer them.
+            | "BOOK_ARCHIVED"
+            | "ENTRY_REFERENCE_RELEASED"
             | "REVISION_NOT_DRAFT"
             | "PRICE_NOT_SCHEDULED"
             | "PRICE_CHANGE_PENDING"

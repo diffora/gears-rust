@@ -13,7 +13,7 @@ use crate::{
         price::{self, Eligibility, Price, PriceState},
     },
     infra::{
-        prices::{Change, PriceBookEntryContext},
+        prices::{Change, PriceBookEntryContext, Stage},
         storage::{
             RepoError,
             entity::{self, price_book_entry},
@@ -142,14 +142,13 @@ async fn live_entry(
     Ok(entry)
 }
 
-/// What `POST /prices/{id}/cancel` and `POST /prices/{id}/end` ask (D-520, D-521).
+/// What `POST /prices/{id}/cancel` and `POST /prices/{id}/end` ask (D-520, D-521). The wire has no
+/// kind: the path names it, and only an end's body carries a date. So a request is a cancel or an
+/// end of its price, never a `set`, and only an end has a new end.
 #[derive(Clone, Copy, Debug)]
 pub struct ChangeRequest {
-    /// The approved price to cancel or end.
-    pub target: Uuid,
-    pub kind: price::ChangeKind,
-    /// An end's new end; `None` for a cancel.
-    pub end: Option<time::Date>,
+    /// The cancel or end of the approved price it names; its id is nil until the row is written.
+    pub change: Change,
     /// The day the guards judge on: the door's clock.
     pub today: time::Date,
 }
@@ -199,12 +198,13 @@ async fn open_change_in(
     digest: &[u8],
 ) -> Result<Response, DoorError> {
     let tenant = ctx.subject_tenant_id();
-    let kind = request.kind.as_str();
-    let endpoint = format!("/bss-pricing/v1/prices/{}/{kind}", request.target);
+    let change = request.change;
+    let kind = change.kind().as_str();
+    let endpoint = format!("/bss-pricing/v1/prices/{}/{kind}", change.target());
     if let Some(replay) = support::claim(tx, tenant, &endpoint, key, digest).await? {
         return Ok(replay);
     }
-    let target = price_repo::find(tx, scope, tenant, request.target)
+    let target = price_repo::find(tx, scope, tenant, change.target())
         .await?
         .ok_or_else(|| support::missing_what("price"))?;
     let pc = PriceBookEntryContext::load(
@@ -214,18 +214,19 @@ async fn open_change_in(
     )
     .await?;
     let chain = approved_of(&pc.domain_prices()?);
-    let change = Change {
-        id: Uuid::nil(),
-        kind: request.kind,
-        target: target.id,
-        end: request.end,
-    };
     // D-520: only a consumer's binding refuses a cancel, never the `keep_for_bound` mark alone.
-    let bound = request.kind == price::ChangeKind::Cancel
+    let bound = matches!(change, Change::Cancel { .. })
         && acceptance_repo::binds_price(tx, &AccessScope::for_tenant(tenant), tenant, target.id)
             .await?;
-    crate::infra::prices::guard_change(&change, &chain, &pc.prices, request.today, false, bound)
-        .map_err(support::approval_failure)?;
+    crate::infra::prices::guard_change(
+        &change,
+        &chain,
+        &pc.prices,
+        request.today,
+        Stage::Judge,
+        bound,
+    )
+    .map_err(support::approval_failure)?;
     let now = crate::infra::storage::stored_now();
     // The row names the price and carries its money and chain unchanged: it is not a price of
     // its own, and no chain, count or resolve reads it as one.
@@ -239,7 +240,7 @@ async fn open_change_in(
         min_fee: target.min_fee.clone(),
         eligibility: target.eligibility.clone(),
         effective_from: target.effective_from,
-        effective_to: request.end,
+        effective_to: change.end(),
         keep_for_bound: false,
         closed_explicitly: false,
         temporary_until: None,

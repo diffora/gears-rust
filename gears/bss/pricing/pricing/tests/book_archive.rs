@@ -22,7 +22,9 @@ use bss_pricing::infra::{
     storage::repo::{price_book_entry_repo, price_repo},
 };
 use bss_products_sdk::models::{Lifecycle, ReferenceState, SkuType};
-use plan_support::{Catalog, Fixture, entry_support, id_of, item, ops_for, plan, publish, scope};
+use plan_support::{
+    Catalog, Fixture, entry_support, id_of, item, ops_for, plan, publish, raw, scope,
+};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -122,6 +124,27 @@ async fn draft(f: &Fixture, entry: Uuid) -> Value {
         .await;
     assert_eq!(s, 201, "{b}");
     b["items"][0].clone()
+}
+
+/// One price of `entry` as the entry's price list reads it.
+async fn price_of(f: &Fixture, entry: Uuid, price: &str) -> Value {
+    let (s, b, _) = f
+        .call(
+            "GET",
+            &format!("/price-book-entries/{entry}/prices"),
+            json!({}),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(s, 200, "{b}");
+    b["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == price)
+        .unwrap_or_else(|| panic!("{price} is listed: {b}"))
+        .clone()
 }
 
 async fn book_tag(f: &Fixture, book: Uuid) -> String {
@@ -289,6 +312,200 @@ async fn ask_58_a_finished_book_archives_and_releases_its_sku_references() {
     assert_eq!(tag, "\"2\"");
 }
 
+/// A release op's reason is read through its work record, as the drive reads it (D-522, review
+/// RF-P item 5): a reason outside the closed set, or a work record that does not decode, is a
+/// corrupt row, a 500 that does not echo it, never a free string or a silent null. The row
+/// restored reads `book_archived` again.
+#[tokio::test]
+async fn a_release_op_of_a_poisoned_work_record_is_a_corrupt_row() {
+    use sea_orm::{ConnectionTrait, Database};
+    let (f, catalog) = plan_support::setup().await;
+    let book = new_book(&f, "poisoned").await;
+    let entry = door_entry(&f, book, catalog.sku(SkuType::Recurring)).await;
+    archive(&f, book).await;
+    let release = ops_for(&f, entry)
+        .await
+        .into_iter()
+        .find(|op| op.kind == "release")
+        .unwrap();
+    let stored = release.outcome.clone().unwrap();
+    assert!(stored.contains("\"book_archived\""), "{stored}");
+    let hex = release.op_id.simple().to_string().to_uppercase();
+    let row = format!("WHERE op_id = '{}' OR hex(op_id) = '{hex}'", release.op_id);
+    let raw = Database::connect(&f.dsn).await.unwrap();
+    for poison in [
+        stored.replace("\"book_archived\"", "\"shelved\""),
+        "{".to_owned(),
+    ] {
+        let written = raw
+            .execute_unprepared(&format!(
+                "UPDATE pricing_reference_op SET outcome = '{poison}' {row}"
+            ))
+            .await
+            .unwrap();
+        assert_eq!(written.rows_affected(), 1);
+        let (s, b, _) = f.call("GET", "/reference-ops", json!({}), None, None).await;
+        assert_eq!(s, 500, "{poison}: {b}");
+        assert!(!b.to_string().contains("shelved"), "{b}");
+    }
+    raw.execute_unprepared(&format!(
+        "UPDATE pricing_reference_op SET outcome = '{stored}' {row}"
+    ))
+    .await
+    .unwrap();
+    raw.close().await.unwrap();
+    let (s, journal, _) = f.call("GET", "/reference-ops", json!({}), None, None).await;
+    assert_eq!(s, 200, "{journal}");
+    let read = journal["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|op| op["kind"] == "release")
+        .unwrap();
+    assert_eq!(read["reason"], "book_archived", "{journal}");
+}
+
+/// Set an entry's stored reference state, as a confirmation in flight or a lost reference leaves it.
+async fn stored_reference(f: &Fixture, entry: Uuid, state: &str) {
+    let hex = entry.simple().to_string().to_uppercase();
+    raw(
+        f,
+        &format!(
+            "UPDATE pricing_price_book_entry SET reference_state = '{state}' \
+             WHERE id = '{entry}' OR hex(id) = '{hex}'"
+        ),
+    )
+    .await;
+}
+
+/// D-522 (review RF-P item 9): an entry whose reference is being confirmed refuses the archive,
+/// 409 `ENTRY_CONFIRMATION_PENDING`, and nothing is written; a `lost` entry is released as a
+/// confirmed one is, through a `release` op.
+#[tokio::test]
+async fn a_confirmation_in_flight_refuses_the_archive_and_a_lost_entry_is_released() {
+    let (f, catalog) = plan_support::setup().await;
+    let book = new_book(&f, "lossy").await;
+    let pending = door_entry(&f, book, catalog.sku(SkuType::Recurring)).await;
+    let lost = door_entry(&f, book, catalog.sku(SkuType::Recurring)).await;
+    stored_reference(&f, pending, "confirmation_pending").await;
+    stored_reference(&f, lost, "lost").await;
+    let tag = book_tag(&f, book).await;
+    refused(
+        &mark(&f, book, "archive", Some(&tag)).await,
+        409,
+        "ENTRY_CONFIRMATION_PENDING",
+    );
+    assert_eq!(
+        book_tag(&f, book).await,
+        tag,
+        "the refused archive wrote nothing"
+    );
+    assert_eq!(reference_state(&f, lost).await, "lost");
+    assert!(
+        ops_for(&f, lost)
+            .await
+            .iter()
+            .all(|op| op.kind != "release"),
+        "no release op"
+    );
+
+    stored_reference(&f, pending, "confirmed").await;
+    archive(&f, book).await;
+    assert_eq!(reference_state(&f, lost).await, "released");
+    let ops = ops_for(&f, lost).await;
+    let release = ops.iter().find(|op| op.kind == "release").unwrap();
+    assert_eq!(release.state, "done", "{release:?}");
+    assert_eq!(held(&catalog, lost), ReferenceState::Released);
+}
+
+/// D-522 (review RF-P item 9): an unarchive makes no `rereserve` op for an entry whose release is
+/// still open. Once the ticker finishes that release, the entry stays `released` in the unarchived
+/// book, read-only, until another archive and unarchive re-reserve it.
+#[tokio::test]
+async fn an_unarchive_skips_an_entry_whose_release_is_still_open() {
+    let (f, catalog) = plan_support::setup().await;
+    let book = new_book(&f, "early").await;
+    let entry = door_entry(&f, book, catalog.sku(SkuType::Recurring)).await;
+    catalog.down.store(true, Ordering::SeqCst);
+    archive(&f, book).await;
+    let release = ops_for(&f, entry)
+        .await
+        .into_iter()
+        .find(|op| op.kind == "release")
+        .unwrap();
+    assert_eq!(release.state, "releasing", "{release:?}");
+    let tag = book_tag(&f, book).await;
+    let (s, b, _) = mark(&f, book, "unarchive", Some(&tag)).await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(b["released_entries"], json!([entry]), "{b}");
+    let ops = ops_for(&f, entry).await;
+    assert!(
+        ops.iter().all(|op| op.kind != "rereserve"),
+        "no re-reservation while the release is open: {ops:?}"
+    );
+
+    catalog.down.store(false, Ordering::SeqCst);
+    Ticker::new(f.state.clone(), Arc::new(Later), 10, 100)
+        .tick()
+        .await
+        .unwrap();
+    assert_eq!(held(&catalog, entry), ReferenceState::Released);
+    assert_eq!(reference_state(&f, entry).await, "released");
+    let ops = ops_for(&f, entry).await;
+    assert!(ops.iter().all(|op| op.kind != "rereserve"), "{ops:?}");
+    refused(
+        &f.call(
+            "POST",
+            &format!("/price-book-entries/{entry}/prices"),
+            json!({"price": {"rate": "0.20"}, "eligibility": "all", "effective_from": future(50)}),
+            None,
+            Some("stranded-price"),
+        )
+        .await,
+        409,
+        "ENTRY_REFERENCE_RELEASED",
+    );
+}
+
+/// D-522 (review RF-P item 9): the `archived` term joins the rest of the book list's `$filter`,
+/// which still applies; two terms that disagree keep no book; and an `archived` term under `or`
+/// is 400 before any read.
+#[tokio::test]
+async fn the_archived_term_joins_the_rest_of_the_book_filter() {
+    let (f, _) = plan_support::setup().await;
+    let finished = new_book(&f, "finished").await;
+    new_book(&f, "other").await;
+    archive(&f, finished).await;
+    let filtered = |expr: &str| format!("?$filter={}", expr.replace(' ', "%20"));
+    for (expr, kept) in [
+        ("archived eq true and code eq 'finished'", vec!["finished"]),
+        ("archived eq true and code eq 'other'", vec![]),
+        ("code eq 'finished' and archived eq false", vec![]),
+        ("archived ne true and code eq 'other'", vec!["other"]),
+        ("archived eq true and archived eq false", vec![]),
+    ] {
+        assert_eq!(listed(&f, &filtered(expr)).await, kept, "{expr}");
+    }
+    let (s, b, _) = f
+        .call(
+            "GET",
+            &format!(
+                "/price-books{}",
+                filtered("archived eq true or code eq 'x'")
+            ),
+            json!({}),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(s, 400, "{b}");
+    assert_eq!(b["status"], 400, "a problem body: {b}");
+    assert!(
+        b.to_string().contains("joined only by top-level `and`"),
+        "it says which shapes `archived` takes: {b}"
+    );
+}
+
 /// The refusals: a missing If-Match is 400, a stale one 409 `STALE_REVISION`, an unknown book 404;
 /// a plan revision that is not superseded is `BOOK_IN_PLAN`, a pending price `BOOK_HAS_PENDING`.
 /// A refused archive writes nothing.
@@ -452,20 +669,25 @@ async fn an_archived_books_entries_and_prices_are_read_only() {
         409,
         "BOOK_ARCHIVED",
     );
-    let submitted = f
-        .call(
+    let pending_id = pending_draft["id"].as_str().unwrap();
+    refused(
+        &f.call(
             "POST",
-            &format!("/prices/{}/submit", pending_draft["id"].as_str().unwrap()),
+            &format!("/prices/{pending_id}/submit"),
             json!({}),
             None,
             Some("late-submit"),
         )
-        .await;
-    assert!(
-        submitted.1.to_string().contains("BOOK_ARCHIVED"),
-        "a draft of an archived book is not submitted: {submitted:?}"
+        .await,
+        409,
+        "BOOK_ARCHIVED",
     );
-    assert_ne!(submitted.0, 201, "{submitted:?}");
+    let kept = price_of(&f, entry, pending_id).await;
+    assert_eq!(
+        kept["state"], "draft",
+        "the refused submit wrote nothing: {kept}"
+    );
+    assert!(kept["pending_unit_id"].is_null(), "{kept}");
     let (_, read, tag) = f
         .call(
             "GET",
@@ -539,6 +761,7 @@ async fn unarchive_rereserves_the_live_skus_and_lists_the_others() {
     let book = new_book(&f, "back").await;
     let e1 = door_entry(&f, book, live).await;
     let e2 = door_entry(&f, book, gone).await;
+    let stranded = draft(&f, e2).await;
     let first_receipt = catalog.refs.lock().unwrap()[&e1].0;
     archive(&f, book).await;
     catalog.age(gone, Lifecycle::Retired);
@@ -568,7 +791,113 @@ async fn unarchive_rereserves_the_live_skus_and_lists_the_others() {
         409,
         "ENTRY_REFERENCE_RELEASED",
     );
+    // A draft written before the archive is not submitted either: the prices unit answers the
+    // released entry as the door does.
+    let stranded_id = stranded["id"].as_str().unwrap();
+    refused(
+        &f.call(
+            "POST",
+            &format!("/prices/{stranded_id}/submit"),
+            json!({}),
+            None,
+            Some("released-submit"),
+        )
+        .await,
+        409,
+        "ENTRY_REFERENCE_RELEASED",
+    );
+    let kept = price_of(&f, e2, stranded_id).await;
+    assert_eq!(kept["state"], "draft", "{kept}");
+    assert!(kept["pending_unit_id"].is_null(), "{kept}");
     draft(&f, e1).await;
+}
+
+/// An unarchive that committed is answered as committed (D-522, review RF-P item 4): when the read
+/// of the entries still released fails after the commit, the door answers the unarchived book with
+/// `released_entries` null, and logs the failure; it neither fails nor invents a list. A retry
+/// under the old tag then meets the committed version.
+#[tokio::test]
+async fn an_unarchive_answers_its_book_when_the_released_entries_cannot_be_read() {
+    let (f, catalog) = plan_support::setup().await;
+    let book = new_book(&f, "unread").await;
+    let entry = door_entry(&f, book, catalog.sku(SkuType::Recurring)).await;
+    archive(&f, book).await;
+    // While the door drives the re-reservation, the entry's row stops decoding: the read of the
+    // released entries after the drive fails.
+    let hex = entry.simple().to_string().to_uppercase();
+    *catalog.on_reserve_sql.lock().unwrap() = Some((
+        String::from(&f.dsn),
+        format!(
+            "UPDATE pricing_price_book_entry SET created_at = 'not a time' \
+             WHERE id = '{entry}' OR hex(id) = '{hex}'"
+        ),
+    ));
+    let tag = book_tag(&f, book).await;
+    let (s, b, new_tag) = mark(&f, book, "unarchive", Some(&tag)).await;
+    assert_eq!(s, 200, "the unarchive committed: {b}");
+    assert!(
+        catalog.on_reserve_sql.lock().unwrap().is_none(),
+        "the drive met the hook"
+    );
+    assert!(b["archived_at"].is_null(), "{b}");
+    assert!(
+        b["released_entries"].is_null(),
+        "not read, not invented: {b}"
+    );
+    assert_eq!(new_tag, "\"3\"");
+    refused(
+        &mark(&f, book, "unarchive", Some(&tag)).await,
+        409,
+        "STALE_REVISION",
+    );
+    let (s, again, _) = mark(&f, book, "unarchive", Some(&new_tag)).await;
+    assert_eq!(s, 200, "an unarchived book is answered as it is: {again}");
+}
+
+/// The door drives its ops a few at a time under one deadline for the whole door and leaves the
+/// rest to the ticker (D-522, review RF-P item 3): with Products stalling every release far past
+/// that deadline, the archive still answers within seconds, its entries `released` and their
+/// releases open, and the ticker finishes them once Products answers.
+#[tokio::test]
+async fn the_archive_answers_within_its_deadline_while_products_stalls() {
+    let (f, catalog) = plan_support::setup().await;
+    let book = new_book(&f, "stalled").await;
+    let entries = [
+        door_entry(&f, book, catalog.sku(SkuType::Recurring)).await,
+        door_entry(&f, book, catalog.sku(SkuType::Recurring)).await,
+    ];
+    catalog.stall_releases_ms.store(15_000, Ordering::SeqCst);
+    let started = std::time::Instant::now();
+    archive(&f, book).await;
+    let took = started.elapsed();
+    assert!(
+        took < std::time::Duration::from_secs(10),
+        "the door answered after {took:?}"
+    );
+    for entry in entries {
+        assert_eq!(reference_state(&f, entry).await, "released");
+        assert_eq!(held(&catalog, entry), ReferenceState::Confirmed, "{entry}");
+        let ops = ops_for(&f, entry).await;
+        let release = ops.iter().find(|op| op.kind == "release").unwrap();
+        assert_eq!(release.state, "releasing", "{release:?}");
+    }
+    assert_eq!(
+        catalog.releases(),
+        0,
+        "no release answered within the deadline"
+    );
+
+    catalog.stall_releases_ms.store(0, Ordering::SeqCst);
+    Ticker::new(f.state.clone(), Arc::new(Later), 10, 100)
+        .tick()
+        .await
+        .unwrap();
+    for entry in entries {
+        assert_eq!(held(&catalog, entry), ReferenceState::Released, "{entry}");
+        let ops = ops_for(&f, entry).await;
+        let release = ops.iter().find(|op| op.kind == "release").unwrap();
+        assert_eq!(release.state, "done", "{release:?}");
+    }
 }
 
 /// The release survives a failed drive: with Products down the archive still answers 200, its

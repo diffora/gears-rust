@@ -239,10 +239,12 @@ fn immutable(
 fn price_state(
     row: &crate::infra::storage::entity::price::Model,
 ) -> Result<PriceState, CanonicalError> {
-    match row.state.parse::<crate::domain::price::PriceState>() {
-        Ok(crate::domain::price::PriceState::Approved) => Ok(PriceState::Approved),
-        Ok(crate::domain::price::PriceState::Cancelled) => Ok(PriceState::Cancelled),
-        _ => Err(corrupt(format!(
+    use crate::domain::price::PriceState as Stored;
+    match row.state.parse::<Stored>() {
+        Ok(Stored::Approved) => Ok(PriceState::Approved),
+        Ok(Stored::Cancelled) => Ok(PriceState::Cancelled),
+        // Written out, so a state added to the domain is a compile error here.
+        Ok(Stored::Draft | Stored::Pending | Stored::Rejected) | Err(_) => Err(corrupt(format!(
             "price {}: state {} is not served",
             row.id, row.state
         ))),

@@ -157,10 +157,11 @@ fn attach_book_identity(value: &mut serde_json::Value, books: &BTreeMap<Uuid, se
                 .get("book_id")
                 .and_then(serde_json::Value::as_str)
                 .and_then(|raw| Uuid::parse_str(raw).ok());
+            // A `book` already beside the id is the snapshot's own and is kept.
             if let Some(id) = named
                 && let Some(book) = books.get(&id)
             {
-                map.insert("book".to_owned(), book.clone());
+                map.entry("book").or_insert_with(|| book.clone());
             }
             for child in map.values_mut() {
                 attach_book_identity(child, books);
@@ -1625,3 +1626,6 @@ async fn observe_prices(
     )
     .await
 }
+#[cfg(test)]
+#[path = "approvals_tests.rs"]
+mod tests;

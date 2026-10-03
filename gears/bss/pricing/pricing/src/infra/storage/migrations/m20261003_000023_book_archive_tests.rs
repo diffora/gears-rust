@@ -1,7 +1,8 @@
-//! D-522 on SQLite: 000023 adds the book's archive mark, widens the entry's `reference_state`
-//! with `released` and the reference op's `kind` with `release`, rebuilding the entry's family
-//! and the op table; every row, key, index and trigger survives. `down` restores the previous
-//! shape, and refuses while a row needs the wider sets.
+//! D-522 on SQLite: 000023 adds the book's archive mark, set and cleared as a pair, widens the
+//! entry's `reference_state` with `released` and the reference op's `kind` with `release`,
+//! rebuilding the entry's family and the op table; every row, key, index and trigger survives, and
+//! the rebuilt price keeps 000022's pairings. `down` restores the previous shape, and refuses while
+//! a row needs the wider sets.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use super::Migration;
@@ -223,6 +224,40 @@ async fn sqlite_widens_the_family_keeps_every_row_and_round_trips() {
             .is_empty(),
         "every key still points at its row"
     );
+    // The archive mark is a pair, and the rebuilt price keeps 000022's pairings.
+    for (sql, what) in [
+        (
+            format!(
+                "UPDATE pricing_price_book SET archived_at = '2026-10-03T01:00:00Z' WHERE id = {}",
+                x(BOOK)
+            ),
+            "an archive time with no archiver",
+        ),
+        (
+            format!(
+                "UPDATE pricing_price_book SET archived_by = {} WHERE id = {}",
+                x(AUTHOR),
+                x(BOOK)
+            ),
+            "an archiver with no archive time",
+        ),
+        (
+            format!(
+                "UPDATE pricing_price SET target_price_id = NULL WHERE id = {}",
+                x(CHANGE)
+            ),
+            "a change that names no price",
+        ),
+        (
+            format!(
+                "UPDATE pricing_price SET state = 'cancelled' WHERE id = {}",
+                x(PRICE)
+            ),
+            "a cancelled price that names no unit",
+        ),
+    ] {
+        assert!(try_exec(&db, &sql).await.is_err(), "{what}: {sql}");
+    }
     // The wider sets.
     exec(
         &db,

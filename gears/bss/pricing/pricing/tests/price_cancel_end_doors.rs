@@ -440,12 +440,17 @@ async fn cancelling_a_scheduled_price_reopens_the_predecessor_on_the_next_start(
     assert_eq!(status, 404, "a change row is not a price");
 }
 
-/// Without a later price the predecessor re-opens to open-ended.
+/// Without a later price the predecessor re-opens to open-ended: its end, stored at the cancelled
+/// price's start as normalisation keeps it, goes back to null (review RF-P item 9).
 #[tokio::test]
 async fn cancelling_the_last_scheduled_price_leaves_the_predecessor_open() {
     let world = World::at("2026-02-15").await;
-    let a = world.seed(1, "2026-01-01").await;
+    let a = world.seed_closed(1, "2026-01-01", "2026-03-01").await;
     let b = world.seed(2, "2026-03-01").await;
+    assert_eq!(
+        World::row(&world.prices().await, &a)["effective_to"],
+        "2026-03-01"
+    );
     let change = world.change(b, "cancel", json!({}), "cancel").await;
     let (status, receipt) = world.submit(&change["id"], "submit").await;
     assert_eq!(status, 201, "{receipt}");
@@ -523,14 +528,72 @@ async fn the_cancel_guards_answer_their_codes() {
         "PRICE_CHANGE_PENDING",
     );
 
-    // A price that started between the door and the submit.
+    // A price that starts on the day of the submit has started (review RF-P item 9: the boundary),
+    // and the door refuses it on that day too.
     let draft = world.change(later, "cancel", json!({}), "later").await;
-    world.set_day("2026-06-02");
+    world.set_day("2026-06-01");
     refused(
         &world.submit(&draft["id"], "submit-late").await,
         409,
         "PRICE_NOT_SCHEDULED",
     );
+    refused(
+        &world
+            .call(
+                "POST",
+                &format!("/prices/{later}/cancel"),
+                json!({}),
+                Some("on-its-start"),
+            )
+            .await,
+        409,
+        "PRICE_NOT_SCHEDULED",
+    );
+}
+
+/// A cancel and an end name an approved price and nothing else (review RF-P item 9): a draft, a
+/// price already cancelled, and an applied change row are each refused at the door, the cancel
+/// `PRICE_NOT_SCHEDULED` and the end `PRICE_ALREADY_ENDED`.
+#[tokio::test]
+async fn a_change_names_an_approved_price_and_nothing_else() {
+    let world = World::at("2026-02-15").await;
+    world.seed(1, "2026-01-01").await;
+    let later = world.seed(2, "2026-05-01").await;
+    let draft = world.draft("2031-06-01", "draft").await;
+    let change = world.change(later, "cancel", json!({}), "cancel").await;
+    let (status, receipt) = world.submit(&change["id"], "submit").await;
+    assert_eq!(status, 201, "{receipt}");
+    assert_eq!(receipt["applied"], true);
+    let rows = world.prices().await;
+    assert_eq!(World::row(&rows, &later)["state"], "cancelled");
+    assert_eq!(World::row(&rows, &change["id"])["state"], "approved");
+    let ids = [
+        ("draft", draft.as_str().unwrap().to_owned()),
+        ("cancelled", later.to_string()),
+        ("change row", change["id"].as_str().unwrap().to_owned()),
+    ];
+    for (what, target) in ids {
+        let answer = world
+            .call(
+                "POST",
+                &format!("/prices/{target}/cancel"),
+                json!({}),
+                Some(&format!("cancel-{what}")),
+            )
+            .await;
+        assert_eq!(answer.0, 409, "cancel of a {what}: {}", answer.1);
+        refused(&answer, 409, "PRICE_NOT_SCHEDULED");
+        let answer = world
+            .call(
+                "POST",
+                &format!("/prices/{target}/end"),
+                json!({"effective_to": "2026-04-01"}),
+                Some(&format!("end-{what}")),
+            )
+            .await;
+        assert_eq!(answer.0, 409, "end of a {what}: {}", answer.1);
+        refused(&answer, 409, "PRICE_ALREADY_ENDED");
+    }
 }
 
 /// One unit names a price once: two changes of the same price in one publish are refused.
@@ -582,7 +645,8 @@ async fn a_price_that_starts_before_apply_is_refused_and_the_unit_changes_nothin
     let (status, receipt) = world.publish(&[&set, &cancel["id"]], "publish").await;
     assert_eq!(status, 201, "{receipt}");
     assert_eq!(receipt["applied"], false);
-    world.set_day("2026-03-02");
+    // The apply runs on B's own start: it has started (review RF-P item 9: the boundary).
+    world.set_day("2026-03-01");
     let answer = world.approve_as_reviewer(&receipt, "approve-race").await;
     refused(&answer, 409, "PRICE_ALREADY_STARTED");
     assert!(
@@ -662,6 +726,8 @@ async fn the_end_guards_answer_their_codes() {
     let live = world.seed(1, "2026-01-01").await;
     let scheduled = world.seed(2, "2026-03-01").await;
     let ended = world.seed_ended(3, "2025-01-01", "2026-02-01").await;
+    // Its end is today: it has ended (review RF-P item 9: the boundary).
+    let ends_today = world.seed_ended(4, "2025-06-01", "2026-02-15").await;
     let end = |target: Uuid, to: &'static str, key: &'static str| {
         let world = &world;
         async move {
@@ -707,6 +773,11 @@ async fn the_end_guards_answer_their_codes() {
     );
     refused(
         &end(ended, "2026-03-01", "already-ended").await,
+        409,
+        "PRICE_ALREADY_ENDED",
+    );
+    refused(
+        &end(ends_today, "2026-02-14", "ends-today").await,
         409,
         "PRICE_ALREADY_ENDED",
     );
@@ -763,6 +834,38 @@ async fn an_end_that_is_no_longer_after_today_is_refused_at_apply() {
     let rows = world.prices().await;
     assert_eq!(World::row(&rows, &live)["effective_to"], Value::Null);
     assert_eq!(World::row(&rows, &live)["closed_explicitly"], false);
+}
+
+/// A stored `end` row with no new end is a corrupt row, not a refusal of the author's date (review
+/// RF-P item 6): no door writes one, so the submit that reads it back answers 500, and nothing
+/// changes.
+#[tokio::test]
+async fn a_stored_end_without_its_date_is_a_corrupt_row() {
+    let world = World::at("2026-02-15").await;
+    let live = world.seed(1, "2026-01-01").await;
+    let change = world
+        .change(live, "end", json!({"effective_to": "2026-02-20"}), "end")
+        .await;
+    let id = change["id"].as_str().unwrap().parse::<Uuid>().unwrap();
+    let hex = id.simple().to_string().to_uppercase();
+    let written = Database::connect(&world.f.dsn)
+        .await
+        .unwrap()
+        .execute_raw(Statement::from_string(
+            DbBackend::Sqlite,
+            format!(
+                "UPDATE pricing_price SET effective_to = NULL WHERE id = '{id}' OR hex(id) = '{hex}'"
+            ),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(written.rows_affected(), 1);
+    let (status, body) = world.submit(&change["id"], "submit").await;
+    assert_eq!(status, 500, "{body}");
+    assert!(!code(&body).contains("END_DATE_INVALID"), "{body}");
+    let rows = world.prices().await;
+    assert_eq!(World::row(&rows, &live)["effective_to"], Value::Null);
+    assert_eq!(World::row(&rows, &change["id"])["state"], "draft");
 }
 
 // ------------------------------------------------------------------ the unit (D-393)

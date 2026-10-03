@@ -109,6 +109,19 @@ fn each_set_carries_its_stored_tokens_on_the_wire() {
     assert_eq!(tokens!(PricingResolveSource), ["entry", "sku", "tenant"]);
 }
 
+/// D-522: a reference op's reason is `book_archived`, the token a release op's work stores.
+#[test]
+fn a_reference_op_reason_is_book_archived() {
+    assert_eq!(
+        round_trips(
+            PricingReferenceOpReason::ALL,
+            PricingReferenceOpReason::as_str,
+            PricingReferenceOpReason::stored,
+        ),
+        [crate::infra::reference_work::BOOK_ARCHIVED_REASON]
+    );
+}
+
 #[test]
 fn a_sku_entry_status_carries_priced_scheduled_and_unpriced() {
     assert_eq!(

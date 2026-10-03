@@ -1410,19 +1410,40 @@ async fn price_book_entries_can_be_read_by_id() {
         .map(|_| Uuid::new_v4().to_string())
         .collect::<Vec<_>>()
         .join(",");
-    for (expr, said) in [
-        ("code eq 'EUR'", "code"),
-        (&format!("id in ({left}) or id in ({right})"), "or"),
-        (&format!("id in ({too_many})"), "200"),
-        ("id ne 00000000-0000-0000-0000-000000000001", "in"),
+    // Each refusal by its own description (review RF-P item 9): the problem's `type` URI already
+    // holds "or" and "in", so a substring of the whole body told the refusals apart from nothing.
+    let unparsed = "the filter is `id in (...)`, at most 200 ids: ";
+    for (expr, said, whole) in [
+        ("code eq 'EUR'", unparsed, false),
+        (
+            &format!("id in ({left}) or id in ({right})"),
+            "`or` is not accepted; the filter is `id in (...)`",
+            true,
+        ),
+        (
+            &format!("id in ({too_many})"),
+            "`id in (...)` lists at most 200 ids",
+            true,
+        ),
+        (
+            "id ne 00000000-0000-0000-0000-000000000001",
+            "the filter is `id in (...)`, at most 200 ids",
+            true,
+        ),
     ] {
         let (s, body, _) = get(&f, &filter_query(expr)).await;
         assert_eq!(s, 400, "{expr}: {body}");
-        assert!(body.to_string().contains("QUERY_INVALID"), "{expr}: {body}");
-        assert!(
-            body.to_string().contains(said),
-            "{expr}: want {said} in {body}"
-        );
+        let violation = &body["context"]["field_violations"][0];
+        assert_eq!(violation["reason"], "QUERY_INVALID", "{expr}: {body}");
+        let description = violation["description"].as_str().unwrap();
+        if whole {
+            assert_eq!(description, said, "{expr}: {body}");
+        } else {
+            assert!(
+                description.starts_with(said) && description.len() > said.len(),
+                "{expr}: the parser's own cause follows {said:?}: {body}"
+            );
+        }
     }
     let (s, both, _) = get(
         &f,
@@ -1434,4 +1455,64 @@ async fn price_book_entries_can_be_read_by_id() {
     .await;
     assert_eq!(s, 400, "{both}");
     assert!(both.to_string().contains("QUERY_INVALID"), "{both}");
+}
+
+/// D-517 (review RF-P item 1): the served contract of `GET /price-book-entries` declares `$filter`
+/// as a plain parameter whose description names the two shapes the read accepts. It publishes no
+/// `x-odata-filter`: that table would offer `id ne`, which the read refuses.
+#[tokio::test]
+async fn the_served_id_filter_names_only_what_the_read_accepts() {
+    let (f, _) = setup().await;
+    let openapi = toolkit::api::OpenApiRegistryImpl::new();
+    let _router = bss_pricing::api::rest::authoring::router(f.state, &openapi);
+    let api = serde_json::to_value(
+        openapi
+            .build_openapi(&toolkit::api::OpenApiInfo::default())
+            .unwrap(),
+    )
+    .unwrap();
+    let op = &api["paths"]["/bss-pricing/v1/price-book-entries"]["get"];
+    assert!(op["x-odata-filter"].is_null(), "{op}");
+    let filter = op["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["in"] == "query" && p["name"] == "$filter")
+        .unwrap_or_else(|| panic!("$filter is declared: {op}"));
+    let text = filter["description"].as_str().unwrap();
+    for said in ["`id eq <id>`", "`id in (<id>, ...)`", "200", "8192 bytes"] {
+        assert!(text.contains(said), "the filter says {said}: {text}");
+    }
+}
+
+/// D-517 (review RF-P item 1): a raw `$filter` longer than the toolkit's `MAX_FILTER_LEN` is 400
+/// `QUERY_INVALID` before it is parsed. The filter one byte over is a well-formed `id eq`, which
+/// the read would otherwise answer; the filter at the limit itself is still read.
+#[tokio::test]
+async fn an_id_filter_past_the_length_cap_is_refused_before_it_is_parsed() {
+    let (f, catalog) = setup().await;
+    let eur = book(&f, "b-eur").await;
+    let left = entry(&f, eur, catalog.sku(SkuType::Usage), "usage", None).await;
+    let padded = |len: usize| {
+        let tail = format!("eq {left}");
+        format!("id{}{tail}", " ".repeat(len - 2 - tail.len()))
+    };
+    let limit = toolkit::api::odata::MAX_FILTER_LEN;
+    let at = padded(limit);
+    assert_eq!(at.len(), limit);
+    let (s, page, _) = get(&f, &filter_query(&at)).await;
+    assert_eq!(s, 200, "a filter at the limit is read: {page}");
+    assert_eq!(item_ids(&page), vec![left.to_string()]);
+    let over = padded(limit + 1);
+    assert_eq!(over.len(), limit + 1);
+    let (s, body, _) = get(&f, &filter_query(&over)).await;
+    assert_eq!(s, 400, "{body}");
+    let violation = &body["context"]["field_violations"][0];
+    assert_eq!(violation["reason"], "QUERY_INVALID", "{body}");
+    assert_eq!(violation["field"], "$filter", "{body}");
+    assert_eq!(
+        violation["description"],
+        format!("`$filter` is at most {limit} bytes"),
+        "{body}"
+    );
 }

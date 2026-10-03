@@ -953,8 +953,16 @@ pub(super) fn sku_entries_query(uri: &Uri) -> Result<EntriesRead, CanonicalError
 }
 
 /// `$filter=id in (…)`, 1 to 200 distinct ids (D-517). Any other shape is 400 `QUERY_INVALID`.
+/// This read takes the raw `$filter` itself, so the `OData` extractor's budget does not run: a
+/// filter longer than its `MAX_FILTER_LEN` is refused here, before the parser sees it.
 fn entry_ids(raw: &str) -> Result<Vec<Uuid>, CanonicalError> {
+    use toolkit::api::odata::MAX_FILTER_LEN;
     let refuse = |detail: &str| support::invalid_because("$filter", "QUERY_INVALID", detail);
+    if raw.len() > MAX_FILTER_LEN {
+        return Err(refuse(&format!(
+            "`$filter` is at most {MAX_FILTER_LEN} bytes"
+        )));
+    }
     let node = parse_odata_filter::<EntryIdField>(raw).map_err(|error| {
         refuse(&format!(
             "the filter is `id in (...)`, at most {ID_LIMIT} ids: {error}"

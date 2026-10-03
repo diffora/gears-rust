@@ -30,7 +30,7 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 use toolkit_canonical_errors::CanonicalError;
 use toolkit_db::secure::AccessScope;
@@ -85,6 +85,12 @@ pub struct Catalog {
     /// Products bound its registry to another owner (a wiring error): every system subject,
     /// pricing's own included, is `REFERENCE_OWNER_MISMATCH`.
     pub foreign_owner: AtomicBool,
+    /// Opt-in: a `release` waits this many milliseconds before it answers (a slow Products).
+    /// Zero (the default) answers at once.
+    pub stall_releases_ms: AtomicU64,
+    /// Opt-in, once: the next `reserve` first runs this SQL on this database (DSN, statement), to
+    /// change a row while a door's drive is between its transactions.
+    pub on_reserve_sql: Mutex<Option<(String, String)>>,
 }
 impl Catalog {
     /// Arm the dated reads (see `versions`) and add one published version of a declared SKU.
@@ -265,6 +271,13 @@ impl ReferenceRegistryV1 for Catalog {
         if self.down.load(Ordering::SeqCst) {
             return Err(Self::unavailable());
         }
+        let hook = self.on_reserve_sql.lock().unwrap().take();
+        if let Some((dsn, sql)) = hook {
+            use sea_orm::{ConnectionTrait, Database};
+            let db = Database::connect(dsn.as_str()).await.unwrap();
+            db.execute_unprepared(&sql).await.unwrap();
+            db.close().await.unwrap();
+        }
         self.reserve_kinds.lock().unwrap().push(kind);
         let mut refs = self.refs.lock().unwrap();
         let entry = refs
@@ -304,6 +317,10 @@ impl ReferenceRegistryV1 for Catalog {
         self.reference_denied(ctx)?;
         if self.down.load(Ordering::SeqCst) {
             return Err(Self::unavailable());
+        }
+        let stall = self.stall_releases_ms.load(Ordering::SeqCst);
+        if stall > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(stall)).await;
         }
         self.releases.fetch_add(1, Ordering::SeqCst);
         for item in self.refs.lock().unwrap().values_mut() {

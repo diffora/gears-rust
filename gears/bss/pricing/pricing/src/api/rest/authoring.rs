@@ -428,6 +428,12 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .standard_errors(openapi)
         .error_503(openapi)
         .register(router, openapi);
+    // D-517: `$filter` is declared by hand. This read accepts `id eq` and `id in` only, and
+    // `with_odata_filter` publishes the toolkit's operator table for a uuid field, `eq|ne|in`, so
+    // the contract would offer `ne`, which the read refuses. The exemption from DE0802 sits on this
+    // one route's statement, so the other routes registered here keep the rule (products' browse
+    // door declares its free `$filter` the same way).
+    #[allow(unknown_lints, de0802_use_odata_ext)]
     let router = OperationBuilder::get("/bss-pricing/v1/price-book-entries")
         .operation_id("bss_pricing.list_sku_entries")
         .summary("Where a SKU is priced")
@@ -451,7 +457,7 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
              cursor carries the order and a hash of the plain keys, so a continuation sends no \
              $orderby. `$filter` is `id in (...)` of at most 200 ids, or `id eq` one id, and \
              replaces sku_id; another \
-             field, `or`, `ne`, or more than 200 ids is refused. Refusals: 400 QUERY_INVALID without \
+             field, `or`, `ne`, more than 200 ids, or a filter longer than 8192 bytes is refused. Refusals: 400 QUERY_INVALID without \
              exactly one well-formed sku_id and without that filter, for a repeated key, for any \
              other key, for $select or $count, for sku_id beside $filter, for a malformed \
              book_id, currency, status, changing or limit, or for more than 50 book ids; 400 \
@@ -467,7 +473,13 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
             false,
             "The SKU whose entries are listed. Required unless $filter=id in (...) is sent",
         )
-        .with_odata_filter::<price_book_entries::EntryIdField>()
+        .query_param(
+            "$filter",
+            false,
+            "`id eq <id>` or `id in (<id>, ...)`: 1 to 200 distinct price book entry ids, at most \
+             8192 bytes; replaces sku_id and takes no other key. Another field, `ne`, `or` or \
+             any other shape is 400 QUERY_INVALID",
+        )
         .query_param(
             "book_id",
             false,
@@ -712,8 +724,10 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
              PAIR_RETURN_STALE or CHAIN_MODEL_CHANGED, or END_DATE_INVALID for an end, D-521); \
              409 PRICE_NOT_DRAFT, PRICE_LOCKED_PENDING or UNIT_CONTENDED, or a guard of a cancel \
              or an end (PRICE_NOT_SCHEDULED, PRICE_CHANGE_PENDING, PRICE_BOUND, \
-             PRICE_ALREADY_ENDED, D-520, D-521); 503 REGISTRY_UNAVAILABLE when Products cannot \
-             answer a usage chain's dated metering read (D-402).",
+             PRICE_ALREADY_ENDED, D-520, D-521), or a price of a released entry (BOOK_ARCHIVED \
+             while its book is archived, else ENTRY_REFERENCE_RELEASED, D-522); 503 \
+             REGISTRY_UNAVAILABLE when Products cannot answer a usage chain's dated metering \
+             read (D-402).",
         )
         .tag("Pricing")
         .authenticated()
@@ -825,8 +839,9 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
              for an end (D-521); 409 PRICE_LOCKED_PENDING or UNIT_CONTENDED, or a guard of a \
              cancel or an end (PRICE_NOT_SCHEDULED, PRICE_CHANGE_PENDING when another pending \
              change or the same unit names its price, PRICE_BOUND, PRICE_ALREADY_ENDED, D-520, \
-             D-521); 503 REGISTRY_UNAVAILABLE when Products cannot answer a usage chain's dated \
-             metering read (D-402).",
+             D-521), or a price of a released entry (BOOK_ARCHIVED while its book is archived, \
+             else ENTRY_REFERENCE_RELEASED, D-522); 503 REGISTRY_UNAVAILABLE when Products \
+             cannot answer a usage chain's dated metering read (D-402).",
         )
         .tag("Pricing")
         .authenticated()
@@ -1126,9 +1141,10 @@ async fn cancel_price(
     let key = preconditions::idempotency_key(&headers)?;
     let digest = preconditions::request_digest(&support::empty_body(&body)?)?;
     let request = prices::ChangeRequest {
-        target: id,
-        kind: crate::domain::price::ChangeKind::Cancel,
-        end: None,
+        change: crate::infra::prices::Change::Cancel {
+            id: Uuid::nil(),
+            target: id,
+        },
         today: state.clock.now().date(),
     };
     prices::open_change(
@@ -1168,11 +1184,15 @@ async fn end_price(
     let digest = preconditions::request_digest(&payload)?;
     let input: dto::PricingPriceEnd = preconditions::parse_body(&body)?;
     let end = support::date(Some(input.effective_to), "effective_to")
-        .map_err(|_| support::invalid("effective_to", "END_DATE_INVALID"))?;
+        .ok()
+        .flatten()
+        .ok_or_else(|| support::invalid("effective_to", "END_DATE_INVALID"))?;
     let request = prices::ChangeRequest {
-        target: id,
-        kind: crate::domain::price::ChangeKind::End,
-        end,
+        change: crate::infra::prices::Change::End {
+            id: Uuid::nil(),
+            target: id,
+            end,
+        },
         today: state.clock.now().date(),
     };
     prices::open_change(
@@ -2158,8 +2178,8 @@ fn archive_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
              audit row (D-522): `archived_at` and `archived_by` are set and the version moves. In \
              the same transaction each entry whose reference is confirmed or lost becomes \
              `released`, with a `release` op (reason book_archived) that releases its SKU \
-             reference in Products; the door drives those ops after the commit, and the ticker \
-             finishes what it does not. A SKU that only this book named then stops being \
+             reference in Products; the door drives those ops after the commit, at most 8 at once \
+             and for at most 3 s in all, and the ticker finishes what it does not. A SKU that only this book named then stops being \
              referenced, so it can be retired. The entries and prices stay and are read-only: an \
              entry create or PATCH, a price create, cancel, end or submit, and a plan item naming \
              an entry of the book are 409 BOOK_ARCHIVED. `GET /price-books` leaves an archived \
@@ -2189,10 +2209,12 @@ fn archive_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .description(
             "Clears a book's archive mark at the version the caller read (If-Match), with an audit \
              row (D-522). Each `released` entry gets a `rereserve` op, unless a release or a \
-             re-reservation of it is still open, and the door drives them after the commit. An \
+             re-reservation of it is still open, and the door drives them after the commit (at most \
+             8 at once, for at most 3 s in all; the ticker finishes the rest). An \
              entry whose SKU refuses the new reservation (retired, say) stays `released` and \
              read-only (409 ENTRY_REFERENCE_RELEASED), and the book is unarchived anyway: \
-             `released_entries` lists the entries still released when the answer is built. \
+             `released_entries` lists the entries still released when the answer is built, or is \
+             null when they could not be read after the unarchive committed. \
              Unarchiving a book that is not archived answers it unchanged. Refusals: 403 without \
              the book write grant; 400 for a missing or malformed If-Match; 404; 409 \
              STALE_REVISION.",
@@ -2213,15 +2235,66 @@ fn archive_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .error_503(openapi)
         .register(router, openapi)
 }
-/// Drive each op an archive or an unarchive wrote, as the door's caller; an op the drive leaves
-/// unfinished is durable, and the ticker finishes it (D-522).
+/// How many reference ops an archive or an unarchive drives at once (D-522).
+const DRIVE_CONCURRENCY: usize = 8;
+/// How long an archive or an unarchive waits for all of its drives together (D-522).
+const DRIVE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(3);
+/// Drive the ops an archive or an unarchive wrote, as the door's caller, at most
+/// [`DRIVE_CONCURRENCY`] at once and under one [`DRIVE_DEADLINE`] for the whole door. Each op is
+/// durable: an op the door leaves unfinished, failed or cut off by the deadline, is the ticker's to
+/// finish (D-522). Each drive runs on a task of its own: a drive opens its own transactions, and
+/// toolkit-db refuses a connection to a task that is inside one.
 async fn drive_all(state: &Arc<AuthoringState>, ctx: &SecurityContext, ops: &[Uuid]) {
+    let deadline = tokio::time::Instant::now() + DRIVE_DEADLINE;
+    let mut queue = ops.iter().copied();
+    let mut running = tokio::task::JoinSet::new();
+    let mut finished = 0_usize;
+    loop {
+        let room = DRIVE_CONCURRENCY.saturating_sub(running.len());
+        for op in queue.by_ref().take(room) {
+            running.spawn(drive_one(state.clone(), ctx.clone(), op));
+        }
+        match tokio::time::timeout_at(deadline, running.join_next()).await {
+            Ok(Some(joined)) => {
+                finished += 1;
+                deferred(joined);
+            }
+            // Every op is driven, or the deadline passed.
+            Ok(None) | Err(_) => break,
+        }
+    }
+    let left = ops.len().saturating_sub(finished);
+    if left > 0 {
+        tracing::warn!(
+            left,
+            total = ops.len(),
+            deadline_ms = DRIVE_DEADLINE.as_millis(),
+            "pricing book archive reference work left to the ticker at the door's deadline"
+        );
+    }
+    // Dropping the set aborts the drives still running; their ops stay durable.
+}
+/// One op of [`drive_all`], driven to its end as the door's caller.
+async fn drive_one(
+    state: Arc<AuthoringState>,
+    ctx: SecurityContext,
+    op: Uuid,
+) -> (Uuid, Result<(), CanonicalError>) {
     use crate::infra::reference_work::{self, Caller, WallClock};
-    for op in ops {
-        if let Err(error) =
-            reference_work::drive(state, ctx, *op, Arc::new(WallClock), Caller::Door).await
-        {
+    let driven = reference_work::drive(&state, &ctx, op, Arc::new(WallClock), Caller::Door)
+        .await
+        .map(drop);
+    (op, driven)
+}
+/// Log a drive of [`drive_all`] that did not finish its op: the ticker finishes it.
+fn deferred(joined: Result<(Uuid, Result<(), CanonicalError>), tokio::task::JoinError>) {
+    match joined {
+        Ok((_, Ok(()))) => {}
+        Ok((op, Err(error))) => {
             tracing::warn!(op_id=%op, error=%error, diagnostic=error.diagnostic().unwrap_or_default(), "pricing book archive reference work deferred to the ticker");
+        }
+        Err(error) => {
+            tracing::warn!(error=%error, "pricing book archive reference drive did not finish; the ticker finishes its op");
         }
     }
 }
@@ -2296,10 +2369,19 @@ async fn unarchive_book(
     .await?;
     drive_all(&state, &ctx, &marked.ops).await;
     let tenant = ctx.subject_tenant_id();
-    let released_entries = transaction(&state.db.db(), move |tx| {
+    // The unarchive has committed: a failed read of the entries still released does not make it an
+    // error. The answer says it does not know them (null) rather than invent a list.
+    let released_entries = match transaction(&state.db.db(), move |tx| {
         Box::pin(async move { books::released_entries(tx, tenant, id).await })
     })
-    .await?;
+    .await
+    {
+        Ok(ids) => Some(ids),
+        Err(error) => {
+            tracing::warn!(book_id=%id, error=%error, diagnostic=error.diagnostic().unwrap_or_default(), "pricing book unarchived; its released entries could not be read for the answer");
+            None
+        }
+    };
     let version = preconditions::RowVersion::from_stored(marked.book.version)
         .map_err(CanonicalError::from)?
         .get();

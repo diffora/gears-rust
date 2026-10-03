@@ -188,6 +188,12 @@ closed_set!(
         Done => "done",
     }
 );
+// Read from its stored token, with no `From`: the work record stores the reason as text
+// (`reference_work::BOOK_ARCHIVED_REASON`).
+closed_set!(
+    /// Why a reference op releases its reference (D-522): its entry's book was archived.
+    PricingReferenceOpReason { BookArchived => "book_archived" }
+);
 // Read from its stored token, with no `From`: the domain's `RefKind::Entry` is spelled
 // `price_book_entry`, and the schema publishes a variant's own snake case.
 closed_set!(

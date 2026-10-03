@@ -4,8 +4,9 @@ use crate::api::rest::closed_sets::{
     PricingApprovalKind, PricingBillingTiming, PricingChangeKind, PricingChargeKind,
     PricingDecisionKind, PricingEligibility, PricingEntryReferenceState, PricingItemReferenceState,
     PricingModel, PricingPeriod, PricingPlanChange, PricingPriceState, PricingPriceStatus,
-    PricingReferenceOpKind, PricingReferenceOpRefKind, PricingReferenceOpState,
-    PricingRevisionState, PricingSkuEntryStatus, PricingUnitState, PricingVoteOutcome,
+    PricingReferenceOpKind, PricingReferenceOpReason, PricingReferenceOpRefKind,
+    PricingReferenceOpState, PricingRevisionState, PricingSkuEntryStatus, PricingUnitState,
+    PricingVoteOutcome,
 };
 use crate::domain::plan::{self, EffectiveRevision};
 use crate::infra::plan_revisions::{effective_revisions, stored_revisions};
@@ -66,7 +67,9 @@ impl From<entity::price_book::Model> for PriceBookDto {
 pub struct PricingPriceBookUnarchiveDto {
     #[serde(flatten)]
     pub book: PriceBookDto,
-    pub released_entries: Vec<Uuid>,
+    /// The entries still `released` when the answer is built; null when they could not be read
+    /// after the unarchive committed (the book's entry list says which).
+    pub released_entries: Option<Vec<Uuid>>,
 }
 #[toolkit_macros::api_dto(response)]
 pub struct PricingPriceBookEntryDto {
@@ -1496,12 +1499,20 @@ pub struct PricingReferenceOpDto {
     pub last_error: Option<String>,
     /// Why the op releases its reference: `book_archived` for a `release` (D-522); null for every
     /// other op.
-    pub reason: Option<String>,
+    pub reason: Option<PricingReferenceOpReason>,
 }
 impl TryFrom<entity::reference_op::Model> for PricingReferenceOpDto {
     type Error = RepoError;
     fn try_from(op: entity::reference_op::Model) -> Result<Self, RepoError> {
         let id = op.op_id;
+        // The work record as the drive reads it: one that does not decode is a corrupt row.
+        let work = crate::infra::reference_work::Work::read(&op)
+            .map_err(|_| RepoError::CorruptRow(format!("op {id} work")))?;
+        let reason = work
+            .reason
+            .as_deref()
+            .map(|token| PricingReferenceOpReason::stored(token, &format_args!("op {id} reason")))
+            .transpose()?;
         Ok(Self {
             op_id: id,
             kind: PricingReferenceOpKind::stored(&op.kind, &format_args!("op {id} kind"))?,
@@ -1516,11 +1527,7 @@ impl TryFrom<entity::reference_op::Model> for PricingReferenceOpDto {
             attempts: op.attempts,
             next_attempt_at: op.next_attempt_at,
             last_error: op.last_error,
-            reason: op
-                .outcome
-                .as_deref()
-                .and_then(|work| serde_json::from_str::<serde_json::Value>(work).ok())
-                .and_then(|work| work.get("reason")?.as_str().map(str::to_owned)),
+            reason,
         })
     }
 }

@@ -882,6 +882,48 @@ fn ending_before_the_next_start_closes_there_and_past_it_is_invalid() {
         "END_DATE_INVALID"
     );
 }
+/// D-521 (review RF-P item 9): an explicitly ended price with no successor keeps its explicit end
+/// as its current end: a second end past it is `END_DATE_INVALID`, one before it is accepted, and
+/// with a successor the sooner of the two bounds it.
+#[test]
+fn an_explicit_end_bounds_a_second_end() {
+    let mut ended = price(1, "2026-01-01", None, PriceState::Approved);
+    ended.effective_to = Some(date("2026-02-25"));
+    ended.closed_explicitly = true;
+    let alone = vec![ended.clone()];
+    assert_eq!(
+        end_price(&alone, ended.id, date("2027-01-01"))
+            .unwrap_err()
+            .code,
+        "END_DATE_INVALID"
+    );
+    assert_eq!(
+        end_price(&alone, ended.id, date("2026-02-26"))
+            .unwrap_err()
+            .code,
+        "END_DATE_INVALID"
+    );
+    let sooner = end_price(&alone, ended.id, date("2026-02-20")).unwrap();
+    assert_eq!(sooner.effective_to, Some(date("2026-02-20")));
+    assert_eq!(
+        end_price(&alone, ended.id, date("2026-02-25"))
+            .unwrap()
+            .effective_to,
+        Some(date("2026-02-25")),
+        "the explicit end itself"
+    );
+    let with_next = vec![
+        ended.clone(),
+        price(2, "2026-02-10", None, PriceState::Approved),
+    ];
+    assert_eq!(
+        end_price(&with_next, ended.id, date("2026-02-20"))
+            .unwrap_err()
+            .code,
+        "END_DATE_INVALID",
+        "a successor inside the explicit end bounds it sooner"
+    );
+}
 /// D-520, D-521: a cancel or end row has no window of its own. It shows its state, and once
 /// applied it is `superseded`, whatever the dates it copied: never a price in force.
 #[test]

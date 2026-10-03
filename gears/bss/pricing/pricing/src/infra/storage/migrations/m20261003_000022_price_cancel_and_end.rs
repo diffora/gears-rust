@@ -12,6 +12,12 @@
 //! the approved-start index covers `change_kind = 'set'` only: one price per start, and a change
 //! record never takes that start (D-520).
 //!
+//! Two CHECKs pair the new columns (the branch review): a change names the price it changes and a
+//! price (`set`) names none, `(change_kind = 'set') = (target_price_id IS NULL)`; and a cancelled
+//! price names the unit that cancelled it and no other row names one,
+//! `(state = 'cancelled') = (cancelled_by_unit_id IS NOT NULL)`. Every row before this migration is
+//! a price that is not cancelled, so both hold for it.
+//!
 //! `down()` restores the previous shape. It fails on a database that holds a `cancelled` price
 //! (the state check) or an applied change (the approved-start index); a draft or pending change
 //! row goes back as a plain row.
@@ -35,6 +41,11 @@ const PG_UP: &[&str] = &[
     "ALTER TABLE bss.pricing_price DROP CONSTRAINT pricing_price_state_check",
     "ALTER TABLE bss.pricing_price ADD CONSTRAINT pricing_price_state_check \
      CHECK (state IN ('draft','pending','approved','rejected','cancelled'))",
+    "ALTER TABLE bss.pricing_price \
+     ADD CONSTRAINT pricing_price_change_target_check \
+       CHECK ((change_kind = 'set') = (target_price_id IS NULL)), \
+     ADD CONSTRAINT pricing_price_cancelled_unit_check \
+       CHECK ((state = 'cancelled') = (cancelled_by_unit_id IS NOT NULL))",
     "DROP INDEX bss.pricing_price_approved_start",
     "CREATE UNIQUE INDEX pricing_price_approved_start \
      ON bss.pricing_price (price_book_entry_id, coalesce(dim_value, ''), effective_from) \
@@ -42,6 +53,9 @@ const PG_UP: &[&str] = &[
 ];
 
 const PG_DOWN: &[&str] = &[
+    "ALTER TABLE bss.pricing_price \
+     DROP CONSTRAINT pricing_price_change_target_check, \
+     DROP CONSTRAINT pricing_price_cancelled_unit_check",
     "ALTER TABLE bss.pricing_price DROP CONSTRAINT pricing_price_state_check",
     "ALTER TABLE bss.pricing_price ADD CONSTRAINT pricing_price_state_check \
      CHECK (state IN ('draft','pending','approved','rejected'))",
@@ -76,7 +90,9 @@ const SQLITE_NEW: &str = "CREATE TABLE pricing_price__d520 (
   approved_at text, version integer NOT NULL DEFAULT 1,
   created_at text NOT NULL, updated_at text NOT NULL,
   UNIQUE (price_book_entry_id, version_no), CHECK (dim_value IS NULL OR dim_value <> ''),
-  CHECK (effective_to IS NULL OR effective_from < effective_to)
+  CHECK (effective_to IS NULL OR effective_from < effective_to),
+  CHECK ((change_kind = 'set') = (target_price_id IS NULL)),
+  CHECK ((state = 'cancelled') = (cancelled_by_unit_id IS NOT NULL))
 )";
 
 const SQLITE_OLD: &str = "CREATE TABLE pricing_price__d520_old (
