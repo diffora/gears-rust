@@ -724,8 +724,10 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
              PAIR_RETURN_STALE or CHAIN_MODEL_CHANGED, or END_DATE_INVALID for an end, D-521); \
              409 PRICE_NOT_DRAFT, PRICE_LOCKED_PENDING or UNIT_CONTENDED, or a guard of a cancel \
              or an end (PRICE_NOT_SCHEDULED, PRICE_CHANGE_PENDING, PRICE_BOUND, \
-             PRICE_ALREADY_ENDED, D-520, D-521); 503 REGISTRY_UNAVAILABLE when Products cannot \
-             answer a usage chain's dated metering read (D-402).",
+             PRICE_ALREADY_ENDED, D-520, D-521), or a price of a released entry (BOOK_ARCHIVED \
+             while its book is archived, else ENTRY_REFERENCE_RELEASED, D-522); 503 \
+             REGISTRY_UNAVAILABLE when Products cannot answer a usage chain's dated metering \
+             read (D-402).",
         )
         .tag("Pricing")
         .authenticated()
@@ -837,8 +839,9 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
              for an end (D-521); 409 PRICE_LOCKED_PENDING or UNIT_CONTENDED, or a guard of a \
              cancel or an end (PRICE_NOT_SCHEDULED, PRICE_CHANGE_PENDING when another pending \
              change or the same unit names its price, PRICE_BOUND, PRICE_ALREADY_ENDED, D-520, \
-             D-521); 503 REGISTRY_UNAVAILABLE when Products cannot answer a usage chain's dated \
-             metering read (D-402).",
+             D-521), or a price of a released entry (BOOK_ARCHIVED while its book is archived, \
+             else ENTRY_REFERENCE_RELEASED, D-522); 503 REGISTRY_UNAVAILABLE when Products \
+             cannot answer a usage chain's dated metering read (D-402).",
         )
         .tag("Pricing")
         .authenticated()

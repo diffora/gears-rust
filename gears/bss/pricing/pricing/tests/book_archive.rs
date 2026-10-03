@@ -124,6 +124,27 @@ async fn draft(f: &Fixture, entry: Uuid) -> Value {
     b["items"][0].clone()
 }
 
+/// One price of `entry` as the entry's price list reads it.
+async fn price_of(f: &Fixture, entry: Uuid, price: &str) -> Value {
+    let (s, b, _) = f
+        .call(
+            "GET",
+            &format!("/price-book-entries/{entry}/prices"),
+            json!({}),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(s, 200, "{b}");
+    b["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == price)
+        .unwrap_or_else(|| panic!("{price} is listed: {b}"))
+        .clone()
+}
+
 async fn book_tag(f: &Fixture, book: Uuid) -> String {
     let (s, b, tag) = f
         .call(
@@ -452,20 +473,25 @@ async fn an_archived_books_entries_and_prices_are_read_only() {
         409,
         "BOOK_ARCHIVED",
     );
-    let submitted = f
-        .call(
+    let pending_id = pending_draft["id"].as_str().unwrap();
+    refused(
+        &f.call(
             "POST",
-            &format!("/prices/{}/submit", pending_draft["id"].as_str().unwrap()),
+            &format!("/prices/{pending_id}/submit"),
             json!({}),
             None,
             Some("late-submit"),
         )
-        .await;
-    assert!(
-        submitted.1.to_string().contains("BOOK_ARCHIVED"),
-        "a draft of an archived book is not submitted: {submitted:?}"
+        .await,
+        409,
+        "BOOK_ARCHIVED",
     );
-    assert_ne!(submitted.0, 201, "{submitted:?}");
+    let kept = price_of(&f, entry, pending_id).await;
+    assert_eq!(
+        kept["state"], "draft",
+        "the refused submit wrote nothing: {kept}"
+    );
+    assert!(kept["pending_unit_id"].is_null(), "{kept}");
     let (_, read, tag) = f
         .call(
             "GET",
@@ -539,6 +565,7 @@ async fn unarchive_rereserves_the_live_skus_and_lists_the_others() {
     let book = new_book(&f, "back").await;
     let e1 = door_entry(&f, book, live).await;
     let e2 = door_entry(&f, book, gone).await;
+    let stranded = draft(&f, e2).await;
     let first_receipt = catalog.refs.lock().unwrap()[&e1].0;
     archive(&f, book).await;
     catalog.age(gone, Lifecycle::Retired);
@@ -568,6 +595,24 @@ async fn unarchive_rereserves_the_live_skus_and_lists_the_others() {
         409,
         "ENTRY_REFERENCE_RELEASED",
     );
+    // A draft written before the archive is not submitted either: the prices unit answers the
+    // released entry as the door does.
+    let stranded_id = stranded["id"].as_str().unwrap();
+    refused(
+        &f.call(
+            "POST",
+            &format!("/prices/{stranded_id}/submit"),
+            json!({}),
+            None,
+            Some("released-submit"),
+        )
+        .await,
+        409,
+        "ENTRY_REFERENCE_RELEASED",
+    );
+    let kept = price_of(&f, e2, stranded_id).await;
+    assert_eq!(kept["state"], "draft", "{kept}");
+    assert!(kept["pending_unit_id"].is_null(), "{kept}");
     draft(&f, e1).await;
 }
 
