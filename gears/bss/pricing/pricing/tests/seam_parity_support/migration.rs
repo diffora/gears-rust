@@ -68,7 +68,8 @@ pub async fn upgrade(
             !(name.contains("000018")
                 || name.contains("000019")
                 || name.contains("000020")
-                || name.contains("000021"))
+                || name.contains("000021")
+                || name.contains("000022"))
         })
         .collect();
     let applied = run_migrations_for_testing(&db.db(), prior).await.unwrap();
@@ -79,7 +80,11 @@ pub async fn upgrade(
             .any(|s| s == "m20260929_000017_revision_scheduled")
     );
     assert!(!applied.applied_names.iter().any(|s| {
-        s.contains("000018") || s.contains("000019") || s.contains("000020") || s.contains("000021")
+        s.contains("000018")
+            || s.contains("000019")
+            || s.contains("000020")
+            || s.contains("000021")
+            || s.contains("000022")
     }));
     let catalog = Arc::new(p::Catalog::default());
     let sku = catalog.sku(bss_products_sdk::models::SkuType::Usage);
@@ -148,7 +153,8 @@ pub async fn upgrade(
             "m20260930_000018_usage_rating_policy",
             "m20260930_000019_commercial_receipts",
             "m20261002_000020_plan_summary",
-            "m20261002_000021_policy_references_sku"
+            "m20261002_000021_policy_references_sku",
+            "m20261003_000022_price_cancel_and_end"
         ]
     );
     let f = p::Fixture::on(db, tenant, dsn, catalog).await;

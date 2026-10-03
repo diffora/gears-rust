@@ -29,6 +29,9 @@ pub struct Row {
     pub closed: bool,
     pub temporary_until: Option<&'static str>,
     pub version_no: i32,
+    /// `set` for a price; `cancel` or `end` for a change row naming `target` (D-520, D-521).
+    pub change_kind: &'static str,
+    pub target: Option<Uuid>,
 }
 impl Default for Row {
     fn default() -> Self {
@@ -44,6 +47,8 @@ impl Default for Row {
             closed: false,
             temporary_until: None,
             version_no: 1,
+            change_kind: "set",
+            target: None,
         }
     }
 }
@@ -77,6 +82,9 @@ pub async fn put(f: &Fixture, entry: Uuid, row: Row) -> Uuid {
             temporary_until: row.temporary_until.map(date),
             paired_price_id: None,
             return_of_price_id: None,
+            change_kind: row.change_kind.into(),
+            target_price_id: row.target,
+            cancelled_by_unit_id: None,
             state: row.state.into(),
             pending_unit_id,
             approved_by_unit_id: None,
@@ -335,6 +343,7 @@ pub fn vm_binding() -> bss_pricing_sdk::read::AcceptedBinding {
         minimum_fee: None,
         effective_from: date("2026-10-01"),
         ends_on: None,
+        state: PriceState::Approved,
     };
     price.money_digest = money_digest(&price);
     AcceptedBinding {

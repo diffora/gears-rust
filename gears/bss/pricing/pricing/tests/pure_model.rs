@@ -2,7 +2,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 use bss_pricing::domain::{
     plan::{ReferenceState as PlanReferenceState, RevisionState, Treatment},
-    price::{Eligibility, PriceState},
+    price::{ChangeKind, Eligibility, PriceState},
     price_book_entry::{ChargeKind, Model, OpState, ReferenceState},
     reference_op::{OpKind, RefKind},
 };
@@ -37,9 +37,14 @@ fn enum_check_values_match_migration_text() {
     // carry the enum's vocabulary, not one of them (PT-13).
     pin_both_dialects!(ChargeKind, entry, "charge_kind");
     pin_both_dialects!(Eligibility, price, "eligibility");
-    pin_both_dialects!(PriceState, price, "state");
     pin_both_dialects!(ReferenceState, entry, "reference_state");
     pin_both_dialects!(OpState, op, "state");
+    // D-520 widened `state` and added `change_kind`. 000007 keeps the original four states.
+    // Both new CHECKs are spelled once for Postgres and once for SQLite.
+    let widened =
+        include_str!("../src/infra/storage/migrations/m20261003_000022_price_cancel_and_end.rs");
+    pin_both_dialects!(PriceState, widened, "state");
+    pin_both_dialects!(ChangeKind, widened, "change_kind");
 }
 /// The revision state's CHECK is `m20260929_000017`'s since D-446 widened it with `scheduled`:
 /// Postgres re-adds it, and the `SQLite` family rebuild spells it in the new table.

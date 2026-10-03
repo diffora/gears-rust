@@ -135,6 +135,7 @@ impl Lite {
                 Some(m.name()) != without
                     && m.name() != "m20260930_000018_usage_rating_policy"
                     && !m.name().contains("000021")
+                    && !m.name().contains("000022")
             })
             .collect();
         run_migrations_for_testing(&self.pool().await, chain).await
@@ -705,7 +706,9 @@ async fn the_forward_migration_moves_the_model_to_the_entry_and_keeps_every_row(
     let fresh = Database::connect("sqlite::memory:").await.unwrap();
     let manager = sea_orm_migration::SchemaManager::new(&fresh);
     for migration in schema_dump::name_ordered_chain().into_iter().filter(|m| {
-        m.name() != "m20260930_000018_usage_rating_policy" && !m.name().contains("000021")
+        m.name() != "m20260930_000018_usage_rating_policy"
+            && !m.name().contains("000021")
+            && !m.name().contains("000022")
     }) {
         migration.up(&manager).await.unwrap();
     }

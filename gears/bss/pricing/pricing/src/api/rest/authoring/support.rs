@@ -331,25 +331,29 @@ pub fn approval_failure(error: bss_approval::ApprovalError) -> DoorError {
             source,
         }),
         A::InvalidSubmit { code, field, .. } => match code {
-            "PRICE_NOT_DRAFT" | "ENTRY_REFERENCE_LOST" | "REVISION_NOT_DRAFT" => {
-                conflict(code).into()
-            }
+            "PRICE_NOT_DRAFT"
+            | "ENTRY_REFERENCE_LOST"
+            | "REVISION_NOT_DRAFT"
+            | "PRICE_NOT_SCHEDULED"
+            | "PRICE_CHANGE_PENDING"
+            | "PRICE_BOUND"
+            | "PRICE_ALREADY_ENDED" => conflict(code).into(),
             "REGISTRY_UNAVAILABLE" => unavailable().into(),
             "PRICE_NOT_FOUND" => missing_what("price").into(),
             "REVISION_NOT_FOUND" => missing_what("plan_revision").into(),
             "ENTRY_NOT_FOUND" => missing_entry().into(),
             _ => invalid(&field, code).into(),
         },
-        A::ApplyRefused { code, detail } => {
-            if code == "REGISTRY_UNAVAILABLE" {
-                unavailable().into()
-            } else {
-                PricingResource::aborted(format!("{code}: {detail}"))
-                    .with_reason("APPLY_REFUSED")
-                    .create()
-                    .into()
-            }
-        }
+        A::ApplyRefused { code, detail } => match code {
+            "REGISTRY_UNAVAILABLE" => unavailable().into(),
+            // D-520: the cancel's own race, a price that started between submit and apply, keeps
+            // its code; every other apply refusal is APPLY_REFUSED naming its cause.
+            "PRICE_ALREADY_STARTED" => conflict_because(code, detail).into(),
+            _ => PricingResource::aborted(format!("{code}: {detail}"))
+                .with_reason("APPLY_REFUSED")
+                .create()
+                .into(),
+        },
         A::SodViolation | A::NotSubmitter => PricingResource::permission_denied()
             .with_reason(error.code())
             .create()

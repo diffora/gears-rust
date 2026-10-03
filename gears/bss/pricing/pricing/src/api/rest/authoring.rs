@@ -626,6 +626,61 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
     reason = "one OperationBuilder chain per route keeps every door's contract in one place"
 )]
 fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
+    let router = OperationBuilder::post("/bss-pricing/v1/prices/{id}/cancel")
+        .operation_id("bss_pricing.cancel_price")
+        .summary("Cancel a scheduled price")
+        .description(
+            "Opens a draft cancel of an approved price that has not started (D-520): a price \
+             row with change_kind cancel and target_price_id, which carries the price's money \
+             unchanged and is never a price in force. Submit it as any draft price, with POST \
+             /prices/{id}/submit on the row or the book's publish-changes; the guards run here, \
+             at submit and again at apply. On approval the price becomes cancelled and the price \
+             before it re-opens onto the next start that remains. Refusals: 400 BODY_UNEXPECTED \
+             for a body other than {}; 409 PRICE_NOT_SCHEDULED (not approved, or started), \
+             PRICE_CHANGE_PENDING (another pending change names it), PRICE_BOUND (a consumer's \
+             binding names it: an acceptance whose bindings name the price; keep_for_bound alone \
+             never refuses) or ENTRY_REFERENCE_LOST; the vote that applies the unit answers 409 \
+             PRICE_ALREADY_STARTED when the price started after the submit. The Idempotency-Key \
+             replays the answer.",
+        )
+        .tag("Pricing")
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "Price id")
+        .param(header("Idempotency-Key"))
+        .handler(cancel_price)
+        .json_response_with_schema::<dto::PricingPriceDto>(openapi, StatusCode::CREATED, "Response")
+        .response_header(etag())
+        .standard_errors(openapi)
+        .error_503(openapi)
+        .register(router, openapi);
+    let router = OperationBuilder::post("/bss-pricing/v1/prices/{id}/end")
+        .operation_id("bss_pricing.end_price")
+        .summary("End a live price")
+        .description(
+            "Opens a draft end of an approved price, live or scheduled, that has not ended \
+             (D-521): a price row with change_kind end, target_price_id and the new end, which \
+             carries the price's money unchanged and is never a price in force. effective_to is \
+             after today, after the price's start, and no later than its current end (the next \
+             start, or its own explicit end). Submit it as any draft price; the guards run here, \
+             at submit and again at apply. On approval the price is closed explicitly at that \
+             end, and a successor that starts inside it still ends it at its start (D-390). \
+             Refusals: 400 END_DATE_INVALID; 409 PRICE_CHANGE_PENDING (another pending change \
+             names it), PRICE_ALREADY_ENDED (not approved, or ended) or ENTRY_REFERENCE_LOST. \
+             The Idempotency-Key replays the answer.",
+        )
+        .tag("Pricing")
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "Price id")
+        .json_request::<dto::PricingPriceEnd>(openapi, "Request")
+        .param(header("Idempotency-Key"))
+        .handler(end_price)
+        .json_response_with_schema::<dto::PricingPriceDto>(openapi, StatusCode::CREATED, "Response")
+        .response_header(etag())
+        .standard_errors(openapi)
+        .error_503(openapi)
+        .register(router, openapi);
     let router = OperationBuilder::post("/bss-pricing/v1/prices/{id}/submit")
         .operation_id("bss_pricing.submit_price")
         .summary("Submit a draft price")
@@ -636,9 +691,11 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
              (D-405). It takes no body and no note: a note for the approver travels with \
              publish-changes (D-464). Refusals: 400 BODY_UNEXPECTED for a body with any key; 400 \
              PAIR_SPLIT, or a rule the price breaks at submit (for example WINDOW_START_IN_PAST, \
-             PAIR_RETURN_STALE or CHAIN_MODEL_CHANGED); 409 PRICE_NOT_DRAFT, PRICE_LOCKED_PENDING \
-             or UNIT_CONTENDED; 503 REGISTRY_UNAVAILABLE when Products cannot answer a usage \
-             chain's dated metering read (D-402).",
+             PAIR_RETURN_STALE or CHAIN_MODEL_CHANGED, or END_DATE_INVALID for an end, D-521); \
+             409 PRICE_NOT_DRAFT, PRICE_LOCKED_PENDING or UNIT_CONTENDED, or a guard of a cancel \
+             or an end (PRICE_NOT_SCHEDULED, PRICE_CHANGE_PENDING, PRICE_BOUND, \
+             PRICE_ALREADY_ENDED, D-520, D-521); 503 REGISTRY_UNAVAILABLE when Products cannot \
+             answer a usage chain's dated metering read (D-402).",
         )
         .tag("Pricing")
         .authenticated()
@@ -746,9 +803,12 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
              common effective date, as one prices approval unit; at quorum 0 it applies at once. \
              An optional note for the approver is stored on the unit as submit_note (D-464). \
              Refusals: 400 NOTE_TOO_LONG for a note over 2000 characters, judged before anything \
-             is read; 400 NO_DRAFT_PRICES, PRICE_NOT_IN_BOOK or PAIR_SPLIT; 409 \
-             PRICE_LOCKED_PENDING or UNIT_CONTENDED; 503 REGISTRY_UNAVAILABLE when Products cannot \
-             answer a usage chain's dated metering read (D-402).",
+             is read; 400 NO_DRAFT_PRICES, PRICE_NOT_IN_BOOK or PAIR_SPLIT, or END_DATE_INVALID \
+             for an end (D-521); 409 PRICE_LOCKED_PENDING or UNIT_CONTENDED, or a guard of a \
+             cancel or an end (PRICE_NOT_SCHEDULED, PRICE_CHANGE_PENDING when another pending \
+             change or the same unit names its price, PRICE_BOUND, PRICE_ALREADY_ENDED, D-520, \
+             D-521); 503 REGISTRY_UNAVAILABLE when Products cannot answer a usage chain's dated \
+             metering read (D-402).",
         )
         .tag("Pricing")
         .authenticated()
@@ -875,9 +935,10 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
              scheduled for that date, D-449). The vote's note is at most 2000 characters. \
              Refusals: 400 GENERATION_MISMATCH, UNIT_STALE or NOTE_TOO_LONG; 403 SOD_VIOLATION \
              for the submitter or the author; 409 DUPLICATE_VOTE, UNIT_ALREADY_DECIDED or \
-             APPLY_REFUSED; 503 REGISTRY_UNAVAILABLE when Products cannot answer a read the \
-             applying vote's rules make: a plan revision's checks, or a usage chain's dated \
-             metering (D-402).",
+             APPLY_REFUSED, and PRICE_ALREADY_STARTED when a price the unit cancels started \
+             after its submit (D-520); 503 REGISTRY_UNAVAILABLE when Products cannot answer a \
+             read the applying vote's rules make: a plan revision's checks, or a usage chain's \
+             dated metering (D-402).",
         )
         .tag("Pricing")
         .authenticated()
@@ -1022,6 +1083,90 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .standard_errors(openapi)
         .error_503(openapi)
         .register(router, openapi)
+}
+async fn cancel_price(
+    Extension(state): Extension<Arc<AuthoringState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    ctx: Option<Extension<SecurityContext>>,
+    Path(id): Path<Uuid>,
+    corr: Option<Extension<correlation::CorrelationId>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(ctx)?;
+    let scope = authz::access_scope(
+        &enforcer,
+        &ctx,
+        &resource_types::PRICE,
+        actions::AUTHOR,
+        Some(OwnerTenant(ctx.subject_tenant_id())),
+        None,
+    )
+    .await
+    .map_err(authz_failure)?;
+    let correlation = correlation::require_correlation(corr)?;
+    let key = preconditions::idempotency_key(&headers)?;
+    let digest = preconditions::request_digest(&support::empty_body(&body)?)?;
+    let request = prices::ChangeRequest {
+        target: id,
+        kind: crate::domain::price::ChangeKind::Cancel,
+        end: None,
+        today: state.clock.now().date(),
+    };
+    prices::open_change(
+        &state.db.db(),
+        scope,
+        ctx,
+        correlation,
+        request,
+        key,
+        digest,
+    )
+    .await
+}
+async fn end_price(
+    Extension(state): Extension<Arc<AuthoringState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    ctx: Option<Extension<SecurityContext>>,
+    Path(id): Path<Uuid>,
+    corr: Option<Extension<correlation::CorrelationId>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(ctx)?;
+    let scope = authz::access_scope(
+        &enforcer,
+        &ctx,
+        &resource_types::PRICE,
+        actions::AUTHOR,
+        Some(OwnerTenant(ctx.subject_tenant_id())),
+        None,
+    )
+    .await
+    .map_err(authz_failure)?;
+    let correlation = correlation::require_correlation(corr)?;
+    let key = preconditions::idempotency_key(&headers)?;
+    let payload: serde_json::Value = preconditions::parse_body(&body)?;
+    let digest = preconditions::request_digest(&payload)?;
+    let input: dto::PricingPriceEnd = preconditions::parse_body(&body)?;
+    let end = support::date(Some(input.effective_to), "effective_to")
+        .map_err(|_| support::invalid("effective_to", "END_DATE_INVALID"))?;
+    let request = prices::ChangeRequest {
+        target: id,
+        kind: crate::domain::price::ChangeKind::End,
+        end,
+        today: state.clock.now().date(),
+    };
+    prices::open_change(
+        &state.db.db(),
+        scope,
+        ctx,
+        correlation,
+        request,
+        key,
+        digest,
+    )
+    .await
 }
 async fn submit_price(
     Extension(state): Extension<Arc<AuthoringState>>,
@@ -1720,7 +1865,8 @@ fn price_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
              (for example WINDOW_END_INVALID, WINDOW_START_IN_PAST or \
              TEMPORARY_SPANS_A_CHANGE), or NOTE_TOO_LONG on a note over 2000 characters \
              (D-457); 403 NOT_DRAFT_AUTHOR; 409 PRICE_NOT_DRAFT (the price or \
-             its partner) or STALE_REVISION.",
+             its partner, or a cancel or end row, which is deleted instead, D-520) or \
+             STALE_REVISION.",
         )
         .tag("Pricing")
         .authenticated()

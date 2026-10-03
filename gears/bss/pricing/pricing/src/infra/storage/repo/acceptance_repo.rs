@@ -68,6 +68,42 @@ pub async fn find_business(
         .await
         .map_err(|e| driver_failure("acceptance business lookup".into(), e))
 }
+/// Whether a consumer holds a binding on `price`: an acceptance of the catalog tenant whose
+/// receipt's bindings name it (D-520). These receipts are every binding pricing stores. A hold
+/// freezes its acceptance's bindings and needs that acceptance; a consumer's pins are its own and
+/// pricing stores none.
+///
+/// The receipt is text, so the database narrows the tenant's acceptances to the receipts that
+/// mention the id. Each one is then decoded, and only its bindings count: the same id elsewhere
+/// in a receipt is not a binding. An id is hexadecimal and hyphens, so it holds no `LIKE`
+/// wildcard.
+/// # Errors
+/// Database failure, or a stored receipt that does not decode.
+pub async fn binds_price(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    price: Uuid,
+) -> Result<bool, RepoError> {
+    let mentions = e::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(e::Column::TenantId.eq(tenant))
+                .add(e::Column::ReceiptJson.contains(price.to_string())),
+        )
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure("acceptance binding lookup".into(), e))?;
+    for row in mentions {
+        let receipt = crate::infra::commercial_terms::wire::decode_acceptance(&row.receipt_json)?;
+        if receipt.bindings.iter().any(|b| b.price.price_id == price) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
 /// Build indexed fields from the typed receipt without rehashing issued content.
 /// # Errors
 /// Unsupported version or invalid exact scalar.

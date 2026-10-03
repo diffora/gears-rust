@@ -146,6 +146,8 @@ COLUMN bss.pricing_plan_revision updated_at timestamp with time zone NOT NULL DE
 COLUMN bss.pricing_plan_revision version bigint NOT NULL DEFAULT 1
 COLUMN bss.pricing_price approved_at timestamp with time zone NULL DEFAULT -
 COLUMN bss.pricing_price approved_by_unit_id uuid NULL DEFAULT -
+COLUMN bss.pricing_price cancelled_by_unit_id uuid NULL DEFAULT -
+COLUMN bss.pricing_price change_kind text NOT NULL DEFAULT 'set'::text
 COLUMN bss.pricing_price closed_explicitly boolean NOT NULL DEFAULT false
 COLUMN bss.pricing_price created_at timestamp with time zone NOT NULL DEFAULT -
 COLUMN bss.pricing_price created_by uuid NOT NULL DEFAULT -
@@ -163,6 +165,7 @@ COLUMN bss.pricing_price price_book_entry_id uuid NOT NULL DEFAULT -
 COLUMN bss.pricing_price price_json jsonb NOT NULL DEFAULT -
 COLUMN bss.pricing_price return_of_price_id uuid NULL DEFAULT -
 COLUMN bss.pricing_price state text NOT NULL DEFAULT -
+COLUMN bss.pricing_price target_price_id uuid NULL DEFAULT -
 COLUMN bss.pricing_price temporary_until date NULL DEFAULT -
 COLUMN bss.pricing_price tenant_id uuid NOT NULL DEFAULT -
 COLUMN bss.pricing_price updated_at timestamp with time zone NOT NULL DEFAULT -
@@ -343,6 +346,8 @@ CONSTRAINT bss.pricing_plan_revision pricing_plan_revision_pending_unit_id_fkey 
 CONSTRAINT bss.pricing_plan_revision pricing_plan_revision_pkey PRIMARY KEY (id)
 CONSTRAINT bss.pricing_plan_revision pricing_plan_revision_plan_id_fkey FOREIGN KEY (plan_id) REFERENCES bss.pricing_plan(id)
 CONSTRAINT bss.pricing_price pricing_price_approved_by_unit_id_fkey FOREIGN KEY (approved_by_unit_id) REFERENCES bss.pricing_approval_unit(id)
+CONSTRAINT bss.pricing_price pricing_price_cancelled_by_unit_id_fkey FOREIGN KEY (cancelled_by_unit_id) REFERENCES bss.pricing_approval_unit(id)
+CONSTRAINT bss.pricing_price pricing_price_change_kind_check CHECK ((change_kind = ANY (ARRAY['set'::text, 'cancel'::text, 'end'::text])))
 CONSTRAINT bss.pricing_price pricing_price_check CHECK (((effective_to IS NULL) OR (effective_from < effective_to)))
 CONSTRAINT bss.pricing_price pricing_price_dim_value_check CHECK (((dim_value IS NULL) OR (dim_value <> ''::text)))
 CONSTRAINT bss.pricing_price pricing_price_eligibility_check CHECK ((eligibility = ANY (ARRAY['all'::text, 'new'::text])))
@@ -353,7 +358,8 @@ CONSTRAINT bss.pricing_price pricing_price_pkey PRIMARY KEY (id)
 CONSTRAINT bss.pricing_price pricing_price_price_book_entry_id_fkey FOREIGN KEY (price_book_entry_id) REFERENCES bss.pricing_price_book_entry(id)
 CONSTRAINT bss.pricing_price pricing_price_price_book_entry_id_version_no_key UNIQUE (price_book_entry_id, version_no)
 CONSTRAINT bss.pricing_price pricing_price_return_of_price_id_fkey FOREIGN KEY (return_of_price_id) REFERENCES bss.pricing_price(id)
-CONSTRAINT bss.pricing_price pricing_price_state_check CHECK ((state = ANY (ARRAY['draft'::text, 'pending'::text, 'approved'::text, 'rejected'::text])))
+CONSTRAINT bss.pricing_price pricing_price_state_check CHECK ((state = ANY (ARRAY['draft'::text, 'pending'::text, 'approved'::text, 'rejected'::text, 'cancelled'::text])))
+CONSTRAINT bss.pricing_price pricing_price_target_price_id_fkey FOREIGN KEY (target_price_id) REFERENCES bss.pricing_price(id)
 CONSTRAINT bss.pricing_price_book pricing_price_book_check CHECK (((valid_from IS NULL) OR (valid_until IS NULL) OR (valid_from < valid_until)))
 CONSTRAINT bss.pricing_price_book pricing_price_book_pkey PRIMARY KEY (id)
 CONSTRAINT bss.pricing_price_book pricing_price_book_tenant_id_code_key UNIQUE (tenant_id, code)
@@ -426,7 +432,7 @@ INDEX bss pricing_plan_revision_open CREATE UNIQUE INDEX pricing_plan_revision_o
 INDEX bss pricing_plan_revision_pkey CREATE UNIQUE INDEX pricing_plan_revision_pkey ON bss.pricing_plan_revision USING btree (id)
 INDEX bss pricing_plan_revision_published CREATE UNIQUE INDEX pricing_plan_revision_published ON bss.pricing_plan_revision USING btree (plan_id) WHERE (state = 'published'::text)
 INDEX bss pricing_plan_revision_scheduled CREATE UNIQUE INDEX pricing_plan_revision_scheduled ON bss.pricing_plan_revision USING btree (plan_id) WHERE (state = 'scheduled'::text)
-INDEX bss pricing_price_approved_start CREATE UNIQUE INDEX pricing_price_approved_start ON bss.pricing_price USING btree (price_book_entry_id, COALESCE(dim_value, ''::text), effective_from) WHERE (state = 'approved'::text)
+INDEX bss pricing_price_approved_start CREATE UNIQUE INDEX pricing_price_approved_start ON bss.pricing_price USING btree (price_book_entry_id, COALESCE(dim_value, ''::text), effective_from) WHERE ((state = 'approved'::text) AND (change_kind = 'set'::text))
 INDEX bss pricing_price_book_entry_key CREATE UNIQUE INDEX pricing_price_book_entry_key ON bss.pricing_price_book_entry USING btree (book_id, sku_id, charge_kind, COALESCE(period, ''::text), model, COALESCE(usage_policy_digest, ''::text))
 INDEX bss pricing_price_book_entry_pkey CREATE UNIQUE INDEX pricing_price_book_entry_pkey ON bss.pricing_price_book_entry USING btree (id)
 INDEX bss pricing_price_book_pkey CREATE UNIQUE INDEX pricing_price_book_pkey ON bss.pricing_price_book USING btree (id)

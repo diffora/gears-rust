@@ -66,7 +66,8 @@ async fn review_migration_18_preserves_every_original_clause() {
             !(name.contains("000018")
                 || name.contains("000019")
                 || name.contains("000020")
-                || name.contains("000021"))
+                || name.contains("000021")
+                || name.contains("000022"))
         })
         .collect();
     run_migrations_for_testing(&db.db(), prior).await.unwrap();

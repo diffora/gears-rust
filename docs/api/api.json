@@ -11027,6 +11027,15 @@
         ],
         "type": "object"
       },
+      "PricingChangeKind": {
+        "description": "What a price row asks the prices unit to do (D-520, D-521). `set` is a price.",
+        "enum": [
+          "set",
+          "cancel",
+          "end"
+        ],
+        "type": "string"
+      },
       "PricingChargeKind": {
         "description": "An entry's charge kind.",
         "enum": [
@@ -11375,7 +11384,7 @@
         "type": "string"
       },
       "PricingPinnedPriceDto": {
-        "description": "`GET /prices/{id}`: one approved price as stored, served forever whatever its window (D-422),\nwith its entry's SKU, charge kind and period and its book's currency. Stored facts only: no\ndisplay status or other value computed from today, and no authoring internals.",
+        "description": "`GET /prices/{id}`: one approved price as stored, served forever whatever its window (D-422),\nwith its entry's SKU, charge kind and period and its book's currency, or a cancelled one\n(D-520). Stored facts only: no value computed from today, and no authoring internals.",
         "properties": {
           "approved_at": {
             "format": "date-time",
@@ -11479,6 +11488,17 @@
           "sku_id": {
             "format": "uuid",
             "type": "string"
+          },
+          "status": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PricingPriceStatus",
+                "description": "`cancelled` for a price cancelled before it started, the entry list's token (D-520): a\nstored fact, the same on every day. Absent on an approved price, whose display status\ndepends on the day, which this read never computes (D-422)."
+              }
+            ]
           },
           "temporary_until": {
             "type": [
@@ -12944,6 +12964,18 @@
               "null"
             ]
           },
+          "cancelled_by_unit_id": {
+            "description": "The unit that cancelled this price, when `state` is `cancelled` (D-520).",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "change_kind": {
+            "$ref": "#/components/schemas/PricingChangeKind",
+            "description": "`set` for a price; `cancel` or `end` for a row that asks to cancel or end the approved\nprice `target_price_id` names (D-520, D-521). Such a row carries that price's money\nunchanged and is never a price in force."
+          },
           "closed_explicitly": {
             "type": "boolean"
           },
@@ -13027,7 +13059,15 @@
           },
           "status": {
             "$ref": "#/components/schemas/PricingPriceStatus",
-            "description": "Display state of matrix row 10: an approved price shows where its window stands today."
+            "description": "Display state of matrix row 10: an approved price shows where its window stands today.\nA cancelled price shows `cancelled` (D-520). A `cancel` or `end` row shows its state, and\n`superseded` once applied (D-520, D-521)."
+          },
+          "target_price_id": {
+            "description": "The approved price a `cancel` or `end` row names; null on a `set` row.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "temporary_until": {
             "type": [
@@ -13064,11 +13104,26 @@
           "keep_for_bound",
           "closed_explicitly",
           "state",
+          "change_kind",
           "status",
           "created_by",
           "version",
           "created_at",
           "updated_at"
+        ],
+        "type": "object"
+      },
+      "PricingPriceEnd": {
+        "additionalProperties": false,
+        "description": "`POST /prices/{id}/end` (D-521).",
+        "properties": {
+          "effective_to": {
+            "description": "The new end, `YYYY-MM-DD`, exclusive: after today, after the price's start, and no later\nthan its current end.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "effective_to"
         ],
         "type": "object"
       },
@@ -13123,19 +13178,21 @@
           "draft",
           "pending",
           "approved",
-          "rejected"
+          "rejected",
+          "cancelled"
         ],
         "type": "string"
       },
       "PricingPriceStatus": {
-        "description": "A price's display state (matrix row 10): an approved price shows where its window stands.",
+        "description": "A price's display state (matrix row 10): an approved price shows where its window stands.\nA cancelled price shows `cancelled` (D-520).",
         "enum": [
           "draft",
           "pending",
           "rejected",
           "scheduled",
           "active",
-          "superseded"
+          "superseded",
+          "cancelled"
         ],
         "type": "string"
       },
@@ -37467,7 +37524,7 @@
     },
     "/bss-pricing/v1/approval-units/{id}/approve": {
       "post": {
-        "description": "Records an approving vote on the generation the reviewer saw; the vote that reaches the quorum applies the unit (a plan revision whose sale date is after today is scheduled for that date, D-449). The vote's note is at most 2000 characters. Refusals: 400 GENERATION_MISMATCH, UNIT_STALE or NOTE_TOO_LONG; 403 SOD_VIOLATION for the submitter or the author; 409 DUPLICATE_VOTE, UNIT_ALREADY_DECIDED or APPLY_REFUSED; 503 REGISTRY_UNAVAILABLE when Products cannot answer a read the applying vote's rules make: a plan revision's checks, or a usage chain's dated metering (D-402).",
+        "description": "Records an approving vote on the generation the reviewer saw; the vote that reaches the quorum applies the unit (a plan revision whose sale date is after today is scheduled for that date, D-449). The vote's note is at most 2000 characters. Refusals: 400 GENERATION_MISMATCH, UNIT_STALE or NOTE_TOO_LONG; 403 SOD_VIOLATION for the submitter or the author; 409 DUPLICATE_VOTE, UNIT_ALREADY_DECIDED or APPLY_REFUSED, and PRICE_ALREADY_STARTED when a price the unit cancels started after its submit (D-520); 503 REGISTRY_UNAVAILABLE when Products cannot answer a read the applying vote's rules make: a plan revision's checks, or a usage chain's dated metering (D-402).",
         "operationId": "bss_pricing.approve_unit",
         "parameters": [
           {
@@ -43200,7 +43257,7 @@
         ]
       },
       "post": {
-        "description": "Submits the book's draft prices, all of them or the listed price_ids, optionally on a common effective date, as one prices approval unit; at quorum 0 it applies at once. An optional note for the approver is stored on the unit as submit_note (D-464). Refusals: 400 NOTE_TOO_LONG for a note over 2000 characters, judged before anything is read; 400 NO_DRAFT_PRICES, PRICE_NOT_IN_BOOK or PAIR_SPLIT; 409 PRICE_LOCKED_PENDING or UNIT_CONTENDED; 503 REGISTRY_UNAVAILABLE when Products cannot answer a usage chain's dated metering read (D-402).",
+        "description": "Submits the book's draft prices, all of them or the listed price_ids, optionally on a common effective date, as one prices approval unit; at quorum 0 it applies at once. An optional note for the approver is stored on the unit as submit_note (D-464). Refusals: 400 NOTE_TOO_LONG for a note over 2000 characters, judged before anything is read; 400 NO_DRAFT_PRICES, PRICE_NOT_IN_BOOK or PAIR_SPLIT, or END_DATE_INVALID for an end (D-521); 409 PRICE_LOCKED_PENDING or UNIT_CONTENDED, or a guard of a cancel or an end (PRICE_NOT_SCHEDULED, PRICE_CHANGE_PENDING when another pending change or the same unit names its price, PRICE_BOUND, PRICE_ALREADY_ENDED, D-520, D-521); 503 REGISTRY_UNAVAILABLE when Products cannot answer a usage chain's dated metering read (D-402).",
         "operationId": "bss_pricing.publish_changes",
         "parameters": [
           {
@@ -43456,7 +43513,7 @@
         ]
       },
       "get": {
-        "description": "Returns an approved price of the tenant with its original money whatever its window (closed, followed by a later price, kept for bound subscriptions), with its entry's SKU, charge kind, period, book and currency: stored facts only. A draft, pending, rejected, unknown or foreign price is one and the same 404; an id that is not an id is 400 ID_INVALID.",
+        "description": "Returns an approved price of the tenant, or a cancelled one (D-520), with its original money whatever its window, with its entry's SKU, charge kind, period, book and currency: stored facts only. A cancelled price carries status `cancelled`; an approved one carries no status, since its display status depends on the day (D-422). A draft, pending, rejected, unknown or foreign price is one and the same 404; an id that is not an id is 400 ID_INVALID.",
         "operationId": "bss_pricing.get_price",
         "parameters": [
           {
@@ -43572,7 +43629,7 @@
         ]
       },
       "patch": {
-        "description": "Changes an unlocked draft price of its author at the version the author read (If-Match). The temporary half of a draft takes effective_from and temporary_until: its pair is built again over the new dates in the same transaction (D-443) - its return re-derived in place, deleted when the chain's next price starts on the new end or nothing of the chain is in force there, or created when a price is to be returned to - and both halves are judged as the create judges them; the answer is the edited price, its paired_price_id naming its partner now, or null. A return's own dates, a temporary price's chain (dim_value), an end on any other price and a null end are 400 TEMPORARY_PRICE_FIXED. Refusals: 400 for a rule the change breaks (for example WINDOW_END_INVALID, WINDOW_START_IN_PAST or TEMPORARY_SPANS_A_CHANGE), or NOTE_TOO_LONG on a note over 2000 characters (D-457); 403 NOT_DRAFT_AUTHOR; 409 PRICE_NOT_DRAFT (the price or its partner) or STALE_REVISION.",
+        "description": "Changes an unlocked draft price of its author at the version the author read (If-Match). The temporary half of a draft takes effective_from and temporary_until: its pair is built again over the new dates in the same transaction (D-443) - its return re-derived in place, deleted when the chain's next price starts on the new end or nothing of the chain is in force there, or created when a price is to be returned to - and both halves are judged as the create judges them; the answer is the edited price, its paired_price_id naming its partner now, or null. A return's own dates, a temporary price's chain (dim_value), an end on any other price and a null end are 400 TEMPORARY_PRICE_FIXED. Refusals: 400 for a rule the change breaks (for example WINDOW_END_INVALID, WINDOW_START_IN_PAST or TEMPORARY_SPANS_A_CHANGE), or NOTE_TOO_LONG on a note over 2000 characters (D-457); 403 NOT_DRAFT_AUTHOR; 409 PRICE_NOT_DRAFT (the price or its partner, or a cancel or end row, which is deleted instead, D-520) or STALE_REVISION.",
         "operationId": "bss_pricing.patch_price",
         "parameters": [
           {
@@ -43716,9 +43773,290 @@
         ]
       }
     },
+    "/bss-pricing/v1/prices/{id}/cancel": {
+      "post": {
+        "description": "Opens a draft cancel of an approved price that has not started (D-520): a price row with change_kind cancel and target_price_id, which carries the price's money unchanged and is never a price in force. Submit it as any draft price, with POST /prices/{id}/submit on the row or the book's publish-changes; the guards run here, at submit and again at apply. On approval the price becomes cancelled and the price before it re-opens onto the next start that remains. Refusals: 400 BODY_UNEXPECTED for a body other than {}; 409 PRICE_NOT_SCHEDULED (not approved, or started), PRICE_CHANGE_PENDING (another pending change names it), PRICE_BOUND (a consumer's binding names it: an acceptance whose bindings name the price; keep_for_bound alone never refuses) or ENTRY_REFERENCE_LOST; the vote that applies the unit answers 409 PRICE_ALREADY_STARTED when the price started after the submit. The Idempotency-Key replays the answer.",
+        "operationId": "bss_pricing.cancel_price",
+        "parameters": [
+          {
+            "description": "Price id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Required authoring precondition",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PricingPriceDto"
+                }
+              }
+            },
+            "description": "Response",
+            "headers": {
+              "ETag": {
+                "description": "The version to send back as If-Match",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Cancel a scheduled price",
+        "tags": [
+          "Pricing"
+        ]
+      }
+    },
+    "/bss-pricing/v1/prices/{id}/end": {
+      "post": {
+        "description": "Opens a draft end of an approved price, live or scheduled, that has not ended (D-521): a price row with change_kind end, target_price_id and the new end, which carries the price's money unchanged and is never a price in force. effective_to is after today, after the price's start, and no later than its current end (the next start, or its own explicit end). Submit it as any draft price; the guards run here, at submit and again at apply. On approval the price is closed explicitly at that end, and a successor that starts inside it still ends it at its start (D-390). Refusals: 400 END_DATE_INVALID; 409 PRICE_CHANGE_PENDING (another pending change names it), PRICE_ALREADY_ENDED (not approved, or ended) or ENTRY_REFERENCE_LOST. The Idempotency-Key replays the answer.",
+        "operationId": "bss_pricing.end_price",
+        "parameters": [
+          {
+            "description": "Price id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Required authoring precondition",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PricingPriceEnd"
+              }
+            }
+          },
+          "description": "Request",
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PricingPriceDto"
+                }
+              }
+            },
+            "description": "Response",
+            "headers": {
+              "ETag": {
+                "description": "The version to send back as If-Match",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "End a live price",
+        "tags": [
+          "Pricing"
+        ]
+      }
+    },
     "/bss-pricing/v1/prices/{id}/submit": {
       "post": {
-        "description": "Puts one draft price into a prices approval unit; at quorum 0 the unit applies at once. A half of a temporary pair is not submitted alone: it is 400 PAIR_SPLIT, and the pair goes through POST /price-books/{id}/publish-changes, which completes it (D-405). It takes no body and no note: a note for the approver travels with publish-changes (D-464). Refusals: 400 BODY_UNEXPECTED for a body with any key; 400 PAIR_SPLIT, or a rule the price breaks at submit (for example WINDOW_START_IN_PAST, PAIR_RETURN_STALE or CHAIN_MODEL_CHANGED); 409 PRICE_NOT_DRAFT, PRICE_LOCKED_PENDING or UNIT_CONTENDED; 503 REGISTRY_UNAVAILABLE when Products cannot answer a usage chain's dated metering read (D-402).",
+        "description": "Puts one draft price into a prices approval unit; at quorum 0 the unit applies at once. A half of a temporary pair is not submitted alone: it is 400 PAIR_SPLIT, and the pair goes through POST /price-books/{id}/publish-changes, which completes it (D-405). It takes no body and no note: a note for the approver travels with publish-changes (D-464). Refusals: 400 BODY_UNEXPECTED for a body with any key; 400 PAIR_SPLIT, or a rule the price breaks at submit (for example WINDOW_START_IN_PAST, PAIR_RETURN_STALE or CHAIN_MODEL_CHANGED, or END_DATE_INVALID for an end, D-521); 409 PRICE_NOT_DRAFT, PRICE_LOCKED_PENDING or UNIT_CONTENDED, or a guard of a cancel or an end (PRICE_NOT_SCHEDULED, PRICE_CHANGE_PENDING, PRICE_BOUND, PRICE_ALREADY_ENDED, D-520, D-521); 503 REGISTRY_UNAVAILABLE when Products cannot answer a usage chain's dated metering read (D-402).",
         "operationId": "bss_pricing.submit_price",
         "parameters": [
           {

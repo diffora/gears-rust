@@ -27,6 +27,8 @@ fn declared_paths() -> Routes {
         ("POST", "/bss-pricing/v1/price-book-entries/{id}/prices"),
         ("PATCH", "/bss-pricing/v1/prices/{id}"),
         ("DELETE", "/bss-pricing/v1/prices/{id}"),
+        ("POST", "/bss-pricing/v1/prices/{id}/cancel"),
+        ("POST", "/bss-pricing/v1/prices/{id}/end"),
         ("POST", "/bss-pricing/v1/prices/{id}/submit"),
         ("GET", "/bss-pricing/v1/price-books/{id}/publish-changes"),
         ("POST", "/bss-pricing/v1/price-books/{id}/publish-changes"),
@@ -94,6 +96,8 @@ fn idempotency_key_routes() -> Routes {
         ("POST", "/bss-pricing/v1/price-books"),
         ("POST", "/bss-pricing/v1/price-books/{id}/entries"),
         ("POST", "/bss-pricing/v1/price-book-entries/{id}/prices"),
+        ("POST", "/bss-pricing/v1/prices/{id}/cancel"),
+        ("POST", "/bss-pricing/v1/prices/{id}/end"),
         ("POST", "/bss-pricing/v1/prices/{id}/submit"),
         ("POST", "/bss-pricing/v1/price-books/{id}/publish-changes"),
         ("POST", "/bss-pricing/v1/approval-units/{id}/approve"),
@@ -125,7 +129,7 @@ async fn the_registered_route_set_is_exactly_the_declared_paths() {
         .collect();
     assert_eq!(registered, declared_paths());
     assert_eq!(census::source_routes(), registered);
-    assert_eq!(registered.len(), 56);
+    assert_eq!(registered.len(), 58);
     assert!(router.has_routes());
 }
 
@@ -185,7 +189,7 @@ fn every_precondition_reading_route_is_in_the_precondition_census() {
     );
     for (needle, control, production) in [
         ("preconditions::if_match(", 1, 13),
-        ("preconditions::idempotency_key(", 1, 14),
+        ("preconditions::idempotency_key(", 1, 16),
         ("Query<", 1, 0),
         // + 1: plan_items::delete answers 204 below its door; + 16: the plan and revision doors
         // (eight registrations and the statuses their handlers and operations answer); + 6: the
@@ -209,8 +213,8 @@ fn every_precondition_reading_route_is_in_the_precondition_census() {
         // plans counts (D-485), its registration and its 200 answer. D-518 kept the sum for the
         // three list reads (each registration's 304, each handler's 200 now answered by
         // `respond`); + 3: the settings read's 304 registration and `revalidate_version`'s 200
-        // check and 304 answer.
-        ("StatusCode::", 2, 115),
+        // check and 304 answer; + 3: the cancel and end draft doors (D-520, D-521).
+        ("StatusCode::", 2, 118),
     ] {
         assert_eq!(census::count_in_functions(census::CONTROL, needle), control);
         assert_eq!(census::production_count(needle), production, "{needle}");
@@ -270,6 +274,8 @@ fn etag_routes() -> Routes {
         ("PUT", "/bss-pricing/v1/approval-policy"),
         ("DELETE", "/bss-pricing/v1/approval-policy/{kind}"),
         ("POST", "/bss-pricing/v1/price-book-entries/{id}/prices"),
+        ("POST", "/bss-pricing/v1/prices/{id}/cancel"),
+        ("POST", "/bss-pricing/v1/prices/{id}/end"),
         ("PATCH", "/bss-pricing/v1/prices/{id}"),
         ("POST", "/bss-pricing/v1/plans"),
         ("PATCH", "/bss-pricing/v1/plans/{id}"),
@@ -315,7 +321,7 @@ async fn every_operation_has_a_human_summary_and_a_description() {
         assert_ne!(description, summary, "{id}");
         described += 1;
     }
-    assert_eq!(described, 56);
+    assert_eq!(described, 58);
 }
 
 /// Every answer that sets an `ETag` declares the header on its success response, and nothing else
@@ -354,9 +360,9 @@ async fn every_answer_that_sets_an_etag_declares_it() {
         })
         .count();
     assert_eq!(
-        anywhere, 34,
+        anywhere, 36,
         "only the success answer of those ops declares it, plus the 304 of the three list reads \
-         and of the settings read"
+         and of the settings read, and the 201 of the cancel and end drafts"
     );
 }
 
@@ -403,6 +409,8 @@ async fn no_operation_declares_a_422() {
 // POST /price-book-entries/{id}/prices price:author false true
 // PATCH /prices/{id} price:author true false
 // DELETE /prices/{id} price:author true false
+// POST /prices/{id}/cancel price:author false true
+// POST /prices/{id}/end price:author false true
 
 // Run-4 approvals: method | path | resource:action | If-Match | Idempotency-Key
 // POST /prices/{id}/submit price:submit false true

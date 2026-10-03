@@ -188,7 +188,9 @@ impl toolkit_db::outbox::LeasedMessageHandler for PendingProducer {
 }
 
 // @cpt-begin:cpt-cf-bss-pricing-algo-read-contract-events-typed-events:p1:inst-read-contract-events-typed-events-1
-/// One price a `prices` unit approved, with the window the chain was approved with.
+/// One price whose window or state a `prices` unit's apply changed, as the apply left it: a price
+/// the unit approved, a price before it whose end the chain re-closed or re-opened, a price the
+/// unit cancelled or ended (D-520, D-521).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PublishedPrice {
@@ -203,16 +205,22 @@ pub struct PublishedPrice {
     pub effective_to: Option<String>,
     /// `all` or `new`.
     pub eligibility: String,
+    /// The price's stored state after the apply: `approved`, or `cancelled` for a price the unit
+    /// cancelled, which is in no chain and never in force (D-520). Additive: an event written
+    /// before it has none, and none is not written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
 }
 
-/// A `prices` unit was applied: its prices are approved in the book.
+/// A `prices` unit was applied: its prices are approved in the book, and every price whose window
+/// or state the apply changed is listed with it (D-520, D-521).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PricesPublished {
     pub tenant_id: Uuid,
     pub book_id: Uuid,
     pub unit_id: Uuid,
-    /// In ascending price id.
+    /// In ascending price id. Never a `cancel` or `end` row: those are records, not prices.
     pub prices: Vec<PublishedPrice>,
     /// The principal whose act applied the unit.
     pub actor_ref: Uuid,

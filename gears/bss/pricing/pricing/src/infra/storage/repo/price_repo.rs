@@ -1,6 +1,9 @@
 //! Scoped price persistence with conditional versions.
 use super::{driver_failure, map_unique, matched};
-use crate::domain::{price::PriceState, price_book_entry::ReferenceState};
+use crate::domain::{
+    price::{ChangeKind, PriceState},
+    price_book_entry::ReferenceState,
+};
 use crate::infra::storage::{RepoError, entity::price as e};
 use sea_orm::sea_query::{Expr, ExprTrait};
 use sea_orm::{ColumnTrait, Condition, EntityTrait, Order, QuerySelect, Set};
@@ -8,6 +11,15 @@ use toolkit_db::secure::{
     AccessScope, DBRunner, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
 };
 use uuid::Uuid;
+/// A `set` row: a price of its chain, not a `cancel` or an `end` that names one (D-520, D-521).
+/// Only these rows are judged, counted, normalised or resolved as prices.
+#[must_use]
+pub fn is_price(m: &e::Model) -> bool {
+    m.change_kind == ChangeKind::Set.as_str()
+}
+fn prices_only() -> sea_orm::sea_query::SimpleExpr {
+    e::Column::ChangeKind.eq(ChangeKind::Set.as_str())
+}
 fn key(tenant: Uuid, id: Uuid) -> Condition {
     Condition::all()
         .add(e::Column::TenantId.eq(tenant))
@@ -49,6 +61,9 @@ pub async fn insert(
         paired_price_id: Set(m.paired_price_id),
         return_of_price_id: Set(m.return_of_price_id),
         state: Set(m.state),
+        change_kind: Set(m.change_kind),
+        target_price_id: Set(m.target_price_id),
+        cancelled_by_unit_id: Set(m.cancelled_by_unit_id),
         pending_unit_id: Set(m.pending_unit_id),
         approved_by_unit_id: Set(m.approved_by_unit_id),
         note: Set(m.note),
@@ -279,7 +294,8 @@ pub async fn count_by_entry_and_state(
         .filter(
             Condition::all()
                 .add(e::Column::TenantId.eq(tenant))
-                .add(e::Column::PriceBookEntryId.is_in(entries.iter().copied())),
+                .add(e::Column::PriceBookEntryId.is_in(entries.iter().copied()))
+                .add(prices_only()),
         )
         .project_all(runner, |q| {
             q.select_only()
@@ -336,6 +352,7 @@ pub async fn count_by_book_and_state(
         .filter(
             Condition::all()
                 .add(e::Column::TenantId.eq(tenant))
+                .add(prices_only())
                 .add(Expr::col((entry::Entity, entry::Column::TenantId)).eq(tenant))
                 .add(
                     Expr::col((entry::Entity, entry::Column::BookId)).is_in(books.iter().copied()),
@@ -386,6 +403,7 @@ pub async fn count_by_key_and_value(
         .filter(
             Condition::all()
                 .add(e::Column::TenantId.eq(tenant))
+                .add(prices_only())
                 .add(e::Column::DimValue.is_not_null())
                 .add(Expr::col((entry::Entity, entry::Column::TenantId)).eq(tenant))
                 .add(Expr::col((entry::Entity, entry::Column::DimensionKey)).is_not_null()),
@@ -429,6 +447,7 @@ pub async fn default_chain(
                     PriceState::Pending.as_str(),
                     PriceState::Draft.as_str(),
                 ]))
+                .add(prices_only())
                 .add(e::Column::DimValue.is_null()),
         )
         .order_by(e::Column::Id, Order::Asc)
@@ -801,5 +820,76 @@ pub async fn set_window(
         .exec(runner)
         .await
         .map_err(|e| map_unique("re-close price".into(), e))?;
+    matched(result.rows_affected, "STALE_REVISION")
+}
+/// Cancel an approved price at the version the caller read: it becomes `cancelled`, records
+/// the unit that cancelled it and leaves every chain (D-520).
+/// # Errors
+/// A price that is no longer approved at `version` is `STALE_REVISION`; database failures keep
+/// their type.
+pub async fn cancel(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    id: Uuid,
+    version: i64,
+    unit: Uuid,
+    now: time::OffsetDateTime,
+) -> Result<(), RepoError> {
+    let result = e::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            e::Column::State,
+            Expr::value(PriceState::Cancelled.as_str()),
+        )
+        .col_expr(e::Column::CancelledByUnitId, Expr::value(Some(unit)))
+        .col_expr(e::Column::UpdatedAt, Expr::value(now))
+        .col_expr(e::Column::Version, Expr::col(e::Column::Version).add(1_i64))
+        .filter(
+            key(tenant, id)
+                .add(e::Column::Version.eq(version))
+                .add(e::Column::State.eq(PriceState::Approved.as_str())),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| map_unique("cancel price".into(), e))?;
+    matched(result.rows_affected, "STALE_REVISION")
+}
+/// End an approved price explicitly at `effective_to`, at the version the caller read (D-521):
+/// the end survives every later normalisation unless a successor starts inside it (D-390).
+/// # Errors
+/// A price that is no longer approved at `version` is `STALE_REVISION`; database failures keep
+/// their type.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "tenant identity, version and the two recomputed columns are the write's operands"
+)]
+pub async fn close_explicitly(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    id: Uuid,
+    version: i64,
+    effective_to: time::Date,
+    keep_for_bound: bool,
+    now: time::OffsetDateTime,
+) -> Result<(), RepoError> {
+    let result = e::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(e::Column::EffectiveTo, Expr::value(Some(effective_to)))
+        .col_expr(e::Column::ClosedExplicitly, Expr::value(true))
+        .col_expr(e::Column::KeepForBound, Expr::value(keep_for_bound))
+        .col_expr(e::Column::UpdatedAt, Expr::value(now))
+        .col_expr(e::Column::Version, Expr::col(e::Column::Version).add(1_i64))
+        .filter(
+            key(tenant, id)
+                .add(e::Column::Version.eq(version))
+                .add(e::Column::State.eq(PriceState::Approved.as_str())),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| map_unique("end price".into(), e))?;
     matched(result.rows_affected, "STALE_REVISION")
 }

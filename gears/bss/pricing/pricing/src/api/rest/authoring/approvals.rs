@@ -328,7 +328,7 @@ async fn published(
     now: OffsetDateTime,
 ) -> Result<(), DoorError> {
     match subject {
-        Subject::Prices(_) => prices_published(tx, outbox, cmd, store, id, now).await,
+        Subject::Prices(s) => prices_published(tx, outbox, cmd, store, s, id, now).await,
         Subject::PlanRevision(s) if s.published_now() => {
             plan_revision_published(tx, outbox, cmd, store, s, id, now).await
         }
@@ -368,26 +368,32 @@ async fn plan_revision_published(
     // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-apply:p1:inst-plans-revision-apply-3
     Ok(())
 }
-/// `PricesPublished` for an applied `prices` unit: every price with the window its chain was
-/// approved with.
+/// `PricesPublished` for an applied `prices` unit: every price whose window or state the apply
+/// changed, as the apply left it (D-520, D-521). These are the unit's prices with the window their
+/// chain was approved with, each price before them whose end the chain re-closed or re-opened,
+/// and each price the unit cancelled (`cancelled`) or ended (its new end). A `cancel` or `end` row
+/// is a record of the change, not a price, so the event never lists it.
 async fn prices_published(
     tx: &DbTx<'_>,
     outbox: &TxOutbox,
     cmd: &Command,
     store: &PricingApprovalStore,
+    subject: &PricesSubject,
     id: Uuid,
     now: OffsetDateTime,
 ) -> Result<(), DoorError> {
     let unit = load_unit(tx, store, id).await?;
     let scope = AccessScope::for_tenant(store.tenant_id);
-    let ids: Vec<Uuid> = store
+    let mut ids: BTreeSet<Uuid> = store
         .items(tx, unit.id)
         .await
         .map_err(approval_failure)?
         .iter()
         .map(|i| i.item_id)
         .collect();
-    // The unit's prices in ONE statement (PS-39).
+    ids.extend(subject.moved());
+    let ids: Vec<Uuid> = ids.into_iter().collect();
+    // The unit's prices and the prices it moved in ONE statement (PS-39).
     let mut found: BTreeMap<Uuid, entity::price::Model> =
         price_repo::find_many(tx, &scope, store.tenant_id, &ids)
             .await?
@@ -395,10 +401,13 @@ async fn prices_published(
             .map(|m| (m.id, m))
             .collect();
     let mut prices = Vec::new();
-    for item_id in ids {
-        let m = found.remove(&item_id).ok_or_else(|| {
-            RepoError::CorruptRow(format!("unit {} lost price {item_id}", unit.id))
+    for price_id in ids {
+        let m = found.remove(&price_id).ok_or_else(|| {
+            RepoError::CorruptRow(format!("unit {} lost price {price_id}", unit.id))
         })?;
+        if !price_repo::is_price(&m) {
+            continue;
+        }
         prices.push(PublishedPrice {
             price_id: m.id,
             price_book_entry_id: m.price_book_entry_id,
@@ -406,9 +415,9 @@ async fn prices_published(
             effective_from: m.effective_from.to_string(),
             effective_to: m.effective_to.map(|d| d.to_string()),
             eligibility: m.eligibility,
+            state: Some(m.state),
         });
     }
-    prices.sort_by_key(|r| r.price_id);
     let event = PricesPublished {
         tenant_id: unit.tenant_id,
         book_id: unit.ref_id,
@@ -732,11 +741,17 @@ async fn proposals(
         .await?,
     );
     let mut stored: BTreeMap<Uuid, entity::price::Model> = BTreeMap::new();
+    // The chains are prices only; a draft `cancel` or `end` is listed beside them (D-520, D-521).
     let mut prices = Vec::new();
+    let mut changes = Vec::new();
     for p in &entries {
         let model = price_book_entry_repo::model_of(p)?;
         for m in grouped.remove(&p.id).unwrap_or_default() {
-            prices.push(price_repo::to_domain(&m, model)?);
+            if price_repo::is_price(&m) {
+                prices.push(price_repo::to_domain(&m, model)?);
+            } else {
+                changes.push(price_repo::to_domain(&m, model)?);
+            }
             stored.insert(m.id, m);
         }
     }
@@ -746,7 +761,10 @@ async fn proposals(
         entries.iter().map(|p| (p.id, p)).collect();
     let owners: Vec<(Uuid, Uuid)> = entries.iter().map(|p| (p.id, p.book_id)).collect();
     let mut out = Vec::new();
-    for r in price::proposed_prices(book, &owners, &prices) {
+    let mut drafts = price::proposed_prices(book, &owners, &prices);
+    drafts.extend(price::proposed_prices(book, &owners, &changes));
+    drafts.sort_by_key(|r| (r.effective_from, r.price_book_entry_id, r.version_no));
+    for r in drafts {
         let Some(m) = stored.get(&r.id) else {
             continue;
         };
@@ -758,11 +776,14 @@ async fn proposals(
             .copied()
             .cloned()
             .ok_or_else(|| RepoError::CorruptRow(format!("price {} has no entry", r.id)))?;
-        let before = price::in_force_before(&prices, r)
-            .and_then(|b| stored.get(&b.id))
-            .cloned()
-            .map(|b| PricingPriceDto::of(b, &entry.model))
-            .transpose()?;
+        // A price's `before` is its predecessor; a change's is the price it names.
+        let before = match m.target_price_id {
+            Some(target) => stored.get(&target),
+            None => price::in_force_before(&prices, r).and_then(|b| stored.get(&b.id)),
+        }
+        .cloned()
+        .map(|b| PricingPriceDto::of(b, &entry.model))
+        .transpose()?;
         let price = PricingPriceDto::of(m.clone(), &entry.model)?;
         let policy = policies.get(&entry.id).cloned();
         let entry = PricingPriceBookEntryDto::from_stored(entry, policy)?;

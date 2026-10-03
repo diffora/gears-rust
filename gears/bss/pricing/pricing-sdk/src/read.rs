@@ -64,6 +64,17 @@ pub enum PriceModel {
     }, // Read-only in this slice.
 }
 
+/// Where a price read by id stands (D-520). A cancelled price was cancelled before it started: it
+/// was never in force, so no resolve, pin or binding returns it, and only the price read by id
+/// serves it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PriceState {
+    /// Approved, whatever its window: open, closed or followed by a later price.
+    Approved,
+    /// Cancelled through its book's prices unit before it started (D-520).
+    Cancelled,
+}
+
 /// `ImmutablePrice` value in the versioned pricing read contract.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImmutablePrice {
@@ -90,6 +101,10 @@ pub struct ImmutablePrice {
 
     /// Observed own end of the binding, excluded from the money digest.
     pub ends_on: Option<Date>, // Eligibility observation, excluded from money_digest.
+
+    /// Stored state: `Approved`, or `Cancelled` for a price cancelled before it started (D-520).
+    /// A binding's price is always `Approved`. Excluded from both digests.
+    pub state: PriceState,
 }
 
 /// `ChargeKind` value in the versioned pricing read contract.
@@ -254,9 +269,11 @@ pub trait PricingReadV1: Send + Sync {
         ctx: &SecurityContext,
         query: ResolveQuery,
     ) -> Result<ResolvedBindings, CanonicalError>;
-    /// Read approved immutable money, including closed historical prices.
+    /// Read approved immutable money, including closed historical prices, and a cancelled price
+    /// with its money as approved and `state` `Cancelled` (D-520).
     /// # Errors
-    /// Authorization or a tenant-scoped missing/nonapproved price.
+    /// Authorization or a tenant-scoped missing price, or one that is neither approved nor
+    /// cancelled.
     async fn price(
         &self,
         ctx: &SecurityContext,

@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use toolkit_db::secure::{AccessScope, DBRunner};
 use uuid::Uuid;
 
-/// An entry's prices by state, a rejected price not counted (D-428), and its approved prices by
+/// An entry's prices by state, a rejected or cancelled price not counted (D-428, D-520), and its approved prices by
 /// where their window stands on the day asked (D-440): `approved` is always `scheduled + active +
 /// superseded`. Pricing's own: the SKU usage port answers products-sdk's `PriceCounts`, unchanged.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -103,7 +103,7 @@ async fn tallies(
             }
             PriceState::Pending => tally.prices.pending += n,
             PriceState::Draft => tally.prices.draft += n,
-            PriceState::Rejected => {}
+            PriceState::Rejected | PriceState::Cancelled => {}
         }
     }
     let items = plan_item_repo::naming_entries(runner, &scope, tenant, entries).await?;

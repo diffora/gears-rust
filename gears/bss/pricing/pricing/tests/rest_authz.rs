@@ -25,6 +25,8 @@ fn census() -> census::Routes {
         ("POST", "/bss-pricing/v1/price-book-entries/{id}/prices"),
         ("PATCH", "/bss-pricing/v1/prices/{id}"),
         ("DELETE", "/bss-pricing/v1/prices/{id}"),
+        ("POST", "/bss-pricing/v1/prices/{id}/cancel"),
+        ("POST", "/bss-pricing/v1/prices/{id}/end"),
         ("POST", "/bss-pricing/v1/prices/{id}/submit"),
         ("GET", "/bss-pricing/v1/price-books/{id}/publish-changes"),
         ("POST", "/bss-pricing/v1/price-books/{id}/publish-changes"),
@@ -84,7 +86,7 @@ async fn the_census_covers_every_route_the_routers_register() {
     assert_eq!(census::source_routes(), registered);
     assert_eq!(census::readers("require_authenticated("), registered);
     assert_eq!(census::readers("authz::access_scope("), registered);
-    assert_eq!(registered.len(), 56);
+    assert_eq!(registered.len(), 58);
     assert_eq!(bss_pricing::authz::labels::ALL.len(), 7);
     let permissions: Vec<_> = toolkit_gts::inventory::iter::<toolkit_gts::InventoryInstance>
         .into_iter()
@@ -129,7 +131,7 @@ async fn no_rest_door_serves_pricings_system_actor() {
             (method.to_owned(), path.to_owned())
         })
         .collect();
-    assert_eq!(doors.len(), 56, "every served door");
+    assert_eq!(doors.len(), 58, "every served door");
     for (method, template) in doors {
         let path = template
             .replace("{id}", &uuid::Uuid::new_v4().to_string())
@@ -181,7 +183,7 @@ fn the_authentication_and_authz_parsers_have_positive_controls() {
     // the doors.
     for (needle, more) in [("require_authenticated(", 2), ("authz::access_scope(", 5)] {
         assert_eq!(census::count_in_functions(census::CONTROL, needle), 2);
-        assert_eq!(census::production_count(needle), 56 + more, "{needle}");
+        assert_eq!(census::production_count(needle), 58 + more, "{needle}");
     }
     let routes = census::registrations(census::CONTROL);
     assert_eq!(
@@ -191,7 +193,7 @@ fn the_authentication_and_authz_parsers_have_positive_controls() {
             .count(),
         2
     );
-    assert_eq!(census::source_routes().len(), 56);
+    assert_eq!(census::source_routes().len(), 58);
 }
 
 #[test]
@@ -246,6 +248,8 @@ fn every_mounted_router_is_merged_into_both_censuses() {
 // POST /price-book-entries/{id}/prices price:author false true
 // PATCH /prices/{id} price:author true false
 // DELETE /prices/{id} price:author true false
+// POST /prices/{id}/cancel price:author false true
+// POST /prices/{id}/end price:author false true
 
 // Run-4 approvals: method | path | resource:action | If-Match | Idempotency-Key
 // POST /prices/{id}/submit price:submit false true

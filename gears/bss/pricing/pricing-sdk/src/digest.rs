@@ -225,6 +225,7 @@ fn policy(p: &UsageRatingPolicy) -> V {
         ("content", policy_content(&p.content)),
     ])
 }
+/// The binding's price. `state` is not digested: a binding's price is always approved (D-520).
 fn price(p: &ImmutablePrice) -> V {
     object([
         ("price_id", text(p.price_id)),
