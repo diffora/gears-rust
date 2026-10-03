@@ -693,7 +693,9 @@ CREATE TABLE bss.products_category (
     archived_at timestamptz, -- the archive mark of a retired category (P-D-263)
     archived_by uuid,
     UNIQUE (tenant_id, id),
-    UNIQUE (tenant_id, code)
+    UNIQUE (tenant_id, code),
+    -- A mark is whole or absent (P-D-263). SQLite: two triggers, insert and update.
+    CONSTRAINT chk_products_category_archive_mark CHECK ((archived_at IS NULL) = (archived_by IS NULL))
 );
 -- At most one default per tenant (P-D-218), never a retired one (P-D-220, judged by the doors;
 -- m20260928_000010 cleared the retired defaults stored before it, data only).
@@ -780,6 +782,8 @@ CREATE TABLE bss.products_sku (
     updated_at timestamptz NOT NULL,
     archived_at timestamptz, -- the archive mark of a retired SKU (P-D-263)
     archived_by uuid,
+    -- A mark is whole or absent (P-D-263). SQLite: two triggers, insert and update.
+    CONSTRAINT chk_products_sku_archive_mark CHECK ((archived_at IS NULL) = (archived_by IS NULL)),
     UNIQUE (tenant_id, id),
     UNIQUE (tenant_id, code),
     UNIQUE (tenant_id, name),
@@ -789,8 +793,9 @@ CREATE TABLE bss.products_sku (
 );
 CREATE INDEX products_sku_browse
     ON bss.products_sku (tenant_id, lifecycle, type, category_id, id);
--- The SKU list hides archived rows by default (P-D-263, m20261003_000014).
-CREATE INDEX ix_products_sku_unarchived ON bss.products_sku (tenant_id) WHERE archived_at IS NULL;
+-- The SKU list hides archived rows by default (P-D-263, m20261003_000014): the default page walks
+-- this index in code order and reads no archived row.
+CREATE INDEX ix_products_sku_unarchived ON bss.products_sku (tenant_id, code) WHERE archived_at IS NULL;
 
 CREATE TABLE bss.products_sku_version (
     tenant_id uuid NOT NULL,

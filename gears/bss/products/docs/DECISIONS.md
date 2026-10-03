@@ -2127,7 +2127,8 @@ lists filled with rows nobody works with.
   (`bss_rest::archived::take_archived`, which the pricing book list shares). The counts drop the top-level `archived`
   terms, as they drop the `lifecycle` ones: `all`, each lifecycle and `in_review` count the rows that are not
   archived, and the new `archived` counts the archived ones. The list and the counts read in the same statements as
-  before (`sku_list_tests::recorded_door`; a partial index `(tenant_id) WHERE archived_at IS NULL` serves the default).
+  before (`sku_list_tests::recorded_door`; the partial index `(tenant_id, code) WHERE archived_at IS NULL` serves the
+  default page, amended below).
 - **What ignores the mark.** A read by id (`GET /skus/{id}`, `GET /categories/{id}`), `/browse`, the consumer read
   contract and pinned facts: history must resolve. The SKU and category answers carry `archived_at`, `archived_by` and
   `archived_by_name` (P-D-262), and the SDK's `Sku` and `Category` carry the first two.
@@ -2143,6 +2144,15 @@ lists filled with rows nobody works with.
 - **The served spec.** Each of the four doors' 200 declares its `ETag` response header: the new revision or version,
   the value the next write sends as If-Match (`preconditions::etag_header`). The doors sent it before; now the spec says
   so. The test: `archive_tests::the_archive_doors_declare_the_etag_of_their_200`.
+- **The index serves the default page.** The first index, `(tenant_id) WHERE archived_at IS NULL`, served no read:
+  Postgres walked `uq_products_sku_code` and filtered out every archived row before the page. The index is now
+  `(tenant_id, code) WHERE archived_at IS NULL`, the default page's order over the rows it shows, and the page walks it
+  (the plan is in `tests/postgres_archive.rs::the_default_sku_page_walks_the_unarchived_index_on_postgres`). The
+  migration had not shipped, so it is amended in place.
+- **A mark is whole or absent.** `archived_at` and `archived_by` are both null or both set: a CHECK
+  `(archived_at IS NULL) = (archived_by IS NULL)` on each table on Postgres (`chk_products_sku_archive_mark`,
+  `chk_products_category_archive_mark`), and two triggers per table on SQLite, which cannot add a CHECK to an existing
+  table. The migration's up and down tests on both engines refuse a half mark.
 
 **Source:** Owner, 2026-10-03 ("archived"; ask 58b). Twin of pricing D-522. Extends P-D-208, P-D-210, P-D-211 and
 P-D-215. Amended by the branch review, 2026-10-03.
