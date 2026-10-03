@@ -96,8 +96,13 @@ pub(super) async fn list_units(
         next_cursor: listed.next_cursor,
         sources: listed.sources.into_iter().map(Into::into).collect(),
     };
-    // AP-D-11: the merged page's submitters and voters in one lookup.
-    state.actor_names.fill(&ctx, &mut page).await;
+    // AP-D-11: the merged page's submitters, voters and live subjects' actors in one lookup; the
+    // sources' declared system actors read "System".
+    state
+        .actor_names
+        .with_system_ids(read::system_actors(&state.hub, &state.sources))
+        .fill(&ctx, &mut page)
+        .await;
     // AP-D-10: a weak tag of the merged page, sources and names included; a match is 304.
     Ok(respond(&headers, &page, PRIVATE_REVALIDATE))
 }
@@ -139,8 +144,13 @@ pub(super) async fn get_unit(
     )
     .await?;
     let mut card = InboxUnitDto::from(unit);
-    // AP-D-11: the submitter, the voters and the live subject's creator in one lookup.
-    state.actor_names.fill(&ctx, &mut card).await;
+    // AP-D-11: the submitter, the voters and the live subject's actors in one lookup, the only
+    // one this card makes: its source answers it unnamed.
+    state
+        .actor_names
+        .with_system_ids(read::system_actors(&state.hub, &state.sources))
+        .fill(&ctx, &mut card)
+        .await;
     Ok(Json(card))
 }
 

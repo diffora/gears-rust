@@ -4,7 +4,8 @@
 //! @cpt-dod:cpt-cf-bss-products-dod-sku-create-unique:p1
 use super::closed_sets::{ProductsReferenceKind, ProductsReferenceState};
 use super::{
-    ApiState, TxError, authz_error_to_canonical, category_tx_config, contention_db_err,
+    ApiState, ArchiveMove, TxError, authz_error_to_canonical, category_tx_config,
+    contention_db_err,
     dto::{ReferencesDto, SkuCard, SkuDto, SkuPatchRequest, SkuRequest, SkuVersionDto},
     json_body,
     preconditions::{etag, if_match, if_match_param},
@@ -318,7 +319,12 @@ fn archive_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .path_param("id", "SKU id")
         .param(if_match_param())
         .handler(archive_sku)
-        .json_response_with_schema::<SkuDto>(openapi, StatusCode::OK, "The archived SKU.")
+        .json_response_with_schema::<SkuDto>(
+            openapi,
+            StatusCode::OK,
+            "The archived SKU; ETag carries its revision.",
+        )
+        .response_header(super::preconditions::etag_header())
         .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
@@ -342,7 +348,12 @@ fn archive_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .path_param("id", "SKU id")
         .param(if_match_param())
         .handler(unarchive_sku)
-        .json_response_with_schema::<SkuDto>(openapi, StatusCode::OK, "The unarchived SKU.")
+        .json_response_with_schema::<SkuDto>(
+            openapi,
+            StatusCode::OK,
+            "The unarchived SKU; ETag carries its revision.",
+        )
+        .response_header(super::preconditions::etag_header())
         .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
@@ -822,7 +833,15 @@ async fn archive_sku(
     Path(id): Path<Uuid>,
     headers: HeaderMap,
 ) -> Result<Response, CanonicalError> {
-    mark_archived(&state, &enforcer, extension_ctx, id, &headers, true).await
+    mark_archived(
+        &state,
+        &enforcer,
+        extension_ctx,
+        id,
+        &headers,
+        ArchiveMove::Archive,
+    )
+    .await
 }
 /// `POST /skus/{id}/unarchive` (P-D-263).
 async fn unarchive_sku(
@@ -832,9 +851,17 @@ async fn unarchive_sku(
     Path(id): Path<Uuid>,
     headers: HeaderMap,
 ) -> Result<Response, CanonicalError> {
-    mark_archived(&state, &enforcer, extension_ctx, id, &headers, false).await
+    mark_archived(
+        &state,
+        &enforcer,
+        extension_ctx,
+        id,
+        &headers,
+        ArchiveMove::Unarchive,
+    )
+    .await
 }
-/// Set (`archive`) or clear a SKU's archive mark (P-D-263) under SKU author, at the revision the
+/// Set ([`ArchiveMove::Archive`]) or clear a SKU's archive mark (P-D-263) under SKU author, at the revision the
 /// caller read, with an audit row in the same transaction. Only a SKU whose lifecycle in force is
 /// retired takes the mark (409 `SKU_NOT_RETIRED`); a stale tag is judged first, as on every write
 /// of a head. A SKU already in the asked state is answered as it is, and nothing is written.
@@ -845,7 +872,7 @@ async fn mark_archived(
     extension_ctx: Option<Extension<SecurityContext>>,
     id: Uuid,
     headers: &HeaderMap,
-    archive: bool,
+    mark: ArchiveMove,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let tenant_id = ctx.subject_tenant_id();
@@ -870,13 +897,13 @@ async fn mark_archived(
                             found: current.revision,
                         }));
                     }
-                    if archive && current.lifecycle != Lifecycle::Retired {
+                    if mark == ArchiveMove::Archive && current.lifecycle != Lifecycle::Retired {
                         return Err(TxError::Refused(DomainError::Conflict {
                             code: "SKU_NOT_RETIRED",
                             detail: "only a retired SKU is archived; retire it first".into(),
                         }));
                     }
-                    if current.archived_at.is_some() == archive {
+                    if mark.already(current.archived_at.is_some()) {
                         return Ok(current);
                     }
                     let s = match repo::set_sku_archived(
@@ -885,7 +912,7 @@ async fn mark_archived(
                         tenant_id,
                         id,
                         expected,
-                        archive.then_some(actor),
+                        mark.archived_by(actor),
                         now,
                     )
                     .await
@@ -900,10 +927,9 @@ async fn mark_archived(
                             }));
                         }
                     };
-                    let action = if archive {
-                        "sku.archive"
-                    } else {
-                        "sku.unarchive"
+                    let action = match mark {
+                        ArchiveMove::Archive => "sku.archive",
+                        ArchiveMove::Unarchive => "sku.unarchive",
                     };
                     audit(
                         tx,

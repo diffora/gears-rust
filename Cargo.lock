@@ -2297,10 +2297,14 @@ dependencies = [
  "cf-gears-toolkit-odata",
  "cf-gears-toolkit-security",
  "futures-util",
+ "gts",
  "http",
+ "proptest",
  "serde",
  "serde_json",
  "tokio",
+ "tracing",
+ "tracing-test",
  "uuid",
 ]
 

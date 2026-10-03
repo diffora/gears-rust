@@ -12,6 +12,8 @@
 //!   at most four chunks at once, inside one 2 s budget for the response.
 //! - A read never fails because of AM: a refused, absent, failed or late lookup
 //!   becomes an [`ActorName`] that carries no label.
+//! - A chunk whose names degrade to [`ActorName::Unavailable`] logs one warn line
+//!   with the reason kind and the id count: no id, no profile and no error text.
 //! - A gear's system actors read [`SYSTEM_LABEL`] and never reach AM.
 //!
 //! AM is a soft dependency. The client is looked up in the hub at each lookup,
@@ -87,6 +89,9 @@ pub trait ActorDirectory: Send + Sync {
     ///
     /// # Errors
     /// Returns AM's authorization, absence and provider errors unchanged.
+    // cancel-safe: [`ActorNames::resolve`] drops this future at the response's deadline. An
+    // implementation only reads, and keeps no state that a drop part way through could leave
+    // half written.
     async fn list_users(
         &self,
         ctx: &SecurityContext,
@@ -187,6 +192,8 @@ struct AmDirectory {
 
 #[async_trait]
 impl ActorDirectory for AmDirectory {
+    // cancel-safe: one read through AM's public user read, with no side effect here; a drop at the
+    // deadline leaves nothing behind.
     async fn list_users(
         &self,
         ctx: &SecurityContext,
@@ -208,6 +215,49 @@ pub struct ActorNames {
     system_ids: BTreeSet<Uuid>,
 }
 
+/// The system ids; the directory is a trait object and is not shown.
+impl std::fmt::Debug for ActorNames {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ActorNames")
+            .field("system_ids", &self.system_ids)
+            .finish_non_exhaustive()
+    }
+}
+
+/// How one chunk's lookups ended for the ids it did not name.
+enum Stop {
+    /// AM refused this caller the profiles.
+    Restricted,
+    /// AM read the whole filtered set and did not find them.
+    NotFound,
+    /// No answer that can be trusted: the reason kind of the chunk's warn line.
+    Degraded(Degraded),
+}
+
+/// Why a chunk's remaining ids read [`ActorName::Unavailable`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Degraded {
+    /// The response's budget ran out before or during a lookup.
+    Budget,
+    /// The directory failed, or no AM client is registered.
+    Directory,
+    /// The provider's pages drifted: a repeated or unrequested id, no progress, a repeated cursor.
+    Pagination,
+    /// The id-set query or its cursor did not build.
+    Query,
+}
+
+impl Degraded {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Budget => "budget",
+            Self::Directory => "directory",
+            Self::Pagination => "pagination",
+            Self::Query => "query",
+        }
+    }
+}
+
 impl ActorNames {
     /// AM through the process client hub. `system_ids` are the gear's own system actors.
     #[must_use]
@@ -222,6 +272,15 @@ impl ActorNames {
             directory,
             system_ids: system_ids.iter().copied().collect(),
         }
+    }
+
+    /// These names with `more` system actors beside the gear's own: a facade adds the system
+    /// actors its sources declare, for one answer.
+    #[must_use]
+    pub fn with_system_ids(&self, more: impl IntoIterator<Item = Uuid>) -> Self {
+        let mut names = self.clone();
+        names.system_ids.extend(more);
+        names
     }
 
     /// The name of every id, in one bounded set of lookups.
@@ -239,14 +298,13 @@ impl ActorNames {
             ids.into_iter().partition(|id| self.system_ids.contains(id));
         let unique: Vec<_> = unique.into_iter().collect();
         let deadline = tokio::time::Instant::now() + LOOKUP_BUDGET;
-        let chunks: Vec<_> = unique
-            .chunks(LOOKUP_BATCH_SIZE)
-            .map(<[Uuid]>::to_vec)
-            .collect();
-        let mut names: BTreeMap<_, _> = stream::iter(chunks)
-            .map(|ids| async move { self.resolve_chunk(ctx, &ids, deadline).await })
+        // Boxed where its lifetimes are concrete, so a `Send` handler's future does not have to
+        // prove the borrowing closure `Send` for every lifetime.
+        let mut names: BTreeMap<_, _> = stream::iter(unique.chunks(LOOKUP_BATCH_SIZE))
+            .map(|ids| self.resolve_chunk(ctx, ids, deadline))
             .buffer_unordered(LOOKUP_CONCURRENCY)
             .flat_map(stream::iter)
+            .boxed()
             .collect()
             .await;
         names.extend(system.into_iter().map(|id| (id, ActorName::System)));
@@ -270,7 +328,8 @@ impl ActorNames {
     /// Read the whole filtered set before claiming that an id is absent. Every
     /// page must make progress and return only new requested ids. A provider that
     /// drifts or fails in pagination never shows an unrelated profile and never
-    /// implies a deletion.
+    /// implies a deletion. A chunk that ends degraded with ids left logs one warn
+    /// line: the reason kind and the id count.
     async fn resolve_chunk(
         &self,
         ctx: &SecurityContext,
@@ -281,15 +340,15 @@ impl ActorNames {
         let mut remaining: BTreeSet<_> = ids.iter().copied().collect();
         let mut seen_cursors = BTreeSet::new();
         let mut cursor = None;
-        let failure = loop {
+        let stop = loop {
             if tokio::time::Instant::now() >= deadline {
-                break ActorName::Unavailable;
+                break Stop::Degraded(Degraded::Budget);
             }
             let Ok(mut query) = ListUsersQuery::with_ids(ids.iter().copied()) else {
-                break ActorName::Unavailable;
+                break Stop::Degraded(Degraded::Query);
             };
             let Ok(pagination) = IdpUserPagination::new(query.pagination.top(), cursor) else {
-                break ActorName::Unavailable;
+                break Stop::Degraded(Degraded::Query);
             };
             query.pagination = pagination;
             let result =
@@ -299,28 +358,43 @@ impl ActorNames {
                 Ok(Err(
                     CanonicalError::PermissionDenied { .. }
                     | CanonicalError::Unauthenticated { .. },
-                )) => break ActorName::Restricted,
-                Ok(Err(CanonicalError::NotFound { .. })) => break ActorName::NotFound,
-                _ => break ActorName::Unavailable,
+                )) => break Stop::Restricted,
+                Ok(Err(CanonicalError::NotFound { .. })) => break Stop::NotFound,
+                Ok(Err(_)) => break Stop::Degraded(Degraded::Directory),
+                Err(_) => break Stop::Degraded(Degraded::Budget),
             };
             let returned: BTreeSet<_> = page.items.iter().map(|user| user.id).collect();
             if returned.len() != page.items.len() || !returned.is_subset(&remaining) {
-                break ActorName::Unavailable;
+                break Stop::Degraded(Degraded::Pagination);
             }
             for user in page.items {
                 remaining.remove(&user.id);
                 names.insert(user.id, project_name(&user));
             }
             let Some(next) = page.page_info.next_cursor else {
-                break ActorName::NotFound;
+                break Stop::NotFound;
             };
             if remaining.is_empty() {
-                break ActorName::NotFound;
+                break Stop::NotFound;
             }
             if returned.is_empty() || !seen_cursors.insert(next.clone()) {
-                break ActorName::Unavailable;
+                break Stop::Degraded(Degraded::Pagination);
             }
             cursor = Some(next);
+        };
+        let failure = match stop {
+            Stop::Restricted => ActorName::Restricted,
+            Stop::NotFound => ActorName::NotFound,
+            Stop::Degraded(reason) => {
+                if !remaining.is_empty() {
+                    tracing::warn!(
+                        reason = reason.as_str(),
+                        ids = remaining.len(),
+                        "actor names: a lookup degraded, these names read null"
+                    );
+                }
+                ActorName::Unavailable
+            }
         };
         names.extend(remaining.into_iter().map(|id| (id, failure.clone())));
         names

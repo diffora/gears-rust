@@ -81,8 +81,8 @@
 | P-D-258 | H | A published usage SKU keeps its metering | DECIDED 2026-10-02 · Owner, 2026-10-02; run 9.13; amends P-D-232, P-D-251 |
 | P-D-259 | H | A usage SKU sells a derived usage type, and its unit is that type's | DECIDED 2026-10-02 · Owner, 2026-10-02; run 9.13; amends P-D-207, P-D-229, P-D-232, P-D-251 |
 | P-D-261 | M | The SKU, derived-type and category lists answer 304 | DECIDED 2026-10-03 · Owner, 2026-10-03 (asks 56, 57); extends P-D-247 |
-| P-D-262 | M | Every actor id a read shows carries its current name (twin of pricing D-519) | DECIDED 2026-10-03 · Owner, 2026-10-02 (ask 32: names on the server, through AM); extends P-D-213, P-D-224, P-D-231 |
-| P-D-263 | M | A retired SKU or category can be archived, and its list hides it by default (twin of pricing D-522) | DECIDED 2026-10-03 · Owner, 2026-10-03 ("archived"; ask 58b); extends P-D-208, P-D-210, P-D-211, P-D-215 |
+| P-D-262 | M | Every actor id a read shows carries its current name (twin of pricing D-519) | DECIDED 2026-10-03 · Owner, 2026-10-02 (ask 32: names on the server, through AM); extends P-D-213, P-D-224, P-D-231; amended 2026-10-03 (one lookup per inbox card) |
+| P-D-263 | M | A retired SKU or category can be archived, and its list hides it by default (twin of pricing D-522) | DECIDED 2026-10-03 · Owner, 2026-10-03 ("archived"; ask 58b); extends P-D-208, P-D-210, P-D-211, P-D-215; amended 2026-10-03 (branch review) |
 | P-D-264 | M | A text function on `lifecycle` filters by the lifecycles it matches | DECIDED 2026-10-03 · Owner, 2026-10-03 ("yes, add it"); amends P-D-249 |
 
 ## Entries
@@ -2088,6 +2088,16 @@ Management read per id of its own.
   next read, a page of SKUs by four authors makes one call for the four, a write answer's names are null, and a hub
   without AM reads null names.
 
+**Amended 2026-10-03 (branch review).** The inbox card is named once.
+
+- The card door's read and its names are two steps: `approval_units::card` reads the card, and the REST door fills its
+  names. The inbox source answers the card from `card`, unnamed, and the approvals inbox names it (AP-D-11). One inbox
+  card read makes one lookup, not two.
+- The source declares this gear's `SYSTEM_ACTORS`, the nil id and pricing's system actor, through
+  `ApprovalSourceV1::system_actors`. The inbox names them "System" as products does.
+- The tests: `actor_names_tests::an_inbox_card_read_makes_one_lookup` and
+  `the_source_declares_the_system_actors_this_gear_names`.
+
 **Source:** Owner, 2026-10-02 (ask 32: "there was already code that resolves the names through AM; do it that way on
 the server"). Twin of pricing D-519. Extends P-D-213, P-D-224 and P-D-231.
 
@@ -2117,7 +2127,8 @@ lists filled with rows nobody works with.
   (`bss_rest::archived::take_archived`, which the pricing book list shares). The counts drop the top-level `archived`
   terms, as they drop the `lifecycle` ones: `all`, each lifecycle and `in_review` count the rows that are not
   archived, and the new `archived` counts the archived ones. The list and the counts read in the same statements as
-  before (`sku_list_tests::recorded_door`; a partial index `(tenant_id) WHERE archived_at IS NULL` serves the default).
+  before (`sku_list_tests::recorded_door`; the partial index `(tenant_id, code) WHERE archived_at IS NULL` serves the
+  default page, amended below).
 - **What ignores the mark.** A read by id (`GET /skus/{id}`, `GET /categories/{id}`), `/browse`, the consumer read
   contract and pinned facts: history must resolve. The SKU and category answers carry `archived_at`, `archived_by` and
   `archived_by_name` (P-D-262), and the SDK's `Sku` and `Category` carry the first two.
@@ -2128,8 +2139,23 @@ lists filled with rows nobody works with.
   `tests/postgres_archive.rs` (the migration up and down on Postgres, the list, the counts and the category list there);
   the migration's own `_tests.rs` on SQLite.
 
+**Amended 2026-10-03 (branch review).**
+
+- **The served spec.** Each of the four doors' 200 declares its `ETag` response header: the new revision or version,
+  the value the next write sends as If-Match (`preconditions::etag_header`). The doors sent it before; now the spec says
+  so. The test: `archive_tests::the_archive_doors_declare_the_etag_of_their_200`.
+- **The index serves the default page.** The first index, `(tenant_id) WHERE archived_at IS NULL`, served no read:
+  Postgres walked `uq_products_sku_code` and filtered out every archived row before the page. The index is now
+  `(tenant_id, code) WHERE archived_at IS NULL`, the default page's order over the rows it shows, and the page walks it
+  (the plan is in `tests/postgres_archive.rs::the_default_sku_page_walks_the_unarchived_index_on_postgres`). The
+  migration had not shipped, so it is amended in place.
+- **A mark is whole or absent.** `archived_at` and `archived_by` are both null or both set: a CHECK
+  `(archived_at IS NULL) = (archived_by IS NULL)` on each table on Postgres (`chk_products_sku_archive_mark`,
+  `chk_products_category_archive_mark`), and two triggers per table on SQLite, which cannot add a CHECK to an existing
+  table. The migration's up and down tests on both engines refuse a half mark.
+
 **Source:** Owner, 2026-10-03 ("archived"; ask 58b). Twin of pricing D-522. Extends P-D-208, P-D-210, P-D-211 and
-P-D-215.
+P-D-215. Amended by the branch review, 2026-10-03.
 #### P-D-264 [M] A text function on `lifecycle` filters by the lifecycles it matches
 
 **Status:** DECIDED 2026-10-03.

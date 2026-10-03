@@ -50,6 +50,13 @@ pub trait ApprovalSourceV1: Send + Sync {
         impact: bool,
     ) -> Result<Option<InboxUnit>, CanonicalError>;
 
+    /// The actors this source's gear records that are not people: its own system actors, and any
+    /// other gear's that act on it. The inbox names them "System" and never asks Account
+    /// Management for them (AP-D-11). None by default.
+    fn system_actors(&self) -> &[Uuid] {
+        &[]
+    }
+
     /// The gear's vote door, passed through: the request body bytes and the idempotency key as
     /// received, the door's answer (status, headers, body) unchanged.
     ///

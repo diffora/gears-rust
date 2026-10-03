@@ -505,15 +505,20 @@ async fn two_real_writers_apply_once_and_lock_errors_remain_typed_for_retry() {
         1,
         "{results:?}"
     );
+    // The loser is typed for retry: the unit already decided or contended, or a lock error the
+    // toolkit's classifier calls contention, the one a door answers 409 `UNIT_CONTENDED` after its
+    // retries (`tx_to_canonical_coded`). Which one depends on how long the winner holds its lock.
     assert_eq!(
         results
             .iter()
-            .filter(|r| matches!(
-                r,
-                Err(TxErr::Approval(
-                    ApprovalError::Contended | ApprovalError::AlreadyDecided
-                ))
-            ))
+            .filter(|r| match r {
+                Err(TxErr::Approval(ApprovalError::Contended | ApprovalError::AlreadyDecided)) =>
+                    true,
+                Err(e) => db_error(e).is_some_and(|e| {
+                    toolkit_db::contention::is_retryable_contention(sea_orm::DbBackend::Sqlite, e)
+                }),
+                Ok(_) => false,
+            })
             .count(),
         1,
         "{results:?}"

@@ -363,7 +363,7 @@ weak tags cover them (P-D-262).
 | Publication | `POST /skus/{id}/submit` | Submit `sku_publish`. An optional body `{ note }` carries the submitter's note (P-D-219). |
 | Change | `POST /skus/{id}/changes` | Published/deprecated content and/or lifecycle proposal; effective_from defaults to today; submit `sku_change`; an optional `note` (P-D-213, P-D-219). A published usage SKU keeps its usage type and its unit: a change of either, a clear of either, or a type change away from usage is 400 `METERING_IMMUTABLE` before any catalog is asked, and again at apply (409), except a raw meter moving onto the identity wrapper of that meter in the same unit (P-D-258, P-D-251). |
 | Retirement/recovery | `POST /skus/{id}/retire`; `POST /skus/{id}/unfence` | Guarded fence and `sku_retire` submission in one transaction, with an optional body `{ note }` (P-D-219); unfence only expired orphans. |
-| Archive | `POST /skus/{id}/archive`; `POST /skus/{id}/unarchive`; `POST /categories/{id}/archive`; `POST /categories/{id}/unarchive` | Set or clear the archive mark under author, at the row's ETag (If-Match), with an audit row (`sku.archive`, `sku.unarchive`, `category.archive`, `category.unarchive`); the revision or version moves. Only a SKU whose lifecycle in force is retired is archived (409 `SKU_NOT_RETIRED`), only a retired category (409 `CATEGORY_NOT_RETIRED`); a stale tag is 409 `STALE_REVISION`; a row already in the asked state is answered unchanged. Reads by id, `/browse`, the consumer reads and pinned facts ignore the mark (P-D-263). |
+| Archive | `POST /skus/{id}/archive`; `POST /skus/{id}/unarchive`; `POST /categories/{id}/archive`; `POST /categories/{id}/unarchive` | Set or clear the archive mark under author, at the row's ETag (If-Match), with an audit row (`sku.archive`, `sku.unarchive`, `category.archive`, `category.unarchive`); the revision or version moves. Only a SKU whose lifecycle in force is retired is archived (409 `SKU_NOT_RETIRED`), only a retired category (409 `CATEGORY_NOT_RETIRED`); a stale tag is 409 `STALE_REVISION`; a row already in the asked state is answered unchanged. The 200 declares the `ETag` the next write sends as If-Match. Reads by id, `/browse`, the consumer reads and pinned facts ignore the mark (P-D-263). |
 | Reference reads | `GET /skus/{id}/references` | products:read; live rows by default; include_released=true adds history with released_at, released_by, forced and release_reason. Live summary retains price_book_entries/plans/reserved totals and adds by_owner maps keyed by owner then kind, plus each owner’s reserved subset. |
 | Reserve | `POST /skus/{id}/references/reserve { owner, kind, ref_id }` | 201 `{ reservation_id }`, or 200 existing live logical reservation; fenced SKU refuses a new reservation. |
 | Confirm | `POST /references/{id}/confirm` | 200 also when already confirmed; released rows cannot reactivate. |
@@ -491,8 +491,9 @@ This gear implements the approvals inbox's source port, `bss_approvals_sdk::Appr
 init in the ClientHub as `dyn ApprovalSourceV1`, scoped `products` (P-D-250). The inbox gear asks it as the caller and
 merges its pages with pricing's by P-D-227's order, `(submitted_at, id)`. The source calls this gear's own doors: the
 list's read (`approval_units::page_of`) with a `CursorV1` it builds from the inbox's key, so the keyset is the pager's
-compare; the counts door on the plain connection; the card door, whose 404 is a miss and whose `impact_live` is the
-inbox's `subject_live`; and the vote door through the approval-unit router under the gear's enforcer and the
+compare; the counts door on the plain connection; the card door's read before its names (`approval_units::card`),
+whose 404 is a miss and whose `impact_live` is the inbox's `subject_live`, so the inbox names the card in one lookup and
+the source declares this gear's system actors to it (P-D-262, approvals AP-D-11); and the vote door through the approval-unit router under the gear's enforcer and the
 platform's error layer, so the grant, the replay endpoint and the answer's bytes are the door's. A `sku_change` or
 `sku_retire` unit's impact is pricing's `SkuUsage` of its SKU, from ONE `SkuUsageV1::usage` call per page, null when
 the port refuses, cannot answer or is absent; never `usage_sets`. A kind products does not record, and any `book_id`,
@@ -692,7 +693,9 @@ CREATE TABLE bss.products_category (
     archived_at timestamptz, -- the archive mark of a retired category (P-D-263)
     archived_by uuid,
     UNIQUE (tenant_id, id),
-    UNIQUE (tenant_id, code)
+    UNIQUE (tenant_id, code),
+    -- A mark is whole or absent (P-D-263). SQLite: two triggers, insert and update.
+    CONSTRAINT chk_products_category_archive_mark CHECK ((archived_at IS NULL) = (archived_by IS NULL))
 );
 -- At most one default per tenant (P-D-218), never a retired one (P-D-220, judged by the doors;
 -- m20260928_000010 cleared the retired defaults stored before it, data only).
@@ -779,6 +782,8 @@ CREATE TABLE bss.products_sku (
     updated_at timestamptz NOT NULL,
     archived_at timestamptz, -- the archive mark of a retired SKU (P-D-263)
     archived_by uuid,
+    -- A mark is whole or absent (P-D-263). SQLite: two triggers, insert and update.
+    CONSTRAINT chk_products_sku_archive_mark CHECK ((archived_at IS NULL) = (archived_by IS NULL)),
     UNIQUE (tenant_id, id),
     UNIQUE (tenant_id, code),
     UNIQUE (tenant_id, name),
@@ -788,8 +793,9 @@ CREATE TABLE bss.products_sku (
 );
 CREATE INDEX products_sku_browse
     ON bss.products_sku (tenant_id, lifecycle, type, category_id, id);
--- The SKU list hides archived rows by default (P-D-263, m20261003_000014).
-CREATE INDEX ix_products_sku_unarchived ON bss.products_sku (tenant_id) WHERE archived_at IS NULL;
+-- The SKU list hides archived rows by default (P-D-263, m20261003_000014): the default page walks
+-- this index in code order and reads no archived row.
+CREATE INDEX ix_products_sku_unarchived ON bss.products_sku (tenant_id, code) WHERE archived_at IS NULL;
 
 CREATE TABLE bss.products_sku_version (
     tenant_id uuid NOT NULL,

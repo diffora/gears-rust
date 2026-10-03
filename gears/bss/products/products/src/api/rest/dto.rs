@@ -563,17 +563,14 @@ pub struct UnitDto {
     pub snapshot: serde_json::Value,
     pub decisions: Vec<DecisionDto>,
     pub impact_live: Option<serde_json::Value>,
-    /// Whether the caller may Approve this unit now (P-D-228): the approval engine's own rule
-    /// (`bss_approval::approve_eligibility`, pricing D-459) over the unit's stored items and its
-    /// decisions, with the caller as the voter. It is false for a decided unit, for its submitter
-    /// and every author of its items (the SKU's creator: separation of duties) and for a caller who
-    /// already voted in its current generation. It means Approve only: a reject judges no
-    /// separation of duties, so the submitter and the SKU's creator may reject a unit whose flag
-    /// is false. The grant is not judged here: without products approve the vote door still
-    /// answers 403.
-    /// Whether the caller may approve this unit now (P-D-228, P-D-255): the engine's approve
-    /// rule and the caller's `approval_unit:approve` grant on this unit. Approve only. Without
-    /// the grant the vote door is still 403.
+    /// Whether the caller may approve this unit now (P-D-228, P-D-255): the approval engine's own
+    /// rule (`bss_approval::approve_eligibility`, pricing D-459) over the unit's stored items and
+    /// its decisions, with the caller as the voter, and the caller's `approval_unit:approve` grant
+    /// on this unit. It is false for a decided unit, for its submitter and every author of its
+    /// items (the SKU's creator: separation of duties), for a caller who already voted in its
+    /// current generation, and for a caller without the grant. It means Approve only: a reject
+    /// judges no separation of duties, so the submitter and the SKU's creator may reject a unit
+    /// whose flag is false (`caller_can_reject`). Without the grant the vote door is still 403.
     pub caller_can_approve: bool,
     /// Whether the caller may reject this unit now (P-D-255): the approve grant, the unit
     /// pending, and no vote by the caller in this generation. That is what the engine allows.

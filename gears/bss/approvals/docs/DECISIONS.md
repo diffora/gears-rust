@@ -32,7 +32,7 @@
 | AP-D-7 | M | The inbox unit carries whether the caller may reject or withdraw it | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 63); extended by AP-D-11 |
 | AP-D-8 | M | The inbox publishes `$orderby` through the toolkit | DECIDED 2026-10-02 · amends AP-D-2 |
 | AP-D-10 | M | The list and the counts answer 304 | DECIDED 2026-10-03 · Owner, 2026-10-03 (asks 56, 57); extends AP-D-2 |
-| AP-D-11 | M | The inbox names its submitters and voters | DECIDED 2026-10-03 · Owner, 2026-10-02 (ask 32: names on the server, through AM); extends AP-D-7, AP-D-10 |
+| AP-D-11 | M | The inbox names its submitters and voters | DECIDED 2026-10-03 · Owner, 2026-10-02 (ask 32: names on the server, through AM); extends AP-D-7, AP-D-10; amended 2026-10-03 (one lookup per card, declared system actors) |
 
 ## Entries
 
@@ -171,5 +171,20 @@ an Account Management read per id of its own.
 - **The tests.** `api/rest/doors_tests.rs`: `the_inbox_names_its_submitters_and_voters_in_one_lookup`,
   `an_unavailable_directory_leaves_the_names_null_on_a_200` and `a_renamed_submitter_changes_the_list_tag`.
 
+**Amended 2026-10-03 (branch review).** The inbox is the only one that names a unit it serves.
+
+- **One lookup per card.** A source answers its card unnamed, so one card read makes one Account Management lookup,
+  not one in the source and one here.
+- **The live subject.** Each actor of a live subject that carries a `*_name` key beside it is named: a products SKU's
+  `created_by`, and its `archived_by` while it is archived (products P-D-263). A subject without the key gains none.
+- **Declared system actors.** `ApprovalSourceV1` gains `system_actors()`, none by default: the actors the source's
+  gear records that are not people. The list and the card read the declared actors of every configured source that is
+  registered, and name them `"System"` without a lookup, beside the nil id. Products declares the nil id and pricing's
+  system actor (products P-D-262), so the inbox and products name them alike. The SDK adds no dependency on any gear.
+- **The tests.** `api/rest/doors_tests.rs`: `a_system_actor_a_source_declares_reads_system_and_is_never_asked`, and
+  the archiver in `the_inbox_names_its_submitters_and_voters_in_one_lookup`. Products:
+  `actor_names_tests::an_inbox_card_read_makes_one_lookup`.
+
 **Source:** Owner, 2026-10-02 (ask 32: "there was already code that resolves the names through AM; do it that way on
-the server"). Twin of pricing D-519 and products P-D-262. Extends AP-D-7 and AP-D-10.
+the server"). Twin of pricing D-519 and products P-D-262. Extends AP-D-7 and AP-D-10. Amended by the branch review,
+2026-10-03.

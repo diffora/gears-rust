@@ -287,32 +287,44 @@ impl InboxCountsDto {
 bss_rest::actor_fields!(InboxDecisionDto { actor => actor_name } []);
 bss_rest::actor_fields!(InboxUnitListDto {}[items]);
 
-/// A unit names its submitter and its voters (AP-D-11), and, when its gear's live subject
-/// carries a creator and a `created_by_name` (a products SKU), that creator too.
+/// The actor ids a live subject may carry, each with the `*_name` key that its gear's answer
+/// puts beside it (a products SKU: its creator, and its archiver while archived).
+const LIVE_ACTORS: [(&str, &str); 2] = [
+    ("created_by", "created_by_name"),
+    ("archived_by", "archived_by_name"),
+];
+
+/// A unit names its submitter and its voters (AP-D-11), and each actor of its gear's live subject
+/// that carries a `*_name` key beside it (a products SKU's creator and archiver). The inbox is the
+/// only one that names a unit it serves: its source answers it unnamed.
 impl bss_rest::actor_names::ActorFields for InboxUnitDto {
     fn actor_ids(&self, ids: &mut Vec<Uuid>) {
         ids.push(self.submitted_by);
         self.decisions.actor_ids(ids);
-        ids.extend(live_creator(self.subject_live.as_ref()));
+        for (field, name) in LIVE_ACTORS {
+            ids.extend(live_actor(self.subject_live.as_ref(), field, name));
+        }
     }
     fn fill_names(&mut self, names: &bss_rest::actor_names::Names) {
         self.submitted_by_name = bss_rest::actor_names::label(names, self.submitted_by);
         self.decisions.fill_names(names);
-        if let Some(id) = live_creator(self.subject_live.as_ref())
-            && let Some(serde_json::Value::Object(live)) = self.subject_live.as_mut()
-        {
-            live.insert(
-                "created_by_name".to_owned(),
-                bss_rest::actor_names::label(names, id)
-                    .map_or(serde_json::Value::Null, serde_json::Value::String),
-            );
+        for (field, name) in LIVE_ACTORS {
+            if let Some(id) = live_actor(self.subject_live.as_ref(), field, name)
+                && let Some(serde_json::Value::Object(live)) = self.subject_live.as_mut()
+            {
+                live.insert(
+                    name.to_owned(),
+                    bss_rest::actor_names::label(names, id)
+                        .map_or(serde_json::Value::Null, serde_json::Value::String),
+                );
+            }
         }
     }
 }
 
-/// The creator of a live subject that names one beside a `created_by_name`.
-fn live_creator(live: Option<&serde_json::Value>) -> Option<Uuid> {
+/// The actor in `field` of a live subject that carries the `name` key beside it.
+fn live_actor(live: Option<&serde_json::Value>, field: &str, name: &str) -> Option<Uuid> {
     let live = live?;
-    live.get("created_by_name")?;
-    live.get("created_by")?.as_str()?.parse().ok()
+    live.get(name)?;
+    live.get(field)?.as_str()?.parse().ok()
 }
