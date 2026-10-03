@@ -322,6 +322,39 @@ async fn null_filters_the_order_and_the_counts_hold_on_postgres() {
     );
 }
 
+/// P-D-264 on Postgres: a text function on `lifecycle` is the `CASE`'s `in` over the lifecycles
+/// it matches, at the top level and under `and`, and a text that matches none keeps nothing.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn a_text_function_on_lifecycle_filters_through_the_case_on_postgres() {
+    let (_pg, f) = Fixture::new().await;
+    let x = f.category("x").await;
+    f.sku("A", "a", Some(x), Lifecycle::Published, None).await;
+    f.sku("B", "b", None, Lifecycle::Draft, None).await;
+    f.sku("C", "c", Some(x), Lifecycle::Deprecated, None).await;
+    f.sku("D", "d", None, Lifecycle::Retired, None).await;
+    for (filter, expected) in [
+        ("contains(lifecycle,'pub')".to_owned(), vec!["A"]),
+        ("startswith(lifecycle,'d')".to_owned(), vec!["B", "C"]),
+        ("endswith(lifecycle,'ed')".to_owned(), vec!["A", "C", "D"]),
+        (
+            format!("category_id eq {x} and startswith(lifecycle,'d')"),
+            vec!["C"],
+        ),
+        (
+            "endswith(lifecycle,'ed') and lifecycle ne 'retired'".to_owned(),
+            vec!["A", "C"],
+        ),
+        ("contains(lifecycle,'PUB')".to_owned(), vec![]),
+        (
+            format!("category_id eq {x} and endswith(lifecycle,'x')"),
+            vec![],
+        ),
+    ] {
+        assert_eq!(f.codes(None, Some(&filter)).await, expected, "{filter}");
+    }
+}
+
 /// P-D-212 on Postgres: a usage filter's whole id set is one `uuid[]` bind, kept or negated, in
 /// the list and in the counts, whatever its size.
 #[tokio::test]

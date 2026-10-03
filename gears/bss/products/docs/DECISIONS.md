@@ -70,7 +70,7 @@
 | P-D-246 | M | The SKU pickers narrow by one book or one plan revision (`priced_in`, `not_priced_in`, `not_in_revision`) through the port's scoped sets | DECIDED 2026-10-01 · Owner, 2026-10-01 (asks v4, 52 and 46); phase 9 plan rev 4 (run 9.8; review M5, M6, M8); amends P-D-210, P-D-212 |
 | P-D-247 | L | A usage-type picker page may be kept privately for a minute | DECIDED 2026-10-01 · Owner, 2026-10-01 (asks v4, 56); phase 9 plan rev 4 (run 9.8); extends P-D-207; extended by P-D-261 |
 | P-D-248 | H | A retire under review keeps the SKU's lifecycle; `retire_pending` is the fence | DECIDED 2026-10-01 · Owner, 2026-10-01; phase 9 plan rev 4 run 9.8d; amends P-D-189, P-D-208, P-D-211, P-D-213 |
-| P-D-249 | H | A lifecycle change honours its date | DECIDED 2026-10-01 · Owner, 2026-10-01; phase 9 plan rev 4 run 9.8d; amends P-D-191 |
+| P-D-249 | H | A lifecycle change honours its date | DECIDED 2026-10-01 · Owner, 2026-10-01; phase 9 plan rev 4 run 9.8d; amends P-D-191; amended by P-D-264 |
 | P-D-250 | M | The approval units answer the approvals inbox through this gear's own doors (twin of pricing D-490) | DECIDED 2026-10-01 · Owner, 2026-10-01 (option A, "yes, A, agreed", then "write the plan"; Run 2 started before 9.5d-2); approvals inbox plan rev 2 (Run 2; design 1 and 3; plan review H1, H3, H4, M1, M2, M5, L1); amends P-D-227; amended by P-D-252 |
 | P-D-251 | H | A derived usage type may wrap one raw meter, and a usage SKU may move onto that wrapper | DECIDED 2026-10-02 · Owner, 2026-10-02 ("let's convert the ones we have into derived form"); amends P-D-230, P-D-232; amended by P-D-258 |
 | P-D-252 | M | The inbox source judges `state` before a foreign empty page | DECIDED 2026-10-02 · phase 9 review; amends P-D-250 |
@@ -81,6 +81,7 @@
 | P-D-258 | H | A published usage SKU keeps its metering | DECIDED 2026-10-02 · Owner, 2026-10-02; run 9.13; amends P-D-232, P-D-251 |
 | P-D-259 | H | A usage SKU sells a derived usage type, and its unit is that type's | DECIDED 2026-10-02 · Owner, 2026-10-02; run 9.13; amends P-D-207, P-D-229, P-D-232, P-D-251 |
 | P-D-261 | M | The SKU, derived-type and category lists answer 304 | DECIDED 2026-10-03 · Owner, 2026-10-03 (asks 56, 57); extends P-D-247 |
+| P-D-264 | M | A text function on `lifecycle` filters by the lifecycles it matches | DECIDED 2026-10-03 · Owner, 2026-10-03 ("yes, add it"); amends P-D-249 |
 
 ## Entries
 
@@ -1814,7 +1815,9 @@ A `sku_change` whose `effective_from` is after today stores `lifecycle_next` and
 
 **Amended 2026-10-02 (fix run F2 part b).** A stored `lifecycle_next` pair that sets only one of the two columns is a corrupt row. A filter compares the lifecycle in force as an OR of the due next and the stored lifecycle, so the comparison can use an index. The counts projection keeps the `CASE`, because Postgres treats two copies of that expression as different `GROUP BY` terms.
 
-**Source:** Owner, 2026-10-01. Phase 9 plan rev 4, run 9.8d. Amends P-D-191.
+**Amended by P-D-264 (2026-10-03).** `contains`, `startswith` and `endswith` on `lifecycle` are no longer 400. Each one is the `CASE`'s `in` over the lifecycle tokens that its text matches. A `lifecycle` term under `or` or `not` stays 400 `INVALID_FILTER` on the list and on the counts.
+
+**Source:** Owner, 2026-10-01. Phase 9 plan rev 4, run 9.8d. Amends P-D-191. Amended by P-D-264.
 
 #### P-D-250 [M] The approval units answer the approvals inbox through this gear's own doors (twin of pricing D-490)
 
@@ -2027,3 +2030,19 @@ A legacy raw draft may be patched onto a derived ref, and that patch drops its u
 - **The tests.** `api/rest/conditional_reads_tests.rs`: the first read, the `304` on a repeated read (the tag, a list, `*`), a new tag after a write that changes the page, and the two usage views of one SKU page.
 
 **Source:** Owner, 2026-10-03 (asks 56 and 57). Extends P-D-247.
+
+#### P-D-264 [M] A text function on `lifecycle` filters by the lifecycles it matches
+
+**Status:** DECIDED 2026-10-03.
+
+- **The gap.** The SKU list's `$filter` publishes every operator that a string field parses. For `lifecycle` these are `eq`, `ne`, `in`, `contains`, `startswith` and `endswith`. P-D-249 served only `eq`, `ne` and `in` through the effective-lifecycle `CASE`, and the three text functions were 400.
+- **The mapping.** The lifecycle is a closed set of four tokens: `draft`, `published`, `deprecated` and `retired`. `contains(lifecycle, 'text')`, `startswith(lifecycle, 'text')` and `endswith(lifecycle, 'text')` are the `CASE`'s `in` over the tokens that contain, start with or end with the text. For example, `contains(lifecycle, 'pub')` is `in ('published')`, and `startswith(lifecycle, 'd')` is `in ('draft', 'deprecated')`.
+- **Case.** The text is matched case-sensitively, because the tokens are lower-case: `contains(lifecycle, 'PUB')` matches no token. The function name is matched without regard to case, as the toolkit's filter conversion does.
+- **No match.** A text that matches no token is a condition that is always false. The list answers 200 with an empty page, not 400.
+- **Where.** A text function is served where `eq`, `ne` and `in` are served: at the top level and joined by `and`. A `lifecycle` term under `or` or `not` stays 400 `INVALID_FILTER`, on the list and on the counts.
+- **The counts.** `GET /skus/counts` drops a text function on `lifecycle` as it drops the other lifecycle terms, whether the text matches a token or none.
+- **The texts.** The 400 detail (`LIFECYCLE_FILTER_REFUSED`) and the descriptions of the two routes name the served text functions and keep the `or`/`not` refusal. In `docs/api/api.json` only those descriptions change: the published operator list of `lifecycle` was already all six.
+- **What stays.** The stored column is never compared. The statements of the SKU list and counts are unchanged (`sku_list_tests::recorded_door`).
+- **The tests.** `api/rest/sku_list_tests.rs`: `a_text_function_on_lifecycle_keeps_the_lifecycles_it_matches`, and the text-function cases of `a_due_lifecycle_is_filtered_through_the_case_or_refused`, `a_lifecycle_term_narrows_on_either_side_of_and` and `the_counts_follow_the_list_without_its_lifecycle_terms`. On Postgres: `tests/postgres_sku_list.rs`, `a_text_function_on_lifecycle_filters_through_the_case_on_postgres`.
+
+**Source:** Owner, 2026-10-03 ("yes, add it"). Amends P-D-249.
