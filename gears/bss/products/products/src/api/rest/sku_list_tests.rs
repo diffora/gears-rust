@@ -1494,28 +1494,85 @@ async fn a_lifecycle_term_narrows_on_either_side_of_and() {
             "lifecycle ne 'retired' and lifecycle ne 'deprecated'",
             vec!["OTH", "PUB"],
         ),
-        // P-D-264: a text function on `lifecycle` narrows on either side of `and` too.
-        (
-            "contains(lifecycle, 'pub') and type eq 'recurring'",
-            vec!["PUB"],
-        ),
-        (
-            "type eq 'recurring' and startswith(lifecycle, 'de')",
-            vec!["DEP"],
-        ),
-        (
-            "endswith(lifecycle, 'ed') and lifecycle ne 'retired'",
-            vec!["DEP", "OTH", "PUB"],
-        ),
-        (
-            "startswith(lifecycle, 'p') and type eq 'one_time' and endswith(lifecycle, 'ed')",
-            vec!["OTH"],
-        ),
-        ("type eq 'recurring' and contains(lifecycle, 'x')", vec![]),
     ] {
         let (status, body) = d.get(&list(&[("$filter", filter)])).await;
         assert_eq!(status, StatusCode::OK, "{filter}: {body}");
         assert_eq!(codes(&body), expected, "{filter}: {body}");
+    }
+}
+
+/// P-D-264: a text function on `lifecycle` narrows on either side of `and`, beside another
+/// `lifecycle` term or text function too. Each case is checked in both orders, and the seeds make
+/// every conjunct matter: the filter without any one of them keeps a row more, so a dropped
+/// conjunct cannot pass for a kept one.
+#[tokio::test]
+async fn every_lifecycle_text_conjunct_narrows_in_either_order() {
+    let d = Door::new().await;
+    for (code, lifecycle, ty) in [
+        ("DEP", Lifecycle::Deprecated, SkuType::Recurring),
+        ("DRA", Lifecycle::Draft, SkuType::Recurring),
+        ("ODE", Lifecycle::Deprecated, SkuType::OneTime),
+        ("ODR", Lifecycle::Draft, SkuType::OneTime),
+        ("OTH", Lifecycle::Published, SkuType::OneTime),
+        ("PUB", Lifecycle::Published, SkuType::Recurring),
+        ("RET", Lifecycle::Retired, SkuType::Recurring),
+    ] {
+        d.sku(Seed {
+            ty,
+            lifecycle,
+            ..seed(code)
+        })
+        .await;
+    }
+    let page = |terms: Vec<&str>| {
+        let filter = terms.join(" and ");
+        let uri = list(&[("$filter", filter.as_str())]);
+        let d = &d;
+        async move {
+            let (status, body) = d.get(&uri).await;
+            assert_eq!(status, StatusCode::OK, "{filter}: {body}");
+            codes(&body)
+        }
+    };
+    for (terms, expected) in [
+        (
+            vec!["contains(lifecycle, 'pub')", "type eq 'recurring'"],
+            vec!["PUB"],
+        ),
+        (
+            vec!["startswith(lifecycle, 'd')", "endswith(lifecycle, 'ed')"],
+            vec!["DEP", "ODE"],
+        ),
+        (
+            vec!["type eq 'one_time'", "endswith(lifecycle, 'ed')"],
+            vec!["ODE", "OTH"],
+        ),
+        (
+            vec!["endswith(lifecycle, 'ed')", "lifecycle ne 'retired'"],
+            vec!["DEP", "ODE", "OTH", "PUB"],
+        ),
+        (
+            vec![
+                "startswith(lifecycle, 'd')",
+                "type eq 'one_time'",
+                "endswith(lifecycle, 'ed')",
+            ],
+            vec!["ODE"],
+        ),
+    ] {
+        let reversed: Vec<&str> = terms.iter().rev().copied().collect();
+        for order in [terms.clone(), reversed] {
+            assert_eq!(page(order.clone()).await, expected, "{order:?}");
+        }
+        for dropped in 0..terms.len() {
+            let mut rest = terms.clone();
+            let gone = rest.remove(dropped);
+            let wider = page(rest).await;
+            assert!(
+                wider.len() > expected.len(),
+                "without {gone} the seeds keep no row more: {wider:?}"
+            );
+        }
     }
 }
 

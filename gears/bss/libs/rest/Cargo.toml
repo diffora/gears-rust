@@ -29,6 +29,8 @@ tracing = { workspace = true }                    # a failed body and a degraded
 uuid = { workspace = true }
 
 [dev-dependencies]
+gts = { workspace = true }   # the metadata type id in AM's client trait, for the recording AM
+proptest = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
 tracing-test = { workspace = true, features = ["no-env-filter"] }
 

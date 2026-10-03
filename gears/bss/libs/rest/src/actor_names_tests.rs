@@ -5,7 +5,9 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use account_management_sdk::{IdpUser, IdpUserFilterField, ListUsersQuery};
+use account_management_sdk::{
+    self as am, AccountManagementClient, IdpUser, IdpUserFilterField, ListUsersQuery,
+};
 use async_trait::async_trait;
 use toolkit::ClientHub;
 use toolkit_canonical_errors::{CanonicalError, resource_error};
@@ -750,4 +752,216 @@ async fn resolve_and_fill_futures_are_send() {
         resolved
     });
     assert_eq!(task.await.unwrap()[&id], ActorName::NotFound);
+}
+
+/// AM itself as a double: it records the subject and tenant of the context and the tenant of each
+/// user read, and answers the asked ids. Every other operation is refused: the names call none.
+#[derive(Default)]
+struct RecordingAm {
+    reads: Mutex<Vec<(Uuid, Uuid, Uuid)>>,
+}
+
+impl RecordingAm {
+    fn reads(&self) -> Vec<(Uuid, Uuid, Uuid)> {
+        self.reads.lock().unwrap().clone()
+    }
+}
+
+/// The refusal of every operation the actor names never call.
+fn not_called<T>() -> Result<T, CanonicalError> {
+    Err(CanonicalError::internal("the actor names call only list_users").create())
+}
+
+#[async_trait]
+impl AccountManagementClient for RecordingAm {
+    async fn create_tenant(
+        &self,
+        _: &SecurityContext,
+        _: am::CreateTenantRequest,
+    ) -> Result<am::Tenant, CanonicalError> {
+        not_called()
+    }
+    async fn get_tenant(&self, _: &SecurityContext, _: Uuid) -> Result<am::Tenant, CanonicalError> {
+        not_called()
+    }
+    async fn list_children(
+        &self,
+        _: &SecurityContext,
+        _: Uuid,
+        _: &toolkit_odata::ODataQuery,
+    ) -> Result<Page<am::Tenant>, CanonicalError> {
+        not_called()
+    }
+    async fn update_tenant(
+        &self,
+        _: &SecurityContext,
+        _: Uuid,
+        _: am::UpdateTenantRequest,
+    ) -> Result<am::Tenant, CanonicalError> {
+        not_called()
+    }
+    async fn suspend_tenant(
+        &self,
+        _: &SecurityContext,
+        _: Uuid,
+    ) -> Result<am::Tenant, CanonicalError> {
+        not_called()
+    }
+    async fn unsuspend_tenant(
+        &self,
+        _: &SecurityContext,
+        _: Uuid,
+    ) -> Result<am::Tenant, CanonicalError> {
+        not_called()
+    }
+    async fn delete_tenant(
+        &self,
+        _: &SecurityContext,
+        _: Uuid,
+    ) -> Result<am::Tenant, CanonicalError> {
+        not_called()
+    }
+    async fn create_user(
+        &self,
+        _: &SecurityContext,
+        _: Uuid,
+        _: am::IdpNewUser,
+    ) -> Result<IdpUser, CanonicalError> {
+        not_called()
+    }
+    async fn get_user(
+        &self,
+        _: &SecurityContext,
+        _: Uuid,
+        _: Uuid,
+    ) -> Result<IdpUser, CanonicalError> {
+        not_called()
+    }
+    async fn list_users(
+        &self,
+        ctx: &SecurityContext,
+        tenant_id: Uuid,
+        query: ListUsersQuery,
+    ) -> Result<Page<IdpUser>, CanonicalError> {
+        self.reads
+            .lock()
+            .unwrap()
+            .push((ctx.subject_id(), ctx.subject_tenant_id(), tenant_id));
+        Ok(page(
+            query_ids(&query)
+                .into_iter()
+                .map(|id| IdpUser::new(id, "from am"))
+                .collect(),
+            None,
+        ))
+    }
+    async fn delete_user(
+        &self,
+        _: &SecurityContext,
+        _: Uuid,
+        _: Uuid,
+    ) -> Result<(), CanonicalError> {
+        not_called()
+    }
+    async fn update_user(
+        &self,
+        _: &SecurityContext,
+        _: Uuid,
+        _: Uuid,
+        _: am::IdpUserPatch,
+    ) -> Result<IdpUser, CanonicalError> {
+        not_called()
+    }
+    async fn create_service_account(
+        &self,
+        _: &SecurityContext,
+        _: Uuid,
+        _: String,
+        _: Vec<String>,
+    ) -> Result<am::IdpServiceAccountCredentials, CanonicalError> {
+        not_called()
+    }
+    async fn list_service_accounts(
+        &self,
+        _: &SecurityContext,
+        _: Uuid,
+    ) -> Result<Vec<am::IdpServiceAccountSummary>, CanonicalError> {
+        not_called()
+    }
+    async fn rotate_service_account_secret(
+        &self,
+        _: &SecurityContext,
+        _: Uuid,
+        _: &str,
+    ) -> Result<am::IdpServiceAccountCredentials, CanonicalError> {
+        not_called()
+    }
+    async fn revoke_service_account(
+        &self,
+        _: &SecurityContext,
+        _: Uuid,
+        _: &str,
+    ) -> Result<(), CanonicalError> {
+        not_called()
+    }
+    async fn get_metadata(
+        &self,
+        _: &SecurityContext,
+        _: Uuid,
+        _: gts::GtsTypeId,
+    ) -> Result<am::MetadataEntry, CanonicalError> {
+        not_called()
+    }
+    async fn resolve_metadata(
+        &self,
+        _: &SecurityContext,
+        _: Uuid,
+        _: gts::GtsTypeId,
+    ) -> Result<Option<am::MetadataEntry>, CanonicalError> {
+        not_called()
+    }
+    async fn list_metadata(
+        &self,
+        _: &SecurityContext,
+        _: Uuid,
+        _: &toolkit_odata::ODataQuery,
+    ) -> Result<Page<am::MetadataEntry>, CanonicalError> {
+        not_called()
+    }
+    async fn upsert_metadata(
+        &self,
+        _: &SecurityContext,
+        _: Uuid,
+        _: am::UpsertMetadataRequest,
+    ) -> Result<am::MetadataEntry, CanonicalError> {
+        not_called()
+    }
+    async fn delete_metadata(
+        &self,
+        _: &SecurityContext,
+        _: Uuid,
+        _: gts::GtsTypeId,
+    ) -> Result<(), CanonicalError> {
+        not_called()
+    }
+}
+
+/// The adapter over the hub's AM reads with the caller's own context, in the caller's own tenant:
+/// no privileged context and no other tenant.
+#[tokio::test]
+async fn the_am_adapter_reads_with_the_callers_own_context_and_tenant() {
+    let am = Arc::new(RecordingAm::default());
+    let hub = Arc::new(ClientHub::new());
+    hub.register::<dyn AccountManagementClient>(am.clone());
+    let service = ActorNames::from_hub(hub, &[]);
+    let (subject, tenant) = (Uuid::from_u128(0x5b), Uuid::from_u128(0x7e));
+    let ctx = SecurityContext::builder()
+        .subject_id(subject)
+        .subject_tenant_id(tenant)
+        .build()
+        .unwrap();
+    let id = Uuid::from_u128(1);
+    let resolved = service.resolve(&ctx, [id]).await;
+    assert_eq!(resolved[&id], ActorName::Resolved("from am".into()));
+    assert_eq!(am.reads(), [(subject, tenant, tenant)]);
 }

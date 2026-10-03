@@ -340,3 +340,48 @@ async fn a_refused_usage_port_changes_the_sku_list_tag() {
     assert!(with_text.contains("\"entries\":1"), "{with_text}");
     assert!(without_text.contains("\"usage\":null"), "{without_text}");
 }
+
+/// P-D-261: the served spec declares, on each of the four list doors, `If-None-Match` as an
+/// optional header, the weak `ETag` and the `Cache-Control` of the 200, and the 304 with both. The
+/// derived-type list declares its minute; the other three revalidate.
+#[tokio::test]
+async fn the_four_lists_declare_the_conditional_get() {
+    let (db, _, _, _dsn) = test_db().await;
+    let (_, state) =
+        rest_app_on_db(Uuid::new_v4(), doors, resolved_usage_types(), "test", db).await;
+    let registry = toolkit::api::OpenApiRegistryImpl::new();
+    let _doors = doors(state, &registry);
+    let spec = serde_json::to_value(
+        registry
+            .build_openapi(&toolkit::api::OpenApiInfo::default())
+            .unwrap(),
+    )
+    .unwrap();
+    for (path, cache) in [
+        ("/bss-products/v1/skus", "private, no-cache"),
+        ("/bss-products/v1/skus/counts", "private, no-cache"),
+        ("/bss-products/v1/categories", "private, no-cache"),
+        (
+            "/bss-products/v1/derived-usage-types",
+            "private, max-age=60",
+        ),
+    ] {
+        let op = &spec["paths"][path]["get"];
+        let parameter = op["parameters"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{path}: no parameters"))
+            .iter()
+            .find(|param| param["name"] == "If-None-Match")
+            .unwrap_or_else(|| panic!("{path}: If-None-Match"));
+        assert_eq!(parameter["in"], "header", "{path}");
+        assert_eq!(parameter["required"], false, "{path}");
+        for status in ["200", "304"] {
+            let headers = &op["responses"][status]["headers"];
+            assert!(headers.get("ETag").is_some(), "{path} {status}: {headers}");
+            assert_eq!(
+                headers["Cache-Control"]["description"], cache,
+                "{path} {status}: {headers}"
+            );
+        }
+    }
+}

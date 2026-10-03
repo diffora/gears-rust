@@ -468,3 +468,116 @@ async fn the_source_declares_the_system_actors_this_gear_names() {
     );
     assert!(source.system_actors().contains(&Uuid::nil()));
 }
+
+const ARI: Uuid = Uuid::from_u128(9);
+
+/// P-D-263, P-D-262: an archived SKU and an archived category name the actor who archived them, on
+/// the SKU card, the SKU list, the category list and the category card, each in one lookup.
+#[tokio::test]
+async fn an_archived_sku_and_category_name_their_archiver() {
+    use crate::domain::category::NewCategory;
+    use crate::domain::sku::NewSku;
+    use bss_products_sdk::models::{Lifecycle, SkuType};
+    let w = world().await;
+    w.people.know(ARI, "Ari Archiver");
+    let (db, scope) = repo_connection(&w.f.dsn, w.f.tenant).await;
+    let conn = db.conn().unwrap();
+    let now = time::OffsetDateTime::now_utc();
+    let gone = repo::insert_sku(
+        &conn,
+        &scope,
+        w.f.tenant,
+        NewSku {
+            code: "GONE".into(),
+            name: "Gone".into(),
+            r#type: SkuType::Recurring,
+            category_id: None,
+            description: String::new(),
+            sellable: true,
+            gl_code: None,
+            tax_category: None,
+            invoice_line_template: None,
+            billing_timing: None,
+            usage_type_ref: None,
+            unit: None,
+        },
+        w.f.author.subject_id(),
+        now,
+    )
+    .await
+    .unwrap();
+    repo::set_lifecycle(
+        &conn,
+        &scope,
+        w.f.tenant,
+        gone.id,
+        &[Lifecycle::Draft],
+        Lifecycle::Retired,
+        now,
+    )
+    .await
+    .unwrap();
+    let gone = repo::find_sku(&conn, &scope, w.f.tenant, gone.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let repo::HeadWrite::Written(_) = repo::set_sku_archived(
+        &conn,
+        &scope,
+        w.f.tenant,
+        gone.id,
+        gone.revision,
+        Some(ARI),
+        now,
+    )
+    .await
+    .unwrap() else {
+        panic!("the SKU archive matched")
+    };
+    let shelved = repo::insert_category(
+        &conn,
+        &scope,
+        w.f.tenant,
+        NewCategory {
+            code: "shelved".into(),
+            name: "Shelved".into(),
+            is_default: false,
+            sort_order: 0,
+        },
+        now,
+    )
+    .await
+    .unwrap();
+    let Some(repo::HeadWrite::Written(shelved)) =
+        repo::retire_category_if_unused(&conn, &scope, w.f.tenant, shelved.id, now)
+            .await
+            .unwrap()
+    else {
+        panic!("the category retires")
+    };
+    let repo::HeadWrite::Written(_) = repo::set_category_archived(
+        &conn,
+        &scope,
+        w.f.tenant,
+        shelved.id,
+        shelved.version,
+        Some(ARI),
+        now,
+    )
+    .await
+    .unwrap() else {
+        panic!("the category archive matched")
+    };
+
+    let card = w.read(&format!("/skus/{}", gone.id)).await;
+    named(&card["sku"], "archived_by", Some("Ari Archiver"));
+    named(&card["sku"], "created_by", Some("Ann Author"));
+    let list = w.read("/skus?$filter=archived%20eq%20true").await;
+    assert_eq!(list["items"][0]["code"], "GONE", "{list}");
+    named(&list["items"][0], "archived_by", Some("Ari Archiver"));
+    let category = w.read(&format!("/categories/{}", shelved.id)).await;
+    named(&category, "archived_by", Some("Ari Archiver"));
+    let categories = w.read("/categories?$filter=archived%20eq%20true").await;
+    assert_eq!(categories["items"][0]["code"], "shelved", "{categories}");
+    named(&categories["items"][0], "archived_by", Some("Ari Archiver"));
+}
