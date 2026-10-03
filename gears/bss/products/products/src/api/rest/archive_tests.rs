@@ -357,3 +357,35 @@ async fn a_retired_category_archives_and_an_active_one_is_refused() {
         );
     }
 }
+
+/// The archive and unarchive doors answer the new version in `ETag`, which the next write sends
+/// as If-Match, and the served spec says so on each 200.
+#[tokio::test]
+async fn the_archive_doors_declare_the_etag_of_their_200() {
+    let (db, _, _, _dsn) = crate::test_support::test_db().await;
+    let (_, state) = crate::test_support::rest_app_on_db(
+        Uuid::new_v4(),
+        doors,
+        crate::test_support::resolved_usage_types(),
+        "test",
+        db,
+    )
+    .await;
+    let registry = toolkit::api::OpenApiRegistryImpl::new();
+    let _doors = doors(state, &registry);
+    let spec = serde_json::to_value(
+        registry
+            .build_openapi(&toolkit::api::OpenApiInfo::default())
+            .unwrap(),
+    )
+    .unwrap();
+    for path in [
+        "/bss-products/v1/skus/{id}/archive",
+        "/bss-products/v1/skus/{id}/unarchive",
+        "/bss-products/v1/categories/{id}/archive",
+        "/bss-products/v1/categories/{id}/unarchive",
+    ] {
+        let headers = &spec["paths"][path]["post"]["responses"]["200"]["headers"];
+        assert!(headers.get("ETag").is_some(), "{path}: {headers}");
+    }
+}

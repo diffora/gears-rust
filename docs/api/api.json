@@ -47042,7 +47042,15 @@
                 }
               }
             },
-            "description": "The archived category; ETag carries its version."
+            "description": "The archived category; ETag carries its version.",
+            "headers": {
+              "ETag": {
+                "description": "The version to send back as If-Match",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -47266,7 +47274,15 @@
                 }
               }
             },
-            "description": "The unarchived category; ETag carries its version."
+            "description": "The unarchived category; ETag carries its version.",
+            "headers": {
+              "ETag": {
+                "description": "The version to send back as If-Match",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -49144,7 +49160,15 @@
                 }
               }
             },
-            "description": "The archived SKU."
+            "description": "The archived SKU; ETag carries its revision.",
+            "headers": {
+              "ETag": {
+                "description": "The version to send back as If-Match",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -50001,7 +50025,15 @@
                 }
               }
             },
-            "description": "The unarchived SKU."
+            "description": "The unarchived SKU; ETag carries its revision.",
+            "headers": {
+              "ETag": {
+                "description": "The version to send back as If-Match",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {

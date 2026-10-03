@@ -3,7 +3,7 @@
 //! Flat categories, direct authoring with revision checks and transactional audit.
 use super::authz_error_to_canonical;
 use super::{
-    ApiState, TxError, category_tx_config, contention_db_err,
+    ApiState, ArchiveMove, TxError, category_tx_config, contention_db_err,
     dto::{CategoryPatchRequest, CategoryRequest, ProductsCategoryDto, ProductsCategoryItem},
     preconditions::{etag, if_match, if_match_param},
     replay, repo_error_to_canonical, require_authenticated,
@@ -285,6 +285,7 @@ fn archive_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
             StatusCode::OK,
             "The archived category; ETag carries its version.",
         )
+        .response_header(super::preconditions::etag_header())
         .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
@@ -313,6 +314,7 @@ fn archive_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
             StatusCode::OK,
             "The unarchived category; ETag carries its version.",
         )
+        .response_header(super::preconditions::etag_header())
         .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
@@ -751,7 +753,15 @@ async fn archive_category(
     Path(id): Path<Uuid>,
     headers: HeaderMap,
 ) -> Result<Response, CanonicalError> {
-    mark_archived(&state, &enforcer, extension_ctx, id, &headers, true).await
+    mark_archived(
+        &state,
+        &enforcer,
+        extension_ctx,
+        id,
+        &headers,
+        ArchiveMove::Archive,
+    )
+    .await
 }
 /// `POST /categories/{id}/unarchive` (P-D-263).
 /// @cpt-cf-bss-products-fr-category-flat
@@ -762,9 +772,17 @@ async fn unarchive_category(
     Path(id): Path<Uuid>,
     headers: HeaderMap,
 ) -> Result<Response, CanonicalError> {
-    mark_archived(&state, &enforcer, extension_ctx, id, &headers, false).await
+    mark_archived(
+        &state,
+        &enforcer,
+        extension_ctx,
+        id,
+        &headers,
+        ArchiveMove::Unarchive,
+    )
+    .await
 }
-/// Set (`archive`) or clear a category's archive mark (P-D-263) under category author, at the
+/// Set ([`ArchiveMove::Archive`]) or clear a category's archive mark (P-D-263) under category author, at the
 /// version the caller read, with an audit row in the same transaction. Only a retired category
 /// takes the mark (409 `CATEGORY_NOT_RETIRED`); a stale tag is judged first, as on the PATCH. A
 /// category already in the asked state is answered as it is, and nothing is written.
@@ -774,7 +792,7 @@ async fn mark_archived(
     extension_ctx: Option<Extension<SecurityContext>>,
     id: Uuid,
     headers: &HeaderMap,
-    archive: bool,
+    mark: ArchiveMove,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let tenant_id = ctx.subject_tenant_id();
@@ -804,13 +822,13 @@ async fn mark_archived(
                             found: current.version,
                         }));
                     }
-                    if archive && current.status != RETIRED {
+                    if mark == ArchiveMove::Archive && current.status != RETIRED {
                         return Err(TxError::Refused(DomainError::Conflict {
                             code: "CATEGORY_NOT_RETIRED",
                             detail: "only a retired category is archived; retire it first".into(),
                         }));
                     }
-                    if current.archived_at.is_some() == archive {
+                    if mark.already(current.archived_at.is_some()) {
                         return Ok(current);
                     }
                     let c = match repo::set_category_archived(
@@ -819,7 +837,7 @@ async fn mark_archived(
                         tenant_id,
                         id,
                         expected,
-                        archive.then_some(actor),
+                        mark.archived_by(actor),
                         now,
                     )
                     .await
@@ -833,10 +851,9 @@ async fn mark_archived(
                             }));
                         }
                     };
-                    let action = if archive {
-                        "category.archive"
-                    } else {
-                        "category.unarchive"
+                    let action = match mark {
+                        ArchiveMove::Archive => "category.archive",
+                        ArchiveMove::Unarchive => "category.unarchive",
                     };
                     audit(tx, &scope, tenant_id, actor, action, &c, now).await?;
                     Ok(c)

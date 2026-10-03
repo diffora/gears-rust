@@ -109,6 +109,34 @@ pub fn require_authenticated(
     Ok(ctx)
 }
 
+/// The way an archive door moves a SKU's or a category's archive mark (P-D-263). The call site
+/// names it, not a `bool` (RS-54).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ArchiveMove {
+    /// Set the mark: `archived_at` and `archived_by`.
+    Archive,
+    /// Clear the mark.
+    Unarchive,
+}
+
+impl ArchiveMove {
+    /// The `archived_by` the repository writes: `actor` to set the mark, `None` to clear it.
+    pub(crate) const fn archived_by(self, actor: uuid::Uuid) -> Option<uuid::Uuid> {
+        match self {
+            Self::Archive => Some(actor),
+            Self::Unarchive => None,
+        }
+    }
+
+    /// Whether a row whose mark is `archived` is already where this move leaves it.
+    pub(crate) const fn already(self, archived: bool) -> bool {
+        match self {
+            Self::Archive => archived,
+            Self::Unarchive => !archived,
+        }
+    }
+}
+
 /// The refusal of a REST caller that asserts pricing's system actor (P-D-222).
 pub const SYSTEM_ACTOR_RESERVED: &str = "SYSTEM_ACTOR_RESERVED";
 

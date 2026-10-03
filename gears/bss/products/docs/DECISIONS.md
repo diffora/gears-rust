@@ -82,7 +82,7 @@
 | P-D-259 | H | A usage SKU sells a derived usage type, and its unit is that type's | DECIDED 2026-10-02 · Owner, 2026-10-02; run 9.13; amends P-D-207, P-D-229, P-D-232, P-D-251 |
 | P-D-261 | M | The SKU, derived-type and category lists answer 304 | DECIDED 2026-10-03 · Owner, 2026-10-03 (asks 56, 57); extends P-D-247 |
 | P-D-262 | M | Every actor id a read shows carries its current name (twin of pricing D-519) | DECIDED 2026-10-03 · Owner, 2026-10-02 (ask 32: names on the server, through AM); extends P-D-213, P-D-224, P-D-231; amended 2026-10-03 (one lookup per inbox card) |
-| P-D-263 | M | A retired SKU or category can be archived, and its list hides it by default (twin of pricing D-522) | DECIDED 2026-10-03 · Owner, 2026-10-03 ("archived"; ask 58b); extends P-D-208, P-D-210, P-D-211, P-D-215 |
+| P-D-263 | M | A retired SKU or category can be archived, and its list hides it by default (twin of pricing D-522) | DECIDED 2026-10-03 · Owner, 2026-10-03 ("archived"; ask 58b); extends P-D-208, P-D-210, P-D-211, P-D-215; amended 2026-10-03 (branch review) |
 | P-D-264 | M | A text function on `lifecycle` filters by the lifecycles it matches | DECIDED 2026-10-03 · Owner, 2026-10-03 ("yes, add it"); amends P-D-249 |
 
 ## Entries
@@ -2138,8 +2138,14 @@ lists filled with rows nobody works with.
   `tests/postgres_archive.rs` (the migration up and down on Postgres, the list, the counts and the category list there);
   the migration's own `_tests.rs` on SQLite.
 
+**Amended 2026-10-03 (branch review).**
+
+- **The served spec.** Each of the four doors' 200 declares its `ETag` response header: the new revision or version,
+  the value the next write sends as If-Match (`preconditions::etag_header`). The doors sent it before; now the spec says
+  so. The test: `archive_tests::the_archive_doors_declare_the_etag_of_their_200`.
+
 **Source:** Owner, 2026-10-03 ("archived"; ask 58b). Twin of pricing D-522. Extends P-D-208, P-D-210, P-D-211 and
-P-D-215.
+P-D-215. Amended by the branch review, 2026-10-03.
 #### P-D-264 [M] A text function on `lifecycle` filters by the lifecycles it matches
 
 **Status:** DECIDED 2026-10-03.
