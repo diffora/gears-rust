@@ -68,7 +68,7 @@
 | P-D-233 | H | Products answers pricing's meter semantics for its derived usage types (E1b) | DECIDED 2026-10-01 · Derived usage types plan rev 3 (design decisions 5 and 6, run 4); implements P-D-229's pricing reference; amends P-D-229, P-D-230, P-D-231, P-D-232; pricing D-503 and D-510 amended |
 | P-D-245 | M | The reference registry reads many SKUs in one call | DECIDED 2026-10-01 · phase 9 plan rev 4 (run 9.7); amends P-D-222 |
 | P-D-246 | M | The SKU pickers narrow by one book or one plan revision (`priced_in`, `not_priced_in`, `not_in_revision`) through the port's scoped sets | DECIDED 2026-10-01 · Owner, 2026-10-01 (asks v4, 52 and 46); phase 9 plan rev 4 (run 9.8; review M5, M6, M8); amends P-D-210, P-D-212 |
-| P-D-247 | L | A usage-type picker page may be kept privately for a minute | DECIDED 2026-10-01 · Owner, 2026-10-01 (asks v4, 56); phase 9 plan rev 4 (run 9.8); extends P-D-207 |
+| P-D-247 | L | A usage-type picker page may be kept privately for a minute | DECIDED 2026-10-01 · Owner, 2026-10-01 (asks v4, 56); phase 9 plan rev 4 (run 9.8); extends P-D-207; extended by P-D-261 |
 | P-D-248 | H | A retire under review keeps the SKU's lifecycle; `retire_pending` is the fence | DECIDED 2026-10-01 · Owner, 2026-10-01; phase 9 plan rev 4 run 9.8d; amends P-D-189, P-D-208, P-D-211, P-D-213 |
 | P-D-249 | H | A lifecycle change honours its date | DECIDED 2026-10-01 · Owner, 2026-10-01; phase 9 plan rev 4 run 9.8d; amends P-D-191 |
 | P-D-250 | M | The approval units answer the approvals inbox through this gear's own doors (twin of pricing D-490) | DECIDED 2026-10-01 · Owner, 2026-10-01 (option A, "yes, A, agreed", then "write the plan"; Run 2 started before 9.5d-2); approvals inbox plan rev 2 (Run 2; design 1 and 3; plan review H1, H3, H4, M1, M2, M5, L1); amends P-D-227; amended by P-D-252 |
@@ -80,6 +80,7 @@
 | P-D-257 | M | The derived type list carries each type's latest version | DECIDED 2026-10-02 · Owner, 2026-10-02; run 9.12; amends P-D-231 |
 | P-D-258 | H | A published usage SKU keeps its metering | DECIDED 2026-10-02 · Owner, 2026-10-02; run 9.13; amends P-D-232, P-D-251 |
 | P-D-259 | H | A usage SKU sells a derived usage type, and its unit is that type's | DECIDED 2026-10-02 · Owner, 2026-10-02; run 9.13; amends P-D-207, P-D-229, P-D-232, P-D-251 |
+| P-D-261 | M | The SKU, derived-type and category lists answer 304 | DECIDED 2026-10-03 · Owner, 2026-10-03 (asks 56, 57); extends P-D-247 |
 
 ## Entries
 
@@ -1784,7 +1785,10 @@ may keep the page, never a shared one. The catalog changes rarely, so a minute i
 the 200 in the served spec. A refusal carries none. `usage_types_tests.rs` tests the header and its absence;
 `gear_tests.rs` tests the declaration.
 
-**Source:** Owner, 2026-10-01 (the pricing-mfe asks v4, 56); phase 9 plan rev 4 (run 9.8). Extends P-D-207.
+P-D-261 extends this entry: `GET /derived-usage-types` answers the same `Cache-Control: private, max-age=60`, with a weak
+`ETag` of its JSON and `304` on a matching `If-None-Match`.
+
+**Source:** Owner, 2026-10-01 (the pricing-mfe asks v4, 56); phase 9 plan rev 4 (run 9.8). Extends P-D-207. Extended by P-D-261.
 
 #### P-D-248 [H] A retire under review keeps the SKU's lifecycle
 
@@ -2009,3 +2013,17 @@ Every SKU read still serves `unit`: the version's `output_unit` for a derived SK
 A legacy raw draft may be patched onto a derived ref, and that patch drops its unit. A raw draft cannot be published. A published raw SKU may take P-D-251's wrap, which stores `unit` null, or retire. Every other write that keeps a raw ref is `DERIVED_USAGE_TYPE_REQUIRED`.
 
 **Source:** Owner, 2026-10-02 ("я склоняюсь к тому что бы не копировать", "нам нужно создание sku с сырыми типами?" … "да"). Run 9.13. Amends P-D-207, P-D-229, P-D-232 and P-D-251.
+
+#### P-D-261 [M] The SKU, derived-type and category lists answer 304
+
+**Status:** DECIDED 2026-10-03.
+
+- **The four reads.** `GET /skus`, `GET /skus/counts`, `GET /derived-usage-types` and `GET /categories` answer a weak `ETag` of the JSON body they serve: `W/"` plus 22 base64url characters of its SHA-256.
+- **The comparison.** `If-None-Match` matches that tag by weak comparison (RFC 9110), including `*` and a comma-separated list. A match is `304` with an empty body, the same `ETag` and the same `Cache-Control`. Only a `200` is turned into a `304`; an error passes through unchanged.
+- **Cache-Control.** The SKU list, the SKU counts and the category list send `private, no-cache`: the browser keeps the answer and must revalidate it. The derived-type list sends `private, max-age=60`, the same window as raw `GET /usage-types` (P-D-247).
+- **The tag is the caller's own body.** It is not a row version. A caller that pricing refuses sees `usage: null` on the SKU list, and a caller that pricing answers sees the usage, so their tags differ. A `304` never gives one caller the view of another caller.
+- **The `If-None-Match` decline is withdrawn.** The module text of `api/rest/preconditions.rs` said that this surface declines `If-None-Match`. That text is removed: these four reads serve it. The module still parses only `If-Match`, for the mutating doors, and that parser refuses a weak tag.
+- **What stays.** The single-resource reads keep the strong `ETag` they serve for `If-Match`. The statement counts of the SKU list and counts are unchanged (`sku_list_tests::recorded_door`).
+- **The tests.** `api/rest/conditional_reads_tests.rs`: the first read, the `304` on a repeated read (the tag, a list, `*`), a new tag after a write that changes the page, and the two usage views of one SKU page.
+
+**Source:** Owner, 2026-10-03 (asks 56 and 57). Extends P-D-247.

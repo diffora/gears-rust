@@ -30,11 +30,13 @@ use crate::{
 };
 use authz_resolver_sdk::PolicyEnforcer;
 use axum::{
-    Extension, Json, Router,
+    Extension, Router,
     extract::{Query, rejection::QueryRejection},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
+    response::Response,
 };
 use bss_products_sdk::sku_usage::{SkuUsageSets, UsageScope};
+use bss_rest::conditional_get::{PRIVATE_REVALIDATE, respond};
 use std::sync::Arc;
 use toolkit::api::{
     OpenApiRegistry,
@@ -175,7 +177,8 @@ pub(crate) fn register(router: Router, openapi: &dyn OpenApiRegistry) -> Router 
              caller, 503 USAGE_UNAVAILABLE when it cannot answer. A book or a revision the tenant \
              does not hold is an empty set. The cursor carries the picker keys too. The multi-id \
              read is `$filter=id in (...)`, one page of at most `$top` 200, within the 8 KiB \
-             filter.",
+             filter. A matching If-None-Match is 304 with an empty body; the 200 carries a weak \
+             ETag of its JSON and Cache-Control private, no-cache (P-D-261).",
         )
         .tag(TAG)
         .authenticated()
@@ -228,6 +231,7 @@ pub(crate) fn register(router: Router, openapi: &dyn OpenApiRegistry) -> Router 
             "A plan revision id: only the SKUs its items do not name (P-D-246)",
             "string",
         )
+        .param(super::preconditions::if_none_match_param())
         .handler(list_skus)
         .with_odata_filter::<SkuFilterField>()
         .with_odata_orderby::<SkuOrderField>()
@@ -236,6 +240,14 @@ pub(crate) fn register(router: Router, openapi: &dyn OpenApiRegistry) -> Router 
             StatusCode::OK,
             "One page of SKUs.",
         )
+        .response_header(super::preconditions::weak_etag_header())
+        .response_header(super::preconditions::revalidate_header())
+        .no_content_response(
+            StatusCode::NOT_MODIFIED,
+            "The If-None-Match tag matches this body",
+        )
+        .response_header(super::preconditions::weak_etag_header())
+        .response_header(super::preconditions::revalidate_header())
         .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
@@ -254,7 +266,9 @@ pub(crate) fn register(router: Router, openapi: &dyn OpenApiRegistry) -> Router 
              `cursor`/`$skiptoken` and `$select` are 400. The picker keys `priced_in`, `not_priced_in` (at most one of the \
              two) and `not_in_revision` narrow the counts as they narrow the list (P-D-246): 403 \
              USAGE_FORBIDDEN when pricing refuses the caller (a revision takes plan read beside \
-             price_book_entry read), 503 USAGE_UNAVAILABLE when it cannot answer.",
+             price_book_entry read), 503 USAGE_UNAVAILABLE when it cannot answer. A matching \
+             If-None-Match is 304 with an empty body; the 200 carries a weak ETag of its JSON and \
+             Cache-Control private, no-cache (P-D-261).",
         )
         .tag(TAG)
         .authenticated()
@@ -295,9 +309,18 @@ pub(crate) fn register(router: Router, openapi: &dyn OpenApiRegistry) -> Router 
             "A plan revision id: only the SKUs its items do not name (P-D-246)",
             "string",
         )
+        .param(super::preconditions::if_none_match_param())
         .handler(count_skus)
         .with_odata_filter::<SkuFilterField>()
         .json_response_with_schema::<ProductsSkuCounts>(openapi, StatusCode::OK, "The SKU counts.")
+        .response_header(super::preconditions::weak_etag_header())
+        .response_header(super::preconditions::revalidate_header())
+        .no_content_response(
+            StatusCode::NOT_MODIFIED,
+            "The If-None-Match tag matches this body",
+        )
+        .response_header(super::preconditions::weak_etag_header())
+        .response_header(super::preconditions::revalidate_header())
         .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
@@ -598,9 +621,10 @@ async fn list_skus(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
+    headers: HeaderMap,
     query: RawQuery,
     odata: Result<OData, CanonicalError>,
-) -> Result<Json<Page<SkuListItem>>, CanonicalError> {
+) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     // Authorization first, then the query (a 403 before a 400).
     let scope = read_scope(&enforcer, &ctx).await?;
@@ -651,20 +675,24 @@ async fn list_skus(
     // P-D-197: one call of pricing's usage port for the page, after the page's transaction.
     let ids: Vec<Uuid> = page.items.iter().map(|s| s.id).collect();
     let mut usage = super::usage::of(&state, &ctx, &ids).await;
-    Ok(Json(Page {
-        items: page
-            .items
-            .into_iter()
-            .map(|s| {
-                let counted = usage.remove(&s.id);
-                SkuListItem {
-                    sku: s.into(),
-                    usage: counted,
-                }
-            })
-            .collect(),
-        page_info: page.page_info,
-    }))
+    Ok(respond(
+        &headers,
+        &Page {
+            items: page
+                .items
+                .into_iter()
+                .map(|s| {
+                    let counted = usage.remove(&s.id);
+                    SkuListItem {
+                        sku: s.into(),
+                        usage: counted,
+                    }
+                })
+                .collect(),
+            page_info: page.page_info,
+        },
+        PRIVATE_REVALIDATE,
+    ))
 }
 
 /// Recover the tenant's orphan fences before a read, in the read's transaction, so the list
@@ -694,9 +722,10 @@ async fn count_skus(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
+    headers: HeaderMap,
     query: RawQuery,
     odata: Result<OData, CanonicalError>,
-) -> Result<Json<ProductsSkuCounts>, CanonicalError> {
+) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let scope = read_scope(&enforcer, &ctx).await?;
     let params = params(query, COUNT_KEYS, Some(&["$filter"]))?;
@@ -734,9 +763,14 @@ async fn count_skus(
         })
         .await
         .map_err(tx_to_canonical)?;
-    Ok(Json(counts.into()))
+    let body: ProductsSkuCounts = counts.into();
+    Ok(respond(&headers, &body, PRIVATE_REVALIDATE))
 }
 
 #[cfg(test)]
 #[path = "sku_list_tests.rs"]
 mod sku_list_tests;
+
+#[cfg(test)]
+#[path = "conditional_reads_tests.rs"]
+mod conditional_reads_tests;

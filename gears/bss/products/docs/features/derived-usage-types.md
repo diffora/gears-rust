@@ -69,7 +69,7 @@ writes ask `author` on the resource `derived_usage_type`; the reads ask `sku:rea
 - [PRD](../PRD.md): `fr-derived-usage-type`, AC #30, AC #31 and AC #32.
 - [DESIGN](../DESIGN.md): §3.1 (the derived usage declaration, type and pin), §3.3 (the doors and the SKU doors' derived
   codes), §3.5 (the catalog port's derived sibling and pricing's meter semantics), §3.7 (the tables).
-- [DECISIONS](../DECISIONS.md): P-D-229, P-D-230, P-D-231, P-D-232, P-D-233, P-D-251, P-D-257; pricing D-503 (amended).
+- [DECISIONS](../DECISIONS.md): P-D-229, P-D-230, P-D-231, P-D-232, P-D-233, P-D-251, P-D-257, P-D-261; pricing D-503 (amended).
 - The plan: `docs/superpowers/plans/2026-10-01-products-derived-usage-types.md` in the main checkout, rev 3, runs 1 to 4.
 
 ## 2. Actor Flows (CDSL)
@@ -223,7 +223,9 @@ Verified by `derived_usage_types_tests::create_gives_version_1_and_a_new_version
 Two writes under `author` on `derived_usage_type` and three reads under `sku:read`, registered through OperationBuilder with
 503 declared on each and a served text naming every code; writes take an optional `Idempotency-Key` and write one audit row
 each in their transaction (`subject_kind = derived_usage_type`, the type's id, the version); the list pages as the SKU list
-does and each item carries the latest version in full, from one grouped read (DESIGN §3.3; P-D-231, P-D-257).
+does and each item carries the latest version in full, from one grouped read (DESIGN §3.3; P-D-231, P-D-257). The list answers 304
+when `If-None-Match` matches a weak `ETag` of its JSON, and sends `Cache-Control: private, max-age=60`, the window of raw
+`GET /usage-types` (P-D-247, P-D-261).
 
 ### A usage SKU pins its derived version
 
