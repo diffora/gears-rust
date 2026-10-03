@@ -157,9 +157,11 @@ pub(crate) fn register(router: Router, openapi: &dyn OpenApiRegistry) -> Router 
         .description(
             "One page of the tenant's SKUs (P-D-210). OData `$filter` over id, code, name, \
              lifecycle, retire_pending, type, category_id (`eq null`: no category) and \
-             pending_unit_id (`ne null`: in review). `lifecycle` compares with `eq`, `ne` or \
-             `in`, and with those joined by `and` (the effective lifecycle); a `lifecycle` term \
-             under `or` or `not`, or `contains`, `startswith` or `endswith` on it, is 400. \
+             pending_unit_id (`ne null`: in review). `lifecycle` compares the effective lifecycle \
+             with `eq`, `ne` or `in`, or with `contains`, `startswith` or `endswith` as the `in` \
+             of the lifecycle tokens the text matches, case-sensitively (none matching keeps \
+             nothing; P-D-264), at the top level or joined by `and`; a `lifecycle` term under \
+             `or` or `not` is 400. \
              `$orderby` over code, name, updated_at (tie-break id; default \
              code); `$top` (alias `limit`; default 50, clamped at 200) and `cursor` (alias \
              `$skiptoken`) from `page_info`. `q` is a case-insensitive substring of the code, \
@@ -260,9 +262,9 @@ pub(crate) fn register(router: Router, openapi: &dyn OpenApiRegistry) -> Router 
         .description(
             "The list's tab counts (P-D-211): every SKU, each lifecycle, and those in review \
              (`pending_unit_id` set), narrowed like the list by `q`, `priced`, `in_plan` and \
-             `$filter`. Top-level `lifecycle` comparisons (`eq`, `ne`, `in`, and those joined by \
-             `and`) are dropped. A `lifecycle` term under `or` or `not`, or `contains`, \
-             `startswith` or `endswith` on `lifecycle`, is 400. `$orderby`, `$top`/`limit`, \
+             `$filter`. Top-level `lifecycle` terms (`eq`, `ne`, `in`, `contains`, `startswith` \
+             or `endswith`, and those joined by `and`) are dropped (P-D-264). A `lifecycle` term \
+             under `or` or `not` is 400. `$orderby`, `$top`/`limit`, \
              `cursor`/`$skiptoken` and `$select` are 400. The picker keys `priced_in`, `not_priced_in` (at most one of the \
              two) and `not_in_revision` narrow the counts as they narrow the list (P-D-246): 403 \
              USAGE_FORBIDDEN when pricing refuses the caller (a revision takes plan read beside \
@@ -735,8 +737,9 @@ async fn count_skus(
     let OData(odata) = odata?;
     // The whole filter is checked as the list would read it, then its lifecycle terms go.
     checked_filter(odata.filter.as_deref())?;
-    // Pulled-out lifecycle terms are dropped (the counts count every lifecycle). A term the
-    // CASE does not serve is the same 400 the list answers (P-D-249).
+    // Pulled-out lifecycle terms, text functions included, are dropped (the counts count every
+    // lifecycle). A term the CASE does not serve is the same 400 the list answers (P-D-249,
+    // P-D-264).
     let condition = match odata.filter.as_deref() {
         Some(expr) => {
             let (rest, _) =

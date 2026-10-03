@@ -156,9 +156,9 @@ async fn served_query_parameters_are_typed_and_the_list_publishes_its_odata_voca
         ],
         "{list}"
     );
-    // P-D-249: the CASE serves `eq`, `ne` and `in`. The toolkit publishes every operator a string
-    // field parses, so the served `$filter` text lists the text functions too; the door's own
-    // description says they are refused.
+    // P-D-249, P-D-264: the CASE serves `eq`, `ne` and `in`, and a text function as the `in` of
+    // the lifecycles it matches. The toolkit publishes every operator a string field parses, and
+    // the door's own description says how each is served.
     let filter_text = list["parameters"]
         .as_array()
         .unwrap()
@@ -171,13 +171,12 @@ async fn served_query_parameters_are_typed_and_the_list_publishes_its_odata_voca
         filter_text.contains("- lifecycle: eq|ne|contains|startswith|endswith|in\n"),
         "{filter_text}"
     );
+    let description = list["description"].as_str().unwrap();
     assert!(
-        list["description"]
-            .as_str()
-            .unwrap()
-            .contains("joined by `and`"),
-        "{}",
-        list["description"]
+        description.contains("joined by `and`")
+            && description.contains("`contains`, `startswith` or `endswith` as the `in`")
+            && !description.contains("`endswith` on it, is 400"),
+        "{description}"
     );
     let mut order: Vec<&str> = list["x-odata-orderby"]["allowedFields"]
         .as_array()
