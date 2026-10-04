@@ -129,6 +129,13 @@ closed_set!(
         Cancelled => "cancelled",
     }
 );
+// No `From`: the read serves only a cancelled price's status (D-520), never a display status
+// computed from the day (D-422).
+closed_set!(
+    /// A pinned price's status (D-520): `cancelled` for a price cancelled before it started, the
+    /// token the entry's price list shows. The only status `GET /prices/{id}` serves.
+    PricingPinnedPriceStatus { Cancelled => "cancelled" }
+);
 closed_set!(
     /// Where a plan item's SKU reference stands with Products.
     PricingItemReferenceState from ItemReference {

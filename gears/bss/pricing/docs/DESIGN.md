@@ -461,7 +461,8 @@ Fields/query parameters are snake_case, including plan_revision_id, item_id, pin
 pinned_from, uncovered, sku_version, billing_timing, rounding_policy, promotion_id and promotion_version (the last two
 deferred with promotions, D-409). Resolve returns inputs, not totals; slice 07 §6 gives the response field by field.
 Every closed set on a response schema is an enum of exactly its stored tokens (D-439): charge_kind, period, model,
-the entry's and the item's reference_state, eligibility, a price's state and display status, a revision's
+the entry's and the item's reference_state, eligibility, a price's state and display status, a pinned price's status
+(`cancelled` alone, D-520), a revision's
 state (published, superseded or scheduled in resolve), a reference op's kind, state and ref_kind, a unit's state, a decision, a
 vote's outcome, default_timing and a resolved input's source. A stored token outside its set is a 500 (CorruptRow).
 Request fields keep string, so each door keeps its code (MODEL_INVALID and the others); default_rounding and

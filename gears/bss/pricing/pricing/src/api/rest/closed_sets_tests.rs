@@ -122,6 +122,20 @@ fn a_reference_op_reason_is_book_archived() {
     );
 }
 
+/// D-520 (amended 2026-10-04): a pinned price's status is `cancelled` alone, the entry list's token
+/// for a cancelled price.
+#[test]
+fn a_pinned_price_status_is_cancelled_alone() {
+    assert_eq!(
+        round_trips(
+            PricingPinnedPriceStatus::ALL,
+            PricingPinnedPriceStatus::as_str,
+            PricingPinnedPriceStatus::stored,
+        ),
+        [PricingPriceStatus::Cancelled.as_str()]
+    );
+}
+
 #[test]
 fn a_sku_entry_status_carries_priced_scheduled_and_unpriced() {
     assert_eq!(

@@ -25,6 +25,8 @@ const PRICE_STATUS: &[&str] = &[
     "superseded",
     "cancelled",
 ];
+/// A pinned price's status (D-520, amended 2026-10-04): only `cancelled` is ever served.
+const PINNED_PRICE_STATUS: &[&str] = &["cancelled"];
 /// Where a SKU's entry stands today (D-486). Not a price's display status.
 const SKU_ENTRY_STATUS: &[&str] = &["priced", "scheduled", "unpriced"];
 const ITEM_REFERENCE: &[&str] = &["unreserved", "confirmation_pending", "confirmed", "lost"];
@@ -110,8 +112,9 @@ const CLOSED: &[Closed] = &[
     ("PricingPinnedPriceDto", "period", PERIOD, true),
     ("PricingPinnedPriceDto", "model", MODEL, false),
     ("PricingPinnedPriceDto", "eligibility", ELIGIBILITY, false),
-    // D-520, amended: `cancelled` on a cancelled price, absent on an approved one (D-422).
-    ("PricingPinnedPriceDto", "status", PRICE_STATUS, true),
+    // D-520, amended: `cancelled` on a cancelled price, absent on an approved one (D-422). Its own
+    // one-value set: the read never serves another status.
+    ("PricingPinnedPriceDto", "status", PINNED_PRICE_STATUS, true),
 ];
 
 /// Response fields that stay `string` (D-439): no CHECK guards the stored set (`default_rounding`

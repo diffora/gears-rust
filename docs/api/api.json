@@ -11554,8 +11554,8 @@
                 "type": "null"
               },
               {
-                "$ref": "#/components/schemas/PricingPriceStatus",
-                "description": "`cancelled` for a price cancelled before it started, the entry list's token (D-520): a\nstored fact, the same on every day. Absent on an approved price, whose display status\ndepends on the day, which this read never computes (D-422)."
+                "$ref": "#/components/schemas/PricingPinnedPriceStatus",
+                "description": "`cancelled` for a price cancelled before it started, the entry list's token (D-520): a\nstored fact, the same on every day. Absent on an approved price, whose display status\ndepends on the day, which this read never computes (D-422). Its own one-value set, so the\nschema offers nothing the read never serves."
               }
             ]
           },
@@ -11587,6 +11587,13 @@
           "closed_explicitly"
         ],
         "type": "object"
+      },
+      "PricingPinnedPriceStatus": {
+        "description": "A pinned price's status (D-520): `cancelled` for a price cancelled before it started, the\ntoken the entry's price list shows. The only status `GET /prices/{id}` serves.",
+        "enum": [
+          "cancelled"
+        ],
+        "type": "string"
       },
       "PricingPlanApprovalProgress": {
         "description": "A pending revision's vote progress (D-462), counts only: its unit, the approve votes the quorum\ncounts (the current generation's, not stale: the approval library's `counted_approvals`, the\ncount the vote door judges by) and the quorum.",

@@ -2,7 +2,7 @@
 //! exact decimal text, dates as `YYYY-MM-DD`. The consumer goldens freeze them. A closed set is
 //! its `enum` (D-439), with the tokens the goldens carry.
 use crate::api::rest::closed_sets::{
-    PricingChargeKind, PricingEligibility, PricingModel, PricingPeriod, PricingPriceStatus,
+    PricingChargeKind, PricingEligibility, PricingModel, PricingPeriod, PricingPinnedPriceStatus,
     PricingResolveSource, PricingResolvedRevisionState,
 };
 use uuid::Uuid;
@@ -157,9 +157,10 @@ pub struct PricingPinnedPriceDto {
     pub approved_at: Option<time::OffsetDateTime>,
     /// `cancelled` for a price cancelled before it started, the entry list's token (D-520): a
     /// stored fact, the same on every day. Absent on an approved price, whose display status
-    /// depends on the day, which this read never computes (D-422).
+    /// depends on the day, which this read never computes (D-422). Its own one-value set, so the
+    /// schema offers nothing the read never serves.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub status: Option<PricingPriceStatus>,
+    pub status: Option<PricingPinnedPriceStatus>,
 }
 #[derive(Default, serde::Deserialize)]
 #[serde(deny_unknown_fields)]

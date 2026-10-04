@@ -26,8 +26,8 @@ use super::authoring::{
     support::{self, DoorError, require_authenticated},
 };
 use super::closed_sets::{
-    PricingChargeKind, PricingEligibility, PricingModel, PricingPeriod, PricingPriceState,
-    PricingPriceStatus, PricingResolvedRevisionState,
+    PricingChargeKind, PricingEligibility, PricingModel, PricingPeriod, PricingPinnedPriceStatus,
+    PricingPriceState, PricingResolvedRevisionState,
 };
 use crate::{
     authz::{self, ResourceRef, actions, resource_types},
@@ -221,7 +221,7 @@ fn render_price(snapshot: PriceSnapshot) -> Result<PricingPinnedPriceDto, DoorEr
         approved_at: row.approved_at,
         status: (PricingPriceState::stored(&row.state, &format_args!("price {id} state"))?
             == PricingPriceState::Cancelled)
-            .then_some(PricingPriceStatus::Cancelled),
+            .then_some(PricingPinnedPriceStatus::Cancelled),
     })
 }
 
