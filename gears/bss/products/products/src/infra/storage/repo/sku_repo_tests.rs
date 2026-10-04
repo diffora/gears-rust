@@ -603,14 +603,14 @@ async fn references_block_both_fences_and_release_is_a_tombstone() {
             unit,
             uuid::Uuid::new_v4(),
             None,
-            false
+            None
         )
         .await
         .unwrap(),
         HeadWrite::Unmatched
     ));
     let HeadWrite::Written(restored) =
-        unlock_and_unfence(&conn, &scope, tenant, s.id, unit, op, None, false)
+        unlock_and_unfence(&conn, &scope, tenant, s.id, unit, op, None, None)
             .await
             .unwrap()
     else {
@@ -696,7 +696,7 @@ async fn type_fence_and_retire_completion_clear_only_the_matching_ownership() {
                 wrong_unit,
                 wrong_op,
                 Some(unit),
-                true
+                Some(crate::infra::storage::stored_now())
             )
             .await
             .unwrap(),
@@ -709,14 +709,30 @@ async fn type_fence_and_retire_completion_clear_only_the_matching_ownership() {
         assert_eq!(held.pending_unit_id, Some(unit));
         assert_eq!(held.fence_op_id, Some(op));
     }
-    let HeadWrite::Written(f) =
-        unlock_and_unfence(&conn, &scope, tenant, s.id, unit, op, Some(unit), true)
-            .await
-            .unwrap()
-    else {
+    let fenced_revision = find_sku_fence(&conn, &scope, tenant, s.id)
+        .await
+        .unwrap()
+        .unwrap()
+        .revision;
+    let retired_at = crate::infra::storage::stored_now();
+    let HeadWrite::Written(f) = unlock_and_unfence(
+        &conn,
+        &scope,
+        tenant,
+        s.id,
+        unit,
+        op,
+        Some(unit),
+        Some(retired_at),
+    )
+    .await
+    .unwrap() else {
         unreachable!()
     };
     assert_eq!(f.lifecycle, Lifecycle::Retired);
+    // The retirement is a change of the row: its concurrency version (the ETag) and `updated_at` move.
+    assert_eq!(f.revision, fenced_revision + 1);
+    assert_eq!(f.updated_at, retired_at);
     assert_eq!(f.approved_by_unit_id, Some(unit));
     assert_eq!(crate::test_support::raw_i64(&dsn,"SELECT COUNT(*) AS v FROM products_sku WHERE fenced_at IS NOT NULL OR fence_op_id IS NOT NULL OR retire_pending != 0").await,0);
 }

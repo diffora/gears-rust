@@ -98,7 +98,7 @@ impl<'a> ApprovalSubject<DbTx<'a>> for SkuRetire {
                     unit.id,
                     self.fence_op_id,
                     approved.then_some(unit.id),
-                    approved
+                    approved.then_some(b.now)
                 )
                 .await
                 .map_err(store_err)?,
