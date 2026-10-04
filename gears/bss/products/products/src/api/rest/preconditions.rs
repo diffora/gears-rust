@@ -190,13 +190,3 @@ pub(crate) fn revalidate_header() -> ResponseHeaderSpec {
         ResponseHeaderType::String,
     )
 }
-
-/// `Cache-Control` for the derived-type list: the same minute as raw usage types (P-D-247, P-D-261).
-#[must_use]
-pub(crate) fn short_cache_header() -> ResponseHeaderSpec {
-    ResponseHeaderSpec::new(
-        "Cache-Control",
-        "private, max-age=60",
-        ResponseHeaderType::String,
-    )
-}

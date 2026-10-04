@@ -161,7 +161,7 @@ async fn the_list_reads_answer_304_until_the_page_changes() {
         &app,
         &ctx,
         "/bss-products/v1/derived-usage-types",
-        "private, max-age=60",
+        "private, no-cache",
     )
     .await;
     let categories_tag = revalidates(
@@ -244,7 +244,10 @@ async fn the_list_reads_answer_304_until_the_page_changes() {
     assert_eq!(fresh.status, StatusCode::OK);
     assert_ne!(fresh.etag, derived_tag);
     assert!(fresh.etag.starts_with("W/\""), "{}", fresh.etag);
-    assert_eq!(fresh.cache_control, "private, max-age=60");
+    assert_eq!(
+        fresh.cache_control, "private, no-cache",
+        "the page names its creators, so it revalidates (P-D-261, amended)"
+    );
 }
 
 /// A caller pricing refuses sees `usage: null`. A caller it answers sees the usage. The tags differ.
@@ -342,8 +345,8 @@ async fn a_refused_usage_port_changes_the_sku_list_tag() {
 }
 
 /// P-D-261: the served spec declares, on each of the four list doors, `If-None-Match` as an
-/// optional header, the weak `ETag` and the `Cache-Control` of the 200, and the 304 with both. The
-/// derived-type list declares its minute; the other three revalidate.
+/// optional header, the weak `ETag` and the `Cache-Control` of the 200, and the 304 with both. All
+/// four revalidate: the derived-type list names its creators, so it no longer keeps a minute.
 #[tokio::test]
 async fn the_four_lists_declare_the_conditional_get() {
     let (db, _, _, _dsn) = test_db().await;
@@ -361,10 +364,7 @@ async fn the_four_lists_declare_the_conditional_get() {
         ("/bss-products/v1/skus", "private, no-cache"),
         ("/bss-products/v1/skus/counts", "private, no-cache"),
         ("/bss-products/v1/categories", "private, no-cache"),
-        (
-            "/bss-products/v1/derived-usage-types",
-            "private, max-age=60",
-        ),
+        ("/bss-products/v1/derived-usage-types", "private, no-cache"),
     ] {
         let op = &spec["paths"][path]["get"];
         let parameter = op["parameters"]

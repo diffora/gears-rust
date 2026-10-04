@@ -23,11 +23,6 @@ pub const PRIVATE_REVALIDATE: CacheHeaders = CacheHeaders {
     cache_control: "private, no-cache",
 };
 
-/// A short private cache: the same window as raw usage types.
-pub const PRIVATE_SHORT: CacheHeaders = CacheHeaders {
-    cache_control: "private, max-age=60",
-};
-
 /// Characters of base64url kept from the SHA-256 digest.
 const TAG_CHARS: usize = 22;
 

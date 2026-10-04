@@ -224,8 +224,9 @@ Two writes under `author` on `derived_usage_type` and three reads under `sku:rea
 503 declared on each and a served text naming every code; writes take an optional `Idempotency-Key` and write one audit row
 each in their transaction (`subject_kind = derived_usage_type`, the type's id, the version); the list pages as the SKU list
 does and each item carries the latest version in full, from one grouped read (DESIGN §3.3; P-D-231, P-D-257). The list answers 304
-when `If-None-Match` matches a weak `ETag` of its JSON, and sends `Cache-Control: private, max-age=60`, the window of raw
-`GET /usage-types` (P-D-247, P-D-261). Every read names each `created_by` (`created_by_name`), resolved once per answer
+when `If-None-Match` matches a weak `ETag` of its JSON, and sends `Cache-Control: private, no-cache`: it names its creators,
+so the browser revalidates it, where raw `GET /usage-types`, which names nobody, keeps its minute (P-D-247, P-D-261).
+Every read names each `created_by` (`created_by_name`), resolved once per answer
 through Account Management, null when it is not available now; the create answers' is null (P-D-262).
 
 ### A usage SKU pins its derived version

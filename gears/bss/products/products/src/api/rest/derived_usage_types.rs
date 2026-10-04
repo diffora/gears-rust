@@ -48,7 +48,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use bss_products_sdk::derived::{DerivedUsageDeclaration, MeterId};
-use bss_rest::conditional_get::{PRIVATE_SHORT, respond};
+use bss_rest::conditional_get::{PRIVATE_REVALIDATE, respond};
 use std::sync::Arc;
 use toolkit::api::{
     OpenApiRegistry,
@@ -158,8 +158,8 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
              `page_info`, as the SKU list pages. Asks `sku:read` (O-3). Any other key, \
              `$filter`, `$orderby` and `$select` are 400 UNSUPPORTED_QUERY_PARAM; a malformed \
              cursor, or one another list cut, is 400. A matching If-None-Match is 304 with an empty \
-             body; the 200 carries a weak ETag of its JSON and Cache-Control private, max-age=60 \
-             (P-D-261).",
+             body; the 200 carries a weak ETag of its JSON and Cache-Control private, no-cache: \
+             the page names its creators, so the browser revalidates it (P-D-261).",
         )
         .tag(TAG)
         .authenticated()
@@ -184,13 +184,13 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
             "One page of derived usage types, by code.",
         )
         .response_header(super::preconditions::weak_etag_header())
-        .response_header(super::preconditions::short_cache_header())
+        .response_header(super::preconditions::revalidate_header())
         .no_content_response(
             StatusCode::NOT_MODIFIED,
             "The If-None-Match tag matches this body",
         )
         .response_header(super::preconditions::weak_etag_header())
-        .response_header(super::preconditions::short_cache_header())
+        .response_header(super::preconditions::revalidate_header())
         .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
@@ -698,7 +698,7 @@ async fn list_derived_usage_types(
             items,
             page_info: page.page_info,
         },
-        PRIVATE_SHORT,
+        PRIVATE_REVALIDATE,
     ))
 }
 

@@ -47371,7 +47371,7 @@
     },
     "/bss-products/v1/derived-usage-types": {
       "get": {
-        "description": "One page of the tenant's derived usage types by code (tie-break id). Each item carries `latest_version` and `latest`, the latest version in the version-read shape: `version`, `declaration` (inputs and formula), `digest`, `meter_ref`, `canonical_unit`, `accrual_policy_version`, `created_by` and `created_at`. `$top` (alias `limit`; default 50, clamped at 200) and `cursor` (alias `$skiptoken`) from `page_info`, as the SKU list pages. Asks `sku:read` (O-3). Any other key, `$filter`, `$orderby` and `$select` are 400 UNSUPPORTED_QUERY_PARAM; a malformed cursor, or one another list cut, is 400. A matching If-None-Match is 304 with an empty body; the 200 carries a weak ETag of its JSON and Cache-Control private, max-age=60 (P-D-261).",
+        "description": "One page of the tenant's derived usage types by code (tie-break id). Each item carries `latest_version` and `latest`, the latest version in the version-read shape: `version`, `declaration` (inputs and formula), `digest`, `meter_ref`, `canonical_unit`, `accrual_policy_version`, `created_by` and `created_at`. `$top` (alias `limit`; default 50, clamped at 200) and `cursor` (alias `$skiptoken`) from `page_info`, as the SKU list pages. Asks `sku:read` (O-3). Any other key, `$filter`, `$orderby` and `$select` are 400 UNSUPPORTED_QUERY_PARAM; a malformed cursor, or one another list cut, is 400. A matching If-None-Match is 304 with an empty body; the 200 carries a weak ETag of its JSON and Cache-Control private, no-cache: the page names its creators, so the browser revalidates it (P-D-261).",
         "operationId": "bss_products.list_derived_usage_types",
         "parameters": [
           {
@@ -47414,7 +47414,7 @@
             "description": "One page of derived usage types, by code.",
             "headers": {
               "Cache-Control": {
-                "description": "private, max-age=60",
+                "description": "private, no-cache",
                 "schema": {
                   "type": "string"
                 }
@@ -47431,7 +47431,7 @@
             "description": "The If-None-Match tag matches this body",
             "headers": {
               "Cache-Control": {
-                "description": "private, max-age=60",
+                "description": "private, no-cache",
                 "schema": {
                   "type": "string"
                 }

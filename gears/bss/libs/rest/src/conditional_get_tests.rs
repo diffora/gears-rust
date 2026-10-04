@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use super::{PRIVATE_REVALIDATE, PRIVATE_SHORT, matches_if_none_match, respond, weak_etag};
+use super::{CacheHeaders, PRIVATE_REVALIDATE, matches_if_none_match, respond, weak_etag};
 use http::{HeaderMap, HeaderValue, header};
 
 fn header(value: &str) -> HeaderValue {
@@ -146,7 +146,10 @@ async fn respond_answers_304_with_an_empty_body_or_200_with_the_json() {
         header::IF_NONE_MATCH,
         header(&format!("\"stale\", {etag_text}")),
     );
-    let from_list = respond(&listed, &value, PRIVATE_SHORT);
+    let short = CacheHeaders {
+        cache_control: "private, max-age=60",
+    };
+    let from_list = respond(&listed, &value, short);
     assert_eq!(from_list.status(), http::StatusCode::NOT_MODIFIED);
     assert_eq!(
         from_list

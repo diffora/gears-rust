@@ -80,7 +80,7 @@
 | P-D-257 | M | The derived type list carries each type's latest version | DECIDED 2026-10-02 · Owner, 2026-10-02; run 9.12; amends P-D-231 |
 | P-D-258 | H | A published usage SKU keeps its metering | DECIDED 2026-10-02 · Owner, 2026-10-02; run 9.13; amends P-D-232, P-D-251 |
 | P-D-259 | H | A usage SKU sells a derived usage type, and its unit is that type's | DECIDED 2026-10-02 · Owner, 2026-10-02; run 9.13; amends P-D-207, P-D-229, P-D-232, P-D-251 |
-| P-D-261 | M | The SKU, derived-type and category lists answer 304 | DECIDED 2026-10-03 · Owner, 2026-10-03 (asks 56, 57); extends P-D-247 |
+| P-D-261 | M | The SKU, derived-type and category lists answer 304 | DECIDED 2026-10-03 · Owner, 2026-10-03 (asks 56, 57); extends P-D-247; amended 2026-10-04 (the derived-type list revalidates) |
 | P-D-262 | M | Every actor id a read shows carries its current name (twin of pricing D-519) | DECIDED 2026-10-03 · Owner, 2026-10-02 (ask 32: names on the server, through AM); extends P-D-213, P-D-224, P-D-231; amended 2026-10-03 (one lookup per inbox card) |
 | P-D-263 | M | A retired SKU or category can be archived, and its list hides it by default (twin of pricing D-522) | DECIDED 2026-10-03 · Owner, 2026-10-03 ("archived"; ask 58b); extends P-D-208, P-D-210, P-D-211, P-D-215; amended 2026-10-03 (branch review) |
 | P-D-264 | M | A text function on `lifecycle` filters by the lifecycles it matches | DECIDED 2026-10-03 · Owner, 2026-10-03 ("yes, add it"); amends P-D-249 |
@@ -1802,8 +1802,10 @@ may keep the page, never a shared one. The catalog changes rarely, so a minute i
 the 200 in the served spec. A refusal carries none. `usage_types_tests.rs` tests the header and its absence;
 `gear_tests.rs` tests the declaration.
 
-P-D-261 extends this entry: `GET /derived-usage-types` answers the same `Cache-Control: private, max-age=60`, with a weak
-`ETag` of its JSON and `304` on a matching `If-None-Match`.
+P-D-261 extended this entry to `GET /derived-usage-types`, with a weak `ETag` of its JSON and `304` on a matching
+`If-None-Match`. Since its amendment of 2026-10-04 that list answers `Cache-Control: private, no-cache`: it names its
+creators (P-D-262). The picker keeps its minute. Its body is the catalog's `gts_id`, `kind` and `metadata_fields`, the
+`source` and the cursors, and it names no one.
 
 **Source:** Owner, 2026-10-01 (the pricing-mfe asks v4, 56); phase 9 plan rev 4 (run 9.8). Extends P-D-207. Extended by P-D-261.
 
@@ -2039,13 +2041,15 @@ A legacy raw draft may be patched onto a derived ref, and that patch drops its u
 
 - **The four reads.** `GET /skus`, `GET /skus/counts`, `GET /derived-usage-types` and `GET /categories` answer a weak `ETag` of the JSON body they serve: `W/"` plus 22 base64url characters of its SHA-256.
 - **The comparison.** `If-None-Match` matches that tag by weak comparison (RFC 9110), including `*` and a comma-separated list. A match is `304` with an empty body, the same `ETag` and the same `Cache-Control`. Only a `200` is turned into a `304`; an error passes through unchanged.
-- **Cache-Control.** The SKU list, the SKU counts and the category list send `private, no-cache`: the browser keeps the answer and must revalidate it. The derived-type list sends `private, max-age=60`, the same window as raw `GET /usage-types` (P-D-247).
+- **Cache-Control.** The four reads send `private, no-cache`: the browser keeps the answer and must revalidate it (amended below; the derived-type list sent `private, max-age=60`, the window of raw `GET /usage-types`).
 - **The tag is the caller's own body.** It is not a row version. A caller that pricing refuses sees `usage: null` on the SKU list, and a caller that pricing answers sees the usage, so their tags differ. A `304` never gives one caller the view of another caller.
 - **The `If-None-Match` decline is withdrawn.** The module text of `api/rest/preconditions.rs` said that this surface declines `If-None-Match`. That text is removed: these four reads serve it. The module still parses only `If-Match`, for the mutating doors, and that parser refuses a weak tag.
 - **What stays.** The single-resource reads keep the strong `ETag` they serve for `If-Match`. The statement counts of the SKU list and counts are unchanged (`sku_list_tests::recorded_door`).
 - **The tests.** `api/rest/conditional_reads_tests.rs`: the first read, the `304` on a repeated read (the tag, a list, `*`), a new tag after a write that changes the page, and the two usage views of one SKU page.
 
-**Source:** Owner, 2026-10-03 (asks 56 and 57). Extends P-D-247.
+**Amended 2026-10-04 (branch review): the derived-type list revalidates.** The list was given raw `GET /usage-types`' `private, max-age=60` (P-D-247). P-D-262 then put `created_by_name` in its body, a name read under the caller's own Account Management rights. A browser keeps a fresh answer by URL, not by caller, so for that minute it could show the page to another user of the same browser without asking the server. `GET /derived-usage-types` now answers `private, no-cache`, the same `bss_rest::conditional_get::PRIVATE_REVALIDATE` as the other three lists: every use of the stored copy is a revalidation, the server authorizes the caller again, and a match is the same `304`. Raw `GET /usage-types` keeps P-D-247's minute: it names no one. The served spec declares `private, no-cache` on the list's `200` and `304`. `bss_rest` drops `PRIVATE_SHORT`, which had no other user. `conditional_reads_tests.rs` pins the header on both answers and in the spec.
+
+**Source:** Owner, 2026-10-03 (asks 56 and 57). Extends P-D-247. The 2026-10-04 amendment: the owner's answer to the branch review's question ("ok" to the recommendation).
 
 #### P-D-262 [M] Every actor id a read shows carries its current name (twin of pricing D-519)
 
@@ -2081,8 +2085,8 @@ Management read per id of its own.
   the SDK still reads that answer.
 - **No storage, no cache.** Products stores no name and caches none. A renamed user reads the new name on the next
   read. The names are part of the body, so the weak `ETag` of `GET /skus` and `GET /derived-usage-types` covers them
-  (P-D-261): a rename changes the tag. The derived-type list keeps `Cache-Control: private, max-age=60`, so a rename
-  shows there within a minute.
+  (P-D-261): a rename changes the tag. Both lists answer `Cache-Control: private, no-cache` (the derived-type list
+  since P-D-261's amendment of 2026-10-04), so a rename shows on the next read.
 - **The tests.** `api/rest/actor_names_tests.rs`: every read above names its actors with one directory call, the system
   actor reads `"System"` without a call, a failing directory leaves every name null on a 200, a rename shows on the
   next read, a page of SKUs by four authors makes one call for the four, a write answer's names are null, and a hub
