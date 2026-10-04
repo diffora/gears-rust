@@ -16,10 +16,11 @@ async fn configured_gear_registers_implemented_routes() -> anyhow::Result<()> {
     assert!(gear.runtime.load_full().is_some());
     assert_eq!(
         crate::infra::storage::migrations::Migrator::migrations().len(),
-        15,
-        "the schema guard, coordination and the thirteen PriceBook migrations (000009: the unit's \
+        16,
+        "the schema guard, coordination and the fourteen PriceBook migrations (000009: the unit's \
          note, P-D-219; 000010: no retired default, P-D-220; 000011: retire_pending, P-D-248; \
-         000012: the derived usage types, P-D-231; 000013: a derived SKU stores no unit, P-D-259)"
+         000012: the derived usage types, P-D-231; 000013: a derived SKU stores no unit, P-D-259; \
+         000014: the archive mark, P-D-263)"
     );
     let openapi = OpenApiRegistryImpl::new();
     let router = gear.register_rest(&ctx, Router::new(), &openapi)?;
@@ -39,6 +40,8 @@ async fn configured_gear_registers_implemented_routes() -> anyhow::Result<()> {
         "bss_products.get_category",
         "bss_products.update_category",
         "bss_products.retire_category",
+        "bss_products.archive_category",
+        "bss_products.unarchive_category",
         "bss_products.create_sku",
         "bss_products.list_skus",
         "bss_products.count_skus",
@@ -48,6 +51,8 @@ async fn configured_gear_registers_implemented_routes() -> anyhow::Result<()> {
         "bss_products.sku_versions",
         "bss_products.sku_version_as_of",
         "bss_products.sku_references",
+        "bss_products.archive_sku",
+        "bss_products.unarchive_sku",
         "bss_products.sku_history",
         "bss_products.submit_sku",
         "bss_products.change_sku",
@@ -145,6 +150,7 @@ async fn served_query_parameters_are_typed_and_the_list_publishes_its_odata_voca
     assert_eq!(
         filter,
         [
+            "archived",
             "category_id",
             "code",
             "id",
@@ -156,9 +162,9 @@ async fn served_query_parameters_are_typed_and_the_list_publishes_its_odata_voca
         ],
         "{list}"
     );
-    // P-D-249: the CASE serves `eq`, `ne` and `in`. The toolkit publishes every operator a string
-    // field parses, so the served `$filter` text lists the text functions too; the door's own
-    // description says they are refused.
+    // P-D-249, P-D-264: the CASE serves `eq`, `ne` and `in`, and a text function as the `in` of
+    // the lifecycles it matches. The toolkit publishes every operator a string field parses, and
+    // the door's own description says how each is served.
     let filter_text = list["parameters"]
         .as_array()
         .unwrap()
@@ -171,13 +177,12 @@ async fn served_query_parameters_are_typed_and_the_list_publishes_its_odata_voca
         filter_text.contains("- lifecycle: eq|ne|contains|startswith|endswith|in\n"),
         "{filter_text}"
     );
+    let description = list["description"].as_str().unwrap();
     assert!(
-        list["description"]
-            .as_str()
-            .unwrap()
-            .contains("joined by `and`"),
-        "{}",
-        list["description"]
+        description.contains("joined by `and`")
+            && description.contains("`contains`, `startswith` or `endswith` as the `in`")
+            && !description.contains("`endswith` on it, is 400"),
+        "{description}"
     );
     let mut order: Vec<&str> = list["x-odata-orderby"]["allowedFields"]
         .as_array()
@@ -202,7 +207,8 @@ async fn served_query_parameters_are_typed_and_the_list_publishes_its_odata_voca
     );
     let counts = &api["paths"]["/bss-products/v1/skus/counts"]["get"];
     assert!(counts["x-odata-orderby"].is_null(), "{counts}");
-    // P-D-215: the category list publishes its vocabulary; `status` and `is_default` only filter.
+    // P-D-215: the category list publishes its vocabulary; `status`, `is_default` and `archived`
+    // (P-D-263) only filter.
     let categories = &api["paths"]["/bss-products/v1/categories"]["get"];
     let mut filter: Vec<&str> = categories["x-odata-filter"]["allowedFields"]
         .as_object()
@@ -213,7 +219,15 @@ async fn served_query_parameters_are_typed_and_the_list_publishes_its_odata_voca
     filter.sort_unstable();
     assert_eq!(
         filter,
-        ["code", "id", "is_default", "name", "sort_order", "status"],
+        [
+            "archived",
+            "code",
+            "id",
+            "is_default",
+            "name",
+            "sort_order",
+            "status"
+        ],
         "{categories}"
     );
     let mut order: Vec<&str> = categories["x-odata-orderby"]["allowedFields"]
@@ -290,6 +304,7 @@ async fn skeleton_harness() -> anyhow::Result<(BssProductsGear, GearCtx)> {
         fence_ttl_minutes: 30,
         reference_principals: std::collections::BTreeMap::new(),
         hub: Arc::new(toolkit::ClientHub::new()),
+        actor_names: crate::api::rest::ApiState::names_from(&Arc::new(toolkit::ClientHub::new())),
     });
     gear.runtime.store(Some(Arc::new(ProductsRuntime {
         enforcer: Arc::new(crate::test_support::flat_in_enforcer(uuid::Uuid::new_v4())),

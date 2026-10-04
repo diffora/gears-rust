@@ -7,7 +7,7 @@
 //! CHECK forbids one — is `CorruptRow` naming the row, a 500, never a panic.
 use crate::domain::{
     plan::{ReferenceState as ItemReference, RevisionState},
-    price::{DisplayStatus, Eligibility, PriceState},
+    price::{ChangeKind, DisplayStatus, Eligibility, PriceState},
     price_book_entry::{ChargeKind, Model, OpState, ReferenceState as EntryReference},
     reference_op::OpKind,
     resolve::Source,
@@ -85,11 +85,13 @@ closed_set!(
     }
 );
 closed_set!(
-    /// Where an entry's SKU reference stands with Products.
+    /// Where an entry's SKU reference stands with Products; `released` once its book is archived
+    /// (D-522).
     PricingEntryReferenceState from EntryReference {
         ConfirmationPending => "confirmation_pending",
         Confirmed => "confirmed",
         Lost => "lost",
+        Released => "released",
     }
 );
 closed_set!(
@@ -103,10 +105,20 @@ closed_set!(
         Pending => "pending",
         Approved => "approved",
         Rejected => "rejected",
+        Cancelled => "cancelled",
+    }
+);
+closed_set!(
+    /// What a price row asks the prices unit to do (D-520, D-521). `set` is a price.
+    PricingChangeKind from ChangeKind {
+        Set => "set",
+        Cancel => "cancel",
+        End => "end",
     }
 );
 closed_set!(
     /// A price's display state (matrix row 10): an approved price shows where its window stands.
+    /// A cancelled price shows `cancelled` (D-520).
     PricingPriceStatus from DisplayStatus {
         Draft => "draft",
         Pending => "pending",
@@ -114,6 +126,7 @@ closed_set!(
         Scheduled => "scheduled",
         Active => "active",
         Superseded => "superseded",
+        Cancelled => "cancelled",
     }
 );
 closed_set!(
@@ -156,12 +169,13 @@ closed_set!(
     }
 );
 closed_set!(
-    /// What a reference op does (D-413).
+    /// What a reference op does (D-413); `release` lets an archived book's entry go (D-522).
     PricingReferenceOpKind from OpKind {
         Create => "create",
         Delete => "delete",
         Rereserve => "rereserve",
         Attach => "attach",
+        Release => "release",
     }
 );
 closed_set!(
@@ -173,6 +187,12 @@ closed_set!(
         Releasing => "releasing",
         Done => "done",
     }
+);
+// Read from its stored token, with no `From`: the work record stores the reason as text
+// (`reference_work::BOOK_ARCHIVED_REASON`).
+closed_set!(
+    /// Why a reference op releases its reference (D-522): its entry's book was archived.
+    PricingReferenceOpReason { BookArchived => "book_archived" }
 );
 // Read from its stored token, with no `From`: the domain's `RefKind::Entry` is spelled
 // `price_book_entry`, and the schema publishes a variant's own snake case.

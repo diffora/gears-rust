@@ -40,14 +40,14 @@
 | P-D-205 | M | The approval policy is read with a content `ETag` and written under `If-Match` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | P-D-206 | M | A never-published draft is deleted by its author, never retired | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amends P-D-190 |
 | P-D-207 | H | Usage types are read as the caller: a denial is 403 `USAGE_TYPE_FORBIDDEN`, and products serves the picker | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 (owner option b); amends P-D-184, P-D-203; extended by P-D-247 |
-| P-D-208 | M | A retired SKU no longer keeps its category in use; retiring a retired category is `CATEGORY_RETIRED` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amends P-D-186 |
+| P-D-208 | M | A retired SKU no longer keeps its category in use; retiring a retired category is `CATEGORY_RETIRED` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amends P-D-186; extended by P-D-263 |
 | P-D-209 | L | No tenant settings door: the fence TTL is the deployment setting `fence_ttl_minutes` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amends P-D-189 |
-| P-D-210 | M | The SKU list pages on the toolkit's OData, with a literal case-insensitive `q` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amended by P-D-246 |
-| P-D-211 | M | The SKU list's tab counts: `GET /skus/counts` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
+| P-D-210 | M | The SKU list pages on the toolkit's OData, with a literal case-insensitive `q` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amended by P-D-246; extended by P-D-263 |
+| P-D-211 | M | The SKU list's tab counts: `GET /skus/counts` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; extended by P-D-263 |
 | P-D-212 | M | The SKU list filters on pricing's usage (`priced`, `in_plan`) through the port's sets; a filter pricing cannot answer fails the read | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amends P-D-197; amended by P-D-246 |
-| P-D-213 | M | A SKU's history: every audit row on a SKU carries the lifecycle move its act made, and `GET /skus/{id}/history` reads them | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amends P-D-189, P-D-200; amended by P-D-219 |
+| P-D-213 | M | A SKU's history: every audit row on a SKU carries the lifecycle move its act made, and `GET /skus/{id}/history` reads them | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amends P-D-189, P-D-200; amended by P-D-219; extended by P-D-262 |
 | P-D-214 | L | SKU versions answer one shape each: the history an array, the version in force at `versions/as-of?date=` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
-| P-D-215 | M | Category reads: `GET /categories/{id}`, a `sku_count` on every read from one grouped count, and the list on the toolkit's OData | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
+| P-D-215 | M | Category reads: `GET /categories/{id}`, a `sku_count` on every read from one grouped count, and the list on the toolkit's OData | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; extended by P-D-263 |
 | P-D-216 | M | An approval-policy override can be reset; the default cannot be deleted (twin of pricing D-435) | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | P-D-217 | M | Closed sets are enums on the responses; requests keep strings and their codes (twin of pricing D-439) | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amended by the phase 9 review (C, fix run 9.5d-1) |
 | P-D-218 | M | Making a category the default moves the default in one write; a lost race is 409 `CATEGORY_DEFAULT_TAKEN` | DECIDED 2026-09-28 · Owner, 2026-09-28; amended by P-D-220 |
@@ -56,21 +56,21 @@
 | P-D-221 | M | The outbox wakes its sequencer after the commit (twin of pricing D-455) | DECIDED 2026-09-29 · Main sync of 2026-09-29 (toolkit-db 2bfc76aec); pricing phase 8 plan rev 2 (run 8.2b) |
 | P-D-222 | H | The registry trusts pricing's system actor in-process only; no REST door serves that actor | DECIDED 2026-09-29 · Owner, 2026-09-29 (dispositions O1, "ok"); whole-branch review RS-02 (fix run W1b); second review of W1b M1 (fix run W1c); keeps pricing D-424; amended by P-D-245 |
 | P-D-223 | M | A refusal keeps its class and names its resource | DECIDED 2026-09-29 · Whole-branch review RS-06, RS-07, RS-09, RS-25, RS-32 and W1a's `UnitNotFound` note (fix run W1b) |
-| P-D-224 | M | The approval-unit list pages and reads its page set-based (twin of pricing D-458) | DECIDED 2026-09-29 · Owner, 2026-09-29 (dispositions O2, "ok"); whole-branch review RS-03 (fix run W1b); amended by P-D-227, P-D-228 |
+| P-D-224 | M | The approval-unit list pages and reads its page set-based (twin of pricing D-458) | DECIDED 2026-09-29 · Owner, 2026-09-29 (dispositions O2, "ok"); whole-branch review RS-03 (fix run W1b); amended by P-D-227, P-D-228; extended by P-D-262 |
 | P-D-225 | M | Every text a request writes has an explicit length cap (twin of pricing D-457) | DECIDED 2026-09-29 · Whole-branch review RS-10, RS-11, RS-37, RS-38 (fix run W1b); the dispositions' "Length caps" |
 | P-D-226 | M | The SDK's SKU types serialize as the wire carries them | DECIDED 2026-09-30 · Whole-branch review RS-22, RS-23, RS-24 (fix run W1b) |
 | P-D-227 | M | The approval units are counted by state and kind and list newest first on request (twin of pricing D-470) | DECIDED 2026-09-30 · Owner, 2026-09-30 (the approvals option 1, "ok"); pricing phase 9 plan rev 2 (decision 10; plan review M4, L11); amends P-D-224; amended by the phase 9 review (C, R32; fix run 9.5d-1; I, fix run 9.5d-2); amended by P-D-250 |
 | P-D-228 | M | A unit says whether its reader may approve it (twin of pricing D-471) | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 4, "ok"); pricing phase 9 plan rev 2 (decision 11; W2; plan review H1, M2); amends P-D-224; amended by the phase 9 review (E, fix run 9.5d-1) |
 | P-D-229 | H | A derived usage meter is a catalog declaration that Rating evaluates | DECIDED 2026-10-01 · Owner, 2026-10-01 (who computes a cloudlet from RAM and CPU); supersedes the PriceBook spec §3 item 11 disposition for derived meters; rating T-D-39 |
 | P-D-230 | H | A derived usage type is versioned data with one evaluator, in the SDK | DECIDED 2026-10-01 · Derived usage types plan rev 3 (design decisions 1–4, run 1); implements P-D-229 and its amendment; amended by P-D-251 |
-| P-D-231 | H | Derived usage types are stored append-only and served by five doors | DECIDED 2026-10-01 · Owner, 2026-10-01 (O-1, O-2, O-3); derived usage types plan rev 3 (design decisions 4, 8, 9, run 2); implements P-D-229 and P-D-230; amended by P-D-257 |
+| P-D-231 | H | Derived usage types are stored append-only and served by five doors | DECIDED 2026-10-01 · Owner, 2026-10-01 (O-1, O-2, O-3); derived usage types plan rev 3 (design decisions 4, 8, 9, run 2); implements P-D-229 and P-D-230; amended by P-D-257; extended by P-D-262 |
 | P-D-232 | H | A usage SKU pins a derived usage type at its first publish | DECIDED 2026-10-01 · Owner, 2026-10-01 (M1, O-2); derived usage types plan rev 3 (design decision 7, run 3); implements P-D-229's pin; amends P-D-184, P-D-207, P-D-231; amended by P-D-251, P-D-258 |
 | P-D-233 | H | Products answers pricing's meter semantics for its derived usage types (E1b) | DECIDED 2026-10-01 · Derived usage types plan rev 3 (design decisions 5 and 6, run 4); implements P-D-229's pricing reference; amends P-D-229, P-D-230, P-D-231, P-D-232; pricing D-503 and D-510 amended |
 | P-D-245 | M | The reference registry reads many SKUs in one call | DECIDED 2026-10-01 · phase 9 plan rev 4 (run 9.7); amends P-D-222 |
 | P-D-246 | M | The SKU pickers narrow by one book or one plan revision (`priced_in`, `not_priced_in`, `not_in_revision`) through the port's scoped sets | DECIDED 2026-10-01 · Owner, 2026-10-01 (asks v4, 52 and 46); phase 9 plan rev 4 (run 9.8; review M5, M6, M8); amends P-D-210, P-D-212 |
-| P-D-247 | L | A usage-type picker page may be kept privately for a minute | DECIDED 2026-10-01 · Owner, 2026-10-01 (asks v4, 56); phase 9 plan rev 4 (run 9.8); extends P-D-207 |
+| P-D-247 | L | A usage-type picker page may be kept privately for a minute | DECIDED 2026-10-01 · Owner, 2026-10-01 (asks v4, 56); phase 9 plan rev 4 (run 9.8); extends P-D-207; extended by P-D-261 |
 | P-D-248 | H | A retire under review keeps the SKU's lifecycle; `retire_pending` is the fence | DECIDED 2026-10-01 · Owner, 2026-10-01; phase 9 plan rev 4 run 9.8d; amends P-D-189, P-D-208, P-D-211, P-D-213 |
-| P-D-249 | H | A lifecycle change honours its date | DECIDED 2026-10-01 · Owner, 2026-10-01; phase 9 plan rev 4 run 9.8d; amends P-D-191 |
+| P-D-249 | H | A lifecycle change honours its date | DECIDED 2026-10-01 · Owner, 2026-10-01; phase 9 plan rev 4 run 9.8d; amends P-D-191; amended by P-D-264 |
 | P-D-250 | M | The approval units answer the approvals inbox through this gear's own doors (twin of pricing D-490) | DECIDED 2026-10-01 · Owner, 2026-10-01 (option A, "yes, A, agreed", then "write the plan"; Run 2 started before 9.5d-2); approvals inbox plan rev 2 (Run 2; design 1 and 3; plan review H1, H3, H4, M1, M2, M5, L1); amends P-D-227; amended by P-D-252 |
 | P-D-251 | H | A derived usage type may wrap one raw meter, and a usage SKU may move onto that wrapper | DECIDED 2026-10-02 · Owner, 2026-10-02 ("let's convert the ones we have into derived form"); amends P-D-230, P-D-232; amended by P-D-258 |
 | P-D-252 | M | The inbox source judges `state` before a foreign empty page | DECIDED 2026-10-02 · phase 9 review; amends P-D-250 |
@@ -80,6 +80,10 @@
 | P-D-257 | M | The derived type list carries each type's latest version | DECIDED 2026-10-02 · Owner, 2026-10-02; run 9.12; amends P-D-231 |
 | P-D-258 | H | A published usage SKU keeps its metering | DECIDED 2026-10-02 · Owner, 2026-10-02; run 9.13; amends P-D-232, P-D-251 |
 | P-D-259 | H | A usage SKU sells a derived usage type, and its unit is that type's | DECIDED 2026-10-02 · Owner, 2026-10-02; run 9.13; amends P-D-207, P-D-229, P-D-232, P-D-251 |
+| P-D-261 | M | The SKU, derived-type and category lists answer 304 | DECIDED 2026-10-03 · Owner, 2026-10-03 (asks 56, 57); extends P-D-247 |
+| P-D-262 | M | Every actor id a read shows carries its current name (twin of pricing D-519) | DECIDED 2026-10-03 · Owner, 2026-10-02 (ask 32: names on the server, through AM); extends P-D-213, P-D-224, P-D-231; amended 2026-10-03 (one lookup per inbox card) |
+| P-D-263 | M | A retired SKU or category can be archived, and its list hides it by default (twin of pricing D-522) | DECIDED 2026-10-03 · Owner, 2026-10-03 ("archived"; ask 58b); extends P-D-208, P-D-210, P-D-211, P-D-215; amended 2026-10-03 (branch review) |
+| P-D-264 | M | A text function on `lifecycle` filters by the lifecycles it matches | DECIDED 2026-10-03 · Owner, 2026-10-03 ("yes, add it"); amends P-D-249 |
 
 ## Entries
 
@@ -556,6 +560,8 @@ to a retired category already answers; `CATEGORY_IN_USE` no longer covers it.
 
 **Source:** Owner, 2026-09-27; phase 6 plan rev 2 (validation D6, ask 9).
 
+**Extended by P-D-263 (2026-10-03).** A retired category, which no SKU keeps in use, can be archived; an archived SKU is retired, so it keeps no category in use either.
+
 #### P-D-209 [L] No tenant settings door: the fence TTL is the deployment setting `fence_ttl_minutes`
 
 DESIGN §3.3, PRD §7.1 and slice 03 §5 described `GET/PUT /settings` with a tenant `fence_ttl_minutes`
@@ -623,6 +629,8 @@ as the multi-id read, within `$top` 200 and the 8 KiB filter.
 **Source:** Owner, 2026-09-27; phase 6 plan rev 2 (owner decision 1; asks 1, 2 and 4; validation D4, D7; plan
 review H1, L1–L5, L10); phase 6 review (queries F1: null equality opt-in per field; F3: the ICU fold).
 
+**Extended by P-D-263 (2026-10-03).** `$filter` names `archived`; an archived SKU is left out unless asked `archived eq true`.
+
 #### P-D-211 [M] The SKU list's tab counts: `GET /skus/counts`
 
 `GET /skus/counts` answers `{ all, draft, published, deprecated, retired, in_review }` for the tabs
@@ -643,6 +651,8 @@ statements as a read that finds fifty; a read that finds none makes the one read
 
 **Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 1; plan review M2); phase 6 review (queries F2: the
 set-based fence recovery).
+
+**Extended by P-D-263 (2026-10-03).** The counts drop the top-level `archived` terms too. `all`, each lifecycle and `in_review` count the SKUs that are not archived, and `archived` counts the archived ones.
 
 #### P-D-212 [M] The SKU list filters on pricing's usage (`priced`, `in_plan`) through the port's sets
 
@@ -762,6 +772,8 @@ change's note; B-2: the order by `audit_id`).
 **Amended by P-D-219 (2026-09-28).** The `approval.submit` row's `reason` is the note of any of the three submit
 doors: a publish's or a retire's `note` as well as a change's. The same note is stored on the unit as `submit_note`.
 
+**Extended by P-D-262 (2026-10-03).** Each history entry carries `actor_name` beside `actor`: the current name through Account Management, null when it is not available now, and "System" for the system's own acts (the nil actor) and for pricing's system actor. The page's actors are read in one lookup.
+
 #### P-D-214 [L] SKU versions answer one shape each: the history an array, the version in force at `versions/as-of?date=`
 
 `GET /skus/{id}/versions` answered an array, or one object when `as_of` was given: one path, two schemas, and a
@@ -819,6 +831,8 @@ list. The downstream e2e reads it whole (its SKU checks and its tenant-isolation
 phase 6.6.
 
 **Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 9; plan review M4).
+
+**Extended by P-D-263 (2026-10-03).** `$filter` names `archived`; an archived category is left out unless asked `archived eq true`.
 
 #### P-D-216 [M] An approval-policy override can be reset; the default cannot be deleted (twin of pricing D-435)
 
@@ -1132,6 +1146,8 @@ order stays the default. `$orderby=submitted_at asc` names that default. Any `$o
 **Amended by P-D-228 (2026-09-30).** A page also reads all its units' items in one statement more
 (`approval_repo::items_of_units`; since the phase 9 review, `item_authors_of_units`, their authors alone), so it
 makes three statements whatever its size.
+
+**Extended by P-D-262 (2026-10-03).** Each listed unit carries `submitted_by_name`, and each decision `actor_name`, resolved in one lookup for the page after its transaction. The page's statements are unchanged.
 
 #### P-D-225 [M] Every text a request writes has an explicit length cap (twin of pricing D-457)
 
@@ -1553,6 +1569,8 @@ pricing's meter semantics from this store (P-D-233), so a derived meter can be s
 **Amended by P-D-257 (2026-10-02).** Each list item also carries `latest`, the latest version in the version-read shape,
 from that same grouped read. `latest_version` stays.
 
+**Extended by P-D-262 (2026-10-03).** The type, its version headers, a version and each listed type and its `latest` carry `created_by_name` beside `created_by`, resolved in one lookup per answer. The create answers' is null.
+
 #### P-D-232 [H] A usage SKU pins a derived usage type at its first publish
 
 **Status:** DECIDED 2026-10-01.
@@ -1784,7 +1802,10 @@ may keep the page, never a shared one. The catalog changes rarely, so a minute i
 the 200 in the served spec. A refusal carries none. `usage_types_tests.rs` tests the header and its absence;
 `gear_tests.rs` tests the declaration.
 
-**Source:** Owner, 2026-10-01 (the pricing-mfe asks v4, 56); phase 9 plan rev 4 (run 9.8). Extends P-D-207.
+P-D-261 extends this entry: `GET /derived-usage-types` answers the same `Cache-Control: private, max-age=60`, with a weak
+`ETag` of its JSON and `304` on a matching `If-None-Match`.
+
+**Source:** Owner, 2026-10-01 (the pricing-mfe asks v4, 56); phase 9 plan rev 4 (run 9.8). Extends P-D-207. Extended by P-D-261.
 
 #### P-D-248 [H] A retire under review keeps the SKU's lifecycle
 
@@ -1810,7 +1831,9 @@ A `sku_change` whose `effective_from` is after today stores `lifecycle_next` and
 
 **Amended 2026-10-02 (fix run F2 part b).** A stored `lifecycle_next` pair that sets only one of the two columns is a corrupt row. A filter compares the lifecycle in force as an OR of the due next and the stored lifecycle, so the comparison can use an index. The counts projection keeps the `CASE`, because Postgres treats two copies of that expression as different `GROUP BY` terms.
 
-**Source:** Owner, 2026-10-01. Phase 9 plan rev 4, run 9.8d. Amends P-D-191.
+**Amended by P-D-264 (2026-10-03).** `contains`, `startswith` and `endswith` on `lifecycle` are no longer 400. Each one is the `CASE`'s `in` over the lifecycle tokens that its text matches. A `lifecycle` term under `or` or `not` stays 400 `INVALID_FILTER` on the list and on the counts.
+
+**Source:** Owner, 2026-10-01. Phase 9 plan rev 4, run 9.8d. Amends P-D-191. Amended by P-D-264.
 
 #### P-D-250 [M] The approval units answer the approvals inbox through this gear's own doors (twin of pricing D-490)
 
@@ -2009,3 +2032,142 @@ Every SKU read still serves `unit`: the version's `output_unit` for a derived SK
 A legacy raw draft may be patched onto a derived ref, and that patch drops its unit. A raw draft cannot be published. A published raw SKU may take P-D-251's wrap, which stores `unit` null, or retire. Every other write that keeps a raw ref is `DERIVED_USAGE_TYPE_REQUIRED`.
 
 **Source:** Owner, 2026-10-02 ("я склоняюсь к тому что бы не копировать", "нам нужно создание sku с сырыми типами?" … "да"). Run 9.13. Amends P-D-207, P-D-229, P-D-232 and P-D-251.
+
+#### P-D-261 [M] The SKU, derived-type and category lists answer 304
+
+**Status:** DECIDED 2026-10-03.
+
+- **The four reads.** `GET /skus`, `GET /skus/counts`, `GET /derived-usage-types` and `GET /categories` answer a weak `ETag` of the JSON body they serve: `W/"` plus 22 base64url characters of its SHA-256.
+- **The comparison.** `If-None-Match` matches that tag by weak comparison (RFC 9110), including `*` and a comma-separated list. A match is `304` with an empty body, the same `ETag` and the same `Cache-Control`. Only a `200` is turned into a `304`; an error passes through unchanged.
+- **Cache-Control.** The SKU list, the SKU counts and the category list send `private, no-cache`: the browser keeps the answer and must revalidate it. The derived-type list sends `private, max-age=60`, the same window as raw `GET /usage-types` (P-D-247).
+- **The tag is the caller's own body.** It is not a row version. A caller that pricing refuses sees `usage: null` on the SKU list, and a caller that pricing answers sees the usage, so their tags differ. A `304` never gives one caller the view of another caller.
+- **The `If-None-Match` decline is withdrawn.** The module text of `api/rest/preconditions.rs` said that this surface declines `If-None-Match`. That text is removed: these four reads serve it. The module still parses only `If-Match`, for the mutating doors, and that parser refuses a weak tag.
+- **What stays.** The single-resource reads keep the strong `ETag` they serve for `If-Match`. The statement counts of the SKU list and counts are unchanged (`sku_list_tests::recorded_door`).
+- **The tests.** `api/rest/conditional_reads_tests.rs`: the first read, the `304` on a repeated read (the tag, a list, `*`), a new tag after a write that changes the page, and the two usage views of one SKU page.
+
+**Source:** Owner, 2026-10-03 (asks 56 and 57). Extends P-D-247.
+
+#### P-D-262 [M] Every actor id a read shows carries its current name (twin of pricing D-519)
+
+**Status:** DECIDED 2026-10-03.
+
+A screen showed `created_by`, `actor` and `submitted_by` as ids. It had no way to name the person without an Account
+Management read per id of its own.
+
+- **The fields.** Beside each actor id the answer gains a sibling `<field>_name`, a string or null. The ids stay. The
+  fields are `created_by` on `SkuDto`, `actor` on `ProductsSkuHistoryEntry`, `submitted_by` on `UnitDto`, `actor` on
+  `DecisionDto`, and `created_by` on `ProductsDerivedUsageTypeVersion`, `ProductsDerivedVersionHeader`,
+  `ProductsDerivedUsageType` and `ProductsDerivedUsageTypeItem`. A unit card's `impact_live`, the live SKU as JSON,
+  carries its `created_by_name` too.
+- **The source.** `bss_rest::actor_names` reads AM's public user read, `list_users` with an id-set filter in the
+  caller's own tenant, with the caller's own context. AM decides which profiles the caller may see; products adds no
+  permission. The label is the display name, then first and last name, then the username. AM is a soft dependency:
+  the client is found in the client hub at each lookup, and products declares no gear dependency on it.
+- **One lookup per answer.** Each read builds its answer from its statements, then collects every actor id of the page
+  or document and resolves them once. The ids are deduplicated and read in chunks of 200, at most four chunks at once,
+  inside one 2 s budget. No statement is added: `sku_list_tests::recorded_door`'s counts are unchanged. A unit read
+  resolves after its transaction, so no transaction waits on AM.
+- **Null.** A name is null when it is not available now: AM refused the profile to this caller, found no such user,
+  failed, did not answer within the budget, or is not deployed. The read never fails because of AM.
+- **System.** The nil actor of the system's own acts (the orphan-fence expiry, P-D-189) and pricing's system actor read
+  `"System"`, and AM is not asked.
+- **The reads.** `GET /skus`, `GET /skus/{id}`, `GET /skus/{id}/history`, `GET /approval-units`,
+  `GET /approval-units/{id}`, `GET /derived-usage-types`, `GET /derived-usage-types/{code}` and
+  `GET /derived-usage-types/{code}/versions/{n}`. The approvals inbox reads the unit page through its source (P-D-250)
+  and names its actors itself (approvals AP-D-11).
+- **Writes name nobody.** A write answer may be stored as its Idempotency-Key's receipt, and a name must not be stored.
+  So no write answer names anyone: its `*_name` fields are null.
+- **The SDK.** `bss_products_sdk::models::Sku` does not gain the name: it is a read-side field of the REST answer, and
+  the SDK still reads that answer.
+- **No storage, no cache.** Products stores no name and caches none. A renamed user reads the new name on the next
+  read. The names are part of the body, so the weak `ETag` of `GET /skus` and `GET /derived-usage-types` covers them
+  (P-D-261): a rename changes the tag. The derived-type list keeps `Cache-Control: private, max-age=60`, so a rename
+  shows there within a minute.
+- **The tests.** `api/rest/actor_names_tests.rs`: every read above names its actors with one directory call, the system
+  actor reads `"System"` without a call, a failing directory leaves every name null on a 200, a rename shows on the
+  next read, a page of SKUs by four authors makes one call for the four, a write answer's names are null, and a hub
+  without AM reads null names.
+
+**Amended 2026-10-03 (branch review).** The inbox card is named once.
+
+- The card door's read and its names are two steps: `approval_units::card` reads the card, and the REST door fills its
+  names. The inbox source answers the card from `card`, unnamed, and the approvals inbox names it (AP-D-11). One inbox
+  card read makes one lookup, not two.
+- The source declares this gear's `SYSTEM_ACTORS`, the nil id and pricing's system actor, through
+  `ApprovalSourceV1::system_actors`. The inbox names them "System" as products does.
+- The tests: `actor_names_tests::an_inbox_card_read_makes_one_lookup` and
+  `the_source_declares_the_system_actors_this_gear_names`.
+
+**Source:** Owner, 2026-10-02 (ask 32: "there was already code that resolves the names through AM; do it that way on
+the server"). Twin of pricing D-519. Extends P-D-213, P-D-224 and P-D-231.
+
+#### P-D-263 [M] A retired SKU or category can be archived, and its list hides it by default (twin of pricing D-522)
+
+**Status:** DECIDED 2026-10-03.
+
+A retired SKU and a retired category stay in their lists for ever: history must resolve, and nothing deletes them. The
+lists filled with rows nobody works with.
+
+- **A mark, not a state.** `products_sku` and `products_category` gain `archived_at` (timestamptz) and `archived_by`
+  (uuid), both null until the row is archived (`m20261003_000014_archive_mark`). Nothing that reads the lifecycle or the
+  status changes: an archived SKU stays `retired`, an archived category stays `retired`.
+- **The doors.** `POST /skus/{id}/archive` and `POST /skus/{id}/unarchive`, `POST /categories/{id}/archive` and
+  `POST /categories/{id}/unarchive`. Each takes If-Match against the row's ETag (the SKU's revision, the category's
+  version), moves it, and writes an audit row in the same transaction (`sku.archive`, `sku.unarchive`,
+  `category.archive`, `category.unarchive`). The grant is author on the row's own resource type, as every other write
+  of that type: SKU author for a SKU, category author for a category. A row already in the asked state is answered as it
+  is, and nothing is written.
+- **Only a finished row is archived.** A SKU whose lifecycle in force is not `retired` is 409 `SKU_NOT_RETIRED`; a
+  category that is not retired is 409 `CATEGORY_NOT_RETIRED`. A stale tag is judged first and is 409 `STALE_REVISION`,
+  as on every other write of a head. Unarchive takes no lifecycle condition: the row is simply listed again.
+- **Lists hide archived rows by default.** `GET /skus`, its pickers (`priced_in`, `not_priced_in`, `not_in_revision`),
+  `GET /skus/counts` and `GET /categories` leave an archived row out. `$filter` names `archived`, a boolean:
+  `archived eq true` keeps only the archived rows, and `archived eq false` is the default made explicit. `archived`
+  compares with `eq` or `ne` and `true` or `false`, alone or joined by top-level `and`; any other use of it is 400
+  (`bss_rest::archived::take_archived`, which the pricing book list shares). The counts drop the top-level `archived`
+  terms, as they drop the `lifecycle` ones: `all`, each lifecycle and `in_review` count the rows that are not
+  archived, and the new `archived` counts the archived ones. The list and the counts read in the same statements as
+  before (`sku_list_tests::recorded_door`; the partial index `(tenant_id, code) WHERE archived_at IS NULL` serves the
+  default page, amended below).
+- **What ignores the mark.** A read by id (`GET /skus/{id}`, `GET /categories/{id}`), `/browse`, the consumer read
+  contract and pinned facts: history must resolve. The SKU and category answers carry `archived_at`, `archived_by` and
+  `archived_by_name` (P-D-262), and the SDK's `Sku` and `Category` carry the first two.
+- **No automatic archive.** Archiving is always an operator's act, never a rule.
+- **Pricing's twin (D-522).** Archiving a pricing book releases its entries' SKU references, so a SKU that only a
+  finished book named stops being `SKU_REFERENCED`, can be retired, and then archived here.
+- **The tests.** `api/rest/archive_tests.rs` (the doors, the lists, the counts, the refusals) and
+  `tests/postgres_archive.rs` (the migration up and down on Postgres, the list, the counts and the category list there);
+  the migration's own `_tests.rs` on SQLite.
+
+**Amended 2026-10-03 (branch review).**
+
+- **The served spec.** Each of the four doors' 200 declares its `ETag` response header: the new revision or version,
+  the value the next write sends as If-Match (`preconditions::etag_header`). The doors sent it before; now the spec says
+  so. The test: `archive_tests::the_archive_doors_declare_the_etag_of_their_200`.
+- **The index serves the default page.** The first index, `(tenant_id) WHERE archived_at IS NULL`, served no read:
+  Postgres walked `uq_products_sku_code` and filtered out every archived row before the page. The index is now
+  `(tenant_id, code) WHERE archived_at IS NULL`, the default page's order over the rows it shows, and the page walks it
+  (the plan is in `tests/postgres_archive.rs::the_default_sku_page_walks_the_unarchived_index_on_postgres`). The
+  migration had not shipped, so it is amended in place.
+- **A mark is whole or absent.** `archived_at` and `archived_by` are both null or both set: a CHECK
+  `(archived_at IS NULL) = (archived_by IS NULL)` on each table on Postgres (`chk_products_sku_archive_mark`,
+  `chk_products_category_archive_mark`), and two triggers per table on SQLite, which cannot add a CHECK to an existing
+  table. The migration's up and down tests on both engines refuse a half mark.
+
+**Source:** Owner, 2026-10-03 ("archived"; ask 58b). Twin of pricing D-522. Extends P-D-208, P-D-210, P-D-211 and
+P-D-215. Amended by the branch review, 2026-10-03.
+#### P-D-264 [M] A text function on `lifecycle` filters by the lifecycles it matches
+
+**Status:** DECIDED 2026-10-03.
+
+- **The gap.** The SKU list's `$filter` publishes every operator that a string field parses. For `lifecycle` these are `eq`, `ne`, `in`, `contains`, `startswith` and `endswith`. P-D-249 served only `eq`, `ne` and `in` through the effective-lifecycle `CASE`, and the three text functions were 400.
+- **The mapping.** The lifecycle is a closed set of four tokens: `draft`, `published`, `deprecated` and `retired`. `contains(lifecycle, 'text')`, `startswith(lifecycle, 'text')` and `endswith(lifecycle, 'text')` are the `CASE`'s `in` over the tokens that contain, start with or end with the text. For example, `contains(lifecycle, 'pub')` is `in ('published')`, and `startswith(lifecycle, 'd')` is `in ('draft', 'deprecated')`.
+- **Case.** The text is matched case-sensitively, because the tokens are lower-case: `contains(lifecycle, 'PUB')` matches no token. The function name is matched without regard to case, as the toolkit's filter conversion does.
+- **No match.** A text that matches no token is a condition that is always false. The list answers 200 with an empty page, not 400.
+- **Where.** A text function is served where `eq`, `ne` and `in` are served: at the top level and joined by `and`. A `lifecycle` term under `or` or `not` stays 400 `INVALID_FILTER`, on the list and on the counts.
+- **The counts.** `GET /skus/counts` drops a text function on `lifecycle` as it drops the other lifecycle terms, whether the text matches a token or none.
+- **The texts.** The 400 detail (`LIFECYCLE_FILTER_REFUSED`) and the descriptions of the two routes name the served text functions and keep the `or`/`not` refusal. In `docs/api/api.json` only those descriptions change: the published operator list of `lifecycle` was already all six.
+- **What stays.** The stored column is never compared. The statements of the SKU list and counts are unchanged (`sku_list_tests::recorded_door`).
+- **The tests.** `api/rest/sku_list_tests.rs`: `a_text_function_on_lifecycle_keeps_the_lifecycles_it_matches`, and the text-function cases of `a_due_lifecycle_is_filtered_through_the_case_or_refused`, `a_lifecycle_term_narrows_on_either_side_of_and` and `the_counts_follow_the_list_without_its_lifecycle_terms`. On Postgres: `tests/postgres_sku_list.rs`, `a_text_function_on_lifecycle_filters_through_the_case_on_postgres`.
+
+**Source:** Owner, 2026-10-03 ("yes, add it"). Amends P-D-249.

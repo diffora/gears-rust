@@ -31,6 +31,8 @@ fn book(tenant: Uuid) -> price_book::Model {
         version: 1,
         created_at: at(9),
         updated_at: at(9),
+        archived_at: None,
+        archived_by: None,
     }
 }
 fn entry(b: &price_book::Model) -> price_book_entry::Model {
@@ -72,6 +74,9 @@ fn price(p: &price_book_entry::Model) -> price::Model {
         temporary_until: None,
         paired_price_id: None,
         return_of_price_id: None,
+        change_kind: "set".into(),
+        target_price_id: None,
+        cancelled_by_unit_id: None,
         state: "draft".into(),
         pending_unit_id: None,
         approved_by_unit_id: None,

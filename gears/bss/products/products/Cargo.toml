@@ -22,6 +22,8 @@ tokio = { workspace = true }
 
 bss-products-sdk = { workspace = true }
 bss-approval = { workspace = true } # approval tables and engine
+# P-D-261: weak ETag and 304 on the SKU, derived-type and category list reads.
+bss-rest = { workspace = true }
 # P-D-250: the approvals inbox's source port, which this gear implements over its own doors.
 bss-approvals-sdk = { workspace = true }
 # P-D-250: the inbox's votes go through this gear's own vote doors as a request (`oneshot`).

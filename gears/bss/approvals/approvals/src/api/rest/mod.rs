@@ -8,4 +8,5 @@ mod routes;
 #[path = "doors_tests.rs"]
 mod doors_tests;
 
-pub(crate) use routes::router;
+/// The doors over `state`, for the gear and for a test that installs its own names.
+pub use routes::router;

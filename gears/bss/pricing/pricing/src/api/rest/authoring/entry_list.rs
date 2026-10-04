@@ -13,7 +13,7 @@ use super::{
     AuthoringState, books,
     dto::PricingPriceBookEntryList,
     price_book_entries,
-    support::{self, authz_failure, invalid_because, require_authenticated, response, transaction},
+    support::{self, authz_failure, invalid_because, require_authenticated, transaction},
 };
 use crate::{
     authz::{self, actions, resource_types},
@@ -252,10 +252,10 @@ async fn list_entries(
     }
     odata.filter_hash = Some(hash);
     let dated = day != today;
-    transaction(&state.db.db(), move |tx| {
-        let (scope, books, ctx, odata) = (scope.clone(), books.clone(), ctx.clone(), odata.clone());
+    let tenant = ctx.subject_tenant_id();
+    let body = transaction(&state.db.db(), move |tx| {
+        let (scope, books, odata) = (scope.clone(), books.clone(), odata.clone());
         Box::pin(async move {
-            let tenant = ctx.subject_tenant_id();
             books::find(tx, &AccessScope::for_tenant(tenant), tenant, id).await?;
             // D-428, D-440, D-472: every entry's usage, price in force and next price in a fixed
             // number of reads per page.
@@ -272,12 +272,12 @@ async fn list_entries(
                 .into());
             }
             let page = books::entries_page(tx, &scope, tenant, id, &odata).await?;
-            let body = PricingPriceBookEntryList {
+            Ok(PricingPriceBookEntryList {
                 items: price_book_entries::read(tx, tenant, page.items, shown, day).await?,
                 page_info: page.page_info,
-            };
-            Ok(response(StatusCode::OK, &body, None)?)
+            })
         })
     })
-    .await
+    .await?;
+    super::names::named(&state, &ctx, body, None).await
 }

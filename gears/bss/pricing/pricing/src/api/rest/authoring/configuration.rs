@@ -54,6 +54,7 @@ pub async fn settings(
             version: 0,
             updated_at: None,
             updated_by: None,
+            updated_by_name: None,
         });
     };
     let currencies = serde_json::from_value(m.currencies)
@@ -71,6 +72,7 @@ pub async fn settings(
         version: m.version,
         updated_at: Some(m.updated_at),
         updated_by: m.updated_by,
+        updated_by_name: None,
     })
 }
 /// D-438: each offered code is spelled as a book's currency is, once.

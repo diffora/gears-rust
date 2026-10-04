@@ -176,6 +176,7 @@ members = [
     "gears/bss/rate-provider/plugins/http-json-plugin",
     "gears/bss/libs/coord",
     "gears/bss/libs/approval",
+    "gears/bss/libs/rest",
     "gears/system/event-broker/event-broker-sdk",
     "gears/system/event-broker/event-broker",
     "gears/system/license-resolver/license-resolver-sdk",
@@ -429,6 +430,8 @@ unicode-normalization = "0.1"
 bss-rate-provider-sdk = { package = "cf-gears-bss-rate-provider-sdk", version = "0.1.10", path = "gears/bss/rate-provider/rate-provider-sdk" }
 coord = { package = "cf-gears-bss-coord", path = "gears/bss/libs/coord" }
 bss-approval = { package = "cf-gears-bss-approval", path = "gears/bss/libs/approval" }
+# Weak ETag and If-None-Match for the BSS list and reference reads.
+bss-rest = { package = "cf-gears-bss-rest", path = "gears/bss/libs/rest" }
 # FIPS-validated SHA-256 for the ledger idempotency payload fingerprint.
 aws-lc-rs = "1.17"
 

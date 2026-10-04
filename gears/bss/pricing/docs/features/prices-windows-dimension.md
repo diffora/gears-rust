@@ -127,7 +127,7 @@ SKU chain guard uses immutable Products history captured before the transaction.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-state-prices-windows-dimension`
 
-Prices move draft → pending → approved through the unit engine; pending ownership prohibits edits. Rejected proposals retain their review history and cannot become approved by direct PATCH; replacement proposals use drafts. Withdrawal unlocks the proposal for authoring. Entry reference_state moves confirmation_pending → confirmed, or lost on proven release. Durable ops move reserving → written → done for creation, cancelling → done for refusal, or releasing → done for deletion; a rereserve op recovers a released receipt when the SKU is not fenced (D-401).
+Prices move draft → pending → approved through the unit engine; pending ownership prohibits edits. Rejected proposals retain their review history and cannot become approved by direct PATCH; replacement proposals use drafts. Withdrawal unlocks the proposal for authoring. An approved price that has not started moves approved → cancelled, a terminal state, when a unit applies a `cancel` row that names it (D-520); a live or scheduled one is explicitly ended when a unit applies an `end` row (D-521). A `cancel` or `end` row moves draft → pending → approved like a price, carries no new money and is never in a chain. A cancelled price leaves the chain and is never the price in force; it stays readable by id, where GET /prices/{id} says `status: cancelled` and the SDK's `ImmutablePrice.state` says `Cancelled` (D-520). Entry reference_state moves confirmation_pending → confirmed, or lost on proven release. Durable ops move reserving → written → done for creation, cancelling → done for refusal, or releasing → done for deletion; a rereserve op recovers a released receipt when the SKU is not fenced (D-401).
 
 ## 5. Definitions of Done
 
@@ -153,7 +153,7 @@ Requirement: `cpt-cf-bss-pricing-fr-price`; PRD AC #4.
 
 - [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-chain-windows`
 
-Approval recomputes predecessor ends within one value chain under transactional revalidation. Same-start uniqueness and domain overlap/past-start validation protect both databases (spec §5).
+Approval recomputes predecessor ends within one value chain under transactional revalidation. Same-start uniqueness and domain overlap/past-start validation protect both databases (spec §5). A cancelled price is not in that chain, so its predecessor re-opens onto the next surviving start (D-520). An explicit end is kept unless a successor starts inside it (D-390, D-521). PricesPublished lists every price whose window or state the apply changed: the unit's prices, each predecessor whose end moved, the cancelled price (`cancelled`) and the ended price with its new end (D-520, D-521 amended).
 
 Requirement: `cpt-cf-bss-pricing-fr-chain-windows`; PRD AC #5.
 
@@ -203,7 +203,7 @@ Requirement: `cpt-cf-bss-pricing-fr-temporary-pair`; PRD AC #8.
 
 - [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-price-pending-guard`
 
-Draft PATCH/DELETE requires current version and no pending unit. Historical approved prices cannot be deleted; pending ownership is acquired conditionally by approval submission (spec §5–§6).
+Draft PATCH/DELETE requires current version and no pending unit. Historical approved prices cannot be deleted; pending ownership is acquired conditionally by approval submission (spec §5–§6). A draft `cancel` or `end` row is deleted, never edited (409 PRICE_NOT_DRAFT on PATCH), and its guards run at its door, at submit and again at apply (D-520, D-521). A cancel is refused 409 PRICE_BOUND only when a consumer's binding names the price (an acceptance whose bindings name it); its `keep_for_bound` mark alone never refuses it (D-520 amended).
 
 Requirement: `cpt-cf-bss-pricing-fr-price`; PRD AC #4.
 
@@ -229,13 +229,13 @@ Requirement: `cpt-cf-bss-pricing-fr-reference-protocol`; PRD AC #11.
 | --- | --- | --- |
 | `cpt-cf-bss-pricing-dod-price-models` | AC #4; `cpt-cf-bss-pricing-fr-price` | Given usage and recurring entries, when prices in their entries' models are drafted then they persist; a usage entry created flat (MODEL_KIND_CHARGEKIND_MISMATCH), a price whose shape does not match its entry's model (PRICE_MISSING), negative prices and approved-money PATCH fail (D-427). |
 | `cpt-cf-bss-pricing-dod-tier-bands-half-open` | AC #4; `cpt-cf-bss-pricing-fr-price` | Given a boundary of 1000, when quantity equals 1000 then volume selects the next band; 999 remains in the prior band. |
-| `cpt-cf-bss-pricing-dod-chain-windows` | AC #5; `cpt-cf-bss-pricing-fr-chain-windows` | Given default and EU prices, when EU gains a successor then default stays unchanged; duplicate approved start, overlap and past start fail. |
+| `cpt-cf-bss-pricing-dod-chain-windows` | AC #5; `cpt-cf-bss-pricing-fr-chain-windows` | Given default and EU prices, when EU gains a successor then default stays unchanged; duplicate approved start, overlap and past start fail. Given A → B (scheduled) → C, when a unit cancels B then A ends at C's start, or stays open without C, and B reads cancelled; when a unit ends a live price then it is closed explicitly there and the chain has no price in force from that date; each such unit's PricesPublished lists the cancelled or ended price and every predecessor whose end moved, and no price that did not move (D-520, D-521). |
 | `cpt-cf-bss-pricing-dod-dimension-fallback` | AC #5; `cpt-cf-bss-pricing-fr-chain-windows` | Given a closed EU tail and an open default, when its end date arrives then default applies; if both are absent selection reports uncovered. |
 | `cpt-cf-bss-pricing-dod-pair-guard` | AC #6; `cpt-cf-bss-pricing-fr-pair-guard` | Given a package predecessor, when only its amount changes then validation passes; a size, dated unit or meter change returns 400 CHAIN_MODEL_CHANGED; the model is the entry's and never changes on a chain (D-427). |
 | `cpt-cf-bss-pricing-dod-min-fee-price-period` | AC #7; `cpt-cf-bss-pricing-fr-min-fee` | Given two 10 charges bound to one price with floor 30 then the result is 30; two distinct floor-30 prices yield 60, not 30 or 120. |
 | `cpt-cf-bss-pricing-dod-temporary-pair` | AC #8; `cpt-cf-bss-pricing-fr-temporary-pair` | Given an existing EU chain, when a five-day temporary change shifts by three days then both boundaries shift and the return stays EU; partial pair submission fails. |
 | `cpt-cf-bss-pricing-dod-temporary-value-fallback` | AC #8; `cpt-cf-bss-pricing-fr-temporary-pair` | Given only a default chain, when a temporary EU override ends then EU follows the current default; no paired return price exists. |
-| `cpt-cf-bss-pricing-dod-price-pending-guard` | AC #4; `cpt-cf-bss-pricing-fr-price` | Given a pending price and its old ETag, when PATCH or DELETE runs then it is refused and unit content is unchanged; an unlocked current draft can be edited. |
+| `cpt-cf-bss-pricing-dod-price-pending-guard` | AC #4; `cpt-cf-bss-pricing-fr-price` | Given a pending price and its old ETag, when PATCH or DELETE runs then it is refused and unit content is unchanged; an unlocked current draft can be edited. Given a scheduled `keep_for_bound` price that no binding names, when it is cancelled then the cancel applies and its predecessor re-opens; given an acceptance whose bindings name it, the cancel is refused 409 PRICE_BOUND at the door, at submit and at apply (D-520). |
 | `cpt-cf-bss-pricing-dod-reference-protocol` | AC #11; `cpt-cf-bss-pricing-fr-reference-protocol` | Given Products and Pricing on real SQLite/Postgres storage, when reserve races retire then both cannot succeed; a live entry blocks retire until durable removal and release. |
 | `cpt-cf-bss-pricing-dod-confirmation-retry` | AC #11; `cpt-cf-bss-pricing-fr-reference-protocol` | Given a committed entry and lost confirm response, when retry resumes then it confirms safely without release; a receipt released before its confirm is re-reserved (lost, with PriceBookEntryReferenceLost, only when the SKU is fenced, retiring or retired) and deletion release failure remains queued. |
 

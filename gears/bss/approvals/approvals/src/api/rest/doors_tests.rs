@@ -37,6 +37,8 @@ struct Fake {
     vote: Mutex<VoteResponse>,
     seen: Mutex<Option<(VoteAction, VoteRequest)>>,
     last_page: Mutex<Option<SourcePageQuery>>,
+    /// The actors this source declares are not people.
+    system: Vec<Uuid>,
 }
 
 impl Fake {
@@ -51,6 +53,7 @@ impl Fake {
             }),
             seen: Mutex::new(None),
             last_page: Mutex::new(None),
+            system: Vec::new(),
         }
     }
 
@@ -66,6 +69,10 @@ impl Fake {
 
 #[async_trait]
 impl ApprovalSourceV1 for Fake {
+    fn system_actors(&self) -> &[Uuid] {
+        &self.system
+    }
+
     async fn page(
         &self,
         _ctx: &toolkit_security::SecurityContext,
@@ -185,10 +192,10 @@ fn inbox(names: &[&str], fakes: &[(&str, Arc<Fake>)]) -> Router {
     for (name, fake) in fakes {
         register(name, fake.clone(), &hub);
     }
-    let state = Arc::new(ApiState {
-        sources: names.iter().map(|name| (*name).to_owned()).collect(),
+    let state = Arc::new(ApiState::new(
+        names.iter().map(|name| (*name).to_owned()).collect(),
         hub,
-    });
+    ));
     router(state, &OpenApiRegistryImpl::new())
 }
 
@@ -755,10 +762,7 @@ async fn a_vote_without_an_idempotency_key_is_refused() {
 async fn the_vote_spec_does_not_declare_412() {
     let registry = OpenApiRegistryImpl::new();
     let _router = router(
-        Arc::new(ApiState {
-            sources: Vec::new(),
-            hub: Arc::new(ClientHub::new()),
-        }),
+        Arc::new(ApiState::new(Vec::new(), Arc::new(ClientHub::new()))),
         &registry,
     );
     let spec = registry
@@ -918,4 +922,464 @@ async fn an_anonymous_caller_is_401() {
     let (status, _, _) =
         bytes(call(&app, "GET", "/bss-approvals/v1/approval-units", b"", false).await).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+/// One GET as the test caller, with an optional `If-None-Match`.
+async fn get_tagged(
+    app: &Router,
+    uri: &str,
+    tag: Option<&str>,
+) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+    let mut request = Request::builder()
+        .method("GET")
+        .uri(uri)
+        .body(Body::empty())
+        .unwrap();
+    request.extensions_mut().insert(test_support::caller());
+    if let Some(tag) = tag {
+        request
+            .headers_mut()
+            .insert(axum::http::header::IF_NONE_MATCH, tag.parse().unwrap());
+    }
+    bytes(app.clone().oneshot(request).await.unwrap()).await
+}
+
+fn header_text(headers: &axum::http::HeaderMap, name: axum::http::HeaderName) -> String {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// AP-D-10: the merged page and the summed counts answer a weak `ETag` of their JSON and
+/// `Cache-Control: private, no-cache`; the same GET with that tag is 304 with an empty body. A
+/// source that goes from ok to unavailable changes the body, so it changes the tag.
+#[tokio::test]
+async fn the_list_and_the_counts_answer_304_until_a_source_status_changes() {
+    use axum::http::header::{CACHE_CONTROL, ETAG};
+    let pricing = Arc::new(Fake::serving(vec![
+        test_support::unit("pricing", 1, 1),
+        test_support::unit("pricing", 3, 3),
+    ]));
+    let products = Arc::new(Fake::serving(vec![test_support::unit("products", 2, 2)]));
+    let app = inbox(
+        &["pricing", "products"],
+        &[("pricing", pricing), ("products", products.clone())],
+    );
+    let paths = [
+        "/bss-approvals/v1/approval-units",
+        "/bss-approvals/v1/approval-units/counts",
+    ];
+    let mut tags = Vec::new();
+    for path in paths {
+        let (status, headers, body) = get_tagged(&app, path, None).await;
+        assert_eq!(status, StatusCode::OK, "{path}");
+        assert!(!body.is_empty(), "{path}");
+        let tag = header_text(&headers, ETAG);
+        assert!(tag.starts_with("W/\""), "{path}: {tag}");
+        assert_eq!(header_text(&headers, CACHE_CONTROL), "private, no-cache");
+        for sent in [tag.clone(), format!("\"other\", {tag}"), "*".to_owned()] {
+            let (status, again, body) = get_tagged(&app, path, Some(&sent)).await;
+            assert_eq!(status, StatusCode::NOT_MODIFIED, "{path}: {sent}");
+            assert!(body.is_empty(), "{path}: {sent}");
+            assert_eq!(header_text(&again, ETAG), tag, "{path}: {sent}");
+            assert_eq!(
+                header_text(&again, CACHE_CONTROL),
+                "private, no-cache",
+                "{path}: {sent}"
+            );
+        }
+        tags.push(tag);
+    }
+    *products.mode.lock().unwrap() = Mode::Unavailable;
+    for (path, old) in paths.into_iter().zip(tags) {
+        let (status, headers, body) = get_tagged(&app, path, Some(&old)).await;
+        assert_eq!(status, StatusCode::OK, "{path}");
+        let answer: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(answer["sources"][1]["status"], "unavailable", "{path}");
+        let fresh = header_text(&headers, ETAG);
+        assert!(fresh.starts_with("W/\""), "{path}: {fresh}");
+        assert_ne!(fresh, old, "{path}");
+        assert_eq!(header_text(&headers, CACHE_CONTROL), "private, no-cache");
+    }
+}
+
+/// AP-D-10: a refusal is never turned into a 304 and carries no tag.
+#[tokio::test]
+async fn a_refused_list_is_not_conditional() {
+    let pricing = Arc::new(Fake::serving(Vec::new()));
+    *pricing.mode.lock().unwrap() = Mode::Unavailable;
+    let app = inbox(&["pricing"], &[("pricing", pricing)]);
+    for path in [
+        "/bss-approvals/v1/approval-units",
+        "/bss-approvals/v1/approval-units/counts",
+    ] {
+        let (status, headers, _) = get_tagged(&app, path, Some("*")).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{path}");
+        assert!(headers.get(axum::http::header::ETAG).is_none(), "{path}");
+    }
+}
+
+/// AP-D-10: the served spec declares `If-None-Match`, the `ETag` and `Cache-Control` of the 200,
+/// and the 304 with both headers, on the list and the counts.
+#[tokio::test]
+async fn the_list_and_the_counts_declare_the_conditional_get() {
+    let registry = OpenApiRegistryImpl::new();
+    let _router = router(
+        Arc::new(ApiState::new(Vec::new(), Arc::new(ClientHub::new()))),
+        &registry,
+    );
+    let spec = registry
+        .build_openapi(&OpenApiInfo::default())
+        .expect("openapi");
+    let json = serde_json::to_value(&spec).unwrap();
+    for path in [
+        "/bss-approvals/v1/approval-units",
+        "/bss-approvals/v1/approval-units/counts",
+    ] {
+        let op = &json["paths"][path]["get"];
+        let parameter = op["parameters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|param| param["name"] == "If-None-Match")
+            .unwrap_or_else(|| panic!("{path}: If-None-Match"));
+        assert_eq!(parameter["in"], "header", "{path}");
+        assert_eq!(parameter["required"], false, "{path}");
+        for status in ["200", "304"] {
+            let headers = &op["responses"][status]["headers"];
+            assert!(headers.get("ETag").is_some(), "{path} {status}: {headers}");
+            assert!(
+                headers.get("Cache-Control").is_some(),
+                "{path} {status}: {headers}"
+            );
+        }
+    }
+    let card = &json["paths"]["/bss-approvals/v1/approval-units/{id}"]["get"]["responses"];
+    assert!(card.get("304").is_none(), "the card is not conditional");
+}
+
+// ------------------------------------------------------------------ AP-D-11 actor names
+
+/// The people the directory knows, every lookup it answered, and whether it is down.
+#[derive(Default)]
+struct People {
+    names: Mutex<std::collections::BTreeMap<Uuid, String>>,
+    calls: Mutex<Vec<Vec<Uuid>>>,
+    down: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait]
+impl bss_rest::actor_names::ActorDirectory for People {
+    async fn list_users(
+        &self,
+        _ctx: &toolkit_security::SecurityContext,
+        query: bss_rest::actor_names::ListUsersQuery,
+    ) -> Result<toolkit_odata::Page<bss_rest::actor_names::IdpUser>, CanonicalError> {
+        let ids = bss_rest::actor_names::queried_ids(&query);
+        self.calls.lock().unwrap().push(ids.clone());
+        if self.down.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(CanonicalError::service_unavailable().create());
+        }
+        let names = self.names.lock().unwrap();
+        let users = ids
+            .iter()
+            .filter_map(|id| {
+                names.get(id).map(|name| {
+                    bss_rest::actor_names::IdpUser::new(*id, "login").with_display_name(name)
+                })
+            })
+            .collect();
+        Ok(toolkit_odata::Page::new(
+            users,
+            toolkit_odata::PageInfo {
+                next_cursor: None,
+                prev_cursor: None,
+                limit: 200,
+            },
+        ))
+    }
+}
+
+impl People {
+    fn know(&self, id: Uuid, name: &str) {
+        self.names.lock().unwrap().insert(id, name.to_owned());
+    }
+    fn calls(&self) -> usize {
+        self.calls.lock().unwrap().len()
+    }
+}
+
+/// A pricing unit submitted by 3 with a vote by 4, and a products unit submitted by 5 whose live
+/// SKU was created by 6 and archived by 9; the inbox names them through `people`.
+fn named_inbox(people: Arc<People>) -> Router {
+    let mut priced = test_support::unit("pricing", 1, 1);
+    priced.decisions = vec![bss_approvals_sdk::InboxDecision {
+        actor: Uuid::from_u128(4),
+        generation: 1,
+        decision: bss_approvals_sdk::DecisionKind::Approve,
+        note: None,
+        at: test_support::at(2),
+        stale: false,
+    }];
+    let mut sku = test_support::unit("products", 3, 2);
+    sku.submitted_by = Uuid::from_u128(5);
+    sku.subject_live = Some(serde_json::json!({
+        "id": Uuid::from_u128(8),
+        "created_by": Uuid::from_u128(6),
+        "created_by_name": null,
+        "archived_by": Uuid::from_u128(9),
+        "archived_by_name": null,
+    }));
+    let hub = Arc::new(ClientHub::new());
+    register("pricing", Arc::new(Fake::serving(vec![priced])), &hub);
+    register("products", Arc::new(Fake::serving(vec![sku])), &hub);
+    let state = ApiState::new(vec!["pricing".into(), "products".into()], hub).with_actor_names(
+        bss_rest::actor_names::ActorNames::with_directory(people, &crate::api::SYSTEM_ACTORS),
+    );
+    router(Arc::new(state), &OpenApiRegistryImpl::new())
+}
+
+fn known_people() -> Arc<People> {
+    let people = Arc::new(People::default());
+    for (id, name) in [(3, "Sam"), (4, "Vic"), (5, "Pat"), (6, "Cid"), (9, "Ari")] {
+        people.know(Uuid::from_u128(id), name);
+    }
+    people
+}
+
+/// One read as the test caller: 200, its body and its `ETag`, and one directory lookup.
+async fn named_read(
+    app: &Router,
+    people: &People,
+    uri: &str,
+    tag: Option<&str>,
+) -> (StatusCode, serde_json::Value, String) {
+    let before = people.calls();
+    let mut request = Request::builder()
+        .method("GET")
+        .uri(uri)
+        .body(Body::empty())
+        .unwrap();
+    request.extensions_mut().insert(test_support::caller());
+    if let Some(tag) = tag {
+        request
+            .headers_mut()
+            .insert("If-None-Match", tag.parse().unwrap());
+    }
+    let (status, headers, body) = bytes(app.clone().oneshot(request).await.unwrap()).await;
+    assert_eq!(people.calls() - before, 1, "{uri}: one lookup per read");
+    let etag = headers
+        .get("etag")
+        .map(|value| value.to_str().unwrap().to_owned())
+        .unwrap_or_default();
+    let json = if body.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_slice(&body).unwrap()
+    };
+    (status, json, etag)
+}
+
+/// The `*_name` sibling of `field` on `value`: present, and the given text or null.
+#[track_caller]
+fn named(value: &serde_json::Value, field: &str, expected: Option<&str>) {
+    let key = format!("{field}_name");
+    let got = value
+        .get(&key)
+        .unwrap_or_else(|| panic!("{key} is missing: {value}"));
+    assert_eq!(
+        got,
+        &expected.map_or(serde_json::Value::Null, |name| serde_json::json!(name)),
+        "{key}: {value}"
+    );
+}
+
+/// The inbox's list and card with the names each is expected to carry, all or none.
+async fn inbox_reads(app: &Router, people: &People, known: bool) {
+    let name = |text: &'static str| known.then_some(text);
+    let (status, page, _) = named_read(app, people, "/bss-approvals/v1/approval-units", None).await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    let items = page["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2, "{page}");
+    let products = items.iter().find(|u| u["source"] == "products").unwrap();
+    let pricing = items.iter().find(|u| u["source"] == "pricing").unwrap();
+    named(pricing, "submitted_by", name("Sam"));
+    named(&pricing["decisions"][0], "actor", name("Vic"));
+    named(products, "submitted_by", name("Pat"));
+    named(&products["subject_live"], "created_by", name("Cid"));
+    named(&products["subject_live"], "archived_by", name("Ari"));
+    let card_uri = format!("/bss-approvals/v1/approval-units/{}", Uuid::from_u128(2));
+    let (status, card, _) = named_read(app, people, &card_uri, None).await;
+    assert_eq!(status, StatusCode::OK, "{card}");
+    named(&card, "submitted_by", name("Pat"));
+    named(&card["subject_live"], "created_by", name("Cid"));
+    named(&card["subject_live"], "archived_by", name("Ari"));
+}
+
+#[tokio::test]
+async fn the_inbox_names_its_submitters_and_voters_in_one_lookup() {
+    let people = known_people();
+    let app = named_inbox(people.clone());
+    inbox_reads(&app, &people, true).await;
+    let mut asked = people.calls.lock().unwrap()[0].clone();
+    asked.sort_unstable();
+    assert_eq!(
+        asked,
+        [3, 4, 5, 6, 9].map(Uuid::from_u128),
+        "the merged page's actors, once each"
+    );
+}
+
+#[tokio::test]
+async fn an_unavailable_directory_leaves_the_names_null_on_a_200() {
+    let people = known_people();
+    people.down.store(true, std::sync::atomic::Ordering::SeqCst);
+    let app = named_inbox(people.clone());
+    inbox_reads(&app, &people, false).await;
+}
+
+#[tokio::test]
+async fn a_renamed_submitter_changes_the_list_tag() {
+    let people = known_people();
+    let app = named_inbox(people.clone());
+    let uri = "/bss-approvals/v1/approval-units";
+    let (_, _, first) = named_read(&app, &people, uri, None).await;
+    let (status, _, again) = named_read(&app, &people, uri, Some(&first)).await;
+    assert_eq!(status, StatusCode::NOT_MODIFIED);
+    assert_eq!(again, first);
+    people.know(Uuid::from_u128(3), "Samantha");
+    let (status, page, renamed) = named_read(&app, &people, uri, Some(&first)).await;
+    assert_eq!(status, StatusCode::OK, "a rename is a new body");
+    assert_ne!(renamed, first);
+    let pricing = page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|u| u["source"] == "pricing")
+        .unwrap();
+    named(pricing, "submitted_by", Some("Samantha"));
+}
+
+/// AP-D-11: an actor a source declares a system actor reads "System" on the list and the card,
+/// whichever unit shows it, and is never asked of the directory.
+#[tokio::test]
+async fn a_system_actor_a_source_declares_reads_system_and_is_never_asked() {
+    let declared = Uuid::from_u128(0xf01);
+    let mut priced = test_support::unit("pricing", 1, 1);
+    priced.decisions = vec![bss_approvals_sdk::InboxDecision {
+        actor: declared,
+        generation: 1,
+        decision: bss_approvals_sdk::DecisionKind::Reject,
+        note: Some("expired".into()),
+        at: test_support::at(2),
+        stale: false,
+    }];
+    let mut products = Fake::serving(Vec::new());
+    products.system = vec![declared];
+    let hub = Arc::new(ClientHub::new());
+    register("pricing", Arc::new(Fake::serving(vec![priced])), &hub);
+    register("products", Arc::new(products), &hub);
+    let people = known_people();
+    let state = ApiState::new(vec!["pricing".into(), "products".into()], hub).with_actor_names(
+        bss_rest::actor_names::ActorNames::with_directory(
+            people.clone(),
+            &crate::api::SYSTEM_ACTORS,
+        ),
+    );
+    let app = router(Arc::new(state), &OpenApiRegistryImpl::new());
+    let (status, page, _) =
+        named_read(&app, &people, "/bss-approvals/v1/approval-units", None).await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    named(&page["items"][0]["decisions"][0], "actor", Some("System"));
+    named(&page["items"][0], "submitted_by", Some("Sam"));
+    let card_uri = format!("/bss-approvals/v1/approval-units/{}", Uuid::from_u128(1));
+    let (status, card, _) = named_read(&app, &people, &card_uri, None).await;
+    assert_eq!(status, StatusCode::OK, "{card}");
+    named(&card["decisions"][0], "actor", Some("System"));
+    let asked = people.calls.lock().unwrap().clone();
+    assert!(
+        asked.iter().all(|ids| !ids.contains(&declared)),
+        "a declared system actor is never asked: {asked:?}"
+    );
+}
+
+/// An inbox over one pricing source serving `unit`, naming actors through `people`.
+fn one_unit_inbox(unit: InboxUnit, people: Arc<People>) -> Router {
+    let hub = Arc::new(ClientHub::new());
+    register("pricing", Arc::new(Fake::serving(vec![unit])), &hub);
+    let state = ApiState::new(vec!["pricing".into()], hub).with_actor_names(
+        bss_rest::actor_names::ActorNames::with_directory(people, &crate::api::SYSTEM_ACTORS),
+    );
+    router(Arc::new(state), &OpenApiRegistryImpl::new())
+}
+
+/// AP-D-11: a live subject's actor is named only where its gear put the `*_name` key beside it.
+/// A subject with `created_by` and `archived_by` but neither name key is not looked up for them,
+/// and gains no key, on the list and the card.
+#[tokio::test]
+async fn a_live_subject_without_its_name_keys_is_not_named() {
+    let (creator, archiver) = (Uuid::from_u128(6), Uuid::from_u128(9));
+    let mut unit = test_support::unit("pricing", 1, 1);
+    unit.subject_live = Some(serde_json::json!({
+        "id": Uuid::from_u128(8),
+        "created_by": creator,
+        "archived_by": archiver,
+    }));
+    let people = known_people();
+    let app = one_unit_inbox(unit, people.clone());
+    let card_uri = format!("/bss-approvals/v1/approval-units/{}", Uuid::from_u128(1));
+    for uri in ["/bss-approvals/v1/approval-units", card_uri.as_str()] {
+        let (status, body, _) = named_read(&app, &people, uri, None).await;
+        assert_eq!(status, StatusCode::OK, "{uri}: {body}");
+        let unit = body.get("items").map_or(&body, |items| &items[0]);
+        named(unit, "submitted_by", Some("Sam"));
+        let live = unit["subject_live"].as_object().unwrap();
+        assert!(!live.contains_key("created_by_name"), "{uri}: {body}");
+        assert!(!live.contains_key("archived_by_name"), "{uri}: {body}");
+    }
+    let asked = people.calls.lock().unwrap().clone();
+    assert!(
+        asked
+            .iter()
+            .all(|ids| !ids.contains(&creator) && !ids.contains(&archiver)),
+        "{asked:?}"
+    );
+}
+
+/// AP-D-11: the nil id, the platform's system context, reads "System" as a voter and as a live
+/// subject's creator, and is never asked of the directory.
+#[tokio::test]
+async fn the_nil_actor_reads_system_and_is_never_asked() {
+    let mut unit = test_support::unit("pricing", 1, 1);
+    unit.decisions = vec![bss_approvals_sdk::InboxDecision {
+        actor: Uuid::nil(),
+        generation: 1,
+        decision: bss_approvals_sdk::DecisionKind::Reject,
+        note: Some("expired".into()),
+        at: test_support::at(2),
+        stale: false,
+    }];
+    unit.subject_live = Some(serde_json::json!({
+        "id": Uuid::from_u128(8),
+        "created_by": Uuid::nil(),
+        "created_by_name": null,
+    }));
+    let people = known_people();
+    let app = one_unit_inbox(unit, people.clone());
+    let card_uri = format!("/bss-approvals/v1/approval-units/{}", Uuid::from_u128(1));
+    for uri in ["/bss-approvals/v1/approval-units", card_uri.as_str()] {
+        let (status, body, _) = named_read(&app, &people, uri, None).await;
+        assert_eq!(status, StatusCode::OK, "{uri}: {body}");
+        let unit = body.get("items").map_or(&body, |items| &items[0]);
+        named(&unit["decisions"][0], "actor", Some("System"));
+        named(&unit["subject_live"], "created_by", Some("System"));
+        named(unit, "submitted_by", Some("Sam"));
+    }
+    let asked = people.calls.lock().unwrap().clone();
+    assert!(
+        asked.iter().all(|ids| !ids.contains(&Uuid::nil())),
+        "{asked:?}"
+    );
 }

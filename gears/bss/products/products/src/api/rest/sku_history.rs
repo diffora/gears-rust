@@ -135,8 +135,11 @@ async fn sku_history(
             SkuListError::Query(e) => CanonicalError::from(e),
             SkuListError::Repo(e) => super::repo_error_to_canonical(&e),
         })?;
+    let mut items: Vec<ProductsSkuHistoryEntry> = page.items.into_iter().map(Into::into).collect();
+    // P-D-262: the page's actors in one lookup; the system's acts read "System".
+    state.actor_names.fill(&ctx, &mut items).await;
     Ok(Json(Page {
-        items: page.items.into_iter().map(Into::into).collect(),
+        items,
         page_info: page.page_info,
     }))
 }

@@ -421,6 +421,8 @@ async fn unknown_foreign_and_bundle_skus_answer_zeros_and_each_id_is_answered_on
             version: 1,
             created_at: now,
             updated_at: now,
+            archived_at: None,
+            archived_by: None,
         },
     )
     .await
@@ -568,6 +570,8 @@ async fn the_usage_sets_are_the_skus_whose_usage_counts_entries_and_plans() {
             version: 1,
             created_at: now,
             updated_at: now,
+            archived_at: None,
+            archived_by: None,
         },
     )
     .await

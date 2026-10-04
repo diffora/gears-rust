@@ -87,7 +87,8 @@ fn entry_needed(entry: Option<Uuid>) -> Result<(), DoorError> {
     }
     Ok(())
 }
-/// The entry must exist, belong to the revision's book and price the item's SKU.
+/// The entry must exist, belong to the revision's book, price the item's SKU and hold its
+/// reference (D-522: `BOOK_ARCHIVED`, `ENTRY_REFERENCE_RELEASED`).
 async fn entry_fits(
     tx: &impl DBRunner,
     scope: &AccessScope,
@@ -104,7 +105,8 @@ async fn entry_fits(
     if e.sku_id != sku {
         return Err(support::invalid("price_book_entry_id", "ITEM_ENTRY_SKU_MISMATCH").into());
     }
-    Ok(())
+    // D-522: no item names an entry of an archived book, or one not re-reserved since.
+    support::writable_entry(tx, &e).await
 }
 
 /// `POST /plan-revisions/{id}/items` below its door: a replay answers from the key's store; then
@@ -255,7 +257,7 @@ pub(super) async fn patch(
 }
 /// `GET /plan-items/{id}` (D-434): the item with its revision's number and state and its plan,
 /// its version as the `ETag` a following PATCH sends back as If-Match. The state is the one the
-/// revision reads today among its plan's revisions (D-447).
+/// revision reads today among its plan's revisions (D-447). The door names its actors (D-519).
 /// # Errors
 /// 404 for an item the tenant does not hold.
 pub(super) async fn get(
@@ -263,7 +265,7 @@ pub(super) async fn get(
     scope: &AccessScope,
     tenant: Uuid,
     id: Uuid,
-) -> Result<Response, DoorError> {
+) -> Result<(super::dto::PricingPlanItemReadDto, u64), DoorError> {
     let m = plan_item_repo::find(tx, scope, tenant, id)
         .await?
         .ok_or_else(|| support::missing_what("plan_item"))?;
@@ -280,16 +282,15 @@ pub(super) async fn get(
     let version = crate::api::rest::preconditions::RowVersion::from_stored(m.version)
         .map_err(CanonicalError::from)?
         .get();
-    Ok(support::response(
-        StatusCode::OK,
-        &super::dto::PricingPlanItemReadDto {
+    Ok((
+        super::dto::PricingPlanItemReadDto {
             item: m.try_into()?,
             plan_id: r.plan_id,
             rev_no: r.rev_no,
             state,
         },
-        Some(version),
-    )?)
+        version,
+    ))
 }
 enum Begun {
     Replay(Receipt),
@@ -370,6 +371,7 @@ pub async fn create(
                 refusal: None,
                 receipt: None,
                 outcome: None,
+                reason: None,
             };
             let op = reference_work::new_op(
                 &ctx,

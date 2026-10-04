@@ -268,6 +268,8 @@ impl MigrationTrait for InvalidOutboxMigration {
 // POST /price-book-entries/{id}/prices price:author false true
 // PATCH /prices/{id} price:author true false
 // DELETE /prices/{id} price:author true false
+// POST /prices/{id}/cancel price:author false true
+// POST /prices/{id}/end price:author false true
 
 // Run-4 approvals: method | path | resource:action | If-Match | Idempotency-Key
 // POST /prices/{id}/submit price:submit false true

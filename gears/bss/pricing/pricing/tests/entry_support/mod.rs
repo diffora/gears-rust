@@ -211,6 +211,28 @@ impl Fixture {
         dsn: TestDsn,
         registry: Arc<dyn bss_products_sdk::ReferenceRegistryV1>,
     ) -> Self {
+        Self::on_named(db, tenant, dsn, registry, None).await
+    }
+    /// [`Fixture::new`] whose reads name their actors through `directory` (D-519).
+    pub async fn with_directory(
+        registry: Arc<dyn bss_products_sdk::ReferenceRegistryV1>,
+        directory: Arc<dyn bss_rest::actor_names::ActorDirectory>,
+    ) -> Self {
+        let (db, _, tenant, dsn) = storage_support::test_db().await;
+        let names = bss_rest::actor_names::ActorNames::with_directory(
+            directory,
+            &bss_pricing::api::rest::authoring::SYSTEM_ACTORS,
+        );
+        Self::on_named(db, tenant, dsn, registry, Some(names)).await
+    }
+    /// [`Fixture::on`] with the actor names `names`, or the hub's when `None`.
+    pub async fn on_named(
+        db: toolkit_db::DBProvider<toolkit_db::DbError>,
+        tenant: Uuid,
+        dsn: TestDsn,
+        registry: Arc<dyn bss_products_sdk::ReferenceRegistryV1>,
+        names: Option<bss_rest::actor_names::ActorNames>,
+    ) -> Self {
         let hub = Arc::new(toolkit::ClientHub::default());
         hub.register::<dyn bss_pricing_sdk::meter_semantics::UsageMeterSemanticsV1>(Arc::new(
             policy_support::MeterProvider::default(),
@@ -218,11 +240,13 @@ impl Fixture {
         hub.register::<bss_products_sdk::PricingReferenceRegistry>(Arc::new(
             bss_products_sdk::PricingReferenceRegistry(registry),
         ));
-        let state = Arc::new(
-            bss_pricing::api::rest::authoring::AuthoringState::new(db.clone(), hub)
-                .await
-                .unwrap(),
-        );
+        let state = bss_pricing::api::rest::authoring::AuthoringState::new(db.clone(), hub)
+            .await
+            .unwrap();
+        let state = Arc::new(match names {
+            Some(names) => state.with_actor_names(names),
+            None => state,
+        });
         let make = |allow| {
             production(state.clone()).layer(axum::Extension(
                 authz_resolver_sdk::PolicyEnforcer::new(Arc::new(Resolver {
@@ -687,6 +711,8 @@ impl ReferenceRegistryV1 for Script {
             created_by: Uuid::new_v4(),
             created_at: time::OffsetDateTime::now_utc(),
             updated_at: time::OffsetDateTime::now_utc(),
+            archived_at: None,
+            archived_by: None,
         })
     }
     async fn sku_version_as_of(
@@ -753,6 +779,9 @@ pub fn price(p: &price_book_entry::Model) -> price::Model {
         temporary_until: None,
         paired_price_id: None,
         return_of_price_id: None,
+        change_kind: "set".into(),
+        target_price_id: None,
+        cancelled_by_unit_id: None,
         state: "draft".into(),
         pending_unit_id: None,
         approved_by_unit_id: None,

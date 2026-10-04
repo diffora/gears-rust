@@ -26,6 +26,15 @@ where
 }
 
 #[test]
+fn change_kind_is_set_cancel_or_end() {
+    macro_rules! tokens {
+        ($t:ident) => {
+            round_trips($t::ALL, $t::as_str, $t::stored)
+        };
+    }
+    assert_eq!(tokens!(PricingChangeKind), ["set", "cancel", "end"]);
+}
+#[test]
 fn each_set_carries_its_stored_tokens_on_the_wire() {
     macro_rules! tokens {
         ($t:ident) => {
@@ -43,12 +52,12 @@ fn each_set_carries_its_stored_tokens_on_the_wire() {
     );
     assert_eq!(
         tokens!(PricingEntryReferenceState),
-        ["confirmation_pending", "confirmed", "lost"]
+        ["confirmation_pending", "confirmed", "lost", "released"]
     );
     assert_eq!(tokens!(PricingEligibility), ["all", "new"]);
     assert_eq!(
         tokens!(PricingPriceState),
-        ["draft", "pending", "approved", "rejected"]
+        ["draft", "pending", "approved", "rejected", "cancelled"]
     );
     assert_eq!(
         tokens!(PricingPriceStatus),
@@ -58,7 +67,8 @@ fn each_set_carries_its_stored_tokens_on_the_wire() {
             "rejected",
             "scheduled",
             "active",
-            "superseded"
+            "superseded",
+            "cancelled"
         ]
     );
     assert_eq!(
@@ -75,7 +85,7 @@ fn each_set_carries_its_stored_tokens_on_the_wire() {
     );
     assert_eq!(
         tokens!(PricingReferenceOpKind),
-        ["create", "delete", "rereserve", "attach"]
+        ["create", "delete", "rereserve", "attach", "release"]
     );
     assert_eq!(
         tokens!(PricingReferenceOpState),
@@ -97,6 +107,19 @@ fn each_set_carries_its_stored_tokens_on_the_wire() {
     );
     assert_eq!(tokens!(PricingBillingTiming), ["advance", "arrears"]);
     assert_eq!(tokens!(PricingResolveSource), ["entry", "sku", "tenant"]);
+}
+
+/// D-522: a reference op's reason is `book_archived`, the token a release op's work stores.
+#[test]
+fn a_reference_op_reason_is_book_archived() {
+    assert_eq!(
+        round_trips(
+            PricingReferenceOpReason::ALL,
+            PricingReferenceOpReason::as_str,
+            PricingReferenceOpReason::stored,
+        ),
+        [crate::infra::reference_work::BOOK_ARCHIVED_REASON]
+    );
 }
 
 #[test]

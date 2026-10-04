@@ -276,8 +276,10 @@ async fn every_filter_field_narrows_the_list() {
             "pending_unit_id ne null or type eq 'bundle'".to_owned(),
             vec!["B", "D"],
         ),
-        // Text functions stay on an open text field. `lifecycle` does not take them (P-D-249).
+        // Text functions on an open text field reach the pager. On `lifecycle` each one is the
+        // `in` of the lifecycles it matches (P-D-264).
         ("startswith(type, 'us')".to_owned(), vec!["B", "E"]),
+        ("contains(lifecycle, 'pub')".to_owned(), vec!["A"]),
     ] {
         assert_eq!(
             d.codes(&list(&[("$filter", &filter)])).await,
@@ -297,7 +299,7 @@ async fn every_filter_field_narrows_the_list() {
         "sellable eq true",
         "category_id gt null",
         "not (lifecycle eq 'draft')",
-        "contains(lifecycle, 'pub')",
+        "not contains(lifecycle, 'pub')",
     ] {
         let body = d.refused(&list(&[("$filter", filter)])).await;
         assert_eq!(problem_code(&body), "INVALID_FILTER", "{filter}: {body}");
@@ -629,6 +631,26 @@ async fn the_counts_follow_the_list_without_its_lifecycle_terms() {
             vec![("$filter", "category_id eq null".to_owned())],
             vec![4, 1, 1, 1, 1, 1],
         ),
+        // P-D-264: a text function on `lifecycle` is a lifecycle term, dropped like the others,
+        // whether it matches a lifecycle or none.
+        (
+            vec![("$filter", "contains(lifecycle, 'draft')".to_owned())],
+            vec![7, 2, 3, 1, 1, 2],
+        ),
+        (
+            vec![(
+                "$filter",
+                format!("startswith(lifecycle, 'd') and category_id eq {x}"),
+            )],
+            vec![3, 1, 2, 0, 0, 1],
+        ),
+        (
+            vec![(
+                "$filter",
+                format!("category_id eq {x} and endswith(lifecycle, 'zzz')"),
+            )],
+            vec![3, 1, 2, 0, 0, 1],
+        ),
         (vec![("q", "storage".to_owned())], vec![2, 0, 1, 0, 1, 1]),
         (
             vec![
@@ -665,9 +687,8 @@ async fn the_counts_follow_the_list_without_its_lifecycle_terms() {
         "category_id eq null and (lifecycle eq 'draft' or code eq 'A')",
         "lifecycle eq 'bad'",
         "updated_at gt 2026-01-01T00:00:00Z",
-        "contains(lifecycle, 'draft')",
-        "startswith(lifecycle, 'dra')",
-        "endswith(lifecycle, 'aft')",
+        "contains(lifecycle, 'draft') or category_id eq null",
+        "not contains(lifecycle, 'draft')",
     ] {
         let body = d.refused(&counts(&[("$filter", filter)])).await;
         assert_eq!(problem_code(&body), "INVALID_FILTER", "{filter}: {body}");
@@ -846,6 +867,25 @@ async fn the_list_and_the_counts_read_in_fixed_statements_for_10_and_100_skus() 
         for (i, (sql, binds)) in b.iter().enumerate() {
             eprintln!("{uri} statement {i} ({binds} binds): {sql}");
         }
+        assert_eq!(a.len(), 2, "{uri}: one fence expiry and one read: {a:#?}");
+        assert_eq!(a, b, "{uri}: the same statements whatever the size");
+    }
+}
+
+/// The archive mark adds no statement (P-D-263): the list hiding archived rows, the list of
+/// archived rows and the counts with their `archived` number read in the same two statements, for
+/// 10 and for 100 SKUs.
+#[tokio::test]
+async fn the_archived_list_and_counts_read_in_the_same_fixed_statements() {
+    let (ten, ten_rec) = recorded_door(10).await;
+    let (hundred, hundred_rec) = recorded_door(100).await;
+    for uri in [
+        list(&[("$filter", "archived eq true")]),
+        list(&[("$filter", "archived eq false and lifecycle eq 'published'")]),
+        counts(&[("$filter", "archived eq true")]),
+    ] {
+        let a = statements(&ten, &ten_rec, &uri).await;
+        let b = statements(&hundred, &hundred_rec, &uri).await;
         assert_eq!(a.len(), 2, "{uri}: one fence expiry and one read: {a:#?}");
         assert_eq!(a, b, "{uri}: the same statements whatever the size");
     }
@@ -1313,8 +1353,9 @@ async fn an_empty_usage_set_keeps_nothing_and_its_negation_everything() {
 }
 
 /// A due `lifecycle_next` is the lifecycle in force. The `CASE` serves a top-level `eq`, `ne` or
-/// `in`, and those joined by `and`. `or`, `not` and the text functions are 400 on the list and
-/// the counts, the counts' text, and the stored column is not compared (P-D-249).
+/// `in`, a text function as the `in` of the lifecycles it matches (P-D-264), and those joined by
+/// `and`. `or` and `not` are 400 on the list and the counts, the counts' text, and the stored
+/// column is not compared (P-D-249).
 #[tokio::test]
 async fn a_due_lifecycle_is_filtered_through_the_case_or_refused() {
     let d = Door::new().await;
@@ -1360,6 +1401,10 @@ async fn a_due_lifecycle_is_filtered_through_the_case_or_refused() {
         "lifecycle ne 'published'",
         "lifecycle in ('deprecated')",
         "lifecycle eq 'deprecated' and code eq 'DUE'",
+        "contains(lifecycle,'deprecated')",
+        "startswith(lifecycle,'dep')",
+        "endswith(lifecycle,'cated')",
+        "code eq 'DUE' and startswith(lifecycle,'dep')",
     ] {
         let (status, body) = d.get(&list(&[("$filter", filter)])).await;
         assert_eq!(status, StatusCode::OK, "{filter}: {body}");
@@ -1369,26 +1414,29 @@ async fn a_due_lifecycle_is_filtered_through_the_case_or_refused() {
             "{filter}: {body}"
         );
     }
-    let (status, stay) = d
-        .get(&list(&[("$filter", "lifecycle eq 'published'")]))
-        .await;
-    assert_eq!(status, StatusCode::OK, "{stay}");
-    assert_eq!(codes(&stay), ["STAY"], "{stay}");
+    for filter in [
+        "lifecycle eq 'published'",
+        "contains(lifecycle,'pub')",
+        "endswith(lifecycle,'shed')",
+    ] {
+        let (status, stay) = d.get(&list(&[("$filter", filter)])).await;
+        assert_eq!(status, StatusCode::OK, "{filter}: {stay}");
+        assert_eq!(codes(&stay), ["STAY"], "{filter}: {stay}");
+    }
 
-    let (status, counted) = d
-        .get(&counts(&[("$filter", "lifecycle eq 'deprecated'")]))
-        .await;
-    assert_eq!(status, StatusCode::OK, "{counted}");
-    assert_eq!(counted["all"], 2, "{counted}");
-    assert_eq!(counted["published"], 1, "{counted}");
-    assert_eq!(counted["deprecated"], 1, "{counted}");
+    for filter in ["lifecycle eq 'deprecated'", "startswith(lifecycle,'dep')"] {
+        let (status, counted) = d.get(&counts(&[("$filter", filter)])).await;
+        assert_eq!(status, StatusCode::OK, "{filter}: {counted}");
+        assert_eq!(counted["all"], 2, "{filter}: {counted}");
+        assert_eq!(counted["published"], 1, "{filter}: {counted}");
+        assert_eq!(counted["deprecated"], 1, "{filter}: {counted}");
+    }
 
     for filter in [
         "lifecycle eq 'deprecated' or code eq 'none'",
         "not (lifecycle eq 'published')",
-        "contains(lifecycle,'deprecated')",
-        "startswith(lifecycle,'dep')",
-        "endswith(lifecycle,'cated')",
+        "contains(lifecycle,'deprecated') or code eq 'none'",
+        "not startswith(lifecycle,'dep')",
     ] {
         for uri in [list(&[("$filter", filter)]), counts(&[("$filter", filter)])] {
             let body = d.refused(&uri).await;
@@ -1396,8 +1444,7 @@ async fn a_due_lifecycle_is_filtered_through_the_case_or_refused() {
             let text = body.to_string();
             assert!(
                 text.contains("under `or` or `not`")
-                    && text.contains("`eq`, `ne` or `in`")
-                    && text.contains("startswith"),
+                    && text.contains("`eq`, `ne`, `in`, `contains`, `startswith` or `endswith`"),
                 "{filter}: {text}"
             );
         }
@@ -1451,6 +1498,163 @@ async fn a_lifecycle_term_narrows_on_either_side_of_and() {
         let (status, body) = d.get(&list(&[("$filter", filter)])).await;
         assert_eq!(status, StatusCode::OK, "{filter}: {body}");
         assert_eq!(codes(&body), expected, "{filter}: {body}");
+    }
+}
+
+/// P-D-264: a text function on `lifecycle` narrows on either side of `and`, beside another
+/// `lifecycle` term or text function too. Each case is checked in both orders, and the seeds make
+/// every conjunct matter: the filter without any one of them keeps a row more, so a dropped
+/// conjunct cannot pass for a kept one.
+#[tokio::test]
+async fn every_lifecycle_text_conjunct_narrows_in_either_order() {
+    let d = Door::new().await;
+    for (code, lifecycle, ty) in [
+        ("DEP", Lifecycle::Deprecated, SkuType::Recurring),
+        ("DRA", Lifecycle::Draft, SkuType::Recurring),
+        ("ODE", Lifecycle::Deprecated, SkuType::OneTime),
+        ("ODR", Lifecycle::Draft, SkuType::OneTime),
+        ("OTH", Lifecycle::Published, SkuType::OneTime),
+        ("PUB", Lifecycle::Published, SkuType::Recurring),
+        ("RET", Lifecycle::Retired, SkuType::Recurring),
+    ] {
+        d.sku(Seed {
+            ty,
+            lifecycle,
+            ..seed(code)
+        })
+        .await;
+    }
+    let page = |terms: Vec<&str>| {
+        let filter = terms.join(" and ");
+        let uri = list(&[("$filter", filter.as_str())]);
+        let d = &d;
+        async move {
+            let (status, body) = d.get(&uri).await;
+            assert_eq!(status, StatusCode::OK, "{filter}: {body}");
+            codes(&body)
+        }
+    };
+    for (terms, expected) in [
+        (
+            vec!["contains(lifecycle, 'pub')", "type eq 'recurring'"],
+            vec!["PUB"],
+        ),
+        (
+            vec!["startswith(lifecycle, 'd')", "endswith(lifecycle, 'ed')"],
+            vec!["DEP", "ODE"],
+        ),
+        (
+            vec!["type eq 'one_time'", "endswith(lifecycle, 'ed')"],
+            vec!["ODE", "OTH"],
+        ),
+        (
+            vec!["endswith(lifecycle, 'ed')", "lifecycle ne 'retired'"],
+            vec!["DEP", "ODE", "OTH", "PUB"],
+        ),
+        (
+            vec![
+                "startswith(lifecycle, 'd')",
+                "type eq 'one_time'",
+                "endswith(lifecycle, 'ed')",
+            ],
+            vec!["ODE"],
+        ),
+    ] {
+        let reversed: Vec<&str> = terms.iter().rev().copied().collect();
+        for order in [terms.clone(), reversed] {
+            assert_eq!(page(order.clone()).await, expected, "{order:?}");
+        }
+        for dropped in 0..terms.len() {
+            let mut rest = terms.clone();
+            let gone = rest.remove(dropped);
+            let wider = page(rest).await;
+            assert!(
+                wider.len() > expected.len(),
+                "without {gone} the seeds keep no row more: {wider:?}"
+            );
+        }
+    }
+}
+
+/// P-D-264: `contains`, `startswith` and `endswith` on `lifecycle` keep the SKUs whose lifecycle
+/// in force is one of the four tokens the text matches, case-sensitively: the same page as the
+/// `in` over those tokens. A text that matches no token keeps nothing: an empty page, not a 400.
+#[tokio::test]
+async fn a_text_function_on_lifecycle_keeps_the_lifecycles_it_matches() {
+    let d = Door::new().await;
+    for (code, lifecycle) in [
+        ("DEP", Lifecycle::Deprecated),
+        ("DRA", Lifecycle::Draft),
+        ("PUB", Lifecycle::Published),
+        ("RET", Lifecycle::Retired),
+    ] {
+        d.sku(Seed {
+            lifecycle,
+            ..seed(code)
+        })
+        .await;
+    }
+    for (filter, same_as, expected) in [
+        (
+            "contains(lifecycle,'pub')",
+            "lifecycle in ('published')",
+            vec!["PUB"],
+        ),
+        (
+            "startswith(lifecycle,'d')",
+            "lifecycle in ('draft','deprecated')",
+            vec!["DEP", "DRA"],
+        ),
+        (
+            "endswith(lifecycle,'ed')",
+            "lifecycle in ('published','deprecated','retired')",
+            vec!["DEP", "PUB", "RET"],
+        ),
+        (
+            "contains(lifecycle,'re')",
+            "lifecycle in ('deprecated','retired')",
+            vec!["DEP", "RET"],
+        ),
+        (
+            "startswith(lifecycle,'draft')",
+            "lifecycle in ('draft')",
+            vec!["DRA"],
+        ),
+        (
+            "contains(lifecycle,'')",
+            "lifecycle in ('draft','published','deprecated','retired')",
+            vec!["DEP", "DRA", "PUB", "RET"],
+        ),
+        // The function name, as the toolkit reads it, regardless of case.
+        (
+            "StartsWith(lifecycle,'d')",
+            "lifecycle in ('draft','deprecated')",
+            vec!["DEP", "DRA"],
+        ),
+    ] {
+        assert_eq!(
+            d.codes(&list(&[("$filter", filter)])).await,
+            expected,
+            "{filter}"
+        );
+        assert_eq!(
+            d.codes(&list(&[("$filter", same_as)])).await,
+            expected,
+            "{same_as}"
+        );
+    }
+    for filter in [
+        "contains(lifecycle,'PUB')",
+        "startswith(lifecycle,'Draft')",
+        "endswith(lifecycle,'x')",
+        "contains(lifecycle,'drafts')",
+    ] {
+        let (status, body) = d.get(&list(&[("$filter", filter)])).await;
+        assert_eq!(status, StatusCode::OK, "{filter}: {body}");
+        assert!(codes(&body).is_empty(), "{filter}: {body}");
+        let (status, counted) = d.get(&counts(&[("$filter", filter)])).await;
+        assert_eq!(status, StatusCode::OK, "{filter}: {counted}");
+        assert_eq!(counted["all"], 4, "{filter}: {counted}");
     }
 }
 

@@ -12,8 +12,8 @@ mod schema_dump;
 
 use bss_pricing::infra::reference_ticker::system_actor;
 use bss_pricing::infra::reference_work::{self, Caller, WallClock};
-use bss_pricing::infra::storage::entity::{price_book, reference_op};
-use bss_pricing::infra::storage::repo::{book_repo, idempotency_repo as idem, reference_op_repo};
+use bss_pricing::infra::storage::entity::reference_op;
+use bss_pricing::infra::storage::repo::{idempotency_repo as idem, reference_op_repo};
 use bss_pricing::module::BssPricingGear;
 use entry_support::{Script, app_for, request, state_on, user_of};
 use pg_support::Pg;
@@ -74,6 +74,8 @@ async fn migrate(pg: &Pg, without: Option<&str>) -> Result<MigrationResult, Migr
             Some(m.name()) != without
                 && m.name() != "m20260930_000018_usage_rating_policy"
                 && !m.name().contains("000021")
+                && !m.name().contains("000022")
+                && !m.name().contains("000023")
         })
         .collect();
     run_migrations_for_testing(&pg.db().await, chain).await
@@ -179,25 +181,18 @@ async fn seed_through_repositories(pg: &Pg) {
         .with_hms(9, 0, 0)
         .unwrap()
         .assume_utc();
-    book_repo::insert(
-        &conn,
-        &scope,
-        price_book::Model {
-            id: BOOK,
-            tenant_id: TENANT,
-            code: "standard".into(),
-            name: "Standard".into(),
-            currency: "EUR".into(),
-            valid_from: None,
-            valid_until: None,
-            description: None,
-            version: 1,
-            created_at: at,
-            updated_at: at,
-        },
+    // The book's table gained the archive mark later (000023, D-522), so the book is written in
+    // the shape this chain holds: as the repository writes it, without those columns.
+    exec(
+        pg,
+        &[format!(
+            "INSERT INTO bss.pricing_price_book (id, tenant_id, code, name, currency, valid_from, \
+             valid_until, description, version, created_at, updated_at) VALUES ('{BOOK}', \
+             '{TENANT}', 'standard', 'Standard', 'EUR', NULL, NULL, NULL, 1, \
+             '2026-09-01T09:00:00Z', '2026-09-01T09:00:00Z')"
+        )],
     )
-    .await
-    .unwrap();
+    .await;
     let op = |op_id, kind: &str, entry, reservation, key: Option<&str>, state: &str| {
         reference_op::Model {
             op_id,

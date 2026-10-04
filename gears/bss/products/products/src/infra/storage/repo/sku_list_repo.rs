@@ -10,6 +10,7 @@
 use super::{driver_failure, sku_repo::sku_of};
 use crate::infra::storage::{RepoError, entity::sku};
 use bss_products_sdk::models::{Lifecycle, Sku, SkuType};
+use bss_rest::archived::Archived;
 use sea_orm::sea_query::{BinOper, Expr, ExprTrait, Func};
 use sea_orm::{
     ColumnTrait, Condition, DbBackend, DbErr, EntityTrait, FromQueryResult, QuerySelect,
@@ -40,6 +41,9 @@ pub enum SkuListField {
     CategoryId,
     PendingUnitId,
     RetirePending,
+    /// The archive mark (P-D-263): taken out of the `$filter` before the pager
+    /// ([`bss_rest::archived::take_archived`]), never compared as a column.
+    Archived,
     UpdatedAt,
 }
 impl FilterField for SkuListField {
@@ -52,6 +56,7 @@ impl FilterField for SkuListField {
         Self::CategoryId,
         Self::PendingUnitId,
         Self::RetirePending,
+        Self::Archived,
         Self::UpdatedAt,
     ];
     fn name(&self) -> &'static str {
@@ -64,13 +69,14 @@ impl FilterField for SkuListField {
             Self::CategoryId => "category_id",
             Self::PendingUnitId => "pending_unit_id",
             Self::RetirePending => "retire_pending",
+            Self::Archived => bss_rest::archived::ARCHIVED,
             Self::UpdatedAt => "updated_at",
         }
     }
     fn kind(&self) -> FieldKind {
         match self {
             Self::Id | Self::CategoryId | Self::PendingUnitId => FieldKind::Uuid,
-            Self::RetirePending => FieldKind::Bool,
+            Self::RetirePending | Self::Archived => FieldKind::Bool,
             Self::Code | Self::Name | Self::Lifecycle | Self::Type => FieldKind::String,
             Self::UpdatedAt => FieldKind::DateTimeUtc,
         }
@@ -107,15 +113,17 @@ impl FieldToColumn<SkuListField> for SkuListMapping {
             SkuListField::CategoryId => sku::Column::CategoryId,
             SkuListField::PendingUnitId => sku::Column::PendingUnitId,
             SkuListField::RetirePending => sku::Column::RetirePending,
+            SkuListField::Archived => sku::Column::ArchivedAt,
             SkuListField::UpdatedAt => sku::Column::UpdatedAt,
         }
     }
     /// `updated_at` orders only: on `SQLite` a `$filter` would bind chrono's `+00:00` against
     /// the stored RFC 3339 `Z`, and a text comparison lies at the boundary. `lifecycle` and
     /// `type` compare (`eq`, `ne`, `in`) with one of their closed values only. A text function
-    /// on `type` still reaches here; one on `lifecycle` is refused before the pager, because
-    /// the `CASE` does not serve it (P-D-249). `null` reaches here only on a nullable field:
-    /// the toolkit's parser refuses it on the others ([`FilterField::nullable`]).
+    /// on `type` still reaches here; one on `lifecycle` is served before the pager, as the
+    /// `CASE`'s `in` over the tokens it matches (P-D-249, P-D-264). `null` reaches here only on
+    /// a nullable field: the toolkit's parser refuses it on the others
+    /// ([`FilterField::nullable`]).
     fn map_value(
         field: SkuListField,
         op: FilterOp,
@@ -123,6 +131,11 @@ impl FieldToColumn<SkuListField> for SkuListMapping {
     ) -> Result<ODataValue, String> {
         if field == SkuListField::UpdatedAt {
             return Err("`updated_at` orders the list and is not a filter field".to_owned());
+        }
+        if field == SkuListField::Archived {
+            // P-D-263: the list takes its `archived` terms out first; a term left here was not
+            // one it can serve.
+            return Err(bss_rest::archived::ARCHIVED_FILTER_REFUSED.to_owned());
         }
         let closed: Option<fn(&str) -> bool> = match field {
             SkuListField::Lifecycle => Some(|v| Lifecycle::parse(v).is_some()),
@@ -155,6 +168,7 @@ impl ODataFieldMapping<SkuListField> for SkuListMapping {
             SkuListField::CategoryId => sea_orm::Value::Uuid(model.category_id),
             SkuListField::PendingUnitId => sea_orm::Value::Uuid(model.pending_unit_id),
             SkuListField::RetirePending => sea_orm::Value::Bool(Some(model.retire_pending)),
+            SkuListField::Archived => sea_orm::Value::Bool(Some(model.archived_at.is_some())),
             SkuListField::UpdatedAt => {
                 sea_orm::Value::TimeDateTimeWithTimeZone(Some(model.updated_at))
             }
@@ -294,6 +308,28 @@ pub fn list_condition(tenant: Uuid, filter: &SkuListFilter, backend: DbBackend) 
     c
 }
 
+/// The archive-mark condition a list applies (P-D-263): the rows without a mark by default, only
+/// the marked ones for `archived eq true`, and none for two terms that disagree.
+pub(crate) fn archive_mark<C: ColumnTrait>(column: C, kept: Archived) -> Condition {
+    match kept {
+        Archived::Hidden => Condition::all().add(column.is_null()),
+        Archived::Only => Condition::all().add(column.is_not_null()),
+        Archived::Neither => Condition::all()
+            .add(column.is_null())
+            .add(column.is_not_null()),
+    }
+}
+
+/// The `$filter` without its top-level `archived` terms, and the rows they keep (P-D-263). A term
+/// the list cannot serve is `InvalidFilter`, a 400.
+/// # Errors
+/// [`bss_rest::archived::ARCHIVED_FILTER_REFUSED`] as `toolkit_odata::Error::InvalidFilter`.
+pub fn take_archived(
+    filter: Option<toolkit_odata::ast::Expr>,
+) -> Result<(Option<toolkit_odata::ast::Expr>, Archived), toolkit_odata::Error> {
+    bss_rest::archived::take_archived_opt(filter).map_err(toolkit_odata::Error::InvalidFilter)
+}
+
 /// A list read refused or failed.
 #[derive(Debug)]
 pub enum SkuListError {
@@ -304,10 +340,17 @@ pub enum SkuListError {
 }
 
 /// A lifecycle term the `CASE` does not serve. The list and the counts both answer 400 with this
-/// text (P-D-249).
-pub(crate) const LIFECYCLE_FILTER_REFUSED: &str = "a `lifecycle` comparison must be `eq`, `ne` or `in`, joined only by top-level \
-     `and`; a `lifecycle` term under `or` or `not`, or `contains`, `startswith` or `endswith` on \
-     `lifecycle`, is refused";
+/// text (P-D-249, P-D-264).
+pub(crate) const LIFECYCLE_FILTER_REFUSED: &str = "a `lifecycle` term must be `eq`, `ne`, `in`, `contains`, `startswith` or \
+     `endswith`, joined only by top-level `and`; a `lifecycle` term under `or` or `not` is refused";
+
+/// The closed set a text function on `lifecycle` is matched against (P-D-264).
+const LIFECYCLES: [Lifecycle; 4] = [
+    Lifecycle::Draft,
+    Lifecycle::Published,
+    Lifecycle::Deprecated,
+    Lifecycle::Retired,
+];
 
 fn is_lifecycle(expr: &toolkit_odata::ast::Expr) -> bool {
     matches!(expr, toolkit_odata::ast::Expr::Identifier(name) if name == SkuListField::Lifecycle.name())
@@ -338,9 +381,49 @@ fn lifecycle_token(expr: &toolkit_odata::ast::Expr) -> Result<String, String> {
         _ => Err("unknown lifecycle".into()),
     }
 }
-/// Pull top-level `lifecycle` comparisons out of `expr` so they compare the effective lifecycle.
-/// A lifecycle term that is not pulled out — under `or` or `not`, or a text function — is
-/// [`LIFECYCLE_FILTER_REFUSED`]. The stored column is never the comparison.
+/// The lifecycle tokens that `contains`, `startswith` or `endswith` on `lifecycle` matches
+/// (P-D-264). The text is matched case-sensitively, as the tokens are lower-case; the function
+/// name regardless of case, as the toolkit's filter conversion reads it. `None` for any other
+/// function, or other arguments than `lifecycle` and a text.
+fn lifecycle_text_tokens(
+    name: &str,
+    args: &[toolkit_odata::ast::Expr],
+) -> Option<Vec<&'static str>> {
+    use toolkit_odata::ast::{Expr, Value};
+    let [field, Expr::Value(Value::String(text))] = args else {
+        return None;
+    };
+    if !is_lifecycle(field) {
+        return None;
+    }
+    let matches: fn(&str, &str) -> bool = match name.to_ascii_lowercase().as_str() {
+        "contains" => |token: &str, text: &str| token.contains(text),
+        "startswith" => |token: &str, text: &str| token.starts_with(text),
+        "endswith" => |token: &str, text: &str| token.ends_with(text),
+        _ => return None,
+    };
+    Some(
+        LIFECYCLES
+            .iter()
+            .map(|lifecycle| lifecycle.as_str())
+            .filter(|token| matches(token, text))
+            .collect(),
+    )
+}
+/// A term that is not pulled out: kept for the pager, or [`LIFECYCLE_FILTER_REFUSED`] when it
+/// names `lifecycle`.
+fn kept_unless_lifecycle(
+    expr: toolkit_odata::ast::Expr,
+) -> Result<(Option<toolkit_odata::ast::Expr>, Condition), String> {
+    if names_lifecycle(&expr) {
+        return Err(LIFECYCLE_FILTER_REFUSED.to_owned());
+    }
+    Ok((Some(expr), Condition::all()))
+}
+/// Pull top-level `lifecycle` terms out of `expr` so they compare the effective lifecycle: `eq`,
+/// `ne`, `in`, and a text function as the `in` of the tokens it matches (P-D-264). A lifecycle
+/// term that is not pulled out — under `or` or `not` — is [`LIFECYCLE_FILTER_REFUSED`]. The
+/// stored column is never the comparison.
 pub(crate) fn take_lifecycle(
     expr: toolkit_odata::ast::Expr,
 ) -> Result<(Option<toolkit_odata::ast::Expr>, Condition), String> {
@@ -383,12 +466,19 @@ pub(crate) fn take_lifecycle(
                 ),
             ))
         }
-        other => {
-            if names_lifecycle(&other) {
-                return Err(LIFECYCLE_FILTER_REFUSED.to_owned());
-            }
-            Ok((Some(other), Condition::all()))
-        }
+        Expr::Function(name, args) => match lifecycle_text_tokens(&name, &args) {
+            // No token matched: an empty `any`, which sea-query renders as `FALSE`. The read
+            // keeps nothing; it is not refused.
+            Some(tokens) => Ok((
+                None,
+                super::sku_repo::effective_lifecycle_in(
+                    crate::infra::storage::stored_now().date(),
+                    &tokens,
+                ),
+            )),
+            None => kept_unless_lifecycle(Expr::Function(name, args)),
+        },
+        other => kept_unless_lifecycle(other),
     }
 }
 /// One page of the tenant's SKUs: `filter`'s narrowing, then the query's `$filter`, cursor and
@@ -406,10 +496,15 @@ pub async fn page_skus(
     query: &ODataQuery,
 ) -> Result<Page<Sku>, SkuListError> {
     let mut query = query.clone();
+    // P-D-263: the archive mark is a nullable column the pager cannot compare as a boolean. The
+    // top-level `archived` terms go first, and an archived SKU is hidden unless they ask for it.
+    let (rest, archived) =
+        take_archived(query.filter.take().map(|f| *f)).map_err(SkuListError::Query)?;
+    query.filter = rest.map(Box::new);
     // The toolkit maps a field to a column, so it cannot express the effective-lifecycle CASE.
-    // Top-level `lifecycle` comparisons (`eq`, `ne`, `in`, and those joined by `and`) are applied
-    // as that CASE before the pager sees the rest (P-D-249). Any other lifecycle term is refused,
-    // so the pager never compares the stored column.
+    // Top-level `lifecycle` terms (`eq`, `ne`, `in`, a text function, and those joined by `and`)
+    // are applied as that CASE before the pager sees the rest (P-D-249, P-D-264). Any other
+    // lifecycle term is refused, so the pager never compares the stored column.
     let lifecycle_filter = match query.filter.take() {
         Some(filter) => {
             let (rest, cond) = take_lifecycle(*filter).map_err(|message| {
@@ -430,6 +525,7 @@ pub async fn page_skus(
         .secure()
         .scope_with(scope)
         .filter(list_condition(tenant, filter, backend))
+        .filter(archive_mark(sku::Column::ArchivedAt, archived))
         .filter(lifecycle_filter);
     let mut page =
         paginate_odata_try::<SkuListField, SkuListMapping, sku::Entity, Sku, _, RepoError, _>(
@@ -459,7 +555,8 @@ pub async fn page_skus(
     Ok(page)
 }
 
-/// The tab counts of the list: every SKU, those in each lifecycle, and those in review.
+/// The tab counts of the list: every SKU that is not archived, those in each lifecycle, those in
+/// review, and the archived ones (P-D-263).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SkuCounts {
     pub all: u64,
@@ -469,11 +566,14 @@ pub struct SkuCounts {
     pub retired: u64,
     /// SKUs a pending approval unit locks (`pending_unit_id` set), in any lifecycle.
     pub in_review: u64,
+    /// The archived SKUs (P-D-263); no other number counts them.
+    pub archived: u64,
 }
 #[derive(Debug, FromQueryResult)]
 struct LifecycleCount {
     lifecycle: String,
     n: i64,
+    archived: i64,
     in_review: i64,
 }
 fn count(v: i64) -> Result<u64, RepoError> {
@@ -481,7 +581,8 @@ fn count(v: i64) -> Result<u64, RepoError> {
 }
 
 /// The counts of the tenant's SKUs narrowed by `filter` and by `condition` (the door's
-/// `$filter` without its `lifecycle` terms), in ONE grouped statement.
+/// `$filter` without its `lifecycle` and `archived` terms), in ONE grouped statement. An archived
+/// SKU counts in `archived` only (P-D-263).
 /// # Errors
 /// Storage failures; a stored lifecycle outside the five is a corrupt row.
 pub async fn count_skus(
@@ -507,8 +608,16 @@ pub async fn count_skus(
             q.select_only()
                 .expr_as(effective, "lifecycle")
                 .column_as(Expr::col((sku::Entity, sku::Column::Id)).count(), "n")
+                // P-D-263: the archived SKUs of the group, and its SKUs in review that are not.
                 .column_as(
-                    Expr::col((sku::Entity, sku::Column::PendingUnitId)).count(),
+                    Expr::col((sku::Entity, sku::Column::ArchivedAt)).count(),
+                    "archived",
+                )
+                .column_as(
+                    Expr::expr(Func::count(Expr::case(
+                        Expr::col((sku::Entity, sku::Column::ArchivedAt)).is_null(),
+                        Expr::col((sku::Entity, sku::Column::PendingUnitId)),
+                    ))),
                     "in_review",
                 )
                 // By position: the effective lifecycle binds its day as a parameter, and Postgres
@@ -521,7 +630,11 @@ pub async fn count_skus(
         .map_err(|e| driver_failure("count SKUs".into(), e))?;
     let mut counts = SkuCounts::default();
     for row in rows {
-        let n = count(row.n)?;
+        let archived = count(row.archived)?;
+        let n = count(row.n)?.checked_sub(archived).ok_or_else(|| {
+            RepoError::CorruptRow(format!("{archived} archived of {} SKUs", row.n))
+        })?;
+        counts.archived += archived;
         let slot = match Lifecycle::parse(&row.lifecycle) {
             Some(Lifecycle::Draft) => &mut counts.draft,
             Some(Lifecycle::Published) => &mut counts.published,

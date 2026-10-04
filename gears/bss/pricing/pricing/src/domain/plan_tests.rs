@@ -107,6 +107,8 @@ fn sku(n: u128, name: &str, code: &str, kind: SkuType, usage_type: Option<&str>)
         created_by: id(0),
         created_at: at,
         updated_at: at,
+        archived_at: None,
+        archived_by: None,
     }
 }
 fn skus() -> Vec<Sku> {

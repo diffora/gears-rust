@@ -7,6 +7,7 @@ pub(crate) mod configuration;
 pub mod dto;
 mod entry_list;
 pub mod inbox_source;
+mod names;
 pub mod plan_items;
 mod plan_list;
 mod plan_routes;
@@ -52,6 +53,9 @@ use toolkit::api::{
 use toolkit_canonical_errors::CanonicalError;
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
+/// The actors that are not people (D-519): pricing's own system actor, and the nil id of the
+/// platform's system context. A read names them "System" and never asks Account Management.
+pub const SYSTEM_ACTORS: [Uuid; 2] = [bss_products_sdk::PRICING_SYSTEM_ACTOR, Uuid::nil()];
 /// Dependencies shared by every authoring request.
 pub struct AuthoringState {
     pub db: toolkit_db::DBProvider<toolkit_db::DbError>,
@@ -60,6 +64,9 @@ pub struct AuthoringState {
     pub outbox: crate::infra::events::EventSink,
     /// The clock the approval doors read their instant from: the wall clock, or a test's.
     clock: Arc<dyn crate::infra::reference_work::Clock>,
+    /// The names of the actors a read shows (D-519), through Account Management when the hub
+    /// holds it.
+    actor_names: bss_rest::actor_names::ActorNames,
     pipeline: tokio::sync::Mutex<Option<Pipeline>>,
 }
 /// The running outbox processor: the broker SDK's producer, or the holding one.
@@ -110,11 +117,13 @@ impl AuthoringState {
                 Pipeline::Interim(handle),
             )
         };
+        let actor_names = bss_rest::actor_names::ActorNames::from_hub(hub.clone(), &SYSTEM_ACTORS);
         Ok(Self {
             db,
             hub,
             outbox,
             clock: Arc::new(crate::infra::reference_work::WallClock),
+            actor_names,
             pipeline: tokio::sync::Mutex::new(Some(pipeline)),
         })
     }
@@ -123,6 +132,14 @@ impl AuthoringState {
     #[must_use]
     pub fn with_clock(self, clock: Arc<dyn crate::infra::reference_work::Clock>) -> Self {
         Self { clock, ..self }
+    }
+    /// The same state naming actors with `actor_names`; tests install a fake directory.
+    #[must_use]
+    pub fn with_actor_names(self, actor_names: bss_rest::actor_names::ActorNames) -> Self {
+        Self {
+            actor_names,
+            ..self
+        }
     }
     pub(crate) async fn stop(&self) {
         match self.pipeline.lock().await.take() {
@@ -240,6 +257,7 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .standard_errors(openapi)
         .error_503(openapi)
         .register(router, openapi);
+    let router = archive_routes(router, openapi);
     let router = entry_list::register(router, openapi);
     let router = OperationBuilder::get("/bss-pricing/v1/price-books/{id}/export")
         .operation_id("bss_pricing.export_book")
@@ -264,14 +282,24 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
             "Returns the tenant's billing defaults (timing, rounding, GL code, tax category), \
              invoice-line templates by SKU type and the currencies a new book may take (empty: \
              any), with who wrote them last and when, and its version as the ETag; the defaults \
-             apply, with no writer, until the settings are first written.",
+             apply, with no writer, until the settings are first written. An If-None-Match that \
+             matches that ETag by weak comparison is 304 with an empty body and the same ETag; \
+             both answers carry Cache-Control private, no-cache (D-518).",
         )
         .tag("Pricing")
         .authenticated()
         .no_license_required()
+        .param(support::if_none_match_version())
         .handler(get_settings)
         .json_response_with_schema::<PricingSettingsDto>(openapi, StatusCode::OK, "Response")
         .response_header(etag())
+        .response_header(support::revalidate_header())
+        .no_content_response(
+            StatusCode::NOT_MODIFIED,
+            "The If-None-Match tag matches the settings version",
+        )
+        .response_header(etag())
+        .response_header(support::revalidate_header())
         .standard_errors(openapi)
         .error_503(openapi)
         .register(router, openapi);
@@ -400,12 +428,20 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .standard_errors(openapi)
         .error_503(openapi)
         .register(router, openapi);
+    // D-517: `$filter` is declared by hand. This read accepts `id eq` and `id in` only, and
+    // `with_odata_filter` publishes the toolkit's operator table for a uuid field, `eq|ne|in`, so
+    // the contract would offer `ne`, which the read refuses. The exemption from DE0802 sits on this
+    // one route's statement, so the other routes registered here keep the rule (products' browse
+    // door declares its free `$filter` the same way).
+    #[allow(unknown_lints, de0802_use_odata_ext)]
     let router = OperationBuilder::get("/bss-pricing/v1/price-book-entries")
         .operation_id("bss_pricing.list_sku_entries")
         .summary("Where a SKU is priced")
         .description(
             "Lists one page of the tenant's price book entries of one SKU across its books \
-             (D-434, D-486), each with its book's code, name and currency, its usage (D-428), \
+             (D-434, D-486), or the entries named by `$filter=id in (...)`, at most 200 ids, \
+             instead of sku_id (D-517). Each item carries its book's code, name and currency, \
+             its usage (D-428), \
              its status and changing on today, its current_price, the default chain's approved \
              price in force today, and its next_price, the default chain's earliest price \
              scheduled after today, else its newest draft or pending price (the highest \
@@ -419,8 +455,11 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
              is book_name (the default) or status, asc or desc; the id breaks a tie in that \
              direction. limit (default 500, clamped at 500) and cursor from page_info page it; a \
              cursor carries the order and a hash of the plain keys, so a continuation sends no \
-             $orderby. Refusals: 400 QUERY_INVALID without exactly one well-formed sku_id, for a \
-             repeated key, for any other key, for $filter, $select or $count, for a malformed \
+             $orderby. `$filter` is `id in (...)` of at most 200 ids, or `id eq` one id, and \
+             replaces sku_id; another \
+             field, `or`, `ne`, more than 200 ids, or a filter longer than 8192 bytes is refused. Refusals: 400 QUERY_INVALID without \
+             exactly one well-formed sku_id and without that filter, for a repeated key, for any \
+             other key, for $select or $count, for sku_id beside $filter, for a malformed \
              book_id, currency, status, changing or limit, or for more than 50 book ids; 400 \
              INVALID_ORDERBY_FIELD for any other order; 400 ORDER_WITH_CURSOR for $orderby \
              beside a cursor; 400 FILTER_MISMATCH for a cursor replayed under another narrowing; \
@@ -429,7 +468,18 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .tag("Pricing")
         .authenticated()
         .no_license_required()
-        .query_param("sku_id", true, "The SKU whose entries are listed")
+        .query_param(
+            "sku_id",
+            false,
+            "The SKU whose entries are listed. Required unless $filter=id in (...) is sent",
+        )
+        .query_param(
+            "$filter",
+            false,
+            "`id eq <id>` or `id in (<id>, ...)`: 1 to 200 distinct price book entry ids, at most \
+             8192 bytes; replaces sku_id and takes no other key. Another field, `ne`, `or` or \
+             any other shape is 400 QUERY_INVALID",
+        )
         .query_param(
             "book_id",
             false,
@@ -606,6 +656,61 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
     reason = "one OperationBuilder chain per route keeps every door's contract in one place"
 )]
 fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
+    let router = OperationBuilder::post("/bss-pricing/v1/prices/{id}/cancel")
+        .operation_id("bss_pricing.cancel_price")
+        .summary("Cancel a scheduled price")
+        .description(
+            "Opens a draft cancel of an approved price that has not started (D-520): a price \
+             row with change_kind cancel and target_price_id, which carries the price's money \
+             unchanged and is never a price in force. Submit it as any draft price, with POST \
+             /prices/{id}/submit on the row or the book's publish-changes; the guards run here, \
+             at submit and again at apply. On approval the price becomes cancelled and the price \
+             before it re-opens onto the next start that remains. Refusals: 400 BODY_UNEXPECTED \
+             for a body other than {}; 409 PRICE_NOT_SCHEDULED (not approved, or started), \
+             PRICE_CHANGE_PENDING (another pending change names it), PRICE_BOUND (a consumer's \
+             binding names it: an acceptance whose bindings name the price; keep_for_bound alone \
+             never refuses) or ENTRY_REFERENCE_LOST; the vote that applies the unit answers 409 \
+             PRICE_ALREADY_STARTED when the price started after the submit. The Idempotency-Key \
+             replays the answer.",
+        )
+        .tag("Pricing")
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "Price id")
+        .param(header("Idempotency-Key"))
+        .handler(cancel_price)
+        .json_response_with_schema::<dto::PricingPriceDto>(openapi, StatusCode::CREATED, "Response")
+        .response_header(etag())
+        .standard_errors(openapi)
+        .error_503(openapi)
+        .register(router, openapi);
+    let router = OperationBuilder::post("/bss-pricing/v1/prices/{id}/end")
+        .operation_id("bss_pricing.end_price")
+        .summary("End a live price")
+        .description(
+            "Opens a draft end of an approved price, live or scheduled, that has not ended \
+             (D-521): a price row with change_kind end, target_price_id and the new end, which \
+             carries the price's money unchanged and is never a price in force. effective_to is \
+             after today, after the price's start, and no later than its current end (the next \
+             start, or its own explicit end). Submit it as any draft price; the guards run here, \
+             at submit and again at apply. On approval the price is closed explicitly at that \
+             end, and a successor that starts inside it still ends it at its start (D-390). \
+             Refusals: 400 END_DATE_INVALID; 409 PRICE_CHANGE_PENDING (another pending change \
+             names it), PRICE_ALREADY_ENDED (not approved, or ended) or ENTRY_REFERENCE_LOST. \
+             The Idempotency-Key replays the answer.",
+        )
+        .tag("Pricing")
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "Price id")
+        .json_request::<dto::PricingPriceEnd>(openapi, "Request")
+        .param(header("Idempotency-Key"))
+        .handler(end_price)
+        .json_response_with_schema::<dto::PricingPriceDto>(openapi, StatusCode::CREATED, "Response")
+        .response_header(etag())
+        .standard_errors(openapi)
+        .error_503(openapi)
+        .register(router, openapi);
     let router = OperationBuilder::post("/bss-pricing/v1/prices/{id}/submit")
         .operation_id("bss_pricing.submit_price")
         .summary("Submit a draft price")
@@ -616,9 +721,13 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
              (D-405). It takes no body and no note: a note for the approver travels with \
              publish-changes (D-464). Refusals: 400 BODY_UNEXPECTED for a body with any key; 400 \
              PAIR_SPLIT, or a rule the price breaks at submit (for example WINDOW_START_IN_PAST, \
-             PAIR_RETURN_STALE or CHAIN_MODEL_CHANGED); 409 PRICE_NOT_DRAFT, PRICE_LOCKED_PENDING \
-             or UNIT_CONTENDED; 503 REGISTRY_UNAVAILABLE when Products cannot answer a usage \
-             chain's dated metering read (D-402).",
+             PAIR_RETURN_STALE or CHAIN_MODEL_CHANGED, or END_DATE_INVALID for an end, D-521); \
+             409 PRICE_NOT_DRAFT, PRICE_LOCKED_PENDING or UNIT_CONTENDED, or a guard of a cancel \
+             or an end (PRICE_NOT_SCHEDULED, PRICE_CHANGE_PENDING, PRICE_BOUND, \
+             PRICE_ALREADY_ENDED, D-520, D-521), or a price of a released entry (BOOK_ARCHIVED \
+             while its book is archived, else ENTRY_REFERENCE_RELEASED, D-522); 503 \
+             REGISTRY_UNAVAILABLE when Products cannot answer a usage chain's dated metering \
+             read (D-402).",
         )
         .tag("Pricing")
         .authenticated()
@@ -726,9 +835,13 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
              common effective date, as one prices approval unit; at quorum 0 it applies at once. \
              An optional note for the approver is stored on the unit as submit_note (D-464). \
              Refusals: 400 NOTE_TOO_LONG for a note over 2000 characters, judged before anything \
-             is read; 400 NO_DRAFT_PRICES, PRICE_NOT_IN_BOOK or PAIR_SPLIT; 409 \
-             PRICE_LOCKED_PENDING or UNIT_CONTENDED; 503 REGISTRY_UNAVAILABLE when Products cannot \
-             answer a usage chain's dated metering read (D-402).",
+             is read; 400 NO_DRAFT_PRICES, PRICE_NOT_IN_BOOK or PAIR_SPLIT, or END_DATE_INVALID \
+             for an end (D-521); 409 PRICE_LOCKED_PENDING or UNIT_CONTENDED, or a guard of a \
+             cancel or an end (PRICE_NOT_SCHEDULED, PRICE_CHANGE_PENDING when another pending \
+             change or the same unit names its price, PRICE_BOUND, PRICE_ALREADY_ENDED, D-520, \
+             D-521), or a price of a released entry (BOOK_ARCHIVED while its book is archived, \
+             else ENTRY_REFERENCE_RELEASED, D-522); 503 REGISTRY_UNAVAILABLE when Products \
+             cannot answer a usage chain's dated metering read (D-402).",
         )
         .tag("Pricing")
         .authenticated()
@@ -855,9 +968,10 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
              scheduled for that date, D-449). The vote's note is at most 2000 characters. \
              Refusals: 400 GENERATION_MISMATCH, UNIT_STALE or NOTE_TOO_LONG; 403 SOD_VIOLATION \
              for the submitter or the author; 409 DUPLICATE_VOTE, UNIT_ALREADY_DECIDED or \
-             APPLY_REFUSED; 503 REGISTRY_UNAVAILABLE when Products cannot answer a read the \
-             applying vote's rules make: a plan revision's checks, or a usage chain's dated \
-             metering (D-402).",
+             APPLY_REFUSED, and PRICE_ALREADY_STARTED when a price the unit cancels started \
+             after its submit (D-520); 503 REGISTRY_UNAVAILABLE when Products cannot answer a \
+             read the applying vote's rules make: a plan revision's checks, or a usage chain's \
+             dated metering (D-402).",
         )
         .tag("Pricing")
         .authenticated()
@@ -1003,6 +1117,95 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .error_503(openapi)
         .register(router, openapi)
 }
+async fn cancel_price(
+    Extension(state): Extension<Arc<AuthoringState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    ctx: Option<Extension<SecurityContext>>,
+    Path(id): Path<Uuid>,
+    corr: Option<Extension<correlation::CorrelationId>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(ctx)?;
+    let scope = authz::access_scope(
+        &enforcer,
+        &ctx,
+        &resource_types::PRICE,
+        actions::AUTHOR,
+        Some(OwnerTenant(ctx.subject_tenant_id())),
+        None,
+    )
+    .await
+    .map_err(authz_failure)?;
+    let correlation = correlation::require_correlation(corr)?;
+    let key = preconditions::idempotency_key(&headers)?;
+    let digest = preconditions::request_digest(&support::empty_body(&body)?)?;
+    let request = prices::ChangeRequest {
+        change: crate::infra::prices::Change::Cancel {
+            id: Uuid::nil(),
+            target: id,
+        },
+        today: state.clock.now().date(),
+    };
+    prices::open_change(
+        &state.db.db(),
+        scope,
+        ctx,
+        correlation,
+        request,
+        key,
+        digest,
+    )
+    .await
+}
+async fn end_price(
+    Extension(state): Extension<Arc<AuthoringState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    ctx: Option<Extension<SecurityContext>>,
+    Path(id): Path<Uuid>,
+    corr: Option<Extension<correlation::CorrelationId>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(ctx)?;
+    let scope = authz::access_scope(
+        &enforcer,
+        &ctx,
+        &resource_types::PRICE,
+        actions::AUTHOR,
+        Some(OwnerTenant(ctx.subject_tenant_id())),
+        None,
+    )
+    .await
+    .map_err(authz_failure)?;
+    let correlation = correlation::require_correlation(corr)?;
+    let key = preconditions::idempotency_key(&headers)?;
+    let payload: serde_json::Value = preconditions::parse_body(&body)?;
+    let digest = preconditions::request_digest(&payload)?;
+    let input: dto::PricingPriceEnd = preconditions::parse_body(&body)?;
+    let end = support::date(Some(input.effective_to), "effective_to")
+        .ok()
+        .flatten()
+        .ok_or_else(|| support::invalid("effective_to", "END_DATE_INVALID"))?;
+    let request = prices::ChangeRequest {
+        change: crate::infra::prices::Change::End {
+            id: Uuid::nil(),
+            target: id,
+            end,
+        },
+        today: state.clock.now().date(),
+    };
+    prices::open_change(
+        &state.db.db(),
+        scope,
+        ctx,
+        correlation,
+        request,
+        key,
+        digest,
+    )
+    .await
+}
 async fn submit_price(
     Extension(state): Extension<Arc<AuthoringState>>,
     Extension(enforcer): Extension<PolicyEnforcer>,
@@ -1126,13 +1329,13 @@ async fn list_publish_changes(
     )
     .await
     .map_err(authz_failure)?;
-    transaction(&state.db.db(), move |tx| {
-        let (scope, ctx) = (scope.clone(), ctx.clone());
-        Box::pin(
-            async move { approvals::publish_list(tx, &scope, ctx.subject_tenant_id(), id).await },
-        )
+    let tenant = ctx.subject_tenant_id();
+    let body = transaction(&state.db.db(), move |tx| {
+        let scope = scope.clone();
+        Box::pin(async move { approvals::publish_list(tx, &scope, tenant, id).await })
     })
-    .await
+    .await?;
+    names::named(&state, &ctx, body, None).await
 }
 async fn publish_changes(
     Extension(state): Extension<Arc<AuthoringState>>,
@@ -1216,11 +1419,13 @@ async fn list_approval_units(
         approve_scope,
         submit_scope,
     };
-    transaction(&state.db.db(), move |tx| {
-        let (scope, ctx, request) = (scope.clone(), ctx.clone(), request.clone());
-        Box::pin(async move { approvals::list_units(tx, &scope, &ctx, &request).await })
+    let caller = ctx.clone();
+    let body = transaction(&state.db.db(), move |tx| {
+        let (scope, ctx, request) = (scope.clone(), caller.clone(), request.clone());
+        Box::pin(async move { approvals::read_unit_page(tx, &scope, &ctx, &request).await })
     })
-    .await
+    .await?;
+    names::named(&state, &ctx, body, None).await
 }
 /// The unit list's narrowing, which the counts take too (D-458, D-470): a known state (else 400
 /// `UNIT_STATE_INVALID`), a kind pricing records (else 400 `QUERY_INVALID` on `kind`), and the
@@ -1410,14 +1615,16 @@ async fn get_approval_unit(
     .await
     .map_err(authz_failure)?;
     let (approve_scope, submit_scope) = approval_flag_scopes(&enforcer, &ctx).await?;
-    transaction(&state.db.db(), move |tx| {
-        let (scope, ctx) = (scope.clone(), ctx.clone());
+    let caller = ctx.clone();
+    let body = transaction(&state.db.db(), move |tx| {
+        let (scope, ctx) = (scope.clone(), caller.clone());
         let (approve_scope, submit_scope) = (approve_scope.clone(), submit_scope.clone());
         Box::pin(async move {
             approvals::get_unit(tx, &scope, &ctx, id, &approve_scope, &submit_scope).await
         })
     })
-    .await
+    .await?;
+    names::named(&state, &ctx, body, None).await
 }
 async fn approve_unit(
     Extension(state): Extension<Arc<AuthoringState>>,
@@ -1700,7 +1907,8 @@ fn price_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
              (for example WINDOW_END_INVALID, WINDOW_START_IN_PAST or \
              TEMPORARY_SPANS_A_CHANGE), or NOTE_TOO_LONG on a note over 2000 characters \
              (D-457); 403 NOT_DRAFT_AUTHOR; 409 PRICE_NOT_DRAFT (the price or \
-             its partner) or STALE_REVISION.",
+             its partner, or a cancel or end row, which is deleted instead, D-520) or \
+             STALE_REVISION.",
         )
         .tag("Pricing")
         .authenticated()
@@ -1876,8 +2084,9 @@ async fn get_book(
     .map_err(authz_failure)?;
     let backend = state.db.db().backend();
     let today = time::OffsetDateTime::now_utc().date();
-    transaction(&state.db.db(), move |tx| {
-        let (scope, ctx) = (scope.clone(), ctx.clone());
+    let tx_ctx = ctx.clone();
+    let read = transaction(&state.db.db(), move |tx| {
+        let (scope, ctx) = (scope.clone(), tx_ctx.clone());
         Box::pin(async move {
             let tenant = ctx.subject_tenant_id();
             let m = books::find(tx, &scope, tenant, id).await?;
@@ -1889,10 +2098,13 @@ async fn get_book(
                 .await?
                 .pop()
                 .ok_or_else(|| CanonicalError::internal("the read book is gone").create())?;
-            Ok(response(StatusCode::OK, &body, Some(version))?)
+            Ok((body, version))
         })
     })
-    .await
+    .await?;
+    // D-522: the archiving actor's name (D-519), after the transaction.
+    let (body, version) = read;
+    names::named(&state, &ctx, body, Some(version)).await
 }
 async fn patch_book(
     Extension(state): Extension<Arc<AuthoringState>>,
@@ -1956,6 +2168,232 @@ async fn delete_book(
     })
     .await
 }
+/// The archive mark of a finished book (D-522): `archive` and `unarchive`.
+fn archive_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
+    let router = OperationBuilder::post("/bss-pricing/v1/price-books/{id}/archive")
+        .operation_id("bss_pricing.archive_book")
+        .summary("Archive a finished price book")
+        .description(
+            "Marks a finished book archived at the version the caller read (If-Match), with an \
+             audit row (D-522): `archived_at` and `archived_by` are set and the version moves. In \
+             the same transaction each entry whose reference is confirmed or lost becomes \
+             `released`, with a `release` op (reason book_archived) that releases its SKU \
+             reference in Products; the door drives those ops after the commit, at most 8 at once \
+             and for at most 3 s in all, and the ticker finishes what it does not. A SKU that only this book named then stops being \
+             referenced, so it can be retired. The entries and prices stay and are read-only: an \
+             entry create or PATCH, a price create, cancel, end or submit, and a plan item naming \
+             an entry of the book are 409 BOOK_ARCHIVED. `GET /price-books` leaves an archived \
+             book out unless asked `archived eq true`; a read by id, the export and the consumer \
+             reads ignore the mark. Archiving an archived book answers it unchanged. Refusals, in \
+             order: 403 without the book write grant; 400 for a missing or malformed If-Match; 404 \
+             for a book the tenant does not hold; 409 STALE_REVISION; 409 BOOK_IN_PLAN (a plan \
+             with a draft, pending, scheduled or published revision on the book; superseded ones \
+             do not refuse it); 409 BOOK_HAS_PENDING (a prices unit of the book in review: a \
+             pending price, cancel or end); 409 \
+             ENTRY_CONFIRMATION_PENDING (an entry's reference is being confirmed).",
+        )
+        .tag("Pricing")
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "Price book id")
+        .param(header("If-Match"))
+        .handler(archive_book)
+        .json_response_with_schema::<PriceBookDto>(openapi, StatusCode::OK, "Response")
+        .response_header(etag())
+        .standard_errors(openapi)
+        .error_503(openapi)
+        .register(router, openapi);
+    OperationBuilder::post("/bss-pricing/v1/price-books/{id}/unarchive")
+        .operation_id("bss_pricing.unarchive_book")
+        .summary("Unarchive a price book")
+        .description(
+            "Clears a book's archive mark at the version the caller read (If-Match), with an audit \
+             row (D-522). Each `released` entry gets a `rereserve` op, unless a release or a \
+             re-reservation of it is still open, and the door drives them after the commit (at most \
+             8 at once, for at most 3 s in all; the ticker finishes the rest). An \
+             entry whose SKU refuses the new reservation (retired, say) stays `released` and \
+             read-only (409 ENTRY_REFERENCE_RELEASED), and the book is unarchived anyway: \
+             `released_entries` lists the entries still released when the answer is built, or is \
+             null when they could not be read after the unarchive committed. \
+             Unarchiving a book that is not archived answers it unchanged. Refusals: 403 without \
+             the book write grant; 400 for a missing or malformed If-Match; 404; 409 \
+             STALE_REVISION.",
+        )
+        .tag("Pricing")
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "Price book id")
+        .param(header("If-Match"))
+        .handler(unarchive_book)
+        .json_response_with_schema::<dto::PricingPriceBookUnarchiveDto>(
+            openapi,
+            StatusCode::OK,
+            "Response",
+        )
+        .response_header(etag())
+        .standard_errors(openapi)
+        .error_503(openapi)
+        .register(router, openapi)
+}
+/// How many reference ops an archive or an unarchive drives at once (D-522).
+const DRIVE_CONCURRENCY: usize = 8;
+/// How long an archive or an unarchive waits for all of its drives together (D-522).
+const DRIVE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(3);
+/// Drive the ops an archive or an unarchive wrote, as the door's caller, at most
+/// [`DRIVE_CONCURRENCY`] at once and under one [`DRIVE_DEADLINE`] for the whole door. Each op is
+/// durable: an op the door leaves unfinished, failed or cut off by the deadline, is the ticker's to
+/// finish (D-522). Each drive runs on a task of its own: a drive opens its own transactions, and
+/// toolkit-db refuses a connection to a task that is inside one.
+async fn drive_all(state: &Arc<AuthoringState>, ctx: &SecurityContext, ops: &[Uuid]) {
+    let deadline = tokio::time::Instant::now() + DRIVE_DEADLINE;
+    let mut queue = ops.iter().copied();
+    let mut running = tokio::task::JoinSet::new();
+    let mut finished = 0_usize;
+    loop {
+        let room = DRIVE_CONCURRENCY.saturating_sub(running.len());
+        for op in queue.by_ref().take(room) {
+            running.spawn(drive_one(state.clone(), ctx.clone(), op));
+        }
+        match tokio::time::timeout_at(deadline, running.join_next()).await {
+            Ok(Some(joined)) => {
+                finished += 1;
+                deferred(joined);
+            }
+            // Every op is driven, or the deadline passed.
+            Ok(None) | Err(_) => break,
+        }
+    }
+    let left = ops.len().saturating_sub(finished);
+    if left > 0 {
+        tracing::warn!(
+            left,
+            total = ops.len(),
+            deadline_ms = DRIVE_DEADLINE.as_millis(),
+            "pricing book archive reference work left to the ticker at the door's deadline"
+        );
+    }
+    // Dropping the set aborts the drives still running; their ops stay durable.
+}
+/// One op of [`drive_all`], driven to its end as the door's caller.
+async fn drive_one(
+    state: Arc<AuthoringState>,
+    ctx: SecurityContext,
+    op: Uuid,
+) -> (Uuid, Result<(), CanonicalError>) {
+    use crate::infra::reference_work::{self, Caller, WallClock};
+    let driven = reference_work::drive(&state, &ctx, op, Arc::new(WallClock), Caller::Door)
+        .await
+        .map(drop);
+    (op, driven)
+}
+/// Log a drive of [`drive_all`] that did not finish its op: the ticker finishes it.
+fn deferred(joined: Result<(Uuid, Result<(), CanonicalError>), tokio::task::JoinError>) {
+    match joined {
+        Ok((_, Ok(()))) => {}
+        Ok((op, Err(error))) => {
+            tracing::warn!(op_id=%op, error=%error, diagnostic=error.diagnostic().unwrap_or_default(), "pricing book archive reference work deferred to the ticker");
+        }
+        Err(error) => {
+            tracing::warn!(error=%error, "pricing book archive reference drive did not finish; the ticker finishes its op");
+        }
+    }
+}
+async fn archive_book(
+    Extension(state): Extension<Arc<AuthoringState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    ctx: Option<Extension<SecurityContext>>,
+    Path(id): Path<Uuid>,
+    corr: Option<Extension<correlation::CorrelationId>>,
+    headers: HeaderMap,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(ctx)?;
+    // The book-write grant on the book, as its PATCH and DELETE ask it.
+    let scope = authz::access_scope(
+        &enforcer,
+        &ctx,
+        &resource_types::PRICE_BOOK,
+        actions::AUTHOR,
+        Some(OwnerTenant(ctx.subject_tenant_id())),
+        Some(ResourceRef(id)),
+    )
+    .await
+    .map_err(authz_failure)?;
+    let correlation = correlation::require_correlation(corr)?;
+    let version = preconditions::if_match(&headers)?.get();
+    let backend = state.db.db().backend();
+    let tx_ctx = ctx.clone();
+    let marked = transaction(&state.db.db(), move |tx| {
+        let (scope, ctx) = (scope.clone(), tx_ctx.clone());
+        Box::pin(async move {
+            books::archive(tx, &scope, &ctx, correlation, backend, id, version).await
+        })
+    })
+    .await?;
+    drive_all(&state, &ctx, &marked.ops).await;
+    let version = preconditions::RowVersion::from_stored(marked.book.version)
+        .map_err(CanonicalError::from)?
+        .get();
+    response(
+        StatusCode::OK,
+        &PriceBookDto::from(marked.book),
+        Some(version),
+    )
+}
+async fn unarchive_book(
+    Extension(state): Extension<Arc<AuthoringState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    ctx: Option<Extension<SecurityContext>>,
+    Path(id): Path<Uuid>,
+    corr: Option<Extension<correlation::CorrelationId>>,
+    headers: HeaderMap,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(ctx)?;
+    // The book-write grant on the book, as its PATCH and DELETE ask it.
+    let scope = authz::access_scope(
+        &enforcer,
+        &ctx,
+        &resource_types::PRICE_BOOK,
+        actions::AUTHOR,
+        Some(OwnerTenant(ctx.subject_tenant_id())),
+        Some(ResourceRef(id)),
+    )
+    .await
+    .map_err(authz_failure)?;
+    let correlation = correlation::require_correlation(corr)?;
+    let version = preconditions::if_match(&headers)?.get();
+    let tx_ctx = ctx.clone();
+    let marked = transaction(&state.db.db(), move |tx| {
+        let (scope, ctx) = (scope.clone(), tx_ctx.clone());
+        Box::pin(async move { books::unarchive(tx, &scope, &ctx, correlation, id, version).await })
+    })
+    .await?;
+    drive_all(&state, &ctx, &marked.ops).await;
+    let tenant = ctx.subject_tenant_id();
+    // The unarchive has committed: a failed read of the entries still released does not make it an
+    // error. The answer says it does not know them (null) rather than invent a list.
+    let released_entries = match transaction(&state.db.db(), move |tx| {
+        Box::pin(async move { books::released_entries(tx, tenant, id).await })
+    })
+    .await
+    {
+        Ok(ids) => Some(ids),
+        Err(error) => {
+            tracing::warn!(book_id=%id, error=%error, diagnostic=error.diagnostic().unwrap_or_default(), "pricing book unarchived; its released entries could not be read for the answer");
+            None
+        }
+    };
+    let version = preconditions::RowVersion::from_stored(marked.book.version)
+        .map_err(CanonicalError::from)?
+        .get();
+    response(
+        StatusCode::OK,
+        &dto::PricingPriceBookUnarchiveDto {
+            book: marked.book.into(),
+            released_entries,
+        },
+        Some(version),
+    )
+}
 async fn export_book(
     Extension(state): Extension<Arc<AuthoringState>>,
     Extension(enforcer): Extension<PolicyEnforcer>,
@@ -1973,23 +2411,19 @@ async fn export_book(
     )
     .await
     .map_err(authz_failure)?;
-    transaction(&state.db.db(), move |tx| {
-        let (scope, ctx) = (scope.clone(), ctx.clone());
-        Box::pin(async move {
-            let tenant = ctx.subject_tenant_id();
-            Ok(response(
-                StatusCode::OK,
-                &books::export(tx, &scope, tenant, id).await?,
-                None,
-            )?)
-        })
+    let tenant = ctx.subject_tenant_id();
+    let body = transaction(&state.db.db(), move |tx| {
+        let scope = scope.clone();
+        Box::pin(async move { books::export(tx, &scope, tenant, id).await })
     })
-    .await
+    .await?;
+    names::named(&state, &ctx, body, None).await
 }
 async fn get_settings(
     Extension(state): Extension<Arc<AuthoringState>>,
     Extension(enforcer): Extension<PolicyEnforcer>,
     ctx: Option<Extension<SecurityContext>>,
+    headers: HeaderMap,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(ctx)?;
     let scope = authz::access_scope(
@@ -2002,18 +2436,22 @@ async fn get_settings(
     )
     .await
     .map_err(authz_failure)?;
-    transaction(&state.db.db(), move |tx| {
-        let (scope, ctx) = (scope.clone(), ctx.clone());
+    let tenant = ctx.subject_tenant_id();
+    let (body, version) = transaction(&state.db.db(), move |tx| {
+        let scope = scope.clone();
         Box::pin(async move {
-            let tenant = ctx.subject_tenant_id();
             let body = configuration::settings(tx, &scope, tenant).await?;
             let version = preconditions::RowVersion::from_stored(body.version)
                 .map_err(CanonicalError::from)?
                 .get();
-            Ok(response(StatusCode::OK, &body, Some(version))?)
+            Ok((body, version))
         })
     })
-    .await
+    .await?;
+    // D-519: the writer's name, after the transaction.
+    let answer = names::named(&state, &ctx, body, Some(version)).await?;
+    // D-518: the strong version tag stays; a matching If-None-Match is 304.
+    Ok(support::revalidate_version(&headers, answer))
 }
 async fn put_settings(
     Extension(state): Extension<Arc<AuthoringState>>,
@@ -2151,28 +2589,30 @@ async fn list_sku_entries(
     )
     .await
     .map_err(authz_failure)?;
-    // D-486: the query, including $filter, $select and $count, is judged before any read.
+    // D-486, D-517: the query, including $filter, $select and $count, is judged before any read.
     let query = price_book_entries::sku_entries_query(&uri)?;
     // D-434: the money is the export's — price_book read. Without it the entries still list, each
     // with a null current_price; only an unavailable policy fails the read. Status is not money.
     let books = money_scope(&enforcer, &ctx).await?;
     let today = time::OffsetDateTime::now_utc().date();
-    transaction(&state.db.db(), move |tx| {
-        let (scope, books, ctx, query) = (scope.clone(), books.clone(), ctx.clone(), query.clone());
+    let tenant = ctx.subject_tenant_id();
+    let body = transaction(&state.db.db(), move |tx| {
+        let (scope, books, query) = (scope.clone(), books.clone(), query.clone());
         Box::pin(async move {
-            let body = price_book_entries::for_sku(
-                tx,
-                &scope,
-                books.as_ref(),
-                ctx.subject_tenant_id(),
-                &query,
-                today,
-            )
-            .await?;
-            Ok(response(StatusCode::OK, &body, None)?)
+            match &query {
+                price_book_entries::EntriesRead::Sku(query) => {
+                    price_book_entries::for_sku(tx, &scope, books.as_ref(), tenant, query, today)
+                        .await
+                }
+                price_book_entries::EntriesRead::Ids(ids) => {
+                    price_book_entries::for_ids(tx, &scope, books.as_ref(), tenant, ids, today)
+                        .await
+                }
+            }
         })
     })
-    .await
+    .await?;
+    names::named(&state, &ctx, body, None).await
 }
 
 async fn create_entry(
@@ -2231,10 +2671,10 @@ async fn get_entry(
     // D-440: the money is shown as D-434 shows it — price_book read, judged a second time.
     let books = money_scope(&enforcer, &ctx).await?;
     let today = time::OffsetDateTime::now_utc().date();
-    transaction(&state.db.db(), move |tx| {
-        let (scope, books, ctx) = (scope.clone(), books.clone(), ctx.clone());
+    let tenant = ctx.subject_tenant_id();
+    let (body, version) = transaction(&state.db.db(), move |tx| {
+        let (scope, books) = (scope.clone(), books.clone());
         Box::pin(async move {
-            let tenant = ctx.subject_tenant_id();
             let m = price_book_entries::find(tx, &scope, tenant, id).await?;
             let version = preconditions::RowVersion::from_stored(m.version)
                 .map_err(CanonicalError::from)?
@@ -2245,10 +2685,11 @@ async fn get_entry(
                 .await?
                 .pop()
                 .ok_or_else(|| CanonicalError::internal("the read entry is gone").create())?;
-            Ok(response(StatusCode::OK, &body, Some(version))?)
+            Ok((body, version))
         })
     })
-    .await
+    .await?;
+    names::named(&state, &ctx, body, Some(version)).await
 }
 
 /// D-434: the money's grant, `price_book` read, judged a second time in the request: its scope
@@ -2321,24 +2762,24 @@ async fn list_entry_prices(
     let books = money_scope(&enforcer, &ctx).await?;
     let wanted = wanted_statuses(&uri)?;
     let today = time::OffsetDateTime::now_utc().date();
-    transaction(&state.db.db(), move |tx| {
-        let (scope, books, ctx, wanted) =
-            (scope.clone(), books.clone(), ctx.clone(), wanted.clone());
+    let tenant = ctx.subject_tenant_id();
+    let body = transaction(&state.db.db(), move |tx| {
+        let (scope, books, wanted) = (scope.clone(), books.clone(), wanted.clone());
         Box::pin(async move {
-            let body = price_book_entries::prices(
+            price_book_entries::prices(
                 tx,
                 &scope,
                 books.as_ref(),
-                ctx.subject_tenant_id(),
+                tenant,
                 id,
                 wanted.as_deref(),
                 today,
             )
-            .await?;
-            Ok(response(StatusCode::OK, &body, None)?)
+            .await
         })
     })
-    .await
+    .await?;
+    names::named(&state, &ctx, body, None).await
 }
 
 async fn patch_entry(

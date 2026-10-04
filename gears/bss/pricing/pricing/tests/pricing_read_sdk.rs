@@ -24,6 +24,59 @@ async fn approved_money_is_exact_and_authorized() {
     );
 }
 
+/// D-520, amended: the typed read says a cancelled price is cancelled. It stays readable by id with
+/// its money as approved, and it is never the price in force: resolve on a day inside its window
+/// still binds the approved price before it.
+#[tokio::test]
+async fn a_cancelled_price_reads_cancelled_by_id_and_is_never_in_force() {
+    use bss_pricing_sdk::read::{PriceQuery, PriceState};
+    let f = ReadFixture::new().await;
+    let approved = f
+        .provider
+        .price(&f.ctx, f.price_query.clone())
+        .await
+        .unwrap();
+    assert_eq!(approved.state, PriceState::Approved);
+    let cancelled = seam_support::put(
+        &f.fixture,
+        approved.price_book_entry_id,
+        seam_support::Row {
+            price: serde_json::json!({"rate":"0.09"}),
+            from: "2026-09-10",
+            state: "cancelled",
+            version_no: 2,
+            ..seam_support::Row::default()
+        },
+    )
+    .await;
+    let read = f
+        .provider
+        .price(
+            &f.ctx,
+            PriceQuery {
+                price_id: cancelled,
+                ..f.price_query.clone()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(read.state, PriceState::Cancelled);
+    assert_eq!(read.effective_from, seam_support::date("2026-09-10"));
+    match read.model {
+        PriceModel::PerUnit { unit_amount } => assert_eq!(unit_amount.to_string(), "0.09"),
+        other => panic!("unexpected price model: {other:?}"),
+    }
+    assert_eq!(f.resolve_query.date, seam_support::date("2026-09-15"));
+    let resolved = f
+        .provider
+        .resolve(&f.ctx, f.resolve_query.clone())
+        .await
+        .unwrap();
+    let binding = resolved.cells[0].binding.as_ref().unwrap();
+    assert_eq!(binding.price.price_id, approved.price_id);
+    assert_eq!(binding.price.state, PriceState::Approved);
+}
+
 #[tokio::test]
 async fn rest_and_sdk_resolve_the_same_stored_matrix() {
     let f = ReadFixture::new().await;

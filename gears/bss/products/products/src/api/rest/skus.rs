@@ -4,7 +4,8 @@
 //! @cpt-dod:cpt-cf-bss-products-dod-sku-create-unique:p1
 use super::closed_sets::{ProductsReferenceKind, ProductsReferenceState};
 use super::{
-    ApiState, TxError, authz_error_to_canonical, category_tx_config, contention_db_err,
+    ApiState, ArchiveMove, TxError, authz_error_to_canonical, category_tx_config,
+    contention_db_err,
     dto::{ReferencesDto, SkuCard, SkuDto, SkuPatchRequest, SkuRequest, SkuVersionDto},
     json_body,
     preconditions::{etag, if_match, if_match_param},
@@ -103,7 +104,7 @@ struct ReferenceList {
     items: Vec<ReferenceDto>,
 }
 
-/// Register the seven SKU operations and their concrete response schemas.
+/// Register the SKU operations and their concrete response schemas.
 pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Router {
     let router = OperationBuilder::post(SKUS)
         .operation_id("bss_products.create_sku")
@@ -293,9 +294,75 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .error_500(openapi)
         .error_503(openapi)
         .register(router, openapi);
+    let router = archive_routes(router, openapi);
     router.layer(Extension(state))
 }
 
+/// The archive mark of a retired SKU (P-D-263): `archive` and `unarchive`.
+fn archive_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
+    let router = OperationBuilder::post(format!("{SKUS}/{{id}}/archive"))
+        .operation_id("bss_products.archive_sku")
+        .summary("Archive a retired SKU")
+        .description(
+            "Marks a retired SKU archived at the revision the caller read (If-Match), with an \
+             audit row: `archived_at` and `archived_by` are set and the revision moves (P-D-263). \
+             The mark is not a lifecycle: the SKU stays retired. `GET /skus`, its counts and the \
+             pickers leave an archived SKU out unless asked `archived eq true`; a read by id, the \
+             browse, the consumer reads and the pinned facts ignore the mark. Archiving an \
+             archived SKU answers it unchanged. Refusals: 403 without SKU author; 400 for a \
+             missing or malformed If-Match; 404; 409 STALE_REVISION, or SKU_NOT_RETIRED for a SKU \
+             whose lifecycle in force is not retired.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "SKU id")
+        .param(if_match_param())
+        .handler(archive_sku)
+        .json_response_with_schema::<SkuDto>(
+            openapi,
+            StatusCode::OK,
+            "The archived SKU; ETag carries its revision.",
+        )
+        .response_header(super::preconditions::etag_header())
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_404(openapi)
+        .error_409(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(router, openapi);
+    OperationBuilder::post(format!("{SKUS}/{{id}}/unarchive"))
+        .operation_id("bss_products.unarchive_sku")
+        .summary("Unarchive a SKU")
+        .description(
+            "Clears a SKU's archive mark at the revision the caller read (If-Match), with an \
+             audit row; the SKU is listed again, still retired (P-D-263). Unarchiving a SKU that \
+             is not archived answers it unchanged. Refusals: 403 without SKU author; 400 for a \
+             missing or malformed If-Match; 404; 409 STALE_REVISION.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "SKU id")
+        .param(if_match_param())
+        .handler(unarchive_sku)
+        .json_response_with_schema::<SkuDto>(
+            openapi,
+            StatusCode::OK,
+            "The unarchived SKU; ETag carries its revision.",
+        )
+        .response_header(super::preconditions::etag_header())
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_404(openapi)
+        .error_409(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(router, openapi)
+}
 /// Authorize reads without an owner hint and writes against the subject tenant. The call site names
 /// the action it asks (`actions::READ` or `actions::AUTHOR`), not a `bool` (RS-54); a write
 /// anchors to the subject's tenant.
@@ -758,6 +825,131 @@ async fn delete_sku_draft(
         .map_err(tx_to_canonical)?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
+/// `POST /skus/{id}/archive` (P-D-263).
+async fn archive_sku(
+    Extension(state): Extension<Arc<ApiState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Response, CanonicalError> {
+    mark_archived(
+        &state,
+        &enforcer,
+        extension_ctx,
+        id,
+        &headers,
+        ArchiveMove::Archive,
+    )
+    .await
+}
+/// `POST /skus/{id}/unarchive` (P-D-263).
+async fn unarchive_sku(
+    Extension(state): Extension<Arc<ApiState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Response, CanonicalError> {
+    mark_archived(
+        &state,
+        &enforcer,
+        extension_ctx,
+        id,
+        &headers,
+        ArchiveMove::Unarchive,
+    )
+    .await
+}
+/// Set ([`ArchiveMove::Archive`]) or clear a SKU's archive mark (P-D-263) under SKU author, at the revision the
+/// caller read, with an audit row in the same transaction. Only a SKU whose lifecycle in force is
+/// retired takes the mark (409 `SKU_NOT_RETIRED`); a stale tag is judged first, as on every write
+/// of a head. A SKU already in the asked state is answered as it is, and nothing is written.
+/// @cpt-cf-bss-products-fr-sku-lifecycle
+async fn mark_archived(
+    state: &Arc<ApiState>,
+    enforcer: &PolicyEnforcer,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    id: Uuid,
+    headers: &HeaderMap,
+    mark: ArchiveMove,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    let tenant_id = ctx.subject_tenant_id();
+    let actor = ctx.subject_id();
+    // Authorization first, then the precondition (as the draft PATCH).
+    let scope_tx = scope(enforcer, &ctx, actions::AUTHOR).await?;
+    let expected = if_match(headers)?.get();
+    let now = crate::infra::storage::stored_now();
+    let marked = state
+        .db
+        .db()
+        .transaction_with_retry::<Sku, TxError, _, _>(
+            category_tx_config(state),
+            contention_db_err,
+            move |tx| {
+                let scope = scope_tx.clone();
+                Box::pin(async move {
+                    let current = find(tx, &scope, tenant_id, id).await?;
+                    if current.revision != expected {
+                        return Err(TxError::Refused(DomainError::StaleRevision {
+                            expected,
+                            found: current.revision,
+                        }));
+                    }
+                    if mark == ArchiveMove::Archive && current.lifecycle != Lifecycle::Retired {
+                        return Err(TxError::Refused(DomainError::Conflict {
+                            code: "SKU_NOT_RETIRED",
+                            detail: "only a retired SKU is archived; retire it first".into(),
+                        }));
+                    }
+                    if mark.already(current.archived_at.is_some()) {
+                        return Ok(current);
+                    }
+                    let s = match repo::set_sku_archived(
+                        tx,
+                        &scope,
+                        tenant_id,
+                        id,
+                        expected,
+                        mark.archived_by(actor),
+                        now,
+                    )
+                    .await
+                    .map_err(TxError::Repo)?
+                    {
+                        HeadWrite::Written(s) => s,
+                        HeadWrite::Unmatched => {
+                            let latest = find(tx, &scope, tenant_id, id).await?;
+                            return Err(TxError::Refused(DomainError::StaleRevision {
+                                expected,
+                                found: latest.revision,
+                            }));
+                        }
+                    };
+                    let action = match mark {
+                        ArchiveMove::Archive => "sku.archive",
+                        ArchiveMove::Unarchive => "sku.unarchive",
+                    };
+                    audit(
+                        tx,
+                        &scope,
+                        tenant_id,
+                        actor,
+                        action,
+                        &s,
+                        now,
+                        repo::LifecycleMove::NONE,
+                    )
+                    .await?;
+                    Ok(s)
+                })
+            },
+        )
+        .await
+        .map_err(tx_to_canonical)?;
+    Ok(response(StatusCode::OK, marked))
+}
 /// Read a SKU and live reference counts from this gear's registry.
 async fn get_sku(
     Extension(state): Extension<Arc<ApiState>>,
@@ -778,15 +970,15 @@ async fn get_sku(
         .map_err(|e| repo_error_to_canonical(&e))?;
     // P-D-197: pricing's usage, or null; the card never fails for it.
     let usage = super::usage::of(&state, &ctx, &[s.id]).await.remove(&s.id);
-    Ok((
-        [(header::ETAG, etag(InternalRevision::new(s.revision)))],
-        Json(SkuCard {
-            sku: s.into(),
-            references: refs.into(),
-            usage,
-        }),
-    )
-        .into_response())
+    let tag = etag(InternalRevision::new(s.revision));
+    let mut card = SkuCard {
+        sku: s.into(),
+        references: refs.into(),
+        usage,
+    };
+    // P-D-262: the creator's name, in one lookup.
+    state.actor_names.fill(&ctx, &mut card).await;
+    Ok(([(header::ETAG, tag)], Json(card)).into_response())
 }
 /// Convert malformed query values into canonical 400 violations.
 fn query<T>(q: Result<Query<T>, QueryRejection>) -> Result<T, CanonicalError> {
@@ -988,6 +1180,9 @@ async fn audit(
     .await
     .map_err(TxError::Repo)
 }
+#[cfg(test)]
+#[path = "archive_tests.rs"]
+mod archive_tests;
 #[cfg(test)]
 #[path = "skus_tests.rs"]
 mod skus_tests;

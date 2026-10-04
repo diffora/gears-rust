@@ -28,6 +28,15 @@ pub struct ProductsCategoryDto {
     pub sort_order: i32,
     pub status: ProductsCategoryStatus,
     pub version: i64,
+    /// When the retired category was archived (P-D-263); null while it is not. Its list hides it
+    /// unless asked `archived eq true`; a read by id ignores the mark.
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub archived_at: Option<OffsetDateTime>,
+    /// Who archived it; null while it is not archived.
+    pub archived_by: Option<Uuid>,
+    /// The current name of `archived_by` (P-D-262), as `created_by_name` names its actor; null
+    /// when no name is available now, and on a write answer.
+    pub archived_by_name: Option<String>,
 }
 impl TryFrom<Category> for ProductsCategoryDto {
     type Error = RepoError;
@@ -44,6 +53,9 @@ impl TryFrom<Category> for ProductsCategoryDto {
                 &format_args!("category {} status", value.id),
             )?,
             version: value.version,
+            archived_at: value.archived_at,
+            archived_by: value.archived_by,
+            archived_by_name: None,
         })
     }
 }
@@ -88,10 +100,23 @@ pub struct SkuDto {
     pub pending_unit_id: Option<Uuid>,
     pub approved_by_unit_id: Option<Uuid>,
     pub created_by: Uuid,
+    /// The current name of `created_by` (P-D-262): its display name, else first and last name, else
+    /// username, from Account Management under the caller's rights; "System" for a system actor.
+    /// Null when no name is available now, and on a write answer.
+    pub created_by_name: Option<String>,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339")]
     pub updated_at: OffsetDateTime,
+    /// When the retired SKU was archived (P-D-263); null while it is not. The SKU list hides it
+    /// unless asked `archived eq true`; a read by id ignores the mark. Not a lifecycle.
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub archived_at: Option<OffsetDateTime>,
+    /// Who archived it; null while it is not archived.
+    pub archived_by: Option<Uuid>,
+    /// The current name of `archived_by` (P-D-262), as `created_by_name` names its actor; null
+    /// when no name is available now, and on a write answer.
+    pub archived_by_name: Option<String>,
 }
 impl From<Sku> for SkuDto {
     fn from(value: Sku) -> Self {
@@ -122,8 +147,12 @@ impl From<Sku> for SkuDto {
             pending_unit_id: value.pending_unit_id,
             approved_by_unit_id: value.approved_by_unit_id,
             created_by: value.created_by,
+            created_by_name: None,
             created_at: value.created_at,
             updated_at: value.updated_at,
+            archived_at: value.archived_at,
+            archived_by: value.archived_by,
+            archived_by_name: None,
         }
     }
 }
@@ -294,7 +323,8 @@ pub struct SkuListItem {
     pub usage: Option<SkuUsageDto>,
 }
 /// The SKU list's tab counts (P-D-211): every SKU the narrowing keeps, those in each lifecycle,
-/// and those a pending approval unit locks (in any lifecycle).
+/// and those a pending approval unit locks (in any lifecycle), none of them archived; and the
+/// archived SKUs the narrowing keeps, which no other number counts (P-D-263).
 #[toolkit_macros::api_dto(response)]
 pub struct ProductsSkuCounts {
     pub all: u64,
@@ -303,6 +333,7 @@ pub struct ProductsSkuCounts {
     pub deprecated: u64,
     pub retired: u64,
     pub in_review: u64,
+    pub archived: u64,
 }
 impl From<crate::infra::storage::repo::SkuCounts> for ProductsSkuCounts {
     fn from(c: crate::infra::storage::repo::SkuCounts) -> Self {
@@ -313,6 +344,7 @@ impl From<crate::infra::storage::repo::SkuCounts> for ProductsSkuCounts {
             deprecated: c.deprecated,
             retired: c.retired,
             in_review: c.in_review,
+            archived: c.archived,
         }
     }
 }
@@ -327,6 +359,10 @@ pub struct ProductsSkuHistoryEntry {
     #[serde(with = "time::serde::rfc3339")]
     pub at: OffsetDateTime,
     pub actor: Uuid,
+    /// The current name of `actor` (P-D-262): its display name, else first and last name, else
+    /// username, from Account Management under the caller's rights; "System" for a system actor.
+    /// Null when no name is available now.
+    pub actor_name: Option<String>,
     /// The audit row's action: a string, since no CHECK holds the column to a set (P-D-217).
     pub action: String,
     pub from_lifecycle: Option<ProductsLifecycle>,
@@ -340,6 +376,7 @@ impl From<crate::infra::storage::repo::SkuHistoryEntry> for ProductsSkuHistoryEn
         Self {
             at: e.at,
             actor: e.actor,
+            actor_name: None,
             action: e.action,
             from_lifecycle: e.from_lifecycle.map(Into::into),
             to_lifecycle: e.to_lifecycle.map(Into::into),
@@ -510,6 +547,10 @@ pub struct UnitDto {
     #[serde(with = "crate::infra::serde_date::option")]
     pub common_effective_date: Option<Date>,
     pub submitted_by: Uuid,
+    /// The current name of `submitted_by` (P-D-262): its display name, else first and last name, else
+    /// username, from Account Management under the caller's rights; "System" for a system actor.
+    /// Null when no name is available now, and on a write answer.
+    pub submitted_by_name: Option<String>,
     #[serde(with = "time::serde::rfc3339")]
     pub submitted_at: OffsetDateTime,
     /// The submitter's note, as sent to the submit, change or retire door; null when none was
@@ -522,17 +563,14 @@ pub struct UnitDto {
     pub snapshot: serde_json::Value,
     pub decisions: Vec<DecisionDto>,
     pub impact_live: Option<serde_json::Value>,
-    /// Whether the caller may Approve this unit now (P-D-228): the approval engine's own rule
-    /// (`bss_approval::approve_eligibility`, pricing D-459) over the unit's stored items and its
-    /// decisions, with the caller as the voter. It is false for a decided unit, for its submitter
-    /// and every author of its items (the SKU's creator: separation of duties) and for a caller who
-    /// already voted in its current generation. It means Approve only: a reject judges no
-    /// separation of duties, so the submitter and the SKU's creator may reject a unit whose flag
-    /// is false. The grant is not judged here: without products approve the vote door still
-    /// answers 403.
-    /// Whether the caller may approve this unit now (P-D-228, P-D-255): the engine's approve
-    /// rule and the caller's `approval_unit:approve` grant on this unit. Approve only. Without
-    /// the grant the vote door is still 403.
+    /// Whether the caller may approve this unit now (P-D-228, P-D-255): the approval engine's own
+    /// rule (`bss_approval::approve_eligibility`, pricing D-459) over the unit's stored items and
+    /// its decisions, with the caller as the voter, and the caller's `approval_unit:approve` grant
+    /// on this unit. It is false for a decided unit, for its submitter and every author of its
+    /// items (the SKU's creator: separation of duties), for a caller who already voted in its
+    /// current generation, and for a caller without the grant. It means Approve only: a reject
+    /// judges no separation of duties, so the submitter and the SKU's creator may reject a unit
+    /// whose flag is false (`caller_can_reject`). Without the grant the vote door is still 403.
     pub caller_can_approve: bool,
     /// Whether the caller may reject this unit now (P-D-255): the approve grant, the unit
     /// pending, and no vote by the caller in this generation. That is what the engine allows.
@@ -573,6 +611,10 @@ pub struct ProductsApprovalUnitKindCounts {
 #[toolkit_macros::api_dto(response)]
 pub struct DecisionDto {
     pub actor: Uuid,
+    /// The current name of `actor` (P-D-262): its display name, else first and last name, else
+    /// username, from Account Management under the caller's rights; "System" for a system actor.
+    /// Null when no name is available now, and on a write answer.
+    pub actor_name: Option<String>,
     pub generation: i32,
     pub decision: ProductsDecisionKind,
     pub note: Option<String>,
@@ -680,6 +722,7 @@ impl UnitDto {
             quorum_required: u.quorum_required,
             common_effective_date: u.common_effective_date,
             submitted_by: u.submitted_by,
+            submitted_by_name: None,
             submitted_at: u.submitted_at,
             submit_note: u.submit_note,
             decided_at: u.decided_at,
@@ -697,6 +740,7 @@ impl From<bss_approval::Decision> for DecisionDto {
     fn from(d: bss_approval::Decision) -> Self {
         Self {
             actor: d.actor,
+            actor_name: None,
             generation: d.generation,
             decision: d.verdict.into(),
             note: d.note,
@@ -865,6 +909,10 @@ pub struct ProductsDerivedUsageTypeVersion {
     /// `derived-v1:<digest>`.
     pub accrual_policy_version: String,
     pub created_by: Uuid,
+    /// The current name of `created_by` (P-D-262): its display name, else first and last name, else
+    /// username, from Account Management under the caller's rights; "System" for a system actor.
+    /// Null when no name is available now, and on a write answer.
+    pub created_by_name: Option<String>,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }
@@ -876,6 +924,10 @@ pub struct ProductsDerivedVersionHeader {
     pub meter_ref: ProductsDerivedMeterRef,
     pub accrual_policy_version: String,
     pub created_by: Uuid,
+    /// The current name of `created_by` (P-D-262): its display name, else first and last name, else
+    /// username, from Account Management under the caller's rights; "System" for a system actor.
+    /// Null when no name is available now, and on a write answer.
+    pub created_by_name: Option<String>,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }
@@ -886,6 +938,10 @@ pub struct ProductsDerivedUsageType {
     pub code: String,
     pub name: String,
     pub created_by: Uuid,
+    /// The current name of `created_by` (P-D-262): its display name, else first and last name, else
+    /// username, from Account Management under the caller's rights; "System" for a system actor.
+    /// Null when no name is available now, and on a write answer.
+    pub created_by_name: Option<String>,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
     pub versions: Vec<ProductsDerivedVersionHeader>,
@@ -901,6 +957,10 @@ pub struct ProductsDerivedUsageTypeItem {
     /// The latest version, in the version-read shape (P-D-257).
     pub latest: ProductsDerivedUsageTypeVersion,
     pub created_by: Uuid,
+    /// The current name of `created_by` (P-D-262): its display name, else first and last name, else
+    /// username, from Account Management under the caller's rights; "System" for a system actor.
+    /// Null when no name is available now, and on a write answer.
+    pub created_by_name: Option<String>,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }

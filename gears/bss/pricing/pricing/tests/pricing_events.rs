@@ -185,6 +185,7 @@ fn three_event_contracts_have_stable_ids_subjects_and_camel_case_payloads() {
             effective_from: "2031-03-01".into(),
             effective_to: None,
             eligibility: "new".into(),
+            state: Some("cancelled".into()),
         }],
         actor_ref: actor,
     };
@@ -200,8 +201,23 @@ fn three_event_contracts_have_stable_ids_subjects_and_camel_case_payloads() {
     assert_eq!(
         serde_json::to_value(&published).unwrap(),
         json!({"tenantId":tenant,"bookId":book,"unitId":unit,"prices":[{"priceId":price,"priceBookEntryId":entry,
-            "dimValue":"eu","effectiveFrom":"2031-03-01","effectiveTo":null,"eligibility":"new"}],
-            "actorRef":actor})
+            "dimValue":"eu","effectiveFrom":"2031-03-01","effectiveTo":null,"eligibility":"new",
+            "state":"cancelled"}],"actorRef":actor})
+    );
+    // D-520 amended: `state` is additive. An envelope written before it still reads, with none.
+    let older: PricesPublished = serde_json::from_value(
+        json!({"tenantId":tenant,"bookId":book,"unitId":unit,"prices":[{"priceId":price,
+            "priceBookEntryId":entry,"dimValue":null,"effectiveFrom":"2031-03-01",
+            "effectiveTo":null,"eligibility":"all"}],"actorRef":actor}),
+    )
+    .unwrap();
+    assert_eq!(older.prices[0].state, None);
+    assert!(
+        !serde_json::to_value(&older).unwrap()["prices"][0]
+            .as_object()
+            .unwrap()
+            .contains_key("state"),
+        "an absent state is not written as null"
     );
     let decided = ApprovalUnitDecided {
         tenant_id: tenant,
@@ -270,9 +286,11 @@ async fn quorum_zero_publish_announces_the_normalised_prices_and_the_decision_in
     assert_eq!(envelope["producer_mode"], "stateless");
     let mut prices = vec![
         json!({"priceId":first["id"],"priceBookEntryId":g.entry["id"],"dimValue":null,
-            "effectiveFrom":"2031-03-01","effectiveTo":"2031-06-01","eligibility":"all"}),
+            "effectiveFrom":"2031-03-01","effectiveTo":"2031-06-01","eligibility":"all",
+            "state":"approved"}),
         json!({"priceId":second["id"],"priceBookEntryId":g.entry["id"],"dimValue":null,
-            "effectiveFrom":"2031-06-01","effectiveTo":null,"eligibility":"new"}),
+            "effectiveFrom":"2031-06-01","effectiveTo":null,"eligibility":"new",
+            "state":"approved"}),
     ];
     prices.sort_by_key(|r| r["priceId"].as_str().unwrap().to_owned());
     assert_eq!(

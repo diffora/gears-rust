@@ -118,14 +118,102 @@ async fn unit_dto(
     submit_scope: &AccessScope,
 ) -> Result<PricingApprovalUnitDto, DoorError> {
     let (authors, decisions) = rows_of(tx, store, unit.id).await?;
-    Ok(PricingApprovalUnitDto::of(
+    let mut dto = PricingApprovalUnitDto::of(
         unit,
         &authors,
         decisions,
         reader,
         approve_scope,
         submit_scope,
-    )?)
+    )?;
+    name_books(tx, store.tenant_id, std::slice::from_mut(&mut dto)).await?;
+    Ok(dto)
+}
+/// Book ids a snapshot names: every `book_id` whose value is an id, at any depth.
+fn collect_book_ids(value: &serde_json::Value, out: &mut BTreeSet<Uuid>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            if let Some(serde_json::Value::String(raw)) = map.get("book_id")
+                && let Ok(id) = Uuid::parse_str(raw)
+            {
+                out.insert(id);
+            }
+            for child in map.values() {
+                collect_book_ids(child, out);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_book_ids(item, out);
+            }
+        }
+        _ => {}
+    }
+}
+fn attach_book_identity(value: &mut serde_json::Value, books: &BTreeMap<Uuid, serde_json::Value>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            let named = map
+                .get("book_id")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|raw| Uuid::parse_str(raw).ok());
+            // A `book` already beside the id is the snapshot's own and is kept.
+            if let Some(id) = named
+                && let Some(book) = books.get(&id)
+            {
+                map.entry("book").or_insert_with(|| book.clone());
+            }
+            for child in map.values_mut() {
+                attach_book_identity(child, books);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                attach_book_identity(item, books);
+            }
+        }
+        _ => {}
+    }
+}
+/// Put `book { id, code, name, currency }` beside every book id a served snapshot names (D-516).
+/// One grouped read for the page, and none when no snapshot names a book. A book the tenant no
+/// longer holds leaves `book` absent, so a decided unit stays readable after its book is deleted.
+/// The stored snapshot and its fingerprint are unchanged: this is what the review reads.
+/// # Errors
+/// Storage failures.
+async fn name_books(
+    tx: &impl DBRunner,
+    tenant: Uuid,
+    units: &mut [PricingApprovalUnitDto],
+) -> Result<(), DoorError> {
+    let mut ids = BTreeSet::new();
+    for unit in units.iter() {
+        collect_book_ids(&unit.snapshot, &mut ids);
+    }
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let id_list: Vec<Uuid> = ids.iter().copied().collect();
+    let found =
+        book_repo::find_many(tx, &AccessScope::for_tenant(tenant), tenant, &id_list).await?;
+    let books: BTreeMap<Uuid, serde_json::Value> = found
+        .into_iter()
+        .map(|book| {
+            (
+                book.id,
+                serde_json::json!({
+                    "id": book.id,
+                    "code": book.code,
+                    "name": book.name,
+                    "currency": book.currency,
+                }),
+            )
+        })
+        .collect();
+    for unit in units {
+        attach_book_identity(&mut unit.snapshot, &books);
+    }
+    Ok(())
 }
 /// One unit's item authors and decisions, one statement each: what its receipt's flag and, for a
 /// plan revision, its progress are built from.
@@ -241,7 +329,7 @@ async fn published(
     now: OffsetDateTime,
 ) -> Result<(), DoorError> {
     match subject {
-        Subject::Prices(_) => prices_published(tx, outbox, cmd, store, id, now).await,
+        Subject::Prices(s) => prices_published(tx, outbox, cmd, store, s, id, now).await,
         Subject::PlanRevision(s) if s.published_now() => {
             plan_revision_published(tx, outbox, cmd, store, s, id, now).await
         }
@@ -281,26 +369,32 @@ async fn plan_revision_published(
     // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-apply:p1:inst-plans-revision-apply-3
     Ok(())
 }
-/// `PricesPublished` for an applied `prices` unit: every price with the window its chain was
-/// approved with.
+/// `PricesPublished` for an applied `prices` unit: every price whose window or state the apply
+/// changed, as the apply left it (D-520, D-521). These are the unit's prices with the window their
+/// chain was approved with, each price before them whose end the chain re-closed or re-opened,
+/// and each price the unit cancelled (`cancelled`) or ended (its new end). A `cancel` or `end` row
+/// is a record of the change, not a price, so the event never lists it.
 async fn prices_published(
     tx: &DbTx<'_>,
     outbox: &TxOutbox,
     cmd: &Command,
     store: &PricingApprovalStore,
+    subject: &PricesSubject,
     id: Uuid,
     now: OffsetDateTime,
 ) -> Result<(), DoorError> {
     let unit = load_unit(tx, store, id).await?;
     let scope = AccessScope::for_tenant(store.tenant_id);
-    let ids: Vec<Uuid> = store
+    let mut ids: BTreeSet<Uuid> = store
         .items(tx, unit.id)
         .await
         .map_err(approval_failure)?
         .iter()
         .map(|i| i.item_id)
         .collect();
-    // The unit's prices in ONE statement (PS-39).
+    ids.extend(subject.moved());
+    let ids: Vec<Uuid> = ids.into_iter().collect();
+    // The unit's prices and the prices it moved in ONE statement (PS-39).
     let mut found: BTreeMap<Uuid, entity::price::Model> =
         price_repo::find_many(tx, &scope, store.tenant_id, &ids)
             .await?
@@ -308,10 +402,13 @@ async fn prices_published(
             .map(|m| (m.id, m))
             .collect();
     let mut prices = Vec::new();
-    for item_id in ids {
-        let m = found.remove(&item_id).ok_or_else(|| {
-            RepoError::CorruptRow(format!("unit {} lost price {item_id}", unit.id))
+    for price_id in ids {
+        let m = found.remove(&price_id).ok_or_else(|| {
+            RepoError::CorruptRow(format!("unit {} lost price {price_id}", unit.id))
         })?;
+        if !price_repo::is_price(&m) {
+            continue;
+        }
         prices.push(PublishedPrice {
             price_id: m.id,
             price_book_entry_id: m.price_book_entry_id,
@@ -319,9 +416,9 @@ async fn prices_published(
             effective_from: m.effective_from.to_string(),
             effective_to: m.effective_to.map(|d| d.to_string()),
             eligibility: m.eligibility,
+            state: Some(m.state),
         });
     }
-    prices.sort_by_key(|r| r.price_id);
     let event = PricesPublished {
         tenant_id: unit.tenant_id,
         book_id: unit.ref_id,
@@ -433,16 +530,18 @@ async fn record_prices(
         .await
         .map_err(approval_failure)?;
     let prices = prices_of(tx, &store, &items).await?;
+    let mut unit = PricingApprovalUnitDto::of(
+        submitted.unit,
+        &authors_of(&items),
+        decisions,
+        cmd.ctx.subject_id(),
+        &cmd.approve_scope,
+        &cmd.submit_scope,
+    )?;
+    name_books(tx, cmd.tenant(), std::slice::from_mut(&mut unit)).await?;
     let receipt = PricingSubmitReceipt {
         applied: submitted.applied,
-        unit: PricingApprovalUnitDto::of(
-            submitted.unit,
-            &authors_of(&items),
-            decisions,
-            cmd.ctx.subject_id(),
-            &cmd.approve_scope,
-            &cmd.submit_scope,
-        )?,
+        unit,
         prices,
     };
     support::answer(
@@ -592,16 +691,18 @@ pub async fn submit_revision(
                 let approval = plans::progress_of(&submitted.unit, &decisions);
                 let revision = PricingPlanRevisionDto::of(&r, items)?
                     .with_units(&plans::instants_of(&submitted.unit), approval);
+                let mut unit = PricingApprovalUnitDto::of(
+                    submitted.unit,
+                    &authors,
+                    decisions,
+                    cmd.ctx.subject_id(),
+                    &cmd.approve_scope,
+                    &cmd.submit_scope,
+                )?;
+                name_books(tx, cmd.tenant(), std::slice::from_mut(&mut unit)).await?;
                 let receipt = PricingPlanRevisionSubmitReceipt {
                     applied: submitted.applied,
-                    unit: PricingApprovalUnitDto::of(
-                        submitted.unit,
-                        &authors,
-                        decisions,
-                        cmd.ctx.subject_id(),
-                        &cmd.approve_scope,
-                        &cmd.submit_scope,
-                    )?,
+                    unit,
                     revision,
                 };
                 support::answer(
@@ -641,11 +742,17 @@ async fn proposals(
         .await?,
     );
     let mut stored: BTreeMap<Uuid, entity::price::Model> = BTreeMap::new();
+    // The chains are prices only; a draft `cancel` or `end` is listed beside them (D-520, D-521).
     let mut prices = Vec::new();
+    let mut changes = Vec::new();
     for p in &entries {
         let model = price_book_entry_repo::model_of(p)?;
         for m in grouped.remove(&p.id).unwrap_or_default() {
-            prices.push(price_repo::to_domain(&m, model)?);
+            if price_repo::is_price(&m) {
+                prices.push(price_repo::to_domain(&m, model)?);
+            } else {
+                changes.push(price_repo::to_domain(&m, model)?);
+            }
             stored.insert(m.id, m);
         }
     }
@@ -655,7 +762,10 @@ async fn proposals(
         entries.iter().map(|p| (p.id, p)).collect();
     let owners: Vec<(Uuid, Uuid)> = entries.iter().map(|p| (p.id, p.book_id)).collect();
     let mut out = Vec::new();
-    for r in price::proposed_prices(book, &owners, &prices) {
+    let mut drafts = price::proposed_prices(book, &owners, &prices);
+    drafts.extend(price::proposed_prices(book, &owners, &changes));
+    drafts.sort_by_key(|r| (r.effective_from, r.price_book_entry_id, r.version_no));
+    for r in drafts {
         let Some(m) = stored.get(&r.id) else {
             continue;
         };
@@ -667,11 +777,14 @@ async fn proposals(
             .copied()
             .cloned()
             .ok_or_else(|| RepoError::CorruptRow(format!("price {} has no entry", r.id)))?;
-        let before = price::in_force_before(&prices, r)
-            .and_then(|b| stored.get(&b.id))
-            .cloned()
-            .map(|b| PricingPriceDto::of(b, &entry.model))
-            .transpose()?;
+        // A price's `before` is its predecessor; a change's is the price it names.
+        let before = match m.target_price_id {
+            Some(target) => stored.get(&target),
+            None => price::in_force_before(&prices, r).and_then(|b| stored.get(&b.id)),
+        }
+        .cloned()
+        .map(|b| PricingPriceDto::of(b, &entry.model))
+        .transpose()?;
         let price = PricingPriceDto::of(m.clone(), &entry.model)?;
         let policy = policies.get(&entry.id).cloned();
         let entry = PricingPriceBookEntryDto::from_stored(entry, policy)?;
@@ -687,7 +800,7 @@ async fn proposals(
     Ok(out)
 }
 
-/// `GET /price-books/{id}/publish-changes`.
+/// `GET /price-books/{id}/publish-changes`: the body, whose actors the door names (D-519).
 /// # Errors
 /// Returns a missing book or storage failure.
 pub async fn publish_list(
@@ -695,7 +808,7 @@ pub async fn publish_list(
     scope: &AccessScope,
     tenant: Uuid,
     book: Uuid,
-) -> Result<Response, DoorError> {
+) -> Result<PricingPublishChanges, DoorError> {
     let model = book_repo::find(tx, scope, tenant, book)
         .await?
         .ok_or_else(support::missing)?;
@@ -703,12 +816,11 @@ pub async fn publish_list(
     let entries: BTreeSet<Uuid> = prices.iter().map(|r| r.entry.id).collect();
     let plans = crate::infra::prices::plans_reading(tx, tenant, &entries, plans::today()).await?;
     let impact = crate::infra::prices::impact_of(prices.len(), entries.len(), &plans);
-    let body = PricingPublishChanges {
+    Ok(PricingPublishChanges {
         book: PriceBookDto::from(model),
         prices,
         impact,
-    };
-    Ok(support::response(StatusCode::OK, &body, None)?)
+    })
 }
 
 /// `POST /price-books/{id}/publish-changes`: the ticked drafts (all when omitted), their pair
@@ -877,23 +989,14 @@ pub struct UnitListRequest {
 /// `GET /approval-units`: one page in submission order (D-458), oldest or newest first (D-470),
 /// each unit with every generation's decisions, whether the caller `ctx` may approve it (D-471)
 /// and, unless the request declines it, the same live impact as the card. The tenant and the
-/// reader both come from `ctx`, so they cannot be swapped (the phase 9 review's R7). The page, its units' items, their
-/// decisions and the plans their impact names are read set-based: a fixed number of statements
-/// whatever the page's size, and no plan read without the impact.
+/// reader both come from `ctx`, so they cannot be swapped (the phase 9 review's R7). The page, its
+/// units' items, their decisions and the plans their impact names are read set-based: a fixed
+/// number of statements whatever the page's size, and no plan read without the impact.
+///
+/// The page is a value. The HTTP door names its actors (D-519) and answers it; the inbox reads it
+/// without parsing a response body back out of JSON.
 /// # Errors
 /// Returns a cursor the pager refuses (400) or storage failures.
-pub async fn list_units(
-    tx: &DbTx<'_>,
-    scope: &AccessScope,
-    ctx: &SecurityContext,
-    request: &UnitListRequest,
-) -> Result<Response, DoorError> {
-    let listed = read_unit_page(tx, scope, ctx, request).await?;
-    Ok(support::response(StatusCode::OK, &listed, None)?)
-}
-
-/// The list door's page, as a value. The HTTP door wraps it; the inbox reads it without parsing
-/// the response body back out of JSON.
 pub async fn read_unit_page(
     tx: &DbTx<'_>,
     scope: &AccessScope,
@@ -968,6 +1071,7 @@ pub async fn read_unit_page(
             .map(|reading| kind.impact_from(reading, &touched));
         items.push(dto);
     }
+    name_books(tx, tenant, &mut items).await?;
     Ok(PricingApprovalUnitList {
         items,
         page_info: page.page_info,
@@ -1013,7 +1117,7 @@ pub async fn count_units(
 }
 /// `GET /approval-units/{id}`: the stored snapshot, the decisions, the live impact and whether
 /// the caller `ctx` may approve it (D-471). The tenant and the reader both come from `ctx` (the
-/// phase 9 review's R9).
+/// phase 9 review's R9). The door names its actors (D-519).
 /// # Errors
 /// Returns a missing unit or storage failure.
 pub async fn get_unit(
@@ -1023,7 +1127,7 @@ pub async fn get_unit(
     id: Uuid,
     approve_scope: &AccessScope,
     submit_scope: &AccessScope,
-) -> Result<Response, DoorError> {
+) -> Result<PricingApprovalUnitDto, DoorError> {
     let (tenant, reader) = (ctx.subject_tenant_id(), ctx.subject_id());
     let store = PricingApprovalStore {
         scope: scope.clone(),
@@ -1042,7 +1146,8 @@ pub async fn get_unit(
         submit_scope,
     )?;
     dto.impact = Some(kind.impact(tx, tenant, &items).await?);
-    Ok(support::response(StatusCode::OK, &dto, None)?)
+    name_books(tx, tenant, std::slice::from_mut(&mut dto)).await?;
+    Ok(dto)
 }
 
 /// The subject a pending unit is judged by, chosen by its stored kind: for `prices`, its book,
@@ -1521,3 +1626,6 @@ async fn observe_prices(
     )
     .await
 }
+#[cfg(test)]
+#[path = "approvals_tests.rs"]
+mod tests;

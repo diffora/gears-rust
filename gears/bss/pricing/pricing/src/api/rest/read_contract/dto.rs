@@ -2,8 +2,8 @@
 //! exact decimal text, dates as `YYYY-MM-DD`. The consumer goldens freeze them. A closed set is
 //! its `enum` (D-439), with the tokens the goldens carry.
 use crate::api::rest::closed_sets::{
-    PricingChargeKind, PricingEligibility, PricingModel, PricingPeriod, PricingResolveSource,
-    PricingResolvedRevisionState,
+    PricingChargeKind, PricingEligibility, PricingModel, PricingPeriod, PricingPriceStatus,
+    PricingResolveSource, PricingResolvedRevisionState,
 };
 use uuid::Uuid;
 
@@ -119,8 +119,8 @@ pub struct PricingResolveBindingDto {
     pub keep_for_bound: bool,
 }
 /// `GET /prices/{id}`: one approved price as stored, served forever whatever its window (D-422),
-/// with its entry's SKU, charge kind and period and its book's currency. Stored facts only: no
-/// display status or other value computed from today, and no authoring internals.
+/// with its entry's SKU, charge kind and period and its book's currency, or a cancelled one
+/// (D-520). Stored facts only: no value computed from today, and no authoring internals.
 #[toolkit_macros::api_dto(response)]
 pub struct PricingPinnedPriceDto {
     pub price_id: Uuid,
@@ -155,6 +155,11 @@ pub struct PricingPinnedPriceDto {
     pub approved_by_unit_id: Option<Uuid>,
     #[serde(with = "time::serde::rfc3339::option")]
     pub approved_at: Option<time::OffsetDateTime>,
+    /// `cancelled` for a price cancelled before it started, the entry list's token (D-520): a
+    /// stored fact, the same on every day. Absent on an approved price, whose display status
+    /// depends on the day, which this read never computes (D-422).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<PricingPriceStatus>,
 }
 #[derive(Default, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
