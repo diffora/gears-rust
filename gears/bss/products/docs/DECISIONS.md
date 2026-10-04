@@ -80,7 +80,7 @@
 | P-D-257 | M | The derived type list carries each type's latest version | DECIDED 2026-10-02 · Owner, 2026-10-02; run 9.12; amends P-D-231 |
 | P-D-258 | H | A published usage SKU keeps its metering | DECIDED 2026-10-02 · Owner, 2026-10-02; run 9.13; amends P-D-232, P-D-251 |
 | P-D-259 | H | A usage SKU sells a derived usage type, and its unit is that type's | DECIDED 2026-10-02 · Owner, 2026-10-02; run 9.13; amends P-D-207, P-D-229, P-D-232, P-D-251 |
-| P-D-261 | M | The SKU, derived-type and category lists answer 304 | DECIDED 2026-10-03 · Owner, 2026-10-03 (asks 56, 57); extends P-D-247; amended 2026-10-04 (the derived-type list revalidates) |
+| P-D-261 | M | The SKU, derived-type and category lists answer 304 | DECIDED 2026-10-03 · Owner, 2026-10-03 (asks 56, 57); extends P-D-247; amended 2026-10-04 (the derived-type list revalidates; `no-cache`, not `no-store`) |
 | P-D-262 | M | Every actor id a read shows carries its current name (twin of pricing D-519) | DECIDED 2026-10-03 · Owner, 2026-10-02 (ask 32: names on the server, through AM); extends P-D-213, P-D-224, P-D-231; amended 2026-10-03 (one lookup per inbox card) |
 | P-D-263 | M | A retired SKU or category can be archived, and its list hides it by default (twin of pricing D-522) | DECIDED 2026-10-03 · Owner, 2026-10-03 ("archived"; ask 58b); extends P-D-208, P-D-210, P-D-211, P-D-215; amended 2026-10-03 (branch review) |
 | P-D-264 | M | A text function on `lifecycle` filters by the lifecycles it matches | DECIDED 2026-10-03 · Owner, 2026-10-03 ("yes, add it"); amends P-D-249 |
@@ -2049,7 +2049,13 @@ A legacy raw draft may be patched onto a derived ref, and that patch drops its u
 
 **Amended 2026-10-04 (branch review): the derived-type list revalidates.** The list was given raw `GET /usage-types`' `private, max-age=60` (P-D-247). P-D-262 then put `created_by_name` in its body, a name read under the caller's own Account Management rights. A browser keeps a fresh answer by URL, not by caller, so for that minute it could show the page to another user of the same browser without asking the server. `GET /derived-usage-types` now answers `private, no-cache`, the same `bss_rest::conditional_get::PRIVATE_REVALIDATE` as the other three lists: every use of the stored copy is a revalidation, the server authorizes the caller again, and a match is the same `304`. Raw `GET /usage-types` keeps P-D-247's minute: it names no one. The served spec declares `private, no-cache` on the list's `200` and `304`. `bss_rest` drops `PRIVATE_SHORT`, which had no other user. `conditional_reads_tests.rs` pins the header on both answers and in the spec.
 
-**Source:** Owner, 2026-10-03 (asks 56 and 57). Extends P-D-247. The 2026-10-04 amendment: the owner's answer to the branch review's question ("ok" to the recommendation).
+**Amended 2026-10-04 (branch review): `no-cache`, not `no-store`.** A `304` needs the copy the browser stored: the browser sends that copy's tag, and a match tells it to use the copy. `no-store` forbids the browser to keep any copy, so under it every read would be a full `200` and the tag would save nothing. These reads therefore keep `private, no-cache`, and do not follow the rule that asks `no-store` of an API answer with per-user data (RUST-SEC-002). The trade-off is accepted for these four reads only:
+
+- **What may stay in the browser.** A per-user body may sit in the browser's private cache, on disk, after the session ends: a SKU page with the `usage` that pricing gave this caller and its authors' names (P-D-262), the counts, a derived-type page with its creators' names, and the categories.
+- **What still holds.** `private` keeps every answer out of shared caches: a proxy or a CDN stores none of them. `no-cache` makes the browser ask the server before each use of its copy, so the caller is authenticated and authorized again on every read. The tag is the caller's own body, so a `304` confirms only a copy that this caller would be served now, never another caller's view.
+- **What stays.** Every other read keeps the headers it had; raw `GET /usage-types` keeps P-D-247's minute.
+
+**Source:** Owner, 2026-10-03 (asks 56 and 57). Extends P-D-247. The 2026-10-04 amendments: the owner's answers to the branch review's questions ("ok" to the recommendations).
 
 #### P-D-262 [M] Every actor id a read shows carries its current name (twin of pricing D-519)
 

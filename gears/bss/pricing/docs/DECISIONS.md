@@ -138,7 +138,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-515 | M | A plan row's book carries its id and validity | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 67); amends D-485 |
 | D-516 | M | A named book carries its identity beside its id | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 54); amends D-460, D-408 |
 | D-517 | M | Entries can be read by id | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 68); amends D-486; amended 2026-10-03 (the filter's length and its declaration) |
-| D-518 | M | The plan list, the plan counts, the book list and the settings answer 304 | DECIDED 2026-10-03 · Owner, 2026-10-03 (asks 56, 57); extends D-469 |
+| D-518 | M | The plan list, the plan counts, the book list and the settings answer 304 | DECIDED 2026-10-03 · Owner, 2026-10-03 (asks 56, 57); extends D-469; amended 2026-10-04 (`no-cache`, not `no-store`) |
 | D-519 | M | Every actor id a read shows carries its current name | DECIDED 2026-10-03 · Owner, 2026-10-02 (ask 32: names on the server, through AM); extends D-438, D-460, D-461 |
 | D-520 | H | A scheduled price is cancelled through the prices unit | DECIDED 2026-10-03 · Owner, 2026-10-03; asks 19, 58a; amends D-390, D-393, D-422; amended 2026-10-03 (the event, the reads, the binding guard, the pairing CHECKs) |
 | D-521 | H | A live price is ended through the prices unit | DECIDED 2026-10-03 · Owner, 2026-10-03; ask 58a; amends D-390, D-393; amended 2026-10-03 (the event) |
@@ -2131,7 +2131,13 @@ A screen that shows a revision, or a price unit, had only the book's id. It coul
 - **What stays.** The strong `ETag` that the other single-resource reads serve for `If-Match` is unchanged. The statement counts of these reads are unchanged.
 - **The tests.** `tests/conditional_reads.rs`: the first read, the `304` on a repeated read, and a new tag after a write, for each of the four reads.
 
-**Source:** Owner, 2026-10-03 (asks 56 and 57). Extends D-469.
+**Amended 2026-10-04 (branch review): `no-cache`, not `no-store`.** A `304` needs the copy the browser stored: the browser sends that copy's tag, and a match tells it to use the copy. `no-store` forbids the browser to keep any copy, so under it every read would be a full `200` and the tag would save nothing. These reads therefore keep `private, no-cache`, and do not follow the rule that asks `no-store` of an API answer with per-user data (RUST-SEC-002). The trade-off is accepted for these four reads only:
+
+- **What may stay in the browser.** A per-user body may sit in the browser's private cache, on disk, after the session ends: a plan page with its authors' names (D-519), the counts, a book page, and the settings with `updated_by_name`.
+- **What still holds.** `private` keeps every answer out of shared caches: a proxy or a CDN stores none of them. `no-cache` makes the browser ask the server before each use of its copy, so the caller is authenticated and authorized again on every read. A list's tag is the caller's own body, so a `304` confirms only a copy that this caller would be served now, never another caller's view. The settings' tag is the row version (above): a `304` confirms the stored settings, and the copy's `updated_by_name` is the one read when the copy was stored (D-519).
+- **What stays.** Every other read keeps the headers it had.
+
+**Source:** Owner, 2026-10-03 (asks 56 and 57). Extends D-469. The 2026-10-04 amendment: the owner's answer to the branch review's question ("ok" to the recommendation).
 
 #### D-519 [M] Every actor id a read shows carries its current name
 

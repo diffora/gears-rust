@@ -31,7 +31,7 @@
 | AP-D-6 | H | The inbox requires the caller's Idempotency-Key | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 61); amends AP-D-4 |
 | AP-D-7 | M | The inbox unit carries whether the caller may reject or withdraw it | DECIDED 2026-10-02 · Owner, 2026-10-02 (ask 63); extended by AP-D-11 |
 | AP-D-8 | M | The inbox publishes `$orderby` through the toolkit | DECIDED 2026-10-02 · amends AP-D-2 |
-| AP-D-10 | M | The list and the counts answer 304 | DECIDED 2026-10-03 · Owner, 2026-10-03 (asks 56, 57); extends AP-D-2 |
+| AP-D-10 | M | The list and the counts answer 304 | DECIDED 2026-10-03 · Owner, 2026-10-03 (asks 56, 57); extends AP-D-2; amended 2026-10-04 (`no-cache`, not `no-store`) |
 | AP-D-11 | M | The inbox names its submitters and voters | DECIDED 2026-10-03 · Owner, 2026-10-02 (ask 32: names on the server, through AM); extends AP-D-7, AP-D-10; amended 2026-10-03 (one lookup per card, declared system actors) |
 
 ## Entries
@@ -141,7 +141,13 @@ The list declares `$orderby` with `.with_odata_orderby::<InboxOrderField>()`. Th
 
 AP-D-11 extends this entry: the list's body carries the names of its submitters and voters, so a renamed user changes the tag.
 
-**Source:** Owner, 2026-10-03 (asks 56 and 57). Extends AP-D-2. The shared helper is `cf-gears-bss-rest` (pricing D-518, products P-D-261). Extended by AP-D-11.
+**Amended 2026-10-04 (branch review): `no-cache`, not `no-store`.** A `304` needs the copy the browser stored: the browser sends that copy's tag, and a match tells it to use the copy. `no-store` forbids the browser to keep any copy, so under it every read would be a full `200` and the tag would save nothing. These reads therefore keep `private, no-cache`, and do not follow the rule that asks `no-store` of an API answer with per-user data (RUST-SEC-002). The trade-off is accepted for these two reads only:
+
+- **What may stay in the browser.** A per-user body may sit in the browser's private cache, on disk, after the session ends: an inbox page with the units this caller's sources answered, their notes, and the names of their submitters and voters (AP-D-11), and the counts.
+- **What still holds.** `private` keeps every answer out of shared caches: a proxy or a CDN stores none of them. `no-cache` makes the browser ask the server before each use of its copy, so the caller is authenticated and every source is asked again as the caller. The tag is the caller's own body, so a `304` confirms only a copy that this caller would be served now, never another caller's view.
+- **What stays.** The card and the votes keep the headers they had.
+
+**Source:** Owner, 2026-10-03 (asks 56 and 57). Extends AP-D-2. The shared helper is `cf-gears-bss-rest` (pricing D-518, products P-D-261). Extended by AP-D-11. The 2026-10-04 amendment: the owner's answer to the branch review's question ("ok" to the recommendation).
 
 ### AP-D-11 The inbox names its submitters and voters
 
