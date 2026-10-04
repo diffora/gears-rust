@@ -65,6 +65,8 @@ mod m20260930_000018_usage_rating_policy;
 mod m20260930_000019_commercial_receipts;
 mod m20261002_000020_plan_summary;
 mod m20261002_000021_policy_references_sku;
+mod m20261003_000022_price_cancel_and_end;
+mod m20261003_000023_book_archive;
 
 /// Coordination followed by pricing-owned migrations.
 pub struct Migrator;
@@ -95,6 +97,8 @@ impl MigratorTrait for Migrator {
             Box::new(m20260930_000019_commercial_receipts::Migration),
             Box::new(m20261002_000020_plan_summary::Migration),
             Box::new(m20261002_000021_policy_references_sku::Migration),
+            Box::new(m20261003_000022_price_cancel_and_end::Migration),
+            Box::new(m20261003_000023_book_archive::Migration),
         ]
     }
 }

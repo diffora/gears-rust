@@ -395,6 +395,7 @@ impl World {
                 .map(|x| x.parse().unwrap()),
             effective_from: self.at.date(),
             ends_on: None,
+            state: bss_pricing_sdk::read::PriceState::Approved,
         };
         price.money_digest = money_digest(&price);
         let policy = entry.usage_rating_policy.typed().unwrap();

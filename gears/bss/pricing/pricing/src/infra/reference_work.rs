@@ -59,7 +59,13 @@ pub struct Work {
     /// transaction, and the cancellation releases whatever reservation exists.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome: Option<String>,
+    /// Why the op releases its reference, when the op says: [`BOOK_ARCHIVED_REASON`] for a
+    /// `release` (D-522). Absent from every other op, and from every op stored before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
+/// The reason a `release` op carries: its entry's book was archived (D-522).
+pub const BOOK_ARCHIVED_REASON: &str = "book_archived";
 /// An entry's persisted create input (D-401): what its create writes, rebuilt from the entry by
 /// every later op of it (a rereserve, a delete). Its JSON is the door's request body field for
 /// field. `model` (D-427) is absent from an op stored before `m20260926_000013`: such a create
@@ -366,7 +372,7 @@ pub fn new_op(
         sku_id: reference.sku_id,
         reservation_id,
         idempotency_key: key,
-        state: if kind == OpKind::Delete {
+        state: if matches!(kind, OpKind::Delete | OpKind::Release) {
             OpState::Releasing
         } else {
             OpState::Reserving
@@ -494,6 +500,8 @@ async fn mark_lost(
 }
 /// A re-reservation that ended without a live receipt leaves its entry lost: the
 /// state, the durable `PriceBookEntryReferenceLost` event and the audit record commit together.
+/// A `released` entry (D-522: its book was archived) stays `released`: its reference was let go on
+/// purpose, not lost, and an unarchive lists it as not re-reserved.
 async fn mark_entry_lost(
     tx: &(impl DBRunner + Sync),
     outbox: &super::events::TxOutbox,
@@ -507,8 +515,11 @@ async fn mark_entry_lost(
     else {
         return Ok(());
     };
-    if entry.reference_state == ReferenceState::Lost.as_str() {
-        // A lost entry whose re-reservation is refused again stays lost, announced once.
+    if entry.reference_state == ReferenceState::Lost.as_str()
+        || entry.reference_state == ReferenceState::Released.as_str()
+    {
+        // A lost entry whose re-reservation is refused again stays lost, announced once; a
+        // released one stays released (D-522).
         return Ok(());
     }
     price_book_entry_repo::set_reference(
@@ -867,6 +878,7 @@ fn refuses_the_write(kind: RefKind, error: &DoorError) -> bool {
             "ENTRY_KEY_TAKEN"
                 | "DIM_NOT_DECLARED"
                 | "BOOK_NOT_FOUND"
+                | "BOOK_ARCHIVED"
                 | "CHARGE_KIND_SKU_TYPE"
                 | "ENTRY_NOT_FOUND"
         ),
@@ -1010,7 +1022,9 @@ fn contention_fault() -> DoorError {
     }
     .into()
 }
-/// Tx B: a create inserts its entry; a rereserve re-points its entry at the new receipt.
+/// Tx B: a create inserts its entry; a rereserve re-points its entry at the new receipt. Neither
+/// writes into an archived book (D-522): the write is refused `BOOK_ARCHIVED`, and the op is
+/// cancelled, which releases the reservation it made.
 async fn write_entry(
     tx: &(impl DBRunner + Sync),
     scope: &AccessScope,
@@ -1018,6 +1032,12 @@ async fn write_entry(
     mut entry: price_book_entry::Model,
     now: OffsetDateTime,
 ) -> Result<(), DoorError> {
+    if crate::infra::storage::repo::book_repo::find(tx, scope, op.tenant_id, entry.book_id)
+        .await?
+        .is_some_and(|book| book.archived_at.is_some())
+    {
+        return Err(support::conflict("BOOK_ARCHIVED").into());
+    }
     if op.kind != OpKind::Rereserve.as_str() {
         #[cfg(feature = "test-support")]
         if take_fault(|faults| &faults.writes) {
@@ -1171,6 +1191,7 @@ pub fn rereserve_op(
         refusal: None,
         receipt: None,
         outcome: None,
+        reason: None,
     };
     let reference = Ref {
         kind: RefKind::Entry,
@@ -1181,6 +1202,44 @@ pub fn rereserve_op(
     op.tenant_id = entry.tenant_id;
     op.next_attempt_at = due;
     Ok(op)
+}
+/// A `release` op for an entry of a book being archived (D-522): it releases the entry's
+/// reservation, as a delete's op does, and records [`BOOK_ARCHIVED_REASON`]. Due after the
+/// in-flight grace, so the archive door drives it first; the ticker finishes what the door does
+/// not.
+/// # Errors
+/// Fails only if the durable work record cannot be encoded.
+pub fn release_op(
+    ctx: &SecurityContext,
+    entry: &price_book_entry::Model,
+    correlation: Uuid,
+    now: OffsetDateTime,
+) -> Result<entity::Model, CanonicalError> {
+    let work = Work {
+        target: Target::PriceBookEntry {
+            book_id: entry.book_id,
+            input: EntryInput::of(entry),
+        },
+        correlation,
+        refusal: None,
+        receipt: None,
+        outcome: None,
+        reason: Some(BOOK_ARCHIVED_REASON.to_owned()),
+    };
+    let reference = Ref {
+        kind: RefKind::Entry,
+        id: entry.id,
+        sku_id: entry.sku_id,
+    };
+    new_op(
+        ctx,
+        reference,
+        &work,
+        OpKind::Release,
+        Some(entry.reservation_id),
+        None,
+        now,
+    )
 }
 /// Products refusals that mean the SKU admits no reservation: fenced, retiring or retired.
 /// Only these make a live entry lost; every other refusal of a re-reservation is retried.

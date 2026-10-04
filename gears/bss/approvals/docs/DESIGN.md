@@ -78,7 +78,7 @@ The facade reads `sources` from its configuration, resolves each name as a scope
 
 ### 3.3 API Contracts
 
-`ApprovalSourceV1` has `page`, `counts`, `get` and one `vote`. `page` takes the narrowing, the order, the limit, the source's own key and whether to fill impact. `vote` takes the body bytes and the idempotency key and returns status, headers and body.
+`ApprovalSourceV1` has `page`, `counts`, `get`, one `vote`, and `system_actors`: the actors its gear names "System", none by default (AP-D-11). `page` takes the narrowing, the order, the limit, the source's own key and whether to fill impact. `vote` takes the body bytes and the idempotency key and returns status, headers and body.
 
 The HTTP doors are:
 
@@ -90,6 +90,10 @@ The HTTP doors are:
 - `POST /bss-approvals/v1/approval-units/{id}/withdraw`
 
 `limit` defaults to 50 and is clamped at 200. The list defaults to newest first. `$orderby` beside a cursor is 400 `ORDER_WITH_CURSOR`. A changed narrowing is 400 `FILTER_MISMATCH`.
+
+The list and the counts answer a weak `ETag` of the JSON body they serve, `sources` included, and `Cache-Control: private, no-cache`. An `If-None-Match` that matches it is 304 with an empty body and the same two headers. A source that changes status, for example from `ok` to `unavailable`, changes the body and so the tag. The card and the votes are not conditional (AP-D-10).
+
+The list and the card name each unit's submitter (`submitted_by_name`) and each decision's actor (`actor_name`), and a products unit's live SKU names its creator and, while it is archived, its archiver. The inbox is the only one that names them: a source answers its card unnamed, so a card read makes one lookup. The nil id and the actors the configured sources declare read "System" without a lookup. The names come from Account Management's user read, under the caller's own rights, in one lookup per answer; a name is null when it is not available now, and the read never fails because of it. The names are part of the list's body, so a rename changes its tag (AP-D-11).
 
 Declared vote codes: 400 `GENERATION_REQUIRED`, `GENERATION_MISMATCH`, `UNIT_STALE`, `NOTE_REQUIRED`, `NOTE_TOO_LONG`, `BODY_UNEXPECTED`; 403 for the grant and `SOD_VIOLATION`; 404; 409 `DUPLICATE_VOTE`, `UNIT_ALREADY_DECIDED`, `IDEMPOTENCY_CONFLICT`; 503. The doors do not answer 412.
 

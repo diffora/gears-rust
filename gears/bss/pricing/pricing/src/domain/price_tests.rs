@@ -815,3 +815,125 @@ fn d427_a_return_copies_money_not_a_model() {
         "the model is not compared either"
     );
 }
+/// D-520: a cancelled price leaves its chain, so the predecessor re-opens onto the next
+/// surviving start, or to open-ended when nothing survives.
+#[test]
+fn cancelling_a_scheduled_price_reopens_its_predecessor() {
+    let mut chain = vec![
+        price(1, "2026-01-01", None, PriceState::Approved),
+        price(2, "2026-03-01", None, PriceState::Cancelled),
+        price(3, "2026-05-01", None, PriceState::Approved),
+    ];
+    normalize_windows(&mut chain);
+    assert_eq!(chain[0].effective_to, Some(date("2026-05-01")));
+    assert_eq!(chain[2].effective_to, None);
+    let mut open = vec![
+        price(1, "2026-01-01", None, PriceState::Approved),
+        price(2, "2026-03-01", None, PriceState::Cancelled),
+    ];
+    normalize_windows(&mut open);
+    assert_eq!(open[0].effective_to, None);
+}
+/// D-520: a cancelled price is not an overlap and is never the price in force.
+#[test]
+fn a_cancelled_price_is_outside_overlap_and_in_force() {
+    let cancelled = price(2, "2026-03-01", None, PriceState::Cancelled);
+    let draft = price(9, "2026-03-01", None, PriceState::Draft);
+    let errors = rules(&draft, std::slice::from_ref(&cancelled), None);
+    assert!(
+        !errors.iter().any(|e| e.code == "WINDOW_OVERLAP"),
+        "{errors:?}"
+    );
+    let mut chain = vec![
+        price(1, "2026-01-01", None, PriceState::Approved),
+        cancelled,
+    ];
+    normalize_windows(&mut chain);
+    let entry = chain[0].price_book_entry_id;
+    for day in ["2026-01-01", "2026-03-01", "2026-12-01"] {
+        let in_force = version_at(&chain, entry, date(day), None).unwrap();
+        assert_eq!(in_force.version_no, 1, "{day}");
+        assert_ne!(in_force.state, PriceState::Cancelled);
+    }
+    assert_eq!(
+        status(
+            &price(2, "2026-03-01", None, PriceState::Cancelled),
+            date("2026-04-01")
+        ),
+        "cancelled"
+    );
+}
+/// D-521: an end on or before the current end (the next approved start) is kept; an end
+/// after that current end is `END_DATE_INVALID`.
+#[test]
+fn ending_before_the_next_start_closes_there_and_past_it_is_invalid() {
+    let mut chain = vec![
+        price(1, "2026-01-01", None, PriceState::Approved),
+        price(2, "2026-03-01", None, PriceState::Approved),
+    ];
+    normalize_windows(&mut chain);
+    let ended = end_price(&chain, chain[0].id, date("2026-02-15")).unwrap();
+    assert_eq!(ended.effective_to, Some(date("2026-02-15")));
+    assert!(ended.closed_explicitly);
+    assert_eq!(
+        end_price(&chain, chain[0].id, date("2026-04-15"))
+            .unwrap_err()
+            .code,
+        "END_DATE_INVALID"
+    );
+}
+/// D-521 (review RF-P item 9): an explicitly ended price with no successor keeps its explicit end
+/// as its current end: a second end past it is `END_DATE_INVALID`, one before it is accepted, and
+/// with a successor the sooner of the two bounds it.
+#[test]
+fn an_explicit_end_bounds_a_second_end() {
+    let mut ended = price(1, "2026-01-01", None, PriceState::Approved);
+    ended.effective_to = Some(date("2026-02-25"));
+    ended.closed_explicitly = true;
+    let alone = vec![ended.clone()];
+    assert_eq!(
+        end_price(&alone, ended.id, date("2027-01-01"))
+            .unwrap_err()
+            .code,
+        "END_DATE_INVALID"
+    );
+    assert_eq!(
+        end_price(&alone, ended.id, date("2026-02-26"))
+            .unwrap_err()
+            .code,
+        "END_DATE_INVALID"
+    );
+    let sooner = end_price(&alone, ended.id, date("2026-02-20")).unwrap();
+    assert_eq!(sooner.effective_to, Some(date("2026-02-20")));
+    assert_eq!(
+        end_price(&alone, ended.id, date("2026-02-25"))
+            .unwrap()
+            .effective_to,
+        Some(date("2026-02-25")),
+        "the explicit end itself"
+    );
+    let with_next = vec![
+        ended.clone(),
+        price(2, "2026-02-10", None, PriceState::Approved),
+    ];
+    assert_eq!(
+        end_price(&with_next, ended.id, date("2026-02-20"))
+            .unwrap_err()
+            .code,
+        "END_DATE_INVALID",
+        "a successor inside the explicit end bounds it sooner"
+    );
+}
+/// D-520, D-521: a cancel or end row has no window of its own. It shows its state, and once
+/// applied it is `superseded`, whatever the dates it copied: never a price in force.
+#[test]
+fn a_change_row_shows_its_state_and_superseded_once_applied() {
+    for (state, shown) in [
+        (PriceState::Draft, DisplayStatus::Draft),
+        (PriceState::Pending, DisplayStatus::Pending),
+        (PriceState::Rejected, DisplayStatus::Rejected),
+        (PriceState::Approved, DisplayStatus::Superseded),
+    ] {
+        assert_eq!(change_display(state), shown, "{state:?}");
+    }
+}

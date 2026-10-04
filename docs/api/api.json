@@ -3886,6 +3886,13 @@
             "format": "uuid",
             "type": "string"
           },
+          "actor_name": {
+            "description": "The current name of `actor` (P-D-262): its display name, else first and last name, else\nusername, from Account Management under the caller's rights; \"System\" for a system actor.\nNull when no name is available now, and on a write answer.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "at": {
             "format": "date-time",
             "type": "string"
@@ -6410,6 +6417,13 @@
             "format": "uuid",
             "type": "string"
           },
+          "actor_name": {
+            "description": "The current name of `actor` (AP-D-11): its display name, else first and last name, else\nusername, from Account Management under the caller's rights. Null when no name is\navailable now.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "at": {
             "type": "string"
           },
@@ -6638,6 +6652,13 @@
           "submitted_by": {
             "format": "uuid",
             "type": "string"
+          },
+          "submitted_by_name": {
+            "description": "The current name of `submitted_by` (AP-D-11): its display name, else first and last name, else\nusername, from Account Management under the caller's rights. Null when no name is\navailable now.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -10585,6 +10606,29 @@
       },
       "PriceBookDto": {
         "properties": {
+          "archived_at": {
+            "description": "When the book was archived (D-522); null while it is not. The book list hides it unless\nasked `archived eq true`; a read by id, the export and the consumer reads ignore the mark.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "archived_by": {
+            "description": "Who archived it; null while it is not archived.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "archived_by_name": {
+            "description": "The current name of `archived_by` (D-519); null when no name is available now, and on a\nwrite answer.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "code": {
             "type": "string"
           },
@@ -10853,6 +10897,13 @@
           "submitted_by": {
             "format": "uuid",
             "type": "string"
+          },
+          "submitted_by_name": {
+            "description": "The current name of `submitted_by` (D-519): its display name, else first and last name, else\nusername, from Account Management under the caller's rights; \"System\" for a system actor.\nNull when no name is available now, and on a write answer.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -10952,6 +11003,31 @@
         ],
         "type": "string"
       },
+      "PricingBookIdentity": {
+        "description": "A book named beside its id (D-516): id, code, name and currency. Validity stays on\n[`PricingPlanBook`].",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "name",
+          "currency"
+        ],
+        "type": "object"
+      },
       "PricingBookPriceCounts": {
         "description": "A book's prices by state — a rejected price included — and its approved prices by where their\nwindow stands today: `approved` = `scheduled + active + superseded` (D-441).",
         "properties": {
@@ -11002,6 +11078,15 @@
         ],
         "type": "object"
       },
+      "PricingChangeKind": {
+        "description": "What a price row asks the prices unit to do (D-520, D-521). `set` is a price.",
+        "enum": [
+          "set",
+          "cancel",
+          "end"
+        ],
+        "type": "string"
+      },
       "PricingChargeKind": {
         "description": "An entry's charge kind.",
         "enum": [
@@ -11017,6 +11102,13 @@
           "actor": {
             "format": "uuid",
             "type": "string"
+          },
+          "actor_name": {
+            "description": "The current name of `actor` (D-519): its display name, else first and last name, else\nusername, from Account Management under the caller's rights; \"System\" for a system actor.\nNull when no name is available now, and on a write answer.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "at": {
             "format": "date-time",
@@ -11270,11 +11362,12 @@
         "type": "object"
       },
       "PricingEntryReferenceState": {
-        "description": "Where an entry's SKU reference stands with Products.",
+        "description": "Where an entry's SKU reference stands with Products; `released` once its book is archived\n(D-522).",
         "enum": [
           "confirmation_pending",
           "confirmed",
-          "lost"
+          "lost",
+          "released"
         ],
         "type": "string"
       },
@@ -11350,7 +11443,7 @@
         "type": "string"
       },
       "PricingPinnedPriceDto": {
-        "description": "`GET /prices/{id}`: one approved price as stored, served forever whatever its window (D-422),\nwith its entry's SKU, charge kind and period and its book's currency. Stored facts only: no\ndisplay status or other value computed from today, and no authoring internals.",
+        "description": "`GET /prices/{id}`: one approved price as stored, served forever whatever its window (D-422),\nwith its entry's SKU, charge kind and period and its book's currency, or a cancelled one\n(D-520). Stored facts only: no value computed from today, and no authoring internals.",
         "properties": {
           "approved_at": {
             "format": "date-time",
@@ -11455,6 +11548,17 @@
             "format": "uuid",
             "type": "string"
           },
+          "status": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PricingPinnedPriceStatus",
+                "description": "`cancelled` for a price cancelled before it started, the entry list's token (D-520): a\nstored fact, the same on every day. Absent on an approved price, whose display status\ndepends on the day, which this read never computes (D-422). Its own one-value set, so the\nschema offers nothing the read never serves."
+              }
+            ]
+          },
           "temporary_until": {
             "type": [
               "string",
@@ -11484,6 +11588,13 @@
         ],
         "type": "object"
       },
+      "PricingPinnedPriceStatus": {
+        "description": "A pinned price's status (D-520): `cancelled` for a price cancelled before it started, the\ntoken the entry's price list shows. The only status `GET /prices/{id}` serves.",
+        "enum": [
+          "cancelled"
+        ],
+        "type": "string"
+      },
       "PricingPlanApprovalProgress": {
         "description": "A pending revision's vote progress (D-462), counts only: its unit, the approve votes the quorum\ncounts (the current generation's, not stale: the approval library's `counted_approvals`, the\ncount the vote door judges by) and the quorum.",
         "properties": {
@@ -11510,7 +11621,7 @@
         "type": "object"
       },
       "PricingPlanBook": {
-        "description": "The book a plan's current revision prices on (D-485).",
+        "description": "The book a plan's current revision prices on (D-485, D-515).",
         "properties": {
           "code": {
             "type": "string"
@@ -11518,11 +11629,30 @@
           "currency": {
             "type": "string"
           },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
           "name": {
             "type": "string"
+          },
+          "valid_from": {
+            "description": "`YYYY-MM-DD`, or null when the book is open on that side.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "valid_until": {
+            "description": "`YYYY-MM-DD`, exclusive, or null when the book is open on that side.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
+          "id",
           "code",
           "name",
           "currency"
@@ -11787,12 +11917,19 @@
         "properties": {
           "book": {
             "$ref": "#/components/schemas/PricingPlanBook",
-            "description": "The book it prices on (D-485): that book's code, name and currency."
+            "description": "The book it prices on (D-485, D-515): that book's id, code, name, currency and validity."
           },
           "created_by": {
             "description": "Its author, who edits it while it is a draft (D-404); not the plan's.",
             "format": "uuid",
             "type": "string"
+          },
+          "created_by_name": {
+            "description": "The current name of `created_by` (D-519): its display name, else first and last name, else\nusername, from Account Management under the caller's rights; \"System\" for a system actor.\nNull when no name is available now, and on a write answer.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "item_count": {
             "description": "How many items it holds, every item counted (a legacy one without an entry too, D-467).",
@@ -11849,6 +11986,13 @@
           "created_by": {
             "format": "uuid",
             "type": "string"
+          },
+          "created_by_name": {
+            "description": "The current name of `created_by` (D-519): its display name, else first and last name, else\nusername, from Account Management under the caller's rights; \"System\" for a system actor.\nNull when no name is available now, and on a write answer.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "current": {
             "oneOf": [
@@ -12042,6 +12186,13 @@
           "created_by": {
             "format": "uuid",
             "type": "string"
+          },
+          "created_by_name": {
+            "description": "The current name of `created_by` (D-519): its display name, else first and last name, else\nusername, from Account Management under the caller's rights; \"System\" for a system actor.\nNull when no name is available now, and on a write answer.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "id": {
             "format": "uuid",
@@ -12269,6 +12420,13 @@
             "format": "uuid",
             "type": "string"
           },
+          "created_by_name": {
+            "description": "The current name of `created_by` (D-519): its display name, else first and last name, else\nusername, from Account Management under the caller's rights; \"System\" for a system actor.\nNull when no name is available now, and on a write answer.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "id": {
             "format": "uuid",
             "type": "string"
@@ -12364,6 +12522,10 @@
               "null"
             ]
           },
+          "book": {
+            "$ref": "#/components/schemas/PricingBookIdentity",
+            "description": "The book `book_id` names (D-516). `book_id` stays."
+          },
           "book_id": {
             "format": "uuid",
             "type": "string"
@@ -12376,6 +12538,13 @@
             "description": "Its author (D-461): the one principal who edits it while it is a draft (D-404).",
             "format": "uuid",
             "type": "string"
+          },
+          "created_by_name": {
+            "description": "The current name of `created_by` (D-519): its display name, else first and last name, else\nusername, from Account Management under the caller's rights; \"System\" for a system actor.\nNull when no name is available now, and on a write answer.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "id": {
             "format": "uuid",
@@ -12410,6 +12579,7 @@
           "id",
           "rev_no",
           "book_id",
+          "book",
           "state",
           "created_by",
           "created_at"
@@ -12820,6 +12990,30 @@
         ],
         "type": "object"
       },
+      "PricingPriceBookUnarchiveDto": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/PriceBookDto"
+          },
+          {
+            "properties": {
+              "released_entries": {
+                "description": "The entries still `released` when the answer is built; null when they could not be read\nafter the unarchive committed (the book's entry list says which).",
+                "items": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              }
+            },
+            "type": "object"
+          }
+        ],
+        "description": "`POST /price-books/{id}/unarchive` (D-522): the book, listed again, and the entries still\n`released` after the door drove their re-reservations: their SKU refused a new reservation\n(retired, say), or Products has not answered yet. Each stays read-only until it is re-reserved."
+      },
       "PricingPriceCreate": {
         "additionalProperties": false,
         "properties": {
@@ -12895,6 +13089,18 @@
               "null"
             ]
           },
+          "cancelled_by_unit_id": {
+            "description": "The unit that cancelled this price, when `state` is `cancelled` (D-520).",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "change_kind": {
+            "$ref": "#/components/schemas/PricingChangeKind",
+            "description": "`set` for a price; `cancel` or `end` for a row that asks to cancel or end the approved\nprice `target_price_id` names (D-520, D-521). Such a row carries that price's money\nunchanged and is never a price in force."
+          },
           "closed_explicitly": {
             "type": "boolean"
           },
@@ -12905,6 +13111,13 @@
           "created_by": {
             "format": "uuid",
             "type": "string"
+          },
+          "created_by_name": {
+            "description": "The current name of `created_by` (D-519): its display name, else first and last name, else\nusername, from Account Management under the caller's rights; \"System\" for a system actor.\nNull when no name is available now, and on a write answer.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "dim_value": {
             "type": [
@@ -12978,7 +13191,15 @@
           },
           "status": {
             "$ref": "#/components/schemas/PricingPriceStatus",
-            "description": "Display state of matrix row 10: an approved price shows where its window stands today."
+            "description": "Display state of matrix row 10: an approved price shows where its window stands today.\nA cancelled price shows `cancelled` (D-520). A `cancel` or `end` row shows its state, and\n`superseded` once applied (D-520, D-521)."
+          },
+          "target_price_id": {
+            "description": "The approved price a `cancel` or `end` row names; null on a `set` row.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "temporary_until": {
             "type": [
@@ -13015,11 +13236,26 @@
           "keep_for_bound",
           "closed_explicitly",
           "state",
+          "change_kind",
           "status",
           "created_by",
           "version",
           "created_at",
           "updated_at"
+        ],
+        "type": "object"
+      },
+      "PricingPriceEnd": {
+        "additionalProperties": false,
+        "description": "`POST /prices/{id}/end` (D-521).",
+        "properties": {
+          "effective_to": {
+            "description": "The new end, `YYYY-MM-DD`, exclusive: after today, after the price's start, and no later\nthan its current end.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "effective_to"
         ],
         "type": "object"
       },
@@ -13074,19 +13310,21 @@
           "draft",
           "pending",
           "approved",
-          "rejected"
+          "rejected",
+          "cancelled"
         ],
         "type": "string"
       },
       "PricingPriceStatus": {
-        "description": "A price's display state (matrix row 10): an approved price shows where its window stands.",
+        "description": "A price's display state (matrix row 10): an approved price shows where its window stands.\nA cancelled price shows `cancelled` (D-520).",
         "enum": [
           "draft",
           "pending",
           "rejected",
           "scheduled",
           "active",
-          "superseded"
+          "superseded",
+          "cancelled"
         ],
         "type": "string"
       },
@@ -13205,6 +13443,17 @@
             "format": "uuid",
             "type": "string"
           },
+          "reason": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PricingReferenceOpReason",
+                "description": "Why the op releases its reference: `book_archived` for a `release` (D-522); null for every\nother op."
+              }
+            ]
+          },
           "ref_id": {
             "format": "uuid",
             "type": "string"
@@ -13241,12 +13490,13 @@
         "type": "object"
       },
       "PricingReferenceOpKind": {
-        "description": "What a reference op does (D-413).",
+        "description": "What a reference op does (D-413); `release` lets an archived book's entry go (D-522).",
         "enum": [
           "create",
           "delete",
           "rereserve",
-          "attach"
+          "attach",
+          "release"
         ],
         "type": "string"
       },
@@ -13270,6 +13520,13 @@
           "items"
         ],
         "type": "object"
+      },
+      "PricingReferenceOpReason": {
+        "description": "Why a reference op releases its reference (D-522): its entry's book was archived.",
+        "enum": [
+          "book_archived"
+        ],
+        "type": "string"
       },
       "PricingReferenceOpRefKind": {
         "description": "The reference a reference op works for (D-407).",
@@ -13741,6 +13998,13 @@
               "null"
             ]
           },
+          "updated_by_name": {
+            "description": "The current name of `updated_by` (D-519): its display name, else first and last name, else\nusername, from Account Management under the caller's rights; \"System\" for a system actor.\nNull when `updated_by` is null, when no name is available now, and on a write answer.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "version": {
             "format": "int64",
             "type": "integer"
@@ -13792,6 +14056,13 @@
               "type": "string"
             },
             "type": "object"
+          },
+          "updated_by_name": {
+            "description": "Ignored (D-519): the writer's name that `GET /settings` shows. It is accepted so that a\nread's body without `version`, `updated_at` and `updated_by` stays a PUT body (D-438).",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -14121,6 +14392,29 @@
       "ProductsCategoryDto": {
         "description": "Wire representation of the registry Category.",
         "properties": {
+          "archived_at": {
+            "description": "When the retired category was archived (P-D-263); null while it is not. Its list hides it\nunless asked `archived eq true`; a read by id ignores the mark.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "archived_by": {
+            "description": "Who archived it; null while it is not archived.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "archived_by_name": {
+            "description": "The current name of `archived_by` (P-D-262), as `created_by_name` names its actor; null\nwhen no name is available now, and on a write answer.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "code": {
             "type": "string"
           },
@@ -14391,6 +14685,13 @@
             "format": "uuid",
             "type": "string"
           },
+          "created_by_name": {
+            "description": "The current name of `created_by` (P-D-262): its display name, else first and last name, else\nusername, from Account Management under the caller's rights; \"System\" for a system actor.\nNull when no name is available now, and on a write answer.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "id": {
             "format": "uuid",
             "type": "string"
@@ -14428,6 +14729,13 @@
           "created_by": {
             "format": "uuid",
             "type": "string"
+          },
+          "created_by_name": {
+            "description": "The current name of `created_by` (P-D-262): its display name, else first and last name, else\nusername, from Account Management under the caller's rights; \"System\" for a system actor.\nNull when no name is available now, and on a write answer.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "id": {
             "format": "uuid",
@@ -14501,6 +14809,13 @@
             "format": "uuid",
             "type": "string"
           },
+          "created_by_name": {
+            "description": "The current name of `created_by` (P-D-262): its display name, else first and last name, else\nusername, from Account Management under the caller's rights; \"System\" for a system actor.\nNull when no name is available now, and on a write answer.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "declaration": {
             "$ref": "#/components/schemas/ProductsDerivedDeclaration"
           },
@@ -14566,6 +14881,13 @@
             "format": "uuid",
             "type": "string"
           },
+          "created_by_name": {
+            "description": "The current name of `created_by` (P-D-262): its display name, else first and last name, else\nusername, from Account Management under the caller's rights; \"System\" for a system actor.\nNull when no name is available now, and on a write answer.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "digest": {
             "type": "string"
           },
@@ -14617,9 +14939,14 @@
         "type": "string"
       },
       "ProductsSkuCounts": {
-        "description": "The SKU list's tab counts (P-D-211): every SKU the narrowing keeps, those in each lifecycle,\nand those a pending approval unit locks (in any lifecycle).",
+        "description": "The SKU list's tab counts (P-D-211): every SKU the narrowing keeps, those in each lifecycle,\nand those a pending approval unit locks (in any lifecycle), none of them archived; and the\narchived SKUs the narrowing keeps, which no other number counts (P-D-263).",
         "properties": {
           "all": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "archived": {
             "format": "int64",
             "minimum": 0,
             "type": "integer"
@@ -14656,7 +14983,8 @@
           "published",
           "deprecated",
           "retired",
-          "in_review"
+          "in_review",
+          "archived"
         ],
         "type": "object"
       },
@@ -14670,6 +14998,13 @@
           "actor": {
             "format": "uuid",
             "type": "string"
+          },
+          "actor_name": {
+            "description": "The current name of `actor` (P-D-262): its display name, else first and last name, else\nusername, from Account Management under the caller's rights; \"System\" for a system actor.\nNull when no name is available now.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "at": {
             "format": "date-time",
@@ -18719,6 +19054,29 @@
               "null"
             ]
           },
+          "archived_at": {
+            "description": "When the retired SKU was archived (P-D-263); null while it is not. The SKU list hides it\nunless asked `archived eq true`; a read by id ignores the mark. Not a lifecycle.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "archived_by": {
+            "description": "Who archived it; null while it is not archived.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "archived_by_name": {
+            "description": "The current name of `archived_by` (P-D-262), as `created_by_name` names its actor; null\nwhen no name is available now, and on a write answer.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "billing_timing": {
             "oneOf": [
               {
@@ -18747,6 +19105,13 @@
           "created_by": {
             "format": "uuid",
             "type": "string"
+          },
+          "created_by_name": {
+            "description": "The current name of `created_by` (P-D-262): its display name, else first and last name, else\nusername, from Account Management under the caller's rights; \"System\" for a system actor.\nNull when no name is available now, and on a write answer.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "description": {
             "type": "string"
@@ -20374,7 +20739,7 @@
       "UnitDto": {
         "properties": {
           "caller_can_approve": {
-            "description": "Whether the caller may Approve this unit now (P-D-228): the approval engine's own rule\n(`bss_approval::approve_eligibility`, pricing D-459) over the unit's stored items and its\ndecisions, with the caller as the voter. It is false for a decided unit, for its submitter\nand every author of its items (the SKU's creator: separation of duties) and for a caller who\nalready voted in its current generation. It means Approve only: a reject judges no\nseparation of duties, so the submitter and the SKU's creator may reject a unit whose flag\nis false. The grant is not judged here: without products approve the vote door still\nanswers 403.\nWhether the caller may approve this unit now (P-D-228, P-D-255): the engine's approve\nrule and the caller's `approval_unit:approve` grant on this unit. Approve only. Without\nthe grant the vote door is still 403.",
+            "description": "Whether the caller may approve this unit now (P-D-228, P-D-255): the approval engine's own\nrule (`bss_approval::approve_eligibility`, pricing D-459) over the unit's stored items and\nits decisions, with the caller as the voter, and the caller's `approval_unit:approve` grant\non this unit. It is false for a decided unit, for its submitter and every author of its\nitems (the SKU's creator: separation of duties), for a caller who already voted in its\ncurrent generation, and for a caller without the grant. It means Approve only: a reject\njudges no separation of duties, so the submitter and the SKU's creator may reject a unit\nwhose flag is false (`caller_can_reject`). Without the grant the vote door is still 403.",
             "type": "boolean"
           },
           "caller_can_reject": {
@@ -20454,6 +20819,13 @@
           "submitted_by": {
             "format": "uuid",
             "type": "string"
+          },
+          "submitted_by_name": {
+            "description": "The current name of `submitted_by` (P-D-262): its display name, else first and last name, else\nusername, from Account Management under the caller's rights; \"System\" for a system actor.\nNull when no name is available now, and on a write answer.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -28490,7 +28862,7 @@
     },
     "/bss-approvals/v1/approval-units": {
       "get": {
-        "description": "One page of approval units from every configured BSS gear, merged by submitted_at and then the unit id, in the same direction. The default order is newest first. `limit` defaults to 50 and is clamped at 200. A cursor carries its order and its narrowing, so a continuation sends no `$orderby`. `impact=false` skips the live impact.              `sources` names each configured gear as ok, forbidden or unavailable. A forbidden gear's units are omitted. A gear that does not answer is unavailable and omitted; the page still answers the gears that did. A cursor records a gear that was unavailable when it was cut, and a continuation keeps that gear omitted. `total` on the counts counts the readable gears only. Refusals: 400 ORDER_WITH_CURSOR when `$orderby` is sent with a cursor; 400 FILTER_MISMATCH when the narrowing changed; 400 for a cursor or an order that does not read; 403 when every gear forbids the caller; 503 SOURCE_UNAVAILABLE when every gear did not answer.",
+        "description": "One page of approval units from every configured BSS gear, merged by submitted_at and then the unit id, in the same direction. The default order is newest first. `limit` defaults to 50 and is clamped at 200. A cursor carries its order and its narrowing, so a continuation sends no `$orderby`. `impact=false` skips the live impact.              `sources` names each configured gear as ok, forbidden or unavailable. A forbidden gear's units are omitted. A gear that does not answer is unavailable and omitted; the page still answers the gears that did. A cursor records a gear that was unavailable when it was cut, and a continuation keeps that gear omitted. `total` on the counts counts the readable gears only. Refusals: 400 ORDER_WITH_CURSOR when `$orderby` is sent with a cursor; 400 FILTER_MISMATCH when the narrowing changed; 400 for a cursor or an order that does not read; 403 when every gear forbids the caller; 503 SOURCE_UNAVAILABLE when every gear did not answer. A matching If-None-Match is 304 with an empty body; the 200 carries a weak ETag of its JSON, `sources` included, and Cache-Control private, no-cache (AP-D-10).",
         "operationId": "bss_approvals.list_approval_units",
         "parameters": [
           {
@@ -28564,6 +28936,15 @@
             "schema": {
               "type": "boolean"
             }
+          },
+          {
+            "description": "A weak ETag from an earlier read of this answer, or *. A match is 304.",
+            "in": "header",
+            "name": "If-None-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -28575,7 +28956,38 @@
                 }
               }
             },
-            "description": "One merged page"
+            "description": "One merged page",
+            "headers": {
+              "Cache-Control": {
+                "description": "private, no-cache",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Weak tag of this JSON body",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "The If-None-Match tag matches this body",
+            "headers": {
+              "Cache-Control": {
+                "description": "private, no-cache",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Weak tag of this JSON body",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -28647,7 +29059,7 @@
     },
     "/bss-approvals/v1/approval-units/counts": {
       "get": {
-        "description": "The list's narrowing, summed over the gears the caller can read: by_state, by_kind and total. Every state and every kind is named, 0 when none. total counts the readable gears only. `sources` names each gear as ok, forbidden or unavailable. A forbidden or unavailable gear is omitted from the sum. Refusals: 400 for a query that does not parse or a key the narrowing does not take; 403 when every gear forbids the caller; 503 SOURCE_UNAVAILABLE when every gear did not answer.",
+        "description": "The list's narrowing, summed over the gears the caller can read: by_state, by_kind and total. Every state and every kind is named, 0 when none. total counts the readable gears only. `sources` names each gear as ok, forbidden or unavailable. A forbidden or unavailable gear is omitted from the sum. Refusals: 400 for a query that does not parse or a key the narrowing does not take; 403 when every gear forbids the caller; 503 SOURCE_UNAVAILABLE when every gear did not answer. A matching If-None-Match is 304 with an empty body; the 200 carries a weak ETag of its JSON, `sources` included, and Cache-Control private, no-cache (AP-D-10).",
         "operationId": "bss_approvals.count_approval_units",
         "parameters": [
           {
@@ -28685,6 +29097,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "A weak ETag from an earlier read of this answer, or *. A match is 304.",
+            "in": "header",
+            "name": "If-None-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -28696,7 +29117,38 @@
                 }
               }
             },
-            "description": "Summed counts"
+            "description": "Summed counts",
+            "headers": {
+              "Cache-Control": {
+                "description": "private, no-cache",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Weak tag of this JSON body",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "The If-None-Match tag matches this body",
+            "headers": {
+              "Cache-Control": {
+                "description": "private, no-cache",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Weak tag of this JSON body",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -37338,7 +37790,7 @@
     },
     "/bss-pricing/v1/approval-units/{id}/approve": {
       "post": {
-        "description": "Records an approving vote on the generation the reviewer saw; the vote that reaches the quorum applies the unit (a plan revision whose sale date is after today is scheduled for that date, D-449). The vote's note is at most 2000 characters. Refusals: 400 GENERATION_MISMATCH, UNIT_STALE or NOTE_TOO_LONG; 403 SOD_VIOLATION for the submitter or the author; 409 DUPLICATE_VOTE, UNIT_ALREADY_DECIDED or APPLY_REFUSED; 503 REGISTRY_UNAVAILABLE when Products cannot answer a read the applying vote's rules make: a plan revision's checks, or a usage chain's dated metering (D-402).",
+        "description": "Records an approving vote on the generation the reviewer saw; the vote that reaches the quorum applies the unit (a plan revision whose sale date is after today is scheduled for that date, D-449). The vote's note is at most 2000 characters. Refusals: 400 GENERATION_MISMATCH, UNIT_STALE or NOTE_TOO_LONG; 403 SOD_VIOLATION for the submitter or the author; 409 DUPLICATE_VOTE, UNIT_ALREADY_DECIDED or APPLY_REFUSED, and PRICE_ALREADY_STARTED when a price the unit cancels started after its submit (D-520); 503 REGISTRY_UNAVAILABLE when Products cannot answer a read the applying vote's rules make: a plan revision's checks, or a usage chain's dated metering (D-402).",
         "operationId": "bss_pricing.approve_unit",
         "parameters": [
           {
@@ -39656,7 +40108,7 @@
     },
     "/bss-pricing/v1/plans": {
       "get": {
-        "description": "One page of the tenant's plans (D-485). Each plan carries selling and change for the request's day, derived from its stored summary (D-484), last_activity_at (the instant a page ordered by it is ordered by), the headers of its revisions as they read today (D-447), its current revision with that revision's book (code, name, currency) and the published revision in effect (D-460). OData `$filter` over code, name, book_id, currency and last_activity_at; `$orderby` over code (the default), name and last_activity_at, with id breaking the tie in that direction; `$top` (alias limit; default 500, clamped at 500) and cursor (alias $skiptoken). q is a case-insensitive literal substring of the code or the name. selling is true or false. change is none, draft, pending or scheduled, one or several, comma-separated. sku_id keeps the plans whose draft, pending, scheduled or published revisions name the SKU through an entry (D-434), inside the page query. Five statements for a non-empty page, whatever its size. Refusals: 400 QUERY_INVALID for any other plain key, a repeated key, or a malformed value; 400 FILTER_MISMATCH for a cursor replayed under another narrowing; 400 for $select, $count and an order field it does not take.",
+        "description": "One page of the tenant's plans (D-485). Each plan carries selling and change for the request's day, derived from its stored summary (D-484), last_activity_at (the instant a page ordered by it is ordered by), the headers of its revisions as they read today (D-447), each header with book { id, code, name, currency } beside book_id (D-516), its current revision with that revision's book (id, code, name, currency, valid_from and valid_until, D-515) and the published revision in effect (D-460). OData `$filter` over code, name, book_id, currency and last_activity_at; `$orderby` over code (the default), name and last_activity_at, with id breaking the tie in that direction; `$top` (alias limit; default 500, clamped at 500) and cursor (alias $skiptoken). q is a case-insensitive literal substring of the code or the name. selling is true or false. change is none, draft, pending or scheduled, one or several, comma-separated. sku_id keeps the plans whose draft, pending, scheduled or published revisions name the SKU through an entry (D-434), inside the page query. Five statements for a non-empty page, whatever its size. A matching If-None-Match is 304 with an empty body; the 200 carries a weak ETag of its JSON and Cache-Control private, no-cache (D-518). Refusals: 400 QUERY_INVALID for any other plain key, a repeated key, or a malformed value; 400 FILTER_MISMATCH for a cursor replayed under another narrowing; 400 for $select, $count and an order field it does not take.",
         "operationId": "bss_pricing.list_plans",
         "parameters": [
           {
@@ -39714,6 +40166,15 @@
             }
           },
           {
+            "description": "A weak ETag from an earlier read of this answer, or *. A match is 304.",
+            "in": "header",
+            "name": "If-None-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "description": "OData v4 filter expression\n- code: eq|ne|contains|startswith|endswith|in\n- name: eq|ne|contains|startswith|endswith|in\n- book_id: eq|ne|in\n- currency: eq|ne|contains|startswith|endswith|in\n- last_activity_at: eq|ne|gt|ge|lt|le|in",
             "in": "query",
             "name": "$filter",
@@ -39741,7 +40202,38 @@
                 }
               }
             },
-            "description": "Response"
+            "description": "Response",
+            "headers": {
+              "Cache-Control": {
+                "description": "private, no-cache",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Weak tag of this JSON body",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "The If-None-Match tag matches this body",
+            "headers": {
+              "Cache-Control": {
+                "description": "private, no-cache",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Weak tag of this JSON body",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -40026,7 +40518,7 @@
     },
     "/bss-pricing/v1/plans/counts": {
       "get": {
-        "description": "Counts the tenant's plans that the list's narrowing keeps (D-485): by_selling (true and false; they add up to total), by_change (none, draft, pending, scheduled; each 0 when none) and total. The same plain keys and $filter as the list, and not limit, cursor or $orderby. One grouped statement. Refusals: the list's.",
+        "description": "Counts the tenant's plans that the list's narrowing keeps (D-485): by_selling (true and false; they add up to total), by_change (none, draft, pending, scheduled; each 0 when none) and total. The same plain keys and $filter as the list, and not limit, cursor or $orderby. One grouped statement. A matching If-None-Match is 304 with an empty body; the 200 carries a weak ETag of its JSON and Cache-Control private, no-cache (D-518). Refusals: the list's.",
         "operationId": "bss_pricing.count_plans",
         "parameters": [
           {
@@ -40066,6 +40558,15 @@
             }
           },
           {
+            "description": "A weak ETag from an earlier read of this answer, or *. A match is 304.",
+            "in": "header",
+            "name": "If-None-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "description": "OData v4 filter expression\n- code: eq|ne|contains|startswith|endswith|in\n- name: eq|ne|contains|startswith|endswith|in\n- book_id: eq|ne|in\n- currency: eq|ne|contains|startswith|endswith|in\n- last_activity_at: eq|ne|gt|ge|lt|le|in",
             "in": "query",
             "name": "$filter",
@@ -40084,7 +40585,38 @@
                 }
               }
             },
-            "description": "Response"
+            "description": "Response",
+            "headers": {
+              "Cache-Control": {
+                "description": "private, no-cache",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Weak tag of this JSON body",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "The If-None-Match tag matches this body",
+            "headers": {
+              "Cache-Control": {
+                "description": "private, no-cache",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Weak tag of this JSON body",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -40222,7 +40754,7 @@
     },
     "/bss-pricing/v1/plans/{id}": {
       "get": {
-        "description": "Returns one plan with the headers of its revisions as they read today (D-447) and when each was submitted and approved (D-461), its current revision and the one in effect (D-460), and its version as the ETag a following PATCH sends back as If-Match. Refusals: 404 for a plan the tenant does not hold.",
+        "description": "Returns one plan with the headers of its revisions as they read today (D-447), each header naming its book beside book_id (D-516), and when each was submitted and approved (D-461), its current revision and the one in effect (D-460), and its version as the ETag a following PATCH sends back as If-Match. Refusals: 404 for a plan the tenant does not hold.",
         "operationId": "bss_pricing.get_plan",
         "parameters": [
           {
@@ -40773,14 +41305,23 @@
     },
     "/bss-pricing/v1/price-book-entries": {
       "get": {
-        "description": "Lists one page of the tenant's price book entries of one SKU across its books (D-434, D-486), each with its book's code, name and currency, its usage (D-428), its status and changing on today, its current_price, the default chain's approved price in force today, and its next_price, the default chain's earliest price scheduled after today, else its newest draft or pending price (the highest version_no), else null (D-472). status is priced when an approved price is in force today, else scheduled when an approved price starts later, else unpriced; changing is true when a draft or pending price exists. Both prices are shown to a caller who also holds price_book read (the export's grant) and are null otherwise; status and changing are not money. The list narrows in memory by book_id (1 to 50 distinct ids), currency, q (a case-insensitive literal substring of the book's code or name), status (priced, scheduled, unpriced) and changing (true or false). $orderby is book_name (the default) or status, asc or desc; the id breaks a tie in that direction. limit (default 500, clamped at 500) and cursor from page_info page it; a cursor carries the order and a hash of the plain keys, so a continuation sends no $orderby. Refusals: 400 QUERY_INVALID without exactly one well-formed sku_id, for a repeated key, for any other key, for $filter, $select or $count, for a malformed book_id, currency, status, changing or limit, or for more than 50 book ids; 400 INVALID_ORDERBY_FIELD for any other order; 400 ORDER_WITH_CURSOR for $orderby beside a cursor; 400 FILTER_MISMATCH for a cursor replayed under another narrowing; 400 for a cursor that does not read.",
+        "description": "Lists one page of the tenant's price book entries of one SKU across its books (D-434, D-486), or the entries named by `$filter=id in (...)`, at most 200 ids, instead of sku_id (D-517). Each item carries its book's code, name and currency, its usage (D-428), its status and changing on today, its current_price, the default chain's approved price in force today, and its next_price, the default chain's earliest price scheduled after today, else its newest draft or pending price (the highest version_no), else null (D-472). status is priced when an approved price is in force today, else scheduled when an approved price starts later, else unpriced; changing is true when a draft or pending price exists. Both prices are shown to a caller who also holds price_book read (the export's grant) and are null otherwise; status and changing are not money. The list narrows in memory by book_id (1 to 50 distinct ids), currency, q (a case-insensitive literal substring of the book's code or name), status (priced, scheduled, unpriced) and changing (true or false). $orderby is book_name (the default) or status, asc or desc; the id breaks a tie in that direction. limit (default 500, clamped at 500) and cursor from page_info page it; a cursor carries the order and a hash of the plain keys, so a continuation sends no $orderby. `$filter` is `id in (...)` of at most 200 ids, or `id eq` one id, and replaces sku_id; another field, `or`, `ne`, more than 200 ids, or a filter longer than 8192 bytes is refused. Refusals: 400 QUERY_INVALID without exactly one well-formed sku_id and without that filter, for a repeated key, for any other key, for $select or $count, for sku_id beside $filter, for a malformed book_id, currency, status, changing or limit, or for more than 50 book ids; 400 INVALID_ORDERBY_FIELD for any other order; 400 ORDER_WITH_CURSOR for $orderby beside a cursor; 400 FILTER_MISMATCH for a cursor replayed under another narrowing; 400 for a cursor that does not read.",
         "operationId": "bss_pricing.list_sku_entries",
         "parameters": [
           {
-            "description": "The SKU whose entries are listed",
+            "description": "The SKU whose entries are listed. Required unless $filter=id in (...) is sent",
             "in": "query",
             "name": "sku_id",
-            "required": true,
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "`id eq <id>` or `id in (<id>, ...)`: 1 to 200 distinct price book entry ids, at most 8192 bytes; replaces sku_id and takes no other key. Another field, `ne`, `or` or any other shape is 400 QUERY_INVALID",
+            "in": "query",
+            "name": "$filter",
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -41621,7 +42162,7 @@
     },
     "/bss-pricing/v1/price-books": {
       "get": {
-        "description": "One page of the tenant's price books (D-442), each with its stats (D-441): its entries and their distinct SKUs, the distinct plans with a draft, pending, scheduled or published revision on it and those that name it only through superseded revisions, its prices by state (the approved ones also as scheduled, active and superseded today), its prices units in review and its last change. OData `$filter` over id, code, name, currency, valid_from and valid_until (`eq null`: open on that side); `$orderby` over code and name (tie-break id; default code); `$top` (alias `limit`; default 200, clamped at 500) and `cursor` (alias `$skiptoken`) from `page_info`. `q` is a case-insensitive substring of the code or the name, matched literally; `sku_id` keeps the books with an entry of that SKU. Refusals: 400 QUERY_INVALID for any other key, a repeated key or a malformed sku_id; 400 FILTER_MISMATCH for a cursor replayed with another `$filter`, `q` or `sku_id`; 400 for `$select`, `$count` and the other OData options it does not take.",
+        "description": "One page of the tenant's price books (D-442), each with its stats (D-441): its entries and their distinct SKUs, the distinct plans with a draft, pending, scheduled or published revision on it and those that name it only through superseded revisions, its prices by state (the approved ones also as scheduled, active and superseded today), its prices units in review and its last change. OData `$filter` over id, code, name, currency, valid_from and valid_until (`eq null`: open on that side), and archived: an archived book is left out unless asked `archived eq true` (D-522), and `archived` compares with `eq` or `ne` and a boolean, joined only by top-level `and`; `$orderby` over code and name (tie-break id; default code); `$top` (alias `limit`; default 200, clamped at 500) and `cursor` (alias `$skiptoken`) from `page_info`. `q` is a case-insensitive substring of the code or the name, matched literally; `sku_id` keeps the books with an entry of that SKU. Refusals: 400 QUERY_INVALID for any other key, a repeated key or a malformed sku_id; 400 FILTER_MISMATCH for a cursor replayed with another `$filter`, `q` or `sku_id`; 400 for `$select`, `$count` and the other OData options it does not take. A matching If-None-Match is 304 with an empty body; the 200 carries a weak ETag of its JSON and Cache-Control private, no-cache (D-518).",
         "operationId": "bss_pricing.list_books",
         "parameters": [
           {
@@ -41661,7 +42202,16 @@
             }
           },
           {
-            "description": "OData v4 filter expression\n- id: eq|ne|in\n- code: eq|ne|contains|startswith|endswith|in\n- name: eq|ne|contains|startswith|endswith|in\n- currency: eq|ne|contains|startswith|endswith|in\n- valid_from: eq|ne|gt|ge|lt|le|in\n- valid_until: eq|ne|gt|ge|lt|le|in",
+            "description": "A weak ETag from an earlier read of this answer, or *. A match is 304.",
+            "in": "header",
+            "name": "If-None-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OData v4 filter expression\n- id: eq|ne|in\n- code: eq|ne|contains|startswith|endswith|in\n- name: eq|ne|contains|startswith|endswith|in\n- currency: eq|ne|contains|startswith|endswith|in\n- valid_from: eq|ne|gt|ge|lt|le|in\n- valid_until: eq|ne|gt|ge|lt|le|in\n- archived: eq|ne",
             "in": "query",
             "name": "$filter",
             "required": false,
@@ -41688,7 +42238,38 @@
                 }
               }
             },
-            "description": "Response"
+            "description": "Response",
+            "headers": {
+              "Cache-Control": {
+                "description": "private, no-cache",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Weak tag of this JSON body",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "The If-None-Match tag matches this body",
+            "headers": {
+              "Cache-Control": {
+                "description": "private, no-cache",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Weak tag of this JSON body",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -41782,6 +42363,10 @@
         ],
         "x-odata-filter": {
           "allowedFields": {
+            "archived": [
+              "eq",
+              "ne"
+            ],
             "code": [
               "eq",
               "ne",
@@ -42366,6 +42951,141 @@
         ]
       }
     },
+    "/bss-pricing/v1/price-books/{id}/archive": {
+      "post": {
+        "description": "Marks a finished book archived at the version the caller read (If-Match), with an audit row (D-522): `archived_at` and `archived_by` are set and the version moves. In the same transaction each entry whose reference is confirmed or lost becomes `released`, with a `release` op (reason book_archived) that releases its SKU reference in Products; the door drives those ops after the commit, at most 8 at once and for at most 3 s in all, and the ticker finishes what it does not. A SKU that only this book named then stops being referenced, so it can be retired. The entries and prices stay and are read-only: an entry create or PATCH, a price create, cancel, end or submit, and a plan item naming an entry of the book are 409 BOOK_ARCHIVED. `GET /price-books` leaves an archived book out unless asked `archived eq true`; a read by id, the export and the consumer reads ignore the mark. Archiving an archived book answers it unchanged. Refusals, in order: 403 without the book write grant; 400 for a missing or malformed If-Match; 404 for a book the tenant does not hold; 409 STALE_REVISION; 409 BOOK_IN_PLAN (a plan with a draft, pending, scheduled or published revision on the book; superseded ones do not refuse it); 409 BOOK_HAS_PENDING (a prices unit of the book in review: a pending price, cancel or end); 409 ENTRY_CONFIRMATION_PENDING (an entry's reference is being confirmed).",
+        "operationId": "bss_pricing.archive_book",
+        "parameters": [
+          {
+            "description": "Price book id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Required authoring precondition",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PriceBookDto"
+                }
+              }
+            },
+            "description": "Response",
+            "headers": {
+              "ETag": {
+                "description": "The version to send back as If-Match",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Archive a finished price book",
+        "tags": [
+          "Pricing"
+        ]
+      }
+    },
     "/bss-pricing/v1/price-books/{id}/entries": {
       "get": {
         "description": "One page of the price book entries of one book of the tenant (D-483), ordered by sku_id, charge_kind, model and id, all ascending: month and year entries of one model follow their id. Each entry carries its usage (D-428): its prices by state (a rejected price is not counted; the approved ones also as scheduled, active and superseded on the day, D-440), the distinct plans whose draft, pending, scheduled or published revisions name it, and the distinct plans that name it only through superseded revisions; its current_price, the default chain's approved price in force on the day; and its next_price, the default chain's earliest price scheduled after the day, else its newest draft or pending price (the highest version_no), else null (D-472). Both prices are shown to a caller who also holds price_book read on the book and are null otherwise (D-434, D-440). The day is as_of, a YYYY-MM-DD date, else today (UTC): every price's status, the usage split and both prices are judged on that one day, on every page (D-473). A day before the book's valid_from, or on or after its valid_until, still answers with the prices in force on it, but a price outside the book's validity is not sellable: the book allows no sale on that day. limit (alias $top) is 500 by default and clamped at 500, and cursor (alias $skiptoken) continues from page_info.next_cursor: a caller that does not follow next_cursor reads the first 500. OData $filter takes sku_id (eq, ne, in), charge_kind, model and reference_state, each compared with one of its closed values. There is no q: SKU names live in Products, so a search asks GET /bss-products/v1/skus?q= and narrows this list with $filter=sku_id in (...). The cursor carries a hash of $filter and of the day, so a cursor replayed under another $filter or another as_of is 400 FILTER_MISMATCH. Refusals, in order: 403 without price_book_entry read; 503 when the policy cannot judge the money; 400 QUERY_INVALID for a plain key other than as_of, limit and cursor, or one given twice, then 400 DATE_INVALID for an as_of that is not a YYYY-MM-DD date; 400 for $orderby (the order is fixed), $select, $count, a $filter the list does not take, a limit of 0 or a cursor that does not read; 400 FILTER_MISMATCH; 404 for a book the tenant does not hold; then 403 PRICE_BOOK_READ_REQUIRED for an as_of other than today when the caller's price_book read does not admit the book, judged before any entry is read: the usage split on another day dates every approved price, so it is money, and a caller without it reads today only.",
@@ -42933,7 +43653,7 @@
         ]
       },
       "post": {
-        "description": "Submits the book's draft prices, all of them or the listed price_ids, optionally on a common effective date, as one prices approval unit; at quorum 0 it applies at once. An optional note for the approver is stored on the unit as submit_note (D-464). Refusals: 400 NOTE_TOO_LONG for a note over 2000 characters, judged before anything is read; 400 NO_DRAFT_PRICES, PRICE_NOT_IN_BOOK or PAIR_SPLIT; 409 PRICE_LOCKED_PENDING or UNIT_CONTENDED; 503 REGISTRY_UNAVAILABLE when Products cannot answer a usage chain's dated metering read (D-402).",
+        "description": "Submits the book's draft prices, all of them or the listed price_ids, optionally on a common effective date, as one prices approval unit; at quorum 0 it applies at once. An optional note for the approver is stored on the unit as submit_note (D-464). Refusals: 400 NOTE_TOO_LONG for a note over 2000 characters, judged before anything is read; 400 NO_DRAFT_PRICES, PRICE_NOT_IN_BOOK or PAIR_SPLIT, or END_DATE_INVALID for an end (D-521); 409 PRICE_LOCKED_PENDING or UNIT_CONTENDED, or a guard of a cancel or an end (PRICE_NOT_SCHEDULED, PRICE_CHANGE_PENDING when another pending change or the same unit names its price, PRICE_BOUND, PRICE_ALREADY_ENDED, D-520, D-521), or a price of a released entry (BOOK_ARCHIVED while its book is archived, else ENTRY_REFERENCE_RELEASED, D-522); 503 REGISTRY_UNAVAILABLE when Products cannot answer a usage chain's dated metering read (D-402).",
         "operationId": "bss_pricing.publish_changes",
         "parameters": [
           {
@@ -43069,6 +43789,141 @@
         ]
       }
     },
+    "/bss-pricing/v1/price-books/{id}/unarchive": {
+      "post": {
+        "description": "Clears a book's archive mark at the version the caller read (If-Match), with an audit row (D-522). Each `released` entry gets a `rereserve` op, and the door drives them after the commit (at most 8 at once, for at most 3 s in all; the ticker finishes the rest). An entry whose SKU refuses the new reservation (retired, say) stays `released` and read-only (409 ENTRY_REFERENCE_RELEASED), and the book is unarchived anyway: `released_entries` lists the entries still released when the answer is built, or is null when they could not be read after the unarchive committed. Unarchiving a book that is not archived answers it unchanged. Refusals, in order: 403 without the book write grant; 400 for a missing or malformed If-Match; 404; 409 STALE_REVISION; 409 ENTRY_RELEASE_PENDING (an entry's release or re-reservation is still open: retry once the reference work finishes). A refusal writes nothing.",
+        "operationId": "bss_pricing.unarchive_book",
+        "parameters": [
+          {
+            "description": "Price book id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Required authoring precondition",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PricingPriceBookUnarchiveDto"
+                }
+              }
+            },
+            "description": "Response",
+            "headers": {
+              "ETag": {
+                "description": "The version to send back as If-Match",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Unarchive a price book",
+        "tags": [
+          "Pricing"
+        ]
+      }
+    },
     "/bss-pricing/v1/prices/{id}": {
       "delete": {
         "description": "Deletes an unlocked draft price of its author at the version the author read (If-Match). Refusals: 403 NOT_DRAFT_AUTHOR; 409 PRICE_NOT_DRAFT or STALE_REVISION.",
@@ -43189,7 +44044,7 @@
         ]
       },
       "get": {
-        "description": "Returns an approved price of the tenant with its original money whatever its window (closed, followed by a later price, kept for bound subscriptions), with its entry's SKU, charge kind, period, book and currency: stored facts only. A draft, pending, rejected, unknown or foreign price is one and the same 404; an id that is not an id is 400 ID_INVALID.",
+        "description": "Returns an approved price of the tenant, or a cancelled one (D-520), with its original money whatever its window, with its entry's SKU, charge kind, period, book and currency: stored facts only. A cancelled price carries status `cancelled`; an approved one carries no status, since its display status depends on the day (D-422). A draft, pending, rejected, unknown or foreign price is one and the same 404; an id that is not an id is 400 ID_INVALID.",
         "operationId": "bss_pricing.get_price",
         "parameters": [
           {
@@ -43305,7 +44160,7 @@
         ]
       },
       "patch": {
-        "description": "Changes an unlocked draft price of its author at the version the author read (If-Match). The temporary half of a draft takes effective_from and temporary_until: its pair is built again over the new dates in the same transaction (D-443) - its return re-derived in place, deleted when the chain's next price starts on the new end or nothing of the chain is in force there, or created when a price is to be returned to - and both halves are judged as the create judges them; the answer is the edited price, its paired_price_id naming its partner now, or null. A return's own dates, a temporary price's chain (dim_value), an end on any other price and a null end are 400 TEMPORARY_PRICE_FIXED. Refusals: 400 for a rule the change breaks (for example WINDOW_END_INVALID, WINDOW_START_IN_PAST or TEMPORARY_SPANS_A_CHANGE), or NOTE_TOO_LONG on a note over 2000 characters (D-457); 403 NOT_DRAFT_AUTHOR; 409 PRICE_NOT_DRAFT (the price or its partner) or STALE_REVISION.",
+        "description": "Changes an unlocked draft price of its author at the version the author read (If-Match). The temporary half of a draft takes effective_from and temporary_until: its pair is built again over the new dates in the same transaction (D-443) - its return re-derived in place, deleted when the chain's next price starts on the new end or nothing of the chain is in force there, or created when a price is to be returned to - and both halves are judged as the create judges them; the answer is the edited price, its paired_price_id naming its partner now, or null. A return's own dates, a temporary price's chain (dim_value), an end on any other price and a null end are 400 TEMPORARY_PRICE_FIXED. Refusals: 400 for a rule the change breaks (for example WINDOW_END_INVALID, WINDOW_START_IN_PAST or TEMPORARY_SPANS_A_CHANGE), or NOTE_TOO_LONG on a note over 2000 characters (D-457); 403 NOT_DRAFT_AUTHOR; 409 PRICE_NOT_DRAFT (the price or its partner, or a cancel or end row, which is deleted instead, D-520) or STALE_REVISION.",
         "operationId": "bss_pricing.patch_price",
         "parameters": [
           {
@@ -43449,9 +44304,290 @@
         ]
       }
     },
+    "/bss-pricing/v1/prices/{id}/cancel": {
+      "post": {
+        "description": "Opens a draft cancel of an approved price that has not started (D-520): a price row with change_kind cancel and target_price_id, which carries the price's money unchanged and is never a price in force. Submit it as any draft price, with POST /prices/{id}/submit on the row or the book's publish-changes; the guards run here, at submit and again at apply. On approval the price becomes cancelled and the price before it re-opens onto the next start that remains. Refusals: 400 BODY_UNEXPECTED for a body other than {}; 409 PRICE_NOT_SCHEDULED (not approved, or started), PRICE_CHANGE_PENDING (another pending change names it), PRICE_BOUND (a consumer's binding names it: an acceptance whose bindings name the price; keep_for_bound alone never refuses) or ENTRY_REFERENCE_LOST; the vote that applies the unit answers 409 PRICE_ALREADY_STARTED when the price started after the submit. The Idempotency-Key replays the answer.",
+        "operationId": "bss_pricing.cancel_price",
+        "parameters": [
+          {
+            "description": "Price id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Required authoring precondition",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PricingPriceDto"
+                }
+              }
+            },
+            "description": "Response",
+            "headers": {
+              "ETag": {
+                "description": "The version to send back as If-Match",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Cancel a scheduled price",
+        "tags": [
+          "Pricing"
+        ]
+      }
+    },
+    "/bss-pricing/v1/prices/{id}/end": {
+      "post": {
+        "description": "Opens a draft end of an approved price, live or scheduled, that has not ended (D-521): a price row with change_kind end, target_price_id and the new end, which carries the price's money unchanged and is never a price in force. effective_to is after today, after the price's start, and no later than its current end (the next start, or its own explicit end). Submit it as any draft price; the guards run here, at submit and again at apply. On approval the price is closed explicitly at that end, and a successor that starts inside it still ends it at its start (D-390). Refusals: 400 END_DATE_INVALID; 409 PRICE_CHANGE_PENDING (another pending change names it), PRICE_ALREADY_ENDED (not approved, or ended) or ENTRY_REFERENCE_LOST. The Idempotency-Key replays the answer.",
+        "operationId": "bss_pricing.end_price",
+        "parameters": [
+          {
+            "description": "Price id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Required authoring precondition",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PricingPriceEnd"
+              }
+            }
+          },
+          "description": "Request",
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PricingPriceDto"
+                }
+              }
+            },
+            "description": "Response",
+            "headers": {
+              "ETag": {
+                "description": "The version to send back as If-Match",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "End a live price",
+        "tags": [
+          "Pricing"
+        ]
+      }
+    },
     "/bss-pricing/v1/prices/{id}/submit": {
       "post": {
-        "description": "Puts one draft price into a prices approval unit; at quorum 0 the unit applies at once. A half of a temporary pair is not submitted alone: it is 400 PAIR_SPLIT, and the pair goes through POST /price-books/{id}/publish-changes, which completes it (D-405). It takes no body and no note: a note for the approver travels with publish-changes (D-464). Refusals: 400 BODY_UNEXPECTED for a body with any key; 400 PAIR_SPLIT, or a rule the price breaks at submit (for example WINDOW_START_IN_PAST, PAIR_RETURN_STALE or CHAIN_MODEL_CHANGED); 409 PRICE_NOT_DRAFT, PRICE_LOCKED_PENDING or UNIT_CONTENDED; 503 REGISTRY_UNAVAILABLE when Products cannot answer a usage chain's dated metering read (D-402).",
+        "description": "Puts one draft price into a prices approval unit; at quorum 0 the unit applies at once. A half of a temporary pair is not submitted alone: it is 400 PAIR_SPLIT, and the pair goes through POST /price-books/{id}/publish-changes, which completes it (D-405). It takes no body and no note: a note for the approver travels with publish-changes (D-464). Refusals: 400 BODY_UNEXPECTED for a body with any key; 400 PAIR_SPLIT, or a rule the price breaks at submit (for example WINDOW_START_IN_PAST, PAIR_RETURN_STALE or CHAIN_MODEL_CHANGED, or END_DATE_INVALID for an end, D-521); 409 PRICE_NOT_DRAFT, PRICE_LOCKED_PENDING or UNIT_CONTENDED, or a guard of a cancel or an end (PRICE_NOT_SCHEDULED, PRICE_CHANGE_PENDING, PRICE_BOUND, PRICE_ALREADY_ENDED, D-520, D-521), or a price of a released entry (BOOK_ARCHIVED while its book is archived, else ENTRY_REFERENCE_RELEASED, D-522); 503 REGISTRY_UNAVAILABLE when Products cannot answer a usage chain's dated metering read (D-402).",
         "operationId": "bss_pricing.submit_price",
         "parameters": [
           {
@@ -43859,8 +44995,19 @@
     },
     "/bss-pricing/v1/settings": {
       "get": {
-        "description": "Returns the tenant's billing defaults (timing, rounding, GL code, tax category), invoice-line templates by SKU type and the currencies a new book may take (empty: any), with who wrote them last and when, and its version as the ETag; the defaults apply, with no writer, until the settings are first written.",
+        "description": "Returns the tenant's billing defaults (timing, rounding, GL code, tax category), invoice-line templates by SKU type and the currencies a new book may take (empty: any), with who wrote them last and when, and its version as the ETag; the defaults apply, with no writer, until the settings are first written. An If-None-Match that matches that ETag by weak comparison is 304 with an empty body and the same ETag; both answers carry Cache-Control private, no-cache (D-518).",
         "operationId": "bss_pricing.get_settings",
+        "parameters": [
+          {
+            "description": "The ETag of an earlier read, or *. A match is 304.",
+            "in": "header",
+            "name": "If-None-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -43872,6 +45019,29 @@
             },
             "description": "Response",
             "headers": {
+              "Cache-Control": {
+                "description": "private, no-cache",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "The version to send back as If-Match",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "The If-None-Match tag matches the settings version",
+            "headers": {
+              "Cache-Control": {
+                "description": "private, no-cache",
+                "schema": {
+                  "type": "string"
+                }
+              },
               "ETag": {
                 "description": "The version to send back as If-Match",
                 "schema": {
@@ -45303,7 +46473,7 @@
     },
     "/bss-products/v1/categories": {
       "get": {
-        "description": "One page of the tenant's categories on the toolkit's OData (P-D-215): `$filter` over id, code, name, status (active or retired), is_default and sort_order; `$orderby` sort_order, code or name (tie-break id; default sort_order, then code); `$top` (alias `limit`; default 200, clamped at 200) and `cursor` (alias `$skiptoken`) from `page_info`. Each item carries `sku_count`, the SKUs that are not retired naming it, from one grouped count. Any other key, `$select` and `$count` are 400; a cursor replayed under another `$filter` is 400.",
+        "description": "One page of the tenant's categories on the toolkit's OData (P-D-215): `$filter` over id, code, name, status (active or retired), is_default, sort_order and archived (an archived category is left out unless asked `archived eq true`, P-D-263; `archived` compares with `eq` or `ne` and a boolean, joined only by top-level `and`); `$orderby` sort_order, code or name (tie-break id; default sort_order, then code); `$top` (alias `limit`; default 200, clamped at 200) and `cursor` (alias `$skiptoken`) from `page_info`. Each item carries `sku_count`, the SKUs that are not retired naming it, from one grouped count. Any other key, `$select` and `$count` are 400; a cursor replayed under another `$filter` is 400. A matching If-None-Match is 304 with an empty body; the 200 carries a weak ETag of its JSON and Cache-Control private, no-cache (P-D-261).",
         "operationId": "bss_products.list_categories",
         "parameters": [
           {
@@ -45325,7 +46495,16 @@
             }
           },
           {
-            "description": "OData v4 filter expression\n- id: eq|ne|in\n- code: eq|ne|contains|startswith|endswith|in\n- name: eq|ne|contains|startswith|endswith|in\n- status: eq|ne|contains|startswith|endswith|in\n- is_default: eq|ne\n- sort_order: eq|ne|gt|ge|lt|le|in",
+            "description": "A weak ETag from an earlier read of this answer, or *. A match is 304.",
+            "in": "header",
+            "name": "If-None-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OData v4 filter expression\n- id: eq|ne|in\n- code: eq|ne|contains|startswith|endswith|in\n- name: eq|ne|contains|startswith|endswith|in\n- status: eq|ne|contains|startswith|endswith|in\n- is_default: eq|ne\n- sort_order: eq|ne|gt|ge|lt|le|in\n- archived: eq|ne",
             "in": "query",
             "name": "$filter",
             "required": false,
@@ -45352,7 +46531,38 @@
                 }
               }
             },
-            "description": "One page of categories, by sort order then code unless ordered otherwise."
+            "description": "One page of categories, by sort order then code unless ordered otherwise.",
+            "headers": {
+              "Cache-Control": {
+                "description": "private, no-cache",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Weak tag of this JSON body",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "The If-None-Match tag matches this body",
+            "headers": {
+              "Cache-Control": {
+                "description": "private, no-cache",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Weak tag of this JSON body",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -45416,6 +46626,10 @@
         ],
         "x-odata-filter": {
           "allowedFields": {
+            "archived": [
+              "eq",
+              "ne"
+            ],
             "code": [
               "eq",
               "ne",
@@ -45805,6 +47019,131 @@
         ]
       }
     },
+    "/bss-products/v1/categories/{id}/archive": {
+      "post": {
+        "description": "Marks a retired category archived at the version the caller read (If-Match), with an audit row: `archived_at` and `archived_by` are set and the version moves (P-D-263). The mark is not a status: the category stays retired. `GET /categories` leaves an archived category out unless asked `archived eq true`; a read by id ignores the mark. Archiving an archived category answers it unchanged. Refusals: 403 without category author; 400 for a missing or malformed If-Match; 404; 409 STALE_REVISION, or CATEGORY_NOT_RETIRED for a category that is not retired.",
+        "operationId": "bss_products.archive_category",
+        "parameters": [
+          {
+            "description": "Category id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Send the ETag returned by the last read. Missing or malformed: 400; stale: 409 STALE_REVISION.",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductsCategoryDto"
+                }
+              }
+            },
+            "description": "The archived category; ETag carries its version.",
+            "headers": {
+              "ETag": {
+                "description": "The version to send back as If-Match",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Archive a retired category",
+        "tags": [
+          "Categories"
+        ]
+      }
+    },
     "/bss-products/v1/categories/{id}/retire": {
       "post": {
         "description": "Retires a category no SKU in draft, published or deprecated names; a retire under review keeps one of those, so it still holds the category (P-D-248). Retired SKUs do not keep it in use (P-D-208). Retiring the tenant's default clears it in the same transaction, with its own version and audit row, and leaves the tenant without a default (P-D-220). Refusals: 404; 409 CATEGORY_IN_USE, or CATEGORY_RETIRED when it is already retired.",
@@ -45912,9 +47251,134 @@
         ]
       }
     },
+    "/bss-products/v1/categories/{id}/unarchive": {
+      "post": {
+        "description": "Clears a category's archive mark at the version the caller read (If-Match), with an audit row; the category is listed again, still retired (P-D-263). Unarchiving a category that is not archived answers it unchanged. Refusals: 403 without category author; 400 for a missing or malformed If-Match; 404; 409 STALE_REVISION.",
+        "operationId": "bss_products.unarchive_category",
+        "parameters": [
+          {
+            "description": "Category id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Send the ETag returned by the last read. Missing or malformed: 400; stale: 409 STALE_REVISION.",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductsCategoryDto"
+                }
+              }
+            },
+            "description": "The unarchived category; ETag carries its version.",
+            "headers": {
+              "ETag": {
+                "description": "The version to send back as If-Match",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Unarchive a category",
+        "tags": [
+          "Categories"
+        ]
+      }
+    },
     "/bss-products/v1/derived-usage-types": {
       "get": {
-        "description": "One page of the tenant's derived usage types by code (tie-break id). Each item carries `latest_version` and `latest`, the latest version in the version-read shape: `version`, `declaration` (inputs and formula), `digest`, `meter_ref`, `canonical_unit`, `accrual_policy_version`, `created_by` and `created_at`. `$top` (alias `limit`; default 50, clamped at 200) and `cursor` (alias `$skiptoken`) from `page_info`, as the SKU list pages. Asks `sku:read` (O-3). Any other key, `$filter`, `$orderby` and `$select` are 400 UNSUPPORTED_QUERY_PARAM; a malformed cursor, or one another list cut, is 400.",
+        "description": "One page of the tenant's derived usage types by code (tie-break id). Each item carries `latest_version` and `latest`, the latest version in the version-read shape: `version`, `declaration` (inputs and formula), `digest`, `meter_ref`, `canonical_unit`, `accrual_policy_version`, `created_by` and `created_at`. `$top` (alias `limit`; default 50, clamped at 200) and `cursor` (alias `$skiptoken`) from `page_info`, as the SKU list pages. Asks `sku:read` (O-3). Any other key, `$filter`, `$orderby` and `$select` are 400 UNSUPPORTED_QUERY_PARAM; a malformed cursor, or one another list cut, is 400. A matching If-None-Match is 304 with an empty body; the 200 carries a weak ETag of its JSON and Cache-Control private, no-cache: the page names its creators, so the browser revalidates it (P-D-261).",
         "operationId": "bss_products.list_derived_usage_types",
         "parameters": [
           {
@@ -45934,6 +47398,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "A weak ETag from an earlier read of this answer, or *. A match is 304.",
+            "in": "header",
+            "name": "If-None-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -45945,7 +47418,38 @@
                 }
               }
             },
-            "description": "One page of derived usage types, by code."
+            "description": "One page of derived usage types, by code.",
+            "headers": {
+              "Cache-Control": {
+                "description": "private, no-cache",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Weak tag of this JSON body",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "The If-None-Match tag matches this body",
+            "headers": {
+              "Cache-Control": {
+                "description": "private, no-cache",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Weak tag of this JSON body",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -46666,7 +48170,7 @@
     },
     "/bss-products/v1/skus": {
       "get": {
-        "description": "One page of the tenant's SKUs (P-D-210). OData `$filter` over id, code, name, lifecycle, retire_pending, type, category_id (`eq null`: no category) and pending_unit_id (`ne null`: in review). `lifecycle` compares with `eq`, `ne` or `in`, and with those joined by `and` (the effective lifecycle); a `lifecycle` term under `or` or `not`, or `contains`, `startswith` or `endswith` on it, is 400. `$orderby` over code, name, updated_at (tie-break id; default code); `$top` (alias `limit`; default 50, clamped at 200) and `cursor` (alias `$skiptoken`) from `page_info`. `q` is a case-insensitive substring of the code, name, unit, usage type or GL code, matched literally (ASCII case folding on SQLite). `priced` and `in_plan` (true or false) keep the SKUs pricing prices or a plan names, or the others (P-D-212): 403 USAGE_FORBIDDEN when pricing refuses the caller, 503 USAGE_UNAVAILABLE when it cannot answer. Any other key, `$select` and `$count` are 400; a cursor replayed with another `$filter`, `q`, `priced` or `in_plan` is 400. Each item carries pricing's `usage`, or null (P-D-197). The pickers (P-D-246): `priced_in` or `not_priced_in`, a price book id (at most one of the two), keeps the SKUs with an entry in that book, in any reference state, or the others; `not_in_revision`, a plan revision id, keeps the SKUs its items do not name. Each key is one call to pricing, under pricing price_book_entry read, and the revision's also under plan read: 403 USAGE_FORBIDDEN when pricing refuses the caller, 503 USAGE_UNAVAILABLE when it cannot answer. A book or a revision the tenant does not hold is an empty set. The cursor carries the picker keys too. The multi-id read is `$filter=id in (...)`, one page of at most `$top` 200, within the 8 KiB filter.",
+        "description": "One page of the tenant's SKUs (P-D-210). OData `$filter` over id, code, name, lifecycle, retire_pending, archived, type, category_id (`eq null`: no category) and pending_unit_id (`ne null`: in review). An archived SKU is left out unless the filter asks `archived eq true`, which lists only the archived ones; `archived eq false` is the default made explicit (P-D-263). `archived` compares with `eq` or `ne` and a boolean, joined only by top-level `and`; any other use of it is 400. `lifecycle` compares the effective lifecycle with `eq`, `ne` or `in`, or with `contains`, `startswith` or `endswith` as the `in` of the lifecycle tokens the text matches, case-sensitively (none matching keeps nothing; P-D-264), at the top level or joined by `and`; a `lifecycle` term under `or` or `not` is 400. `$orderby` over code, name, updated_at (tie-break id; default code); `$top` (alias `limit`; default 50, clamped at 200) and `cursor` (alias `$skiptoken`) from `page_info`. `q` is a case-insensitive substring of the code, name, unit, usage type or GL code, matched literally (ASCII case folding on SQLite). `priced` and `in_plan` (true or false) keep the SKUs pricing prices or a plan names, or the others (P-D-212): 403 USAGE_FORBIDDEN when pricing refuses the caller, 503 USAGE_UNAVAILABLE when it cannot answer. Any other key, `$select` and `$count` are 400; a cursor replayed with another `$filter`, `q`, `priced` or `in_plan` is 400. Each item carries pricing's `usage`, or null (P-D-197). The pickers (P-D-246): `priced_in` or `not_priced_in`, a price book id (at most one of the two), keeps the SKUs with an entry in that book, in any reference state, or the others; `not_in_revision`, a plan revision id, keeps the SKUs its items do not name. Each key is one call to pricing, under pricing price_book_entry read, and the revision's also under plan read: 403 USAGE_FORBIDDEN when pricing refuses the caller, 503 USAGE_UNAVAILABLE when it cannot answer. A book or a revision the tenant does not hold is an empty set. The cursor carries the picker keys too. The multi-id read is `$filter=id in (...)`, one page of at most `$top` 200, within the 8 KiB filter. A matching If-None-Match is 304 with an empty body; the 200 carries a weak ETag of its JSON and Cache-Control private, no-cache (P-D-261).",
         "operationId": "bss_products.list_skus",
         "parameters": [
           {
@@ -46742,7 +48246,16 @@
             }
           },
           {
-            "description": "OData v4 filter expression\n- id: eq|ne|in\n- code: eq|ne|contains|startswith|endswith|in\n- name: eq|ne|contains|startswith|endswith|in\n- lifecycle: eq|ne|contains|startswith|endswith|in\n- type: eq|ne|contains|startswith|endswith|in\n- category_id: eq|ne|in\n- pending_unit_id: eq|ne|in\n- retire_pending: eq|ne",
+            "description": "A weak ETag from an earlier read of this answer, or *. A match is 304.",
+            "in": "header",
+            "name": "If-None-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OData v4 filter expression\n- id: eq|ne|in\n- code: eq|ne|contains|startswith|endswith|in\n- name: eq|ne|contains|startswith|endswith|in\n- lifecycle: eq|ne|contains|startswith|endswith|in\n- type: eq|ne|contains|startswith|endswith|in\n- category_id: eq|ne|in\n- pending_unit_id: eq|ne|in\n- retire_pending: eq|ne\n- archived: eq|ne",
             "in": "query",
             "name": "$filter",
             "required": false,
@@ -46769,7 +48282,38 @@
                 }
               }
             },
-            "description": "One page of SKUs."
+            "description": "One page of SKUs.",
+            "headers": {
+              "Cache-Control": {
+                "description": "private, no-cache",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Weak tag of this JSON body",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "The If-None-Match tag matches this body",
+            "headers": {
+              "Cache-Control": {
+                "description": "private, no-cache",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Weak tag of this JSON body",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -46833,6 +48377,10 @@
         ],
         "x-odata-filter": {
           "allowedFields": {
+            "archived": [
+              "eq",
+              "ne"
+            ],
             "category_id": [
               "eq",
               "ne",
@@ -47019,7 +48567,7 @@
     },
     "/bss-products/v1/skus/counts": {
       "get": {
-        "description": "The list's tab counts (P-D-211): every SKU, each lifecycle, and those in review (`pending_unit_id` set), narrowed like the list by `q`, `priced`, `in_plan` and `$filter`. Top-level `lifecycle` comparisons (`eq`, `ne`, `in`, and those joined by `and`) are dropped. A `lifecycle` term under `or` or `not`, or `contains`, `startswith` or `endswith` on `lifecycle`, is 400. `$orderby`, `$top`/`limit`, `cursor`/`$skiptoken` and `$select` are 400. The picker keys `priced_in`, `not_priced_in` (at most one of the two) and `not_in_revision` narrow the counts as they narrow the list (P-D-246): 403 USAGE_FORBIDDEN when pricing refuses the caller (a revision takes plan read beside price_book_entry read), 503 USAGE_UNAVAILABLE when it cannot answer.",
+        "description": "The list's tab counts (P-D-211): every SKU, each lifecycle, and those in review (`pending_unit_id` set), none of them archived, and the archived SKUs in `archived` (P-D-263), narrowed like the list by `q`, `priced`, `in_plan` and `$filter`. Top-level `lifecycle` terms (`eq`, `ne`, `in`, `contains`, `startswith` or `endswith`, and those joined by `and`) and top-level `archived` comparisons are dropped (P-D-264). A `lifecycle` term under `or` or `not` is 400. `$orderby`, `$top`/`limit`, `cursor`/`$skiptoken` and `$select` are 400. The picker keys `priced_in`, `not_priced_in` (at most one of the two) and `not_in_revision` narrow the counts as they narrow the list (P-D-246): 403 USAGE_FORBIDDEN when pricing refuses the caller (a revision takes plan read beside price_book_entry read), 503 USAGE_UNAVAILABLE when it cannot answer. A matching If-None-Match is 304 with an empty body; the 200 carries a weak ETag of its JSON and Cache-Control private, no-cache (P-D-261).",
         "operationId": "bss_products.count_skus",
         "parameters": [
           {
@@ -47077,7 +48625,16 @@
             }
           },
           {
-            "description": "OData v4 filter expression\n- id: eq|ne|in\n- code: eq|ne|contains|startswith|endswith|in\n- name: eq|ne|contains|startswith|endswith|in\n- lifecycle: eq|ne|contains|startswith|endswith|in\n- type: eq|ne|contains|startswith|endswith|in\n- category_id: eq|ne|in\n- pending_unit_id: eq|ne|in\n- retire_pending: eq|ne",
+            "description": "A weak ETag from an earlier read of this answer, or *. A match is 304.",
+            "in": "header",
+            "name": "If-None-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OData v4 filter expression\n- id: eq|ne|in\n- code: eq|ne|contains|startswith|endswith|in\n- name: eq|ne|contains|startswith|endswith|in\n- lifecycle: eq|ne|contains|startswith|endswith|in\n- type: eq|ne|contains|startswith|endswith|in\n- category_id: eq|ne|in\n- pending_unit_id: eq|ne|in\n- retire_pending: eq|ne\n- archived: eq|ne",
             "in": "query",
             "name": "$filter",
             "required": false,
@@ -47095,7 +48652,38 @@
                 }
               }
             },
-            "description": "The SKU counts."
+            "description": "The SKU counts.",
+            "headers": {
+              "Cache-Control": {
+                "description": "private, no-cache",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Weak tag of this JSON body",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "The If-None-Match tag matches this body",
+            "headers": {
+              "Cache-Control": {
+                "description": "private, no-cache",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "Weak tag of this JSON body",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -47159,6 +48747,10 @@
         ],
         "x-odata-filter": {
           "allowedFields": {
+            "archived": [
+              "eq",
+              "ne"
+            ],
             "category_id": [
               "eq",
               "ne",
@@ -47540,6 +49132,131 @@
           }
         ],
         "summary": "Edit a draft SKU",
+        "tags": [
+          "SKUs"
+        ]
+      }
+    },
+    "/bss-products/v1/skus/{id}/archive": {
+      "post": {
+        "description": "Marks a retired SKU archived at the revision the caller read (If-Match), with an audit row: `archived_at` and `archived_by` are set and the revision moves (P-D-263). The mark is not a lifecycle: the SKU stays retired. `GET /skus`, its counts and the pickers leave an archived SKU out unless asked `archived eq true`; a read by id, the browse, the consumer reads and the pinned facts ignore the mark. Archiving an archived SKU answers it unchanged. Refusals: 403 without SKU author; 400 for a missing or malformed If-Match; 404; 409 STALE_REVISION, or SKU_NOT_RETIRED for a SKU whose lifecycle in force is not retired.",
+        "operationId": "bss_products.archive_sku",
+        "parameters": [
+          {
+            "description": "SKU id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Send the ETag returned by the last read. Missing or malformed: 400; stale: 409 STALE_REVISION.",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkuDto"
+                }
+              }
+            },
+            "description": "The archived SKU; ETag carries its revision.",
+            "headers": {
+              "ETag": {
+                "description": "The version to send back as If-Match",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Archive a retired SKU",
         "tags": [
           "SKUs"
         ]
@@ -48282,6 +49999,131 @@
         "summary": "submit_sku",
         "tags": [
           "SKU governance"
+        ]
+      }
+    },
+    "/bss-products/v1/skus/{id}/unarchive": {
+      "post": {
+        "description": "Clears a SKU's archive mark at the revision the caller read (If-Match), with an audit row; the SKU is listed again, still retired (P-D-263). Unarchiving a SKU that is not archived answers it unchanged. Refusals: 403 without SKU author; 400 for a missing or malformed If-Match; 404; 409 STALE_REVISION.",
+        "operationId": "bss_products.unarchive_sku",
+        "parameters": [
+          {
+            "description": "SKU id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Send the ETag returned by the last read. Missing or malformed: 400; stale: 409 STALE_REVISION.",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkuDto"
+                }
+              }
+            },
+            "description": "The unarchived SKU; ETag carries its revision.",
+            "headers": {
+              "ETag": {
+                "description": "The version to send back as If-Match",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Unarchive a SKU",
+        "tags": [
+          "SKUs"
         ]
       }
     },

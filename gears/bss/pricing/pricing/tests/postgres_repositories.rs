@@ -30,6 +30,8 @@ async fn postgres_unique_codes_and_price_decimal_roundtrip() {
         version: 1,
         created_at: now,
         updated_at: now,
+        archived_at: None,
+        archived_by: None,
     };
     book_repo::insert(&conn, &scope, b.clone()).await.unwrap();
     assert!(matches!(
@@ -99,6 +101,9 @@ async fn postgres_unique_codes_and_price_decimal_roundtrip() {
         temporary_until: None,
         paired_price_id: None,
         return_of_price_id: None,
+        change_kind: "set".into(),
+        target_price_id: None,
+        cancelled_by_unit_id: None,
         state: "approved".into(),
         pending_unit_id: None,
         approved_by_unit_id: None,

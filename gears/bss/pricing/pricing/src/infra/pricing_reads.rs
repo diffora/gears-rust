@@ -132,7 +132,12 @@ pub async fn load_price(
     // @cpt-begin:cpt-cf-bss-pricing-flow-read-contract-events:p1:inst-read-contract-events-flow-5
     let row = price_repo::find(tx, scope, tenant, id)
         .await?
-        .filter(|p| p.state == PriceState::Approved.as_str())
+        // An approved price, or a cancelled one (D-520), never a `cancel` or `end` row.
+        .filter(|p| {
+            price_repo::is_price(p)
+                && (p.state == PriceState::Approved.as_str()
+                    || p.state == PriceState::Cancelled.as_str())
+        })
         .ok_or_else(|| {
             PriceResource::not_found("price not found")
                 .with_resource("price")
@@ -224,8 +229,14 @@ pub async fn read_stored_at(
     if let Some(lost) = wanted.iter().find(|w| !held.contains(w)) {
         return Err(corrupt(format!("entry {lost} of revision {id}")));
     }
-    let mut grouped =
-        price_repo::by_entry(price_repo::for_entries(tx, &children, tenant, &wanted).await?);
+    // The prices only: a `cancel` or `end` row is never resolved, pinned or bound (D-520, D-521).
+    let mut grouped = price_repo::by_entry(
+        price_repo::for_entries(tx, &children, tenant, &wanted)
+            .await?
+            .into_iter()
+            .filter(price_repo::is_price)
+            .collect(),
+    );
     let mut dimensions = BTreeMap::new();
     let entry_rows = found.clone();
     for e in found {

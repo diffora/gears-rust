@@ -1248,6 +1248,7 @@ pub async fn rest_app_on_db(
     source: &'static str,
     db: toolkit_db::DBProvider<toolkit_db::DbError>,
 ) -> (axum::Router, Arc<crate::api::rest::ApiState>) {
+    let hub = Arc::new(toolkit::ClientHub::new());
     let handle = toolkit_db::outbox::Outbox::builder(db.db().clone())
         .table_prefix(events::OUTBOX_TABLE_PREFIX)
         .unwrap()
@@ -1270,7 +1271,8 @@ pub async fn rest_app_on_db(
             Uuid::from_u128(42),
             "pricing".into(),
         )]),
-        hub: Arc::new(toolkit::ClientHub::new()),
+        hub: Arc::clone(&hub),
+        actor_names: crate::api::rest::ApiState::names_from(&hub),
     });
     let app = build(state.clone(), &toolkit::api::OpenApiRegistryImpl::new())
         .layer(axum::Extension(flat_in_enforcer(tenant)))

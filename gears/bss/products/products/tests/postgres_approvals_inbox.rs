@@ -109,6 +109,9 @@ async fn walk_on_postgres() -> Walk {
         fence_ttl_minutes: 30,
         reference_principals: std::collections::BTreeMap::new(),
         hub: Arc::new(toolkit::ClientHub::new()),
+        actor_names: bss_products::api::rest::ApiState::names_from(&Arc::new(
+            toolkit::ClientHub::new(),
+        )),
     });
     // Pricing: its own database and chain, and its authoring state.
     let pricing_pg = Pg::empty().await;

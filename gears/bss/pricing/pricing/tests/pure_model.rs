@@ -2,7 +2,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 use bss_pricing::domain::{
     plan::{ReferenceState as PlanReferenceState, RevisionState, Treatment},
-    price::{Eligibility, PriceState},
+    price::{ChangeKind, Eligibility, PriceState},
     price_book_entry::{ChargeKind, Model, OpState, ReferenceState},
     reference_op::{OpKind, RefKind},
 };
@@ -37,9 +37,19 @@ fn enum_check_values_match_migration_text() {
     // carry the enum's vocabulary, not one of them (PT-13).
     pin_both_dialects!(ChargeKind, entry, "charge_kind");
     pin_both_dialects!(Eligibility, price, "eligibility");
-    pin_both_dialects!(PriceState, price, "state");
-    pin_both_dialects!(ReferenceState, entry, "reference_state");
     pin_both_dialects!(OpState, op, "state");
+    // D-522 widened `reference_state` with `released`. 000005 keeps the original three.
+    let archived = include_str!("../src/infra/storage/migrations/m20261003_000023_book_archive.rs");
+    pin_both_dialects!(ReferenceState, archived, "reference_state");
+    assert!(
+        entry.contains("CHECK (reference_state IN ('confirmation_pending','confirmed','lost'))")
+    );
+    // D-520 widened `state` and added `change_kind`. 000007 keeps the original four states.
+    // Both new CHECKs are spelled once for Postgres and once for SQLite.
+    let widened =
+        include_str!("../src/infra/storage/migrations/m20261003_000022_price_cancel_and_end.rs");
+    pin_both_dialects!(PriceState, widened, "state");
+    pin_both_dialects!(ChangeKind, widened, "change_kind");
 }
 /// The revision state's CHECK is `m20260929_000017`'s since D-446 widened it with `scheduled`:
 /// Postgres re-adds it, and the `SQLite` family rebuild spells it in the new table.
@@ -61,11 +71,14 @@ fn reference_op_kind_and_ref_kind_match_migration_text() {
     let op = include_str!(
         "../src/infra/storage/migrations/m20260926_000006_create_pricing_reference_op.rs"
     );
-    pin_both_dialects!(OpKind, op, "kind");
+    // D-522 widened `kind` with `release`; 000006 keeps the original four.
+    let archived = include_str!("../src/infra/storage/migrations/m20261003_000023_book_archive.rs");
+    pin_both_dialects!(OpKind, archived, "kind");
+    assert!(op.contains("CHECK (kind IN ('create','delete','rereserve','attach'))"));
     pin_both_dialects!(RefKind, op, "ref_kind");
     assert_eq!(
         OpKind::ALL.iter().map(|k| k.as_str()).collect::<Vec<_>>(),
-        ["create", "delete", "rereserve", "attach"]
+        ["create", "delete", "rereserve", "attach", "release"]
     );
     assert_eq!(
         RefKind::ALL.iter().map(|k| k.as_str()).collect::<Vec<_>>(),

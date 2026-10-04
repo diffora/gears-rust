@@ -57,14 +57,11 @@
 //! is the **header** layer the domain must not know about — which header
 //! carries the tag, and what an absent one means.
 //!
-//! # No `If-None-Match`
+//! # `If-Match` only, in this module
 //!
-//! The design set names no conditional-`GET` requirement for this surface —
-//! `foundation.md` and `01-foundation.md` mention `If-Match` and `ETag` only
-//! on the mutating verbs and the `GET` that seeds them, never `If-None-Match`
-//! or a `304`. Adding a reader for it here would be inventing a contract
-//! nothing in this gear's design set asks for; a real request would be
-//! serving it and this module carries no handler yet.
+//! List and reference reads answer `If-None-Match` with `304` (P-D-261). This
+//! module still parses only `If-Match` for the mutating doors. A weak tag is
+//! not a row version, and [`if_match`] refuses one.
 //! @cpt-dod:cpt-cf-bss-products-dod-if-match-version:p1
 
 use axum::http::HeaderMap;
@@ -162,6 +159,34 @@ pub(crate) fn etag_header() -> ResponseHeaderSpec {
     ResponseHeaderSpec::new(
         "ETag",
         "The version to send back as If-Match",
+        ResponseHeaderType::String,
+    )
+}
+
+/// `If-None-Match` on a list read (P-D-261). A match is 304; the header is optional.
+#[must_use]
+pub(crate) fn if_none_match_param() -> ParamSpec {
+    ParamSpec::header("If-None-Match")
+        .required(false)
+        .description("A weak ETag from an earlier read of this answer, or *. A match is 304.")
+}
+
+/// The weak `ETag` of the JSON body (P-D-261). It is not the version a write sends as `If-Match`.
+#[must_use]
+pub(crate) fn weak_etag_header() -> ResponseHeaderSpec {
+    ResponseHeaderSpec::new(
+        "ETag",
+        "Weak tag of this JSON body",
+        ResponseHeaderType::String,
+    )
+}
+
+/// `Cache-Control` for a list the browser must revalidate (P-D-261).
+#[must_use]
+pub(crate) fn revalidate_header() -> ResponseHeaderSpec {
+    ResponseHeaderSpec::new(
+        "Cache-Control",
+        "private, no-cache",
         ResponseHeaderType::String,
     )
 }

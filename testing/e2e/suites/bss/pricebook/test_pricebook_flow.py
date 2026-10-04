@@ -29,6 +29,9 @@ plans list names each plan's current revision and the one in effect (D-460); a p
 publish-changes carry a note (D-464); both gears count their approval units and page them newest
 first (D-470, P-D-227), and a unit says whether its reader may approve it (D-471, P-D-228); an
 entry names its next price (D-472), and a book's entries list reads its prices on a date (D-473).
+
+Archive: a finished book is archived and releases its entries' SKU references (D-522), so the SKU
+retires and is archived in turn (P-D-263); both lists hide what is archived unless asked.
 """
 
 import datetime
@@ -198,7 +201,7 @@ def test_a_priced_sku_publishes_its_price_and_blocks_retirement(api, variant):
     assert replay.json() == entry, "the same Idempotency-Key replays the receipt"
 
     # One draft price, published with quorum 0.
-    start = (datetime.date.today() + datetime.timedelta(days=30)).isoformat()
+    start = (datetime.datetime.now(datetime.timezone.utc).date() + datetime.timedelta(days=30)).isoformat()
     r = api.post(
         f"{PRICING}/price-book-entries/{entry['id']}/prices",
         json={**shape["price"], "eligibility": "all", "effective_from": start},
@@ -391,8 +394,12 @@ def _current(
 
 
 def _current_of(row: dict) -> dict:
-    """``current`` without its book identity, for the assertions that do not name the book."""
-    return {k: v for k, v in row["current"].items() if k != "book"}
+    """``current`` without its book identity and its author's name, for the assertions that name
+    neither. The name is always there (D-519): a string, or null when it is not available now, as
+    on every write answer."""
+    current = row["current"]
+    assert "created_by_name" in current, current
+    return {k: v for k, v in current.items() if k not in ("book", "created_by_name")}
 
 
 @pytest.mark.timeout(120)
@@ -816,6 +823,8 @@ def test_a_sku_without_a_category_is_priced_in_two_models_and_its_reads_carry_it
             "deprecated": 0,
             "retired": 0,
             "in_review": 0,
+            # P-D-263: the counts carry the archived SKUs apart.
+            "archived": 0,
         }, r.text
         r = api.post(f"{PRODUCTS}/categories/{unused}/retire", json={})
         assert r.status_code == 200, r.text
@@ -1748,7 +1757,7 @@ def test_a_draft_item_may_wait_for_its_entry(api):
     )
     assert r.status_code == 201, r.text
     entry = r.json()["id"]
-    start = datetime.date.today().isoformat()
+    start = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
     r = api.post(
         f"{PRICING}/price-book-entries/{entry}/prices",
         json={
@@ -1777,3 +1786,108 @@ def test_a_draft_item_may_wait_for_its_entry(api):
     r = api.post(f"{PRICING}/plan-revisions/{rev}/submit", json={}, headers=_key())
     assert r.status_code == 201, r.text
     assert "REVISION_CHECKS_RED" not in r.text, r.text
+
+
+def _pricing_quorum_zero(api) -> None:
+    """Pricing's default quorum 0, written at the policy's own ETag."""
+    _, tag = _policy(api)
+    r = api.put(f"{PRICING}/approval-policy", json={"quorum": 0}, headers={"If-Match": tag})
+    assert r.status_code == 200, r.text
+
+
+@pytest.mark.timeout(120)
+def test_an_archived_book_releases_its_sku_so_the_sku_retires_and_archives(api):
+    """Ask 58 (pricing D-522, products P-D-263).
+
+    A finished book is archived: its entry's SKU reference is released, the entry reads
+    ``released``, and the book leaves the list unless asked ``archived eq true``. Products then
+    retires the SKU, which no live reference keeps, and archives it, and the SKU leaves its list
+    the same way. Every date is a UTC date.
+    """
+    run = uuid.uuid4().hex[:8]
+    today = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
+
+    _products_quorum_zero(api)
+    code = f"E2E-ARCHIVE-{run}"
+    r = api.post(
+        f"{PRODUCTS}/skus",
+        json={"code": code, "name": f"E2E archive {run}", "type": "recurring"},
+    )
+    assert r.status_code == 201, r.text
+    sku = r.json()["id"]
+    r = api.post(f"{PRODUCTS}/skus/{sku}/submit", json={})
+    assert r.status_code == 200, r.text
+    assert r.json()["applied"] is True, r.text
+
+    _pricing_quorum_zero(api)
+    book_code = f"archive-{run}"
+    r = api.post(
+        f"{PRICING}/price-books",
+        json={"code": book_code, "name": f"Archive {run}", "currency": "EUR"},
+        headers=_key(),
+    )
+    assert r.status_code == 201, r.text
+    book = r.json()["id"]
+    r = _monthly_entry(api, book, sku, "flat")
+    assert r.status_code == 201, r.text
+    entry = r.json()
+    assert entry["reference_state"] == "confirmed", entry
+    _draft_price(api, entry, {"amount": "30.00"}, today)
+    r = api.post(f"{PRICING}/price-books/{book}/publish-changes", json={}, headers=_key())
+    assert r.status_code == 201, r.text
+    assert r.json()["applied"] is True, r.text
+
+    # The live entry keeps the SKU referenced.
+    r = api.post(f"{PRODUCTS}/skus/{sku}/retire", json={})
+    assert r.status_code == 409, r.text
+    assert "SKU_REFERENCED" in r.text, r.text
+
+    # Archive the finished book at its ETag.
+    r = api.get(f"{PRICING}/price-books/{book}")
+    assert r.status_code == 200, r.text
+    r = api.post(
+        f"{PRICING}/price-books/{book}/archive",
+        json={},
+        headers={"If-Match": r.headers["etag"]},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["archived_at"] is not None, r.text
+    r = api.get(f"{PRICING}/price-book-entries/{entry['id']}")
+    assert r.status_code == 200, r.text
+    assert r.json()["reference_state"] == "released", r.text
+    r = api.get(f"{PRICING}/price-books", params={"q": book_code})
+    assert r.status_code == 200, r.text
+    assert [b["id"] for b in r.json()["items"]] == [], r.text
+    r = api.get(
+        f"{PRICING}/price-books", params={"q": book_code, "$filter": "archived eq true"}
+    )
+    assert r.status_code == 200, r.text
+    assert [b["id"] for b in r.json()["items"]] == [book], r.text
+    # The archived book's entries are read-only.
+    r = api.post(
+        f"{PRICING}/price-book-entries/{entry['id']}/prices",
+        json={"price": {"amount": "31.00"}, "eligibility": "all", "effective_from": today},
+        headers=_key(),
+    )
+    assert r.status_code == 409, r.text
+    assert "BOOK_ARCHIVED" in r.text, r.text
+
+    # Products retires the SKU, then archives it.
+    r = api.post(f"{PRODUCTS}/skus/{sku}/retire", json={})
+    assert r.status_code == 200, r.text
+    assert r.json()["applied"] is True, r.text
+    r = api.get(f"{PRODUCTS}/skus/{sku}")
+    assert r.status_code == 200, r.text
+    assert r.json()["sku"]["lifecycle"] == "retired", r.text
+    r = api.post(
+        f"{PRODUCTS}/skus/{sku}/archive",
+        headers={"If-Match": r.headers["etag"]},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["archived_at"] is not None, r.text
+    assert _usage_filtered(api, code) == [], "an archived SKU leaves the list"
+    r = api.get(f"{PRODUCTS}/skus", params={"q": code, "$filter": "archived eq true"})
+    assert r.status_code == 200, r.text
+    assert [s["id"] for s in r.json()["items"]] == [sku], r.text
+    r = api.get(f"{PRODUCTS}/skus/{sku}")
+    assert r.status_code == 200, "a read by id ignores the mark"

@@ -30,11 +30,13 @@ use crate::{
 };
 use authz_resolver_sdk::PolicyEnforcer;
 use axum::{
-    Extension, Json, Router,
+    Extension, Router,
     extract::{Query, rejection::QueryRejection},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
+    response::Response,
 };
 use bss_products_sdk::sku_usage::{SkuUsageSets, UsageScope};
+use bss_rest::conditional_get::{PRIVATE_REVALIDATE, respond};
 use std::sync::Arc;
 use toolkit::api::{
     OpenApiRegistry,
@@ -75,6 +77,8 @@ pub enum SkuFilterField {
     CategoryId,
     PendingUnitId,
     RetirePending,
+    /// The archive mark (P-D-263): `archived eq true` lists only the archived SKUs.
+    Archived,
 }
 impl SkuFilterField {
     const fn field(self) -> SkuListField {
@@ -87,6 +91,7 @@ impl SkuFilterField {
             Self::CategoryId => SkuListField::CategoryId,
             Self::PendingUnitId => SkuListField::PendingUnitId,
             Self::RetirePending => SkuListField::RetirePending,
+            Self::Archived => SkuListField::Archived,
         }
     }
 }
@@ -100,6 +105,7 @@ impl FilterField for SkuFilterField {
         Self::CategoryId,
         Self::PendingUnitId,
         Self::RetirePending,
+        Self::Archived,
     ];
     fn name(&self) -> &'static str {
         self.field().name()
@@ -154,10 +160,15 @@ pub(crate) fn register(router: Router, openapi: &dyn OpenApiRegistry) -> Router 
         .summary("List, filter and search SKUs")
         .description(
             "One page of the tenant's SKUs (P-D-210). OData `$filter` over id, code, name, \
-             lifecycle, retire_pending, type, category_id (`eq null`: no category) and \
-             pending_unit_id (`ne null`: in review). `lifecycle` compares with `eq`, `ne` or \
-             `in`, and with those joined by `and` (the effective lifecycle); a `lifecycle` term \
-             under `or` or `not`, or `contains`, `startswith` or `endswith` on it, is 400. \
+             lifecycle, retire_pending, archived, type, category_id (`eq null`: no category) and \
+             pending_unit_id (`ne null`: in review). An archived SKU is left out unless the \
+             filter asks `archived eq true`, which lists only the archived ones; `archived eq \
+             false` is the default made explicit (P-D-263). `archived` compares with `eq` or `ne` \
+             and a boolean, joined only by top-level `and`; any other use of it is 400. \
+             `lifecycle` compares the effective lifecycle with `eq`, `ne` or `in`, or with \
+             `contains`, `startswith` or `endswith` as the `in` of the lifecycle tokens the text \
+             matches, case-sensitively (none matching keeps nothing; P-D-264), at the top level \
+             or joined by `and`; a `lifecycle` term under `or` or `not` is 400. \
              `$orderby` over code, name, updated_at (tie-break id; default \
              code); `$top` (alias `limit`; default 50, clamped at 200) and `cursor` (alias \
              `$skiptoken`) from `page_info`. `q` is a case-insensitive substring of the code, \
@@ -175,7 +186,8 @@ pub(crate) fn register(router: Router, openapi: &dyn OpenApiRegistry) -> Router 
              caller, 503 USAGE_UNAVAILABLE when it cannot answer. A book or a revision the tenant \
              does not hold is an empty set. The cursor carries the picker keys too. The multi-id \
              read is `$filter=id in (...)`, one page of at most `$top` 200, within the 8 KiB \
-             filter.",
+             filter. A matching If-None-Match is 304 with an empty body; the 200 carries a weak \
+             ETag of its JSON and Cache-Control private, no-cache (P-D-261).",
         )
         .tag(TAG)
         .authenticated()
@@ -228,6 +240,7 @@ pub(crate) fn register(router: Router, openapi: &dyn OpenApiRegistry) -> Router 
             "A plan revision id: only the SKUs its items do not name (P-D-246)",
             "string",
         )
+        .param(super::preconditions::if_none_match_param())
         .handler(list_skus)
         .with_odata_filter::<SkuFilterField>()
         .with_odata_orderby::<SkuOrderField>()
@@ -236,6 +249,14 @@ pub(crate) fn register(router: Router, openapi: &dyn OpenApiRegistry) -> Router 
             StatusCode::OK,
             "One page of SKUs.",
         )
+        .response_header(super::preconditions::weak_etag_header())
+        .response_header(super::preconditions::revalidate_header())
+        .no_content_response(
+            StatusCode::NOT_MODIFIED,
+            "The If-None-Match tag matches this body",
+        )
+        .response_header(super::preconditions::weak_etag_header())
+        .response_header(super::preconditions::revalidate_header())
         .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
@@ -247,14 +268,17 @@ pub(crate) fn register(router: Router, openapi: &dyn OpenApiRegistry) -> Router 
         .summary("Count SKUs by lifecycle and in review")
         .description(
             "The list's tab counts (P-D-211): every SKU, each lifecycle, and those in review \
-             (`pending_unit_id` set), narrowed like the list by `q`, `priced`, `in_plan` and \
-             `$filter`. Top-level `lifecycle` comparisons (`eq`, `ne`, `in`, and those joined by \
-             `and`) are dropped. A `lifecycle` term under `or` or `not`, or `contains`, \
-             `startswith` or `endswith` on `lifecycle`, is 400. `$orderby`, `$top`/`limit`, \
+             (`pending_unit_id` set), none of them archived, and the archived SKUs in `archived` \
+             (P-D-263), narrowed like the list by `q`, `priced`, `in_plan` and `$filter`. \
+             Top-level `lifecycle` terms (`eq`, `ne`, `in`, `contains`, `startswith` or \
+             `endswith`, and those joined by `and`) and top-level `archived` comparisons are \
+             dropped (P-D-264). A `lifecycle` term under `or` or `not` is 400. `$orderby`, `$top`/`limit`, \
              `cursor`/`$skiptoken` and `$select` are 400. The picker keys `priced_in`, `not_priced_in` (at most one of the \
              two) and `not_in_revision` narrow the counts as they narrow the list (P-D-246): 403 \
              USAGE_FORBIDDEN when pricing refuses the caller (a revision takes plan read beside \
-             price_book_entry read), 503 USAGE_UNAVAILABLE when it cannot answer.",
+             price_book_entry read), 503 USAGE_UNAVAILABLE when it cannot answer. A matching \
+             If-None-Match is 304 with an empty body; the 200 carries a weak ETag of its JSON and \
+             Cache-Control private, no-cache (P-D-261).",
         )
         .tag(TAG)
         .authenticated()
@@ -295,9 +319,18 @@ pub(crate) fn register(router: Router, openapi: &dyn OpenApiRegistry) -> Router 
             "A plan revision id: only the SKUs its items do not name (P-D-246)",
             "string",
         )
+        .param(super::preconditions::if_none_match_param())
         .handler(count_skus)
         .with_odata_filter::<SkuFilterField>()
         .json_response_with_schema::<ProductsSkuCounts>(openapi, StatusCode::OK, "The SKU counts.")
+        .response_header(super::preconditions::weak_etag_header())
+        .response_header(super::preconditions::revalidate_header())
+        .no_content_response(
+            StatusCode::NOT_MODIFIED,
+            "The If-None-Match tag matches this body",
+        )
+        .response_header(super::preconditions::weak_etag_header())
+        .response_header(super::preconditions::revalidate_header())
         .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
@@ -486,15 +519,21 @@ pub(super) fn params(
 }
 
 /// The `$filter`, checked the way the pager will read it: only [`SkuFilterField`]s (`null` only
-/// on a nullable one), and each value through the mapping (a closed value). The condition it
-/// becomes, for a count.
+/// on a nullable one), its `archived` terms ones the list can take apart (P-D-263), and each other
+/// value through the mapping (a closed value). The condition the rest becomes, for a count.
 fn checked_filter(filter: Option<&Expr>) -> Result<Option<sea_orm::Condition>, CanonicalError> {
     let Some(expr) = filter else {
         return Ok(None);
     };
     convert_expr_to_filter_node::<SkuFilterField>(expr)
         .map_err(|e| ODataError::InvalidFilter(e.to_string()))?;
-    let node = convert_expr_to_filter_node::<SkuListField>(expr)
+    // P-D-263: the `archived` terms leave before the pager's reading; the list applies them on the
+    // mark, and the counts count both sides.
+    let (rest, _) = repo::take_archived(Some(expr.clone()))?;
+    let Some(rest) = rest else {
+        return Ok(None);
+    };
+    let node = convert_expr_to_filter_node::<SkuListField>(&rest)
         .map_err(|e| ODataError::InvalidFilter(e.to_string()))?;
     let condition = filter_node_to_condition::<SkuListField, SkuListMapping>(&node)
         .map_err(ODataError::InvalidFilter)?;
@@ -598,9 +637,10 @@ async fn list_skus(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
+    headers: HeaderMap,
     query: RawQuery,
     odata: Result<OData, CanonicalError>,
-) -> Result<Json<Page<SkuListItem>>, CanonicalError> {
+) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     // Authorization first, then the query (a 403 before a 400).
     let scope = read_scope(&enforcer, &ctx).await?;
@@ -651,20 +691,27 @@ async fn list_skus(
     // P-D-197: one call of pricing's usage port for the page, after the page's transaction.
     let ids: Vec<Uuid> = page.items.iter().map(|s| s.id).collect();
     let mut usage = super::usage::of(&state, &ctx, &ids).await;
-    Ok(Json(Page {
-        items: page
-            .items
-            .into_iter()
-            .map(|s| {
-                let counted = usage.remove(&s.id);
-                SkuListItem {
-                    sku: s.into(),
-                    usage: counted,
-                }
-            })
-            .collect(),
-        page_info: page.page_info,
-    }))
+    let mut items: Vec<SkuListItem> = page
+        .items
+        .into_iter()
+        .map(|s| {
+            let counted = usage.remove(&s.id);
+            SkuListItem {
+                sku: s.into(),
+                usage: counted,
+            }
+        })
+        .collect();
+    // P-D-262: the page's creators in one lookup; the weak tag covers their names.
+    state.actor_names.fill(&ctx, &mut items).await;
+    Ok(respond(
+        &headers,
+        &Page {
+            items,
+            page_info: page.page_info,
+        },
+        PRIVATE_REVALIDATE,
+    ))
 }
 
 /// Recover the tenant's orphan fences before a read, in the read's transaction, so the list
@@ -694,17 +741,19 @@ async fn count_skus(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
+    headers: HeaderMap,
     query: RawQuery,
     odata: Result<OData, CanonicalError>,
-) -> Result<Json<ProductsSkuCounts>, CanonicalError> {
+) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let scope = read_scope(&enforcer, &ctx).await?;
     let params = params(query, COUNT_KEYS, Some(&["$filter"]))?;
     let OData(odata) = odata?;
     // The whole filter is checked as the list would read it, then its lifecycle terms go.
     checked_filter(odata.filter.as_deref())?;
-    // Pulled-out lifecycle terms are dropped (the counts count every lifecycle). A term the
-    // CASE does not serve is the same 400 the list answers (P-D-249).
+    // Pulled-out lifecycle terms, text functions included, are dropped (the counts count every
+    // lifecycle). A term the CASE does not serve is the same 400 the list answers (P-D-249,
+    // P-D-264).
     let condition = match odata.filter.as_deref() {
         Some(expr) => {
             let (rest, _) =
@@ -734,9 +783,14 @@ async fn count_skus(
         })
         .await
         .map_err(tx_to_canonical)?;
-    Ok(Json(counts.into()))
+    let body: ProductsSkuCounts = counts.into();
+    Ok(respond(&headers, &body, PRIVATE_REVALIDATE))
 }
 
 #[cfg(test)]
 #[path = "sku_list_tests.rs"]
 mod sku_list_tests;
+
+#[cfg(test)]
+#[path = "conditional_reads_tests.rs"]
+mod conditional_reads_tests;

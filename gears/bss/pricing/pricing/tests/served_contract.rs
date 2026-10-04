@@ -74,7 +74,7 @@ async fn an_op_that_is_not_served_has_no_text_to_read() {
 async fn every_op_declares_its_503() {
     let api = served().await;
     let all = ops(&api);
-    assert_eq!(all.len(), 56, "the route census holds 56 ops");
+    assert_eq!(all.len(), 60, "the route census holds 60 ops");
     let missing: Vec<_> = all
         .iter()
         .filter(|(_, _, op)| {
@@ -375,8 +375,8 @@ async fn the_sku_entries_read_says_how_it_narrows_orders_and_pages() {
     assert_eq!(
         names,
         [
-            "$orderby", "book_id", "changing", "currency", "cursor", "limit", "q", "sku_id",
-            "status",
+            "$filter", "$orderby", "book_id", "changing", "currency", "cursor", "limit", "q",
+            "sku_id", "status",
         ]
     );
     let text = description(&api, "get", path);

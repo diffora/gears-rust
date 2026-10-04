@@ -193,7 +193,7 @@ impl<'a> ApprovalSubject<DbTx<'a>> for SkuChange {
                         unit.id,
                         op,
                         approved.then_some(unit.id),
-                        false
+                        None
                     )
                     .await
                     .map_err(store_err)?,

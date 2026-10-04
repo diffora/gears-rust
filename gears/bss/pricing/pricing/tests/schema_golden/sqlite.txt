@@ -69,7 +69,7 @@ INDEX pricing_plan_revision_scheduled
   DDL CREATE UNIQUE INDEX pricing_plan_revision_scheduled ON pricing_plan_revision (plan_id) WHERE state = 'scheduled'
 INDEX pricing_price_approved_start
   ON pricing_price
-  DDL CREATE UNIQUE INDEX pricing_price_approved_start ON pricing_price (price_book_entry_id, coalesce(dim_value, ''), effective_from) WHERE state = 'approved'
+  DDL CREATE UNIQUE INDEX pricing_price_approved_start ON pricing_price (price_book_entry_id, coalesce(dim_value, ''), effective_from) WHERE state = 'approved' AND change_kind = 'set'
 INDEX pricing_price_book_entry_key
   ON pricing_price_book_entry
   DDL CREATE UNIQUE INDEX pricing_price_book_entry_key ON pricing_price_book_entry (book_id, sku_id, charge_kind, coalesce(period, ''), model, coalesce(usage_policy_digest, ''))
@@ -358,6 +358,8 @@ TABLE pricing_plan_revision
 TABLE pricing_price
   COLUMN approved_at TEXT NULL DEFAULT - PK 0
   COLUMN approved_by_unit_id TEXT NULL DEFAULT - PK 0
+  COLUMN cancelled_by_unit_id TEXT NULL DEFAULT - PK 0
+  COLUMN change_kind TEXT NOT NULL DEFAULT 'set' PK 0
   COLUMN closed_explicitly INTEGER NOT NULL DEFAULT 0 PK 0
   COLUMN created_at TEXT NOT NULL DEFAULT - PK 0
   COLUMN created_by TEXT NOT NULL DEFAULT - PK 0
@@ -375,17 +377,22 @@ TABLE pricing_price
   COLUMN price_json TEXT NOT NULL DEFAULT - PK 0
   COLUMN return_of_price_id TEXT NULL DEFAULT - PK 0
   COLUMN state TEXT NOT NULL DEFAULT - PK 0
+  COLUMN target_price_id TEXT NULL DEFAULT - PK 0
   COLUMN temporary_until TEXT NULL DEFAULT - PK 0
   COLUMN tenant_id TEXT NOT NULL DEFAULT - PK 0
   COLUMN updated_at TEXT NOT NULL DEFAULT - PK 0
   COLUMN version INTEGER NOT NULL DEFAULT 1 PK 0
   COLUMN version_no INTEGER NOT NULL DEFAULT - PK 0
   FK approved_by_unit_id -> pricing_approval_unit.id
+  FK cancelled_by_unit_id -> pricing_approval_unit.id
   FK paired_price_id -> pricing_price.id
   FK pending_unit_id -> pricing_approval_unit.id
   FK price_book_entry_id -> pricing_price_book_entry.id
   FK return_of_price_id -> pricing_price.id
+  FK target_price_id -> pricing_price.id
 TABLE pricing_price_book
+  COLUMN archived_at TEXT NULL DEFAULT - PK 0
+  COLUMN archived_by TEXT NULL DEFAULT - PK 0
   COLUMN code TEXT NOT NULL DEFAULT - PK 0
   COLUMN created_at TEXT NOT NULL DEFAULT - PK 0
   COLUMN currency char(3) NOT NULL DEFAULT - PK 0

@@ -6,7 +6,9 @@ use std::sync::Arc;
 use axum::Router;
 use axum::http::StatusCode;
 use toolkit::api::OpenApiRegistry;
-use toolkit::api::operation_builder::{OperationBuilder, OperationBuilderODataExt, ParamSpec};
+use toolkit::api::operation_builder::{
+    OperationBuilder, OperationBuilderODataExt, ParamSpec, ResponseHeaderSpec, ResponseHeaderType,
+};
 use toolkit_odata::filter::FilterField;
 
 use super::handlers;
@@ -35,6 +37,31 @@ impl FilterField for InboxOrderField {
     fn from_name(name: &str) -> Option<Self> {
         (name == "submitted_at").then_some(Self::SubmittedAt)
     }
+}
+
+/// `If-None-Match` on the list and the counts (AP-D-10). A match is 304; the header is optional.
+fn if_none_match() -> ParamSpec {
+    ParamSpec::header("If-None-Match")
+        .required(false)
+        .description("A weak ETag from an earlier read of this answer, or *. A match is 304.")
+}
+
+/// The weak `ETag` of the JSON body (AP-D-10).
+fn weak_etag() -> ResponseHeaderSpec {
+    ResponseHeaderSpec::new(
+        "ETag",
+        "Weak tag of this JSON body",
+        ResponseHeaderType::String,
+    )
+}
+
+/// `Cache-Control: private, no-cache` (AP-D-10): the browser keeps the answer and revalidates it.
+fn revalidate() -> ResponseHeaderSpec {
+    ResponseHeaderSpec::new(
+        "Cache-Control",
+        "private, no-cache",
+        ResponseHeaderType::String,
+    )
 }
 
 pub fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Router {
@@ -85,7 +112,9 @@ fn list_route(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
              on the counts counts the readable gears only. Refusals: 400 ORDER_WITH_CURSOR when \
              `$orderby` is sent with a cursor; 400 FILTER_MISMATCH when the narrowing changed; \
              400 for a cursor or an order that does not read; 403 when every gear forbids the \
-             caller; 503 SOURCE_UNAVAILABLE when every gear did not answer.",
+             caller; 503 SOURCE_UNAVAILABLE when every gear did not answer. A matching \
+             If-None-Match is 304 with an empty body; the 200 carries a weak ETag of its JSON, \
+             `sources` included, and Cache-Control private, no-cache (AP-D-10).",
         )
         .tag(TAG)
         .authenticated()
@@ -118,8 +147,17 @@ fn list_route(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .query_param_typed("cursor", false, "Continuation from next_cursor", "string")
         .with_odata_orderby::<InboxOrderField>()
         .query_param_typed("impact", false, "false skips the live impact", "boolean")
+        .param(if_none_match())
         .handler(handlers::list_units)
         .json_response_with_schema::<InboxUnitListDto>(openapi, StatusCode::OK, "One merged page")
+        .response_header(weak_etag())
+        .response_header(revalidate())
+        .no_content_response(
+            StatusCode::NOT_MODIFIED,
+            "The If-None-Match tag matches this body",
+        )
+        .response_header(weak_etag())
+        .response_header(revalidate())
         .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
@@ -138,7 +176,9 @@ fn counts_route(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
              readable gears only. `sources` names each gear as ok, forbidden or unavailable. A \
              forbidden or unavailable gear is omitted from the sum. Refusals: 400 for a query \
              that does not parse or a key the narrowing does not take; 403 when every gear \
-             forbids the caller; 503 SOURCE_UNAVAILABLE when every gear did not answer.",
+             forbids the caller; 503 SOURCE_UNAVAILABLE when every gear did not answer. A \
+             matching If-None-Match is 304 with an empty body; the 200 carries a weak ETag of its \
+             JSON, `sources` included, and Cache-Control private, no-cache (AP-D-10).",
         )
         .tag(TAG)
         .authenticated()
@@ -162,8 +202,17 @@ fn counts_route(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
             "Price book id; products treats it as empty",
             "string",
         )
+        .param(if_none_match())
         .handler(handlers::count_units)
         .json_response_with_schema::<InboxCountsDto>(openapi, StatusCode::OK, "Summed counts")
+        .response_header(weak_etag())
+        .response_header(revalidate())
+        .no_content_response(
+            StatusCode::NOT_MODIFIED,
+            "The If-None-Match tag matches this body",
+        )
+        .response_header(weak_etag())
+        .response_header(revalidate())
         .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)

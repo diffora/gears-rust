@@ -29,7 +29,7 @@ const DESIGN_INDEXES: &[(&str, &str)] = &[
     ),
     (
         "pricing_price_approved_start",
-        "(price_book_entry_id, COALESCE(dim_value, ''::text), effective_from) WHERE (state = 'approved'::text)",
+        "(price_book_entry_id, COALESCE(dim_value, ''::text), effective_from) WHERE ((state = 'approved'::text) AND (change_kind = 'set'::text))",
     ),
     (
         "pricing_price_chain",
@@ -160,6 +160,8 @@ async fn postgres_one_approved_start_per_chain_and_only_among_approved_prices() 
             version: 1,
             created_at: now,
             updated_at: now,
+            archived_at: None,
+            archived_by: None,
         },
     )
     .await
@@ -263,6 +265,9 @@ fn price_template(
         temporary_until: None,
         paired_price_id: None,
         return_of_price_id: None,
+        change_kind: "set".into(),
+        target_price_id: None,
+        cancelled_by_unit_id: None,
         state: "draft".into(),
         pending_unit_id: None,
         approved_by_unit_id: None,

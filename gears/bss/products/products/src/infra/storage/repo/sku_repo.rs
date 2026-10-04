@@ -179,6 +179,8 @@ pub(crate) fn sku_of(m: sku::Model) -> Result<Sku, RepoError> {
         created_by: m.created_by,
         created_at: m.created_at,
         updated_at: m.updated_at,
+        archived_at: m.archived_at,
+        archived_by: m.archived_by,
     })
 }
 
@@ -293,6 +295,8 @@ pub async fn insert_sku(
         created_by: Set(created_by),
         created_at: Set(now),
         updated_at: Set(now),
+        archived_at: Set(None),
+        archived_by: Set(None),
     };
     let row = sku::Entity::insert(model.clone())
         .secure()
@@ -705,9 +709,11 @@ pub async fn fence_sku(
         .map_err(|e| driver_failure("fence SKU".into(), e))?;
     written(runner, scope, tenant_id, id, r.rows_affected).await
 }
+/// `retired` is the moment an approved retirement takes effect: the head turns `retired`, and as a
+/// change of the row it moves `revision`, the concurrency version its `ETag` names, and `updated_at`.
 fn clear_fence(
     scope: &AccessScope,
-    retired: bool,
+    retired: Option<OffsetDateTime>,
 ) -> toolkit_db::secure::SecureUpdateMany<sku::Entity, toolkit_db::secure::Scoped> {
     let mut q = sku::Entity::update_many()
         .secure()
@@ -716,11 +722,16 @@ fn clear_fence(
         .col_expr(sku::Column::RetirePending, Expr::value(false))
         .col_expr(sku::Column::FencedAt, Expr::value(None::<OffsetDateTime>))
         .col_expr(sku::Column::FenceOpId, Expr::value(None::<Uuid>));
-    if retired {
+    if let Some(now) = retired {
         q = q
             .col_expr(sku::Column::Lifecycle, Expr::value("retired"))
             .col_expr(sku::Column::LifecycleNext, Expr::value(None::<String>))
-            .col_expr(sku::Column::LifecycleNextFrom, Expr::value(None::<Date>));
+            .col_expr(sku::Column::LifecycleNextFrom, Expr::value(None::<Date>))
+            .col_expr(sku::Column::UpdatedAt, Expr::value(now))
+            .col_expr(
+                sku::Column::Revision,
+                Expr::col(sku::Column::Revision).add(1_i64),
+            );
     }
     q
 }
@@ -739,7 +750,7 @@ pub async fn unfence_sku(
     if let Some(op) = op_id {
         c = c.add(sku::Column::FenceOpId.eq(op));
     }
-    let r = clear_fence(scope, false)
+    let r = clear_fence(scope, None)
         .filter(c)
         .exec(runner)
         .await
@@ -761,7 +772,7 @@ pub async fn unlock_and_unfence(
     unit_id: Uuid,
     op_id: Uuid,
     approved_by: Option<Uuid>,
-    retired: bool,
+    retired: Option<OffsetDateTime>,
 ) -> Result<HeadWrite<Sku>, RepoError> {
     fold_head(runner, scope, tenant_id, id).await?;
     let mut q =
@@ -886,6 +897,39 @@ pub async fn delete_draft_sku(
         .map_err(|e| driver_failure("delete draft SKU".into(), e))?;
     Ok(r.rows_affected == 1)
 }
+/// Write the archive mark (P-D-263) at the revision the caller read: `Some(actor)` archives the
+/// SKU now, `None` unarchives it. The mark is a write of its own (`revision` + 1, `updated_at`); the
+/// lifecycle is not touched, and the door judges which SKU may carry the mark.
+/// # Errors
+/// Returns scoped storage failures. `Unmatched` when the revision moved or the SKU is gone.
+pub async fn set_sku_archived(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    id: Uuid,
+    expected_revision: i64,
+    archived_by: Option<Uuid>,
+    now: OffsetDateTime,
+) -> Result<HeadWrite<Sku>, RepoError> {
+    let r = sku::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            sku::Column::ArchivedAt,
+            Expr::value(archived_by.map(|_| now)),
+        )
+        .col_expr(sku::Column::ArchivedBy, Expr::value(archived_by))
+        .col_expr(sku::Column::UpdatedAt, Expr::value(now))
+        .col_expr(
+            sku::Column::Revision,
+            Expr::col(sku::Column::Revision).add(1_i64),
+        )
+        .filter(key(tenant_id, id).add(sku::Column::Revision.eq(expected_revision)))
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure("mark SKU archived".into(), e))?;
+    written(runner, scope, tenant_id, id, r.rows_affected).await
+}
 #[cfg(test)]
 #[path = "sku_repo_tests.rs"]
 mod sku_repo_tests;
@@ -1003,7 +1047,7 @@ pub async fn expire_orphan_fences(
     for row in &fenced {
         found.insert(row.id, lifecycle_in_force(row)?);
     }
-    let mut lifted = clear_fence(scope, false)
+    let mut lifted = clear_fence(scope, None)
         .filter(orphan())
         .exec_with_returning(runner)
         .await

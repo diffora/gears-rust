@@ -26,6 +26,9 @@ const LATER_REBUILD: &str = "m20261001_000011_sku_lifecycle_honesty";
 /// applied 000013 first would drop the triggers and look like a second structural change.
 /// This proof is about 000007 alone, so those triggers stay out of both passes.
 const DERIVED_UNIT: &str = "m20261002_000013_derived_sku_unit";
+/// 000014's archive columns and partial index sit on `products_sku` too (P-D-263); 000007's
+/// rebuild would drop them the same way, so they stay out of both passes as well.
+const ARCHIVE_MARK: &str = "m20261003_000014_archive_mark";
 const GUARD: &str = "m0000_products_refuse_a_legacy_or_stale_schema";
 /// The parent first, then its two children.
 const FAMILY: [&str; 3] = [
@@ -73,7 +76,10 @@ impl Lite {
             .migrations()
             .into_iter()
             .filter(|m| {
-                Some(m.name()) != without && m.name() != LATER_REBUILD && m.name() != DERIVED_UNIT
+                Some(m.name()) != without
+                    && m.name() != LATER_REBUILD
+                    && m.name() != DERIVED_UNIT
+                    && m.name() != ARCHIVE_MARK
             })
             .collect();
         run_migrations_for_testing(&db, chain).await

@@ -48,6 +48,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use bss_products_sdk::derived::{DerivedUsageDeclaration, MeterId};
+use bss_rest::conditional_get::{PRIVATE_REVALIDATE, respond};
 use std::sync::Arc;
 use toolkit::api::{
     OpenApiRegistry,
@@ -156,7 +157,9 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
              (alias `limit`; default 50, clamped at 200) and `cursor` (alias `$skiptoken`) from \
              `page_info`, as the SKU list pages. Asks `sku:read` (O-3). Any other key, \
              `$filter`, `$orderby` and `$select` are 400 UNSUPPORTED_QUERY_PARAM; a malformed \
-             cursor, or one another list cut, is 400.",
+             cursor, or one another list cut, is 400. A matching If-None-Match is 304 with an empty \
+             body; the 200 carries a weak ETag of its JSON and Cache-Control private, no-cache: \
+             the page names its creators, so the browser revalidates it (P-D-261).",
         )
         .tag(TAG)
         .authenticated()
@@ -173,12 +176,21 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
             "Continuation from page_info (alias $skiptoken)",
             "string",
         )
+        .param(super::preconditions::if_none_match_param())
         .handler(list_derived_usage_types)
         .json_response_with_schema::<Page<ProductsDerivedUsageTypeItem>>(
             openapi,
             StatusCode::OK,
             "One page of derived usage types, by code.",
         )
+        .response_header(super::preconditions::weak_etag_header())
+        .response_header(super::preconditions::revalidate_header())
+        .no_content_response(
+            StatusCode::NOT_MODIFIED,
+            "The If-None-Match tag matches this body",
+        )
+        .response_header(super::preconditions::weak_etag_header())
+        .response_header(super::preconditions::revalidate_header())
         .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
@@ -354,6 +366,7 @@ fn version_dto(
         canonical_unit,
         accrual_policy_version: v.accrual_policy_version(),
         created_by: v.created_by,
+        created_by_name: None,
         created_at: v.created_at,
     })
 }
@@ -626,9 +639,10 @@ async fn list_derived_usage_types(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
+    headers: HeaderMap,
     query: RawQuery,
     odata: Result<OData, CanonicalError>,
-) -> Result<Json<Page<ProductsDerivedUsageTypeItem>>, CanonicalError> {
+) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     // Authorization first, then the query (a 403 before a 400).
     let scope = read_scope(&enforcer, &ctx).await?.tenant_only();
@@ -654,7 +668,7 @@ async fn list_derived_usage_types(
     let latest = store::latest_versions(&conn, &scope, tenant, &ids)
         .await
         .map_err(|e| stored_row_error(&e))?;
-    let items = page
+    let mut items: Vec<ProductsDerivedUsageTypeItem> = page
         .items
         .into_iter()
         .map(|t| {
@@ -670,15 +684,22 @@ async fn list_derived_usage_types(
                 latest_version,
                 latest: latest_row,
                 created_by: t.created_by,
+                created_by_name: None,
                 created_at: t.created_at,
             })
         })
         .collect::<Result<_, RepoError>>()
         .map_err(|e| stored_row_error(&e))?;
-    Ok(Json(Page {
-        items,
-        page_info: page.page_info,
-    }))
+    // P-D-262: the page's creators in one lookup; the weak tag covers their names.
+    state.actor_names.fill(&ctx, &mut items).await;
+    Ok(respond(
+        &headers,
+        &Page {
+            items,
+            page_info: page.page_info,
+        },
+        PRIVATE_REVALIDATE,
+    ))
 }
 
 /// @cpt-cf-bss-products-fr-derived-usage-type
@@ -708,19 +729,24 @@ async fn get_derived_usage_type(
                 meter_ref: meter(&t, v.version)?,
                 accrual_policy_version: v.accrual_policy_version(),
                 created_by: v.created_by,
+                created_by_name: None,
                 created_at: v.created_at,
             })
         })
         .collect::<Result<_, RepoError>>()
         .map_err(|e| stored_row_error(&e))?;
-    Ok(Json(ProductsDerivedUsageType {
+    let mut body = ProductsDerivedUsageType {
         id: t.id,
         code: t.code,
         name: t.name,
         created_by: t.created_by,
+        created_by_name: None,
         created_at: t.created_at,
         versions,
-    }))
+    };
+    // P-D-262: the type's and its versions' creators in one lookup.
+    state.actor_names.fill(&ctx, &mut body).await;
+    Ok(Json(body))
 }
 
 /// @cpt-cf-bss-products-fr-derived-usage-type
@@ -746,7 +772,9 @@ async fn get_derived_usage_type_version(
         .await
         .map_err(|e| stored_row_error(&e))?
         .ok_or_else(not_found)?;
-    let body = version_dto(&t, &v).map_err(|e| stored_row_error(&e))?;
+    let mut body = version_dto(&t, &v).map_err(|e| stored_row_error(&e))?;
+    // P-D-262: the version's creator.
+    state.actor_names.fill(&ctx, &mut body).await;
     Ok(Json(body).into_response())
 }
 

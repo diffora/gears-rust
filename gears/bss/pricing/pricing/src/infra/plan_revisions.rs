@@ -539,8 +539,11 @@ impl PlanRevisionSubject {
             });
             if refuses
                 && prices.get(&entry.id).is_some_and(|rows| {
-                    rows.iter()
-                        .any(|p| p.state == "approved" && p.min_fee.is_some())
+                    rows.iter().any(|p| {
+                        p.state == "approved"
+                            && crate::infra::storage::repo::price_repo::is_price(p)
+                            && p.min_fee.is_some()
+                    })
                 })
             {
                 return Err(invalid(

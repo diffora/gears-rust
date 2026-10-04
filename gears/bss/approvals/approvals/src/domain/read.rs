@@ -400,6 +400,17 @@ async fn ask_counts(
     }
 }
 
+/// The system actors the configured sources declare (AP-D-11). A source not registered now
+/// declares none.
+#[must_use]
+pub fn system_actors(hub: &ClientHub, names: &[String]) -> Vec<Uuid> {
+    names
+        .iter()
+        .filter_map(|name| lookup(hub, name))
+        .flat_map(|source| source.system_actors().to_vec())
+        .collect()
+}
+
 fn lookup(hub: &ClientHub, name: &str) -> Option<Arc<dyn ApprovalSourceV1>> {
     hub.try_get_scoped(&ClientScope::new(name))
 }

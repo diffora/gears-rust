@@ -18,6 +18,8 @@ fn declared_paths() -> Routes {
         ("GET", "/bss-pricing/v1/price-books/{id}"),
         ("PATCH", "/bss-pricing/v1/price-books/{id}"),
         ("DELETE", "/bss-pricing/v1/price-books/{id}"),
+        ("POST", "/bss-pricing/v1/price-books/{id}/archive"),
+        ("POST", "/bss-pricing/v1/price-books/{id}/unarchive"),
         ("GET", "/bss-pricing/v1/price-books/{id}/entries"),
         ("GET", "/bss-pricing/v1/price-books/{id}/export"),
         ("GET", "/bss-pricing/v1/settings"),
@@ -27,6 +29,8 @@ fn declared_paths() -> Routes {
         ("POST", "/bss-pricing/v1/price-book-entries/{id}/prices"),
         ("PATCH", "/bss-pricing/v1/prices/{id}"),
         ("DELETE", "/bss-pricing/v1/prices/{id}"),
+        ("POST", "/bss-pricing/v1/prices/{id}/cancel"),
+        ("POST", "/bss-pricing/v1/prices/{id}/end"),
         ("POST", "/bss-pricing/v1/prices/{id}/submit"),
         ("GET", "/bss-pricing/v1/price-books/{id}/publish-changes"),
         ("POST", "/bss-pricing/v1/price-books/{id}/publish-changes"),
@@ -74,6 +78,8 @@ fn if_match_routes() -> Routes {
         ("PATCH", "/bss-pricing/v1/price-book-entries/{id}"),
         ("PATCH", "/bss-pricing/v1/price-books/{id}"),
         ("DELETE", "/bss-pricing/v1/price-books/{id}"),
+        ("POST", "/bss-pricing/v1/price-books/{id}/archive"),
+        ("POST", "/bss-pricing/v1/price-books/{id}/unarchive"),
         ("PUT", "/bss-pricing/v1/settings"),
         ("PUT", "/bss-pricing/v1/dimension-keys"),
         ("PATCH", "/bss-pricing/v1/prices/{id}"),
@@ -94,6 +100,8 @@ fn idempotency_key_routes() -> Routes {
         ("POST", "/bss-pricing/v1/price-books"),
         ("POST", "/bss-pricing/v1/price-books/{id}/entries"),
         ("POST", "/bss-pricing/v1/price-book-entries/{id}/prices"),
+        ("POST", "/bss-pricing/v1/prices/{id}/cancel"),
+        ("POST", "/bss-pricing/v1/prices/{id}/end"),
         ("POST", "/bss-pricing/v1/prices/{id}/submit"),
         ("POST", "/bss-pricing/v1/price-books/{id}/publish-changes"),
         ("POST", "/bss-pricing/v1/approval-units/{id}/approve"),
@@ -125,7 +133,7 @@ async fn the_registered_route_set_is_exactly_the_declared_paths() {
         .collect();
     assert_eq!(registered, declared_paths());
     assert_eq!(census::source_routes(), registered);
-    assert_eq!(registered.len(), 56);
+    assert_eq!(registered.len(), 60);
     assert!(router.has_routes());
 }
 
@@ -184,8 +192,9 @@ fn every_precondition_reading_route_is_in_the_precondition_census() {
         idempotency_key_routes()
     );
     for (needle, control, production) in [
-        ("preconditions::if_match(", 1, 13),
-        ("preconditions::idempotency_key(", 1, 14),
+        // + 2: the book's archive and unarchive (D-522).
+        ("preconditions::if_match(", 1, 15),
+        ("preconditions::idempotency_key(", 1, 16),
         ("Query<", 1, 0),
         // + 1: plan_items::delete answers 204 below its door; + 16: the plan and revision doors
         // (eight registrations and the statuses their handlers and operations answer); + 6: the
@@ -206,8 +215,15 @@ fn every_precondition_reading_route_is_in_the_precondition_census() {
         // (D-470), its registration and its 200 answer; + 4: run 9.6's reservations read and
         // effective-policy read (D-480, D-481), each registration and its 200 answer; + 2: run
         // 9.7's batch checks read (D-482), its registration and its 200 answer; + 2: run 9.8b's
-        // plans counts (D-485), its registration and its 200 answer.
-        ("StatusCode::", 2, 112),
+        // plans counts (D-485), its registration and its 200 answer. D-518 kept the sum for the
+        // three list reads (each registration's 304, each handler's 200 now answered by
+        // `respond`); + 3: the settings read's 304 registration and `revalidate_version`'s 200
+        // check and 304 answer; + 3: the cancel and end draft doors (D-520, D-521); - 11: D-519's
+        // twelve reads that name their actors answer their 200 through the one `names::named`
+        // (`StatusCode::OK` once), not each from its own function; + 3: the book's archive and
+        // unarchive (D-522), two registrations and two 200 answers, while the book read answers
+        // through `names::named` now.
+        ("StatusCode::", 2, 110),
     ] {
         assert_eq!(census::count_in_functions(census::CONTROL, needle), control);
         assert_eq!(census::production_count(needle), production, "{needle}");
@@ -252,9 +268,16 @@ fn etag_routes() -> Routes {
         ("GET", "/bss-pricing/v1/plans/{id}"),
         ("GET", "/bss-pricing/v1/plan-revisions/{id}"),
         ("GET", "/bss-pricing/v1/plan-items/{id}"),
+        // D-518: the list reads. The tag is a weak hash of the JSON body, not an If-Match version.
+        ("GET", "/bss-pricing/v1/plans"),
+        ("GET", "/bss-pricing/v1/plans/counts"),
+        ("GET", "/bss-pricing/v1/price-books"),
         // D-469: the write answers that set one (run 9.2's census).
         ("POST", "/bss-pricing/v1/price-books"),
         ("PATCH", "/bss-pricing/v1/price-books/{id}"),
+        // D-522: the archive mark moves the book's version.
+        ("POST", "/bss-pricing/v1/price-books/{id}/archive"),
+        ("POST", "/bss-pricing/v1/price-books/{id}/unarchive"),
         ("PUT", "/bss-pricing/v1/settings"),
         ("PUT", "/bss-pricing/v1/dimension-keys"),
         ("PATCH", "/bss-pricing/v1/dimension-keys"),
@@ -263,6 +286,8 @@ fn etag_routes() -> Routes {
         ("PUT", "/bss-pricing/v1/approval-policy"),
         ("DELETE", "/bss-pricing/v1/approval-policy/{kind}"),
         ("POST", "/bss-pricing/v1/price-book-entries/{id}/prices"),
+        ("POST", "/bss-pricing/v1/prices/{id}/cancel"),
+        ("POST", "/bss-pricing/v1/prices/{id}/end"),
         ("PATCH", "/bss-pricing/v1/prices/{id}"),
         ("POST", "/bss-pricing/v1/plans"),
         ("PATCH", "/bss-pricing/v1/plans/{id}"),
@@ -308,12 +333,13 @@ async fn every_operation_has_a_human_summary_and_a_description() {
         assert_ne!(description, summary, "{id}");
         described += 1;
     }
-    assert_eq!(described, 56);
+    assert_eq!(described, 60);
 }
 
 /// Every answer that sets an `ETag` declares the header on its success response, and nothing else
-/// declares one: the eight reads, and the nineteen write answers that the census of run 9.2 found
-/// (D-469), each the version a following If-Match takes.
+/// declares one: the eight reads and the nineteen write answers of D-469, each the version a
+/// following If-Match takes, plus the three list reads of D-518 (a weak tag of the JSON body,
+/// also declared on the 304) and the settings read's 304 (its strong version tag, D-518).
 #[tokio::test]
 async fn every_answer_that_sets_an_etag_declares_it() {
     let harness = rest_support::Harness::new().await.unwrap();
@@ -346,8 +372,10 @@ async fn every_answer_that_sets_an_etag_declares_it() {
         })
         .count();
     assert_eq!(
-        anywhere, 27,
-        "only the success answer of those ops declares it"
+        anywhere, 38,
+        "only the success answer of those ops declares it, plus the 304 of the three list reads \
+         and of the settings read, the 201 of the cancel and end drafts, and the 200 of the book's \
+         archive and unarchive"
     );
 }
 
@@ -394,6 +422,8 @@ async fn no_operation_declares_a_422() {
 // POST /price-book-entries/{id}/prices price:author false true
 // PATCH /prices/{id} price:author true false
 // DELETE /prices/{id} price:author true false
+// POST /prices/{id}/cancel price:author false true
+// POST /prices/{id}/end price:author false true
 
 // Run-4 approvals: method | path | resource:action | If-Match | Idempotency-Key
 // POST /prices/{id}/submit price:submit false true

@@ -447,7 +447,8 @@ async fn seeded_plans(f: &Fixture, catalog: &Catalog, eur: Uuid, from: usize, n:
 // Probed in run 9.1: a per-plan read of the items or the units is red here.
 /// D-485 (amending D-434, D-460 and D-453): `GET /plans` makes five statements whatever the
 /// number of plans: the page, the revisions, the current and in-effect items, the units and the
-/// current revisions' books. The same statements for 10 and for 100 plans.
+/// revisions' books (D-516: every header's book, still that one statement). The same statements
+/// for 10 and for 100 plans.
 #[tokio::test]
 async fn the_plan_list_reads_in_four_statements_for_10_and_100_plans() {
     let (db, recorder, tenant, dsn) = entry_support::recorded_db().await;
@@ -820,7 +821,10 @@ async fn every_write_answer_carries_the_new_fields() {
         created["current"],
         json!({"revision_id":rev1,"rev_no":1,"state":"draft","item_count":0,"sku_ids":[],
                "created_by":f.ctx.subject_id(),
-               "book":{"code":"pro","name":"pro","currency":"EUR"}}),
+               // D-519: a write answer names nobody; the reads do.
+               "created_by_name":null,
+               "book":{"id":created["revisions"][0]["book_id"],"code":"pro","name":"pro",
+               "currency":"EUR","valid_from":null,"valid_until":null}}),
         "the create answers its empty draft: {created}"
     );
     assert_eq!(created["in_effect"], json!(null));
@@ -898,4 +902,54 @@ async fn every_write_answer_carries_the_new_fields() {
         "pending: {receipt}"
     );
     assert_eq!(receipt["revision"]["approval"]["approvals"], 0);
+}
+
+/// D-515: `current.book` carries the book's id and validity, so the list needs no book index
+/// for the link or the validity line. An open book answers null on both dates.
+#[tokio::test]
+async fn a_plan_rows_book_carries_its_id_and_validity() {
+    let (f, _) = setup().await;
+    let (s, dated, _) = f
+        .call(
+            "POST",
+            "/price-books",
+            json!({
+                "code": "dated",
+                "name": "Dated",
+                "currency": "EUR",
+                "valid_from": "2026-01-01",
+                "valid_until": "2026-12-31",
+            }),
+            None,
+            Some("book-dated"),
+        )
+        .await;
+    assert_eq!(s, 201, "{dated}");
+    let (created, _) = plan(&f, "dated", id_of(&dated["id"])).await;
+    let current = &created["current"]["book"];
+    assert_eq!(
+        current,
+        &json!({
+            "id": dated["id"],
+            "code": "dated",
+            "name": "Dated",
+            "currency": "EUR",
+            "valid_from": "2026-01-01",
+            "valid_until": "2026-12-31",
+        }),
+        "the create answers the book it wrote: {created}"
+    );
+    let listed = get(&f, "/plans").await;
+    let row = listed["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == created["id"])
+        .unwrap();
+    assert_eq!(row["current"]["book"], *current, "the list: {row}");
+    let open = book(&f, "open").await;
+    let (opened, _) = plan(&f, "open", open).await;
+    assert_eq!(opened["current"]["book"]["id"], open.to_string());
+    assert_eq!(opened["current"]["book"]["valid_from"], json!(null));
+    assert_eq!(opened["current"]["book"]["valid_until"], json!(null));
 }

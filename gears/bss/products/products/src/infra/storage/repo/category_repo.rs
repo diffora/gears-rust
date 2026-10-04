@@ -30,6 +30,8 @@ fn category_of(m: category::Model) -> Category {
         sort_order: m.sort_order,
         status: m.status,
         version: m.version,
+        archived_at: m.archived_at,
+        archived_by: m.archived_by,
     }
 }
 fn key(tenant: Uuid, id: Uuid) -> Condition {
@@ -59,6 +61,8 @@ pub async fn insert_category(
         version: Set(1),
         created_at: Set(now),
         updated_at: Set(now),
+        archived_at: Set(None),
+        archived_by: Set(None),
     };
     category::Entity::insert(model.clone())
         .secure()
@@ -272,6 +276,39 @@ pub async fn retire_category_if_unused(
         .await
         .map(Some)
 }
+/// Write the archive mark (P-D-263) at the version the caller read: `Some(actor)` archives the
+/// category now, `None` unarchives it. The mark is a write of its own (`version` + 1,
+/// `updated_at`); the status is not touched, and the door judges which category may carry it.
+/// # Errors
+/// Returns scoped storage failures. `Unmatched` when the version moved or the category is gone.
+pub async fn set_category_archived(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    id: Uuid,
+    expected_version: i64,
+    archived_by: Option<Uuid>,
+    now: OffsetDateTime,
+) -> Result<HeadWrite<Category>, RepoError> {
+    let r = category::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            category::Column::ArchivedAt,
+            Expr::value(archived_by.map(|_| now)),
+        )
+        .col_expr(category::Column::ArchivedBy, Expr::value(archived_by))
+        .col_expr(
+            category::Column::Version,
+            Expr::col(category::Column::Version).add(1_i64),
+        )
+        .col_expr(category::Column::UpdatedAt, Expr::value(now))
+        .filter(key(tenant_id, id).add(category::Column::Version.eq(expected_version)))
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure("mark category archived".into(), e))?;
+    category_written(runner, scope, tenant_id, id, r.rows_affected).await
+}
 /// The page size when the caller names none, and the most a page holds (P-D-215).
 pub const CATEGORY_PAGE: LimitCfg = LimitCfg {
     default: 200,
@@ -288,6 +325,9 @@ pub enum CategoryListField {
     Status,
     IsDefault,
     SortOrder,
+    /// The archive mark (P-D-263): taken out of the `$filter` before the pager, never compared
+    /// as a column.
+    Archived,
 }
 impl FilterField for CategoryListField {
     const FIELDS: &'static [Self] = &[
@@ -297,6 +337,7 @@ impl FilterField for CategoryListField {
         Self::Status,
         Self::IsDefault,
         Self::SortOrder,
+        Self::Archived,
     ];
     fn name(&self) -> &'static str {
         match self {
@@ -306,13 +347,14 @@ impl FilterField for CategoryListField {
             Self::Status => "status",
             Self::IsDefault => "is_default",
             Self::SortOrder => "sort_order",
+            Self::Archived => bss_rest::archived::ARCHIVED,
         }
     }
     fn kind(&self) -> FieldKind {
         match self {
             Self::Id => FieldKind::Uuid,
             Self::Code | Self::Name | Self::Status => FieldKind::String,
-            Self::IsDefault => FieldKind::Bool,
+            Self::IsDefault | Self::Archived => FieldKind::Bool,
             Self::SortOrder => FieldKind::I64,
         }
     }
@@ -321,8 +363,8 @@ impl FilterField for CategoryListField {
     }
 }
 impl CategoryListField {
-    /// Whether the field may key an order and a cursor: `status` and `is_default` are filter-only
-    /// (two values each; an order by them says nothing a filter does not).
+    /// Whether the field may key an order and a cursor: `status`, `is_default` and `archived` are
+    /// filter-only (two values each; an order by them says nothing a filter does not).
     #[must_use]
     pub const fn orderable(self) -> bool {
         matches!(self, Self::Id | Self::Code | Self::Name | Self::SortOrder)
@@ -340,6 +382,7 @@ impl FieldToColumn<CategoryListField> for CategoryListMapping {
             CategoryListField::Status => category::Column::Status,
             CategoryListField::IsDefault => category::Column::IsDefault,
             CategoryListField::SortOrder => category::Column::SortOrder,
+            CategoryListField::Archived => category::Column::ArchivedAt,
         }
     }
     /// No field is nullable (the toolkit's parser refuses `null` on each); `status` compares
@@ -349,6 +392,10 @@ impl FieldToColumn<CategoryListField> for CategoryListMapping {
         op: FilterOp,
         value: &ODataValue,
     ) -> Result<ODataValue, String> {
+        if field == CategoryListField::Archived {
+            // P-D-263: the list takes its `archived` terms out first.
+            return Err(bss_rest::archived::ARCHIVED_FILTER_REFUSED.to_owned());
+        }
         if field == CategoryListField::Status
             && matches!(op, FilterOp::Eq | FilterOp::Ne | FilterOp::In)
             && !matches!(value, ODataValue::String(v) if v == "active" || v == "retired")
@@ -371,13 +418,14 @@ impl ODataFieldMapping<CategoryListField> for CategoryListMapping {
             CategoryListField::Status => sea_orm::Value::String(Some(model.status.clone())),
             CategoryListField::IsDefault => sea_orm::Value::Bool(Some(model.is_default)),
             CategoryListField::SortOrder => sea_orm::Value::Int(Some(model.sort_order)),
+            CategoryListField::Archived => sea_orm::Value::Bool(Some(model.archived_at.is_some())),
         }
     }
 }
 
 /// One page of the tenant's categories: the query's `$filter`, cursor and order — by default
 /// `sort_order`, then `code` (P-D-215) — tie-broken by `id`; `$top` defaults to 200 and is clamped
-/// there.
+/// there. An archived category is left out unless the filter asks `archived eq true` (P-D-263).
 /// # Errors
 /// [`super::SkuListError::Query`] for a value, order field or cursor the pager refuses;
 /// [`super::SkuListError::Repo`] for storage.
@@ -388,6 +436,9 @@ pub async fn page_categories(
     query: &ODataQuery,
 ) -> Result<Page<Category>, super::SkuListError> {
     let mut query = query.clone();
+    let (rest, archived) = super::take_archived(query.filter.take().map(|f| *f))
+        .map_err(super::SkuListError::Query)?;
+    query.filter = rest.map(Box::new);
     if query.cursor.is_none() && query.order.0.is_empty() {
         query.order = ODataOrderBy(
             [CategoryListField::SortOrder, CategoryListField::Code]
@@ -401,7 +452,11 @@ pub async fn page_categories(
     let select = category::Entity::find()
         .secure()
         .scope_with(scope)
-        .filter(Condition::all().add(category::Column::TenantId.eq(tenant)));
+        .filter(Condition::all().add(category::Column::TenantId.eq(tenant)))
+        .filter(super::sku_list_repo::archive_mark(
+            category::Column::ArchivedAt,
+            archived,
+        ));
     paginate_odata_try::<
         CategoryListField,
         CategoryListMapping,

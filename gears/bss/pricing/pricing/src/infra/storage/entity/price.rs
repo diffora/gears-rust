@@ -25,6 +25,12 @@ pub struct Model {
     pub paired_price_id: Option<Uuid>,
     pub return_of_price_id: Option<Uuid>,
     pub state: String,
+    /// `set`, `cancel` or `end` (D-520, D-521). Existing rows are `set`.
+    pub change_kind: String,
+    /// The approved price a `cancel` or `end` row names.
+    pub target_price_id: Option<Uuid>,
+    /// The unit that cancelled this price, when `state` is `cancelled`.
+    pub cancelled_by_unit_id: Option<Uuid>,
     pub pending_unit_id: Option<Uuid>,
     pub approved_by_unit_id: Option<Uuid>,
     pub note: Option<String>,

@@ -159,6 +159,11 @@ fn not_inbox(error: &serde_json::Error) -> CanonicalError {
 
 #[async_trait]
 impl ApprovalSourceV1 for PricingApprovalSource {
+    // AP-D-11: pricing's own system actor and the nil actor are not people the inbox asks AM for.
+    fn system_actors(&self) -> &[Uuid] {
+        &super::SYSTEM_ACTORS
+    }
+
     async fn page(
         &self,
         ctx: &SecurityContext,

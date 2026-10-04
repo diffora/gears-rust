@@ -235,6 +235,7 @@ fn work(item: &plan_item::Model, correlation: Uuid) -> Work {
         refusal: None,
         receipt: None,
         outcome: None,
+        reason: None,
     }
 }
 /// The attach op of a copied item (D-413), written in the copy's transaction with the item

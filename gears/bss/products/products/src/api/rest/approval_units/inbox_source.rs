@@ -7,8 +7,11 @@
 //!   compare (P-D-227), never a second one.
 //! - **The counts** are the counts door's handler: one grouped statement on the plain
 //!   connection, never in the list's serializable transaction (the phase 9 review's R32).
-//! - **The card** is the card door's handler; a miss inside the tenant is `None`. Its
-//!   `impact_live`, the live SKU head, is the inbox's `subject_live`.
+//! - **The card** is the card door's read before its names; a miss inside the tenant is `None`.
+//!   Its `impact_live`, the live SKU head, is the inbox's `subject_live`. The inbox names the
+//!   card's actors itself, so one inbox card read makes one lookup (AP-D-11, P-D-262).
+//! - **The system actors** are the ones this gear's reads name "System" (P-D-262): the nil id
+//!   and pricing's system actor. The inbox names them so too.
 //! - **The impact** of a `sku_change` or `sku_retire` unit is pricing's usage of its SKU: ONE
 //!   `SkuUsageV1::usage` call per page, through the SKU read's own helper, so a refusal (no
 //!   pricing entry read), an outage, a late answer or a missing port is `impact: null` and never a
@@ -24,7 +27,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use axum::body::Body;
-use axum::extract::{Extension, Path, Query};
+use axum::extract::{Extension, Query};
 use axum::http::{Request, header};
 use axum::response::Response;
 use bss_approvals_sdk::{
@@ -257,25 +260,24 @@ impl ApprovalSourceV1 for ProductsApprovalSource {
         serde_json::from_value(door_json(response).await?).map_err(|e| not_inbox(&e))
     }
 
+    fn system_actors(&self) -> &[Uuid] {
+        &crate::api::rest::SYSTEM_ACTORS
+    }
+
     async fn get(
         &self,
         ctx: &SecurityContext,
         id: Uuid,
         impact: bool,
     ) -> Result<Option<InboxUnit>, CanonicalError> {
-        let answer = super::get(
-            Extension(self.state.clone()),
-            Extension(self.enforcer.clone()),
-            Some(Extension(ctx.clone())),
-            Path(id),
-        )
-        .await;
-        match answer {
-            Ok(response) => {
-                let mut unit = InboxUnit::from_door(SOURCE, door_json(response).await?)
-                    .map_err(|e| not_inbox(&e))?;
+        let ctx = require_authenticated(Some(Extension(ctx.clone())))?;
+        match super::card(&self.state, &self.enforcer, &ctx, id).await {
+            Ok(card) => {
+                let door = serde_json::to_value(card).map_err(|e| not_inbox(&e))?;
+                let mut unit = InboxUnit::from_door(SOURCE, door).map_err(|e| not_inbox(&e))?;
                 if impact {
-                    self.fill_impact(ctx, std::slice::from_mut(&mut unit)).await;
+                    self.fill_impact(&ctx, std::slice::from_mut(&mut unit))
+                        .await;
                 }
                 Ok(Some(unit))
             }

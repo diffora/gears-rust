@@ -125,6 +125,8 @@ async fn seed_on(pg: &pg_support::Pg) -> Seed {
             version: 1,
             created_at: now(),
             updated_at: now(),
+            archived_at: None,
+            archived_by: None,
         },
     )
     .await
@@ -1553,6 +1555,9 @@ async fn postgres_the_sku_reads_and_the_value_counts_read_set_based() {
             temporary_until: None,
             paired_price_id: None,
             return_of_price_id: None,
+            change_kind: "set".into(),
+            target_price_id: None,
+            cancelled_by_unit_id: None,
             state: state.into(),
             pending_unit_id: None,
             approved_by_unit_id: None,

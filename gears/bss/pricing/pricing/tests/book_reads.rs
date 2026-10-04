@@ -1075,7 +1075,8 @@ async fn a_cursor_replayed_under_another_narrowing_is_refused() {
     }
 }
 
-/// D-480 (amending D-442): `$filter` names `id`, with `eq` and `in`, on this backend. A malformed
+/// D-480 (amending D-442), pinned again by D-516: `$filter` names `id`, with `eq` and `in`, on this
+/// backend. The filter is not rebuilt. A malformed
 /// uuid is 400. The cursor's hash covers the filter, so replaying it under another `id` is 400
 /// `FILTER_MISMATCH`.
 #[tokio::test]
