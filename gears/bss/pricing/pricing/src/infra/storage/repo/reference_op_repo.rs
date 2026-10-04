@@ -205,7 +205,7 @@ pub async fn page(
 }
 
 /// The references among `ref_ids` (of `ref_kind`) that have unfinished work of one of `kinds`,
-/// in ONE read: an unarchive re-reserves no entry whose release or re-reservation is still open
+/// in ONE read: an unarchive is refused while an entry's release or re-reservation is still open
 /// (D-522).
 /// # Errors
 /// Returns typed scoped storage failures.

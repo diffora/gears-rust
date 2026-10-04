@@ -7,7 +7,8 @@
 //!   ticker finishes a release the door could not.
 //! - The archived book's entries and prices are read-only: `BOOK_ARCHIVED`.
 //! - `POST /price-books/{id}/unarchive` re-reserves each released entry whose SKU still admits a
-//!   reference and lists the entries it could not.
+//!   reference and lists the entries it could not. It is refused (`ENTRY_RELEASE_PENDING`) while a
+//!   release or a re-reservation of an entry is still open.
 //! - `GET /price-books` hides an archived book unless asked `archived eq true`.
 //!
 //! The Postgres twin is `postgres_book_archive.rs`. Products' side of ask 58 (the SKU then
@@ -418,11 +419,26 @@ async fn a_confirmation_in_flight_refuses_the_archive_and_a_lost_entry_is_releas
     assert_eq!(held(&catalog, lost), ReferenceState::Released);
 }
 
-/// D-522 (review RF-P item 9): an unarchive makes no `rereserve` op for an entry whose release is
-/// still open. Once the ticker finishes that release, the entry stays `released` in the unarchived
-/// book, read-only, until another archive and unarchive re-reserve it.
+/// The book's archive mark, as a read by id serves it.
+async fn archived_at(f: &Fixture, book: Uuid) -> Value {
+    let (s, b, _) = f
+        .call(
+            "GET",
+            &format!("/price-books/{book}"),
+            json!({}),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(s, 200, "{b}");
+    b["archived_at"].clone()
+}
+
+/// D-522 (amended 2026-10-04): an unarchive is refused 409 `ENTRY_RELEASE_PENDING` while an entry
+/// of the book has an open `release` or `rereserve` op, and nothing is written: the book stays
+/// archived at the tag the caller read, and no `rereserve` op is made.
 #[tokio::test]
-async fn an_unarchive_skips_an_entry_whose_release_is_still_open() {
+async fn an_unarchive_is_refused_while_a_release_or_a_rereserve_is_open() {
     let (f, catalog) = plan_support::setup().await;
     let book = new_book(&f, "early").await;
     let entry = door_entry(&f, book, catalog.sku(SkuType::Recurring)).await;
@@ -435,13 +451,67 @@ async fn an_unarchive_skips_an_entry_whose_release_is_still_open() {
         .unwrap();
     assert_eq!(release.state, "releasing", "{release:?}");
     let tag = book_tag(&f, book).await;
-    let (s, b, _) = mark(&f, book, "unarchive", Some(&tag)).await;
-    assert_eq!(s, 200, "{b}");
-    assert_eq!(b["released_entries"], json!([entry]), "{b}");
+    refused(
+        &mark(&f, book, "unarchive", Some(&tag)).await,
+        409,
+        "ENTRY_RELEASE_PENDING",
+    );
+    assert_eq!(book_tag(&f, book).await, tag, "the refusal wrote nothing");
+    assert!(!archived_at(&f, book).await.is_null(), "still archived");
+    assert_eq!(reference_state(&f, entry).await, "released");
     let ops = ops_for(&f, entry).await;
     assert!(
         ops.iter().all(|op| op.kind != "rereserve"),
         "no re-reservation while the release is open: {ops:?}"
+    );
+
+    // A re-reservation an unarchive could not finish, in a book archived again meanwhile.
+    catalog.down.store(false, Ordering::SeqCst);
+    let book = new_book(&f, "again").await;
+    let entry = door_entry(&f, book, catalog.sku(SkuType::Recurring)).await;
+    archive(&f, book).await;
+    catalog.down.store(true, Ordering::SeqCst);
+    let (s, b, _) = mark(&f, book, "unarchive", Some(&book_tag(&f, book).await)).await;
+    assert_eq!(s, 200, "{b}");
+    archive(&f, book).await;
+    let rereserve = ops_for(&f, entry)
+        .await
+        .into_iter()
+        .find(|op| op.kind == "rereserve")
+        .unwrap();
+    assert_ne!(rereserve.state, "done", "{rereserve:?}");
+    let tag = book_tag(&f, book).await;
+    refused(
+        &mark(&f, book, "unarchive", Some(&tag)).await,
+        409,
+        "ENTRY_RELEASE_PENDING",
+    );
+    assert_eq!(book_tag(&f, book).await, tag, "the refusal wrote nothing");
+    assert!(!archived_at(&f, book).await.is_null(), "still archived");
+    let rereserves = ops_for(&f, entry)
+        .await
+        .into_iter()
+        .filter(|op| op.kind == "rereserve")
+        .count();
+    assert_eq!(rereserves, 1, "no second re-reservation");
+}
+
+/// D-522 (amended 2026-10-04): once the ticker has finished the release that refused an unarchive,
+/// the same tag unarchives the book, and the entry is re-reserved: `confirmed`, a new reservation
+/// in Products, and writable again.
+#[tokio::test]
+async fn an_unarchive_after_the_ticker_finished_the_release_rereserves_the_entry() {
+    let (f, catalog) = plan_support::setup().await;
+    let book = new_book(&f, "later").await;
+    let entry = door_entry(&f, book, catalog.sku(SkuType::Recurring)).await;
+    let first_receipt = catalog.refs.lock().unwrap()[&entry].0;
+    catalog.down.store(true, Ordering::SeqCst);
+    archive(&f, book).await;
+    let tag = book_tag(&f, book).await;
+    refused(
+        &mark(&f, book, "unarchive", Some(&tag)).await,
+        409,
+        "ENTRY_RELEASE_PENDING",
     );
 
     catalog.down.store(false, Ordering::SeqCst);
@@ -450,21 +520,19 @@ async fn an_unarchive_skips_an_entry_whose_release_is_still_open() {
         .await
         .unwrap();
     assert_eq!(held(&catalog, entry), ReferenceState::Released);
-    assert_eq!(reference_state(&f, entry).await, "released");
+    let (s, b, new_tag) = mark(&f, book, "unarchive", Some(&tag)).await;
+    assert_eq!(s, 200, "{b}");
+    assert!(b["archived_at"].is_null(), "{b}");
+    assert_eq!(b["released_entries"], json!([]), "{b}");
+    assert_ne!(new_tag, tag);
+    assert_eq!(reference_state(&f, entry).await, "confirmed");
+    let (receipt, state) = catalog.refs.lock().unwrap()[&entry];
+    assert_ne!(receipt, first_receipt, "a new reservation");
+    assert_eq!(state, ReferenceState::Confirmed);
     let ops = ops_for(&f, entry).await;
-    assert!(ops.iter().all(|op| op.kind != "rereserve"), "{ops:?}");
-    refused(
-        &f.call(
-            "POST",
-            &format!("/price-book-entries/{entry}/prices"),
-            json!({"price": {"rate": "0.20"}, "eligibility": "all", "effective_from": future(50)}),
-            None,
-            Some("stranded-price"),
-        )
-        .await,
-        409,
-        "ENTRY_REFERENCE_RELEASED",
-    );
+    let rereserve = ops.iter().find(|op| op.kind == "rereserve").unwrap();
+    assert_eq!(rereserve.state, "done", "{rereserve:?}");
+    draft(&f, entry).await;
 }
 
 /// D-522 (review RF-P item 9): the `archived` term joins the rest of the book list's `$filter`,

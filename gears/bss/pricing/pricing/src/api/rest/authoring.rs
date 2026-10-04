@@ -2208,16 +2208,16 @@ fn archive_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .summary("Unarchive a price book")
         .description(
             "Clears a book's archive mark at the version the caller read (If-Match), with an audit \
-             row (D-522). Each `released` entry gets a `rereserve` op, unless a release or a \
-             re-reservation of it is still open, and the door drives them after the commit (at most \
-             8 at once, for at most 3 s in all; the ticker finishes the rest). An \
-             entry whose SKU refuses the new reservation (retired, say) stays `released` and \
-             read-only (409 ENTRY_REFERENCE_RELEASED), and the book is unarchived anyway: \
+             row (D-522). Each `released` entry gets a `rereserve` op, and the door drives them \
+             after the commit (at most 8 at once, for at most 3 s in all; the ticker finishes the \
+             rest). An entry whose SKU refuses the new reservation (retired, say) stays `released` \
+             and read-only (409 ENTRY_REFERENCE_RELEASED), and the book is unarchived anyway: \
              `released_entries` lists the entries still released when the answer is built, or is \
              null when they could not be read after the unarchive committed. \
-             Unarchiving a book that is not archived answers it unchanged. Refusals: 403 without \
-             the book write grant; 400 for a missing or malformed If-Match; 404; 409 \
-             STALE_REVISION.",
+             Unarchiving a book that is not archived answers it unchanged. Refusals, in order: 403 \
+             without the book write grant; 400 for a missing or malformed If-Match; 404; 409 \
+             STALE_REVISION; 409 ENTRY_RELEASE_PENDING (an entry's release or re-reservation is \
+             still open: retry once the reference work finishes). A refusal writes nothing.",
         )
         .tag("Pricing")
         .authenticated()

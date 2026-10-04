@@ -294,12 +294,14 @@ pub async fn archive(
 }
 /// `POST /price-books/{id}/unarchive` (D-522): the archive mark cleared at the version the caller
 /// read (If-Match), with an audit row; 404 and 409 `STALE_REVISION` as the archive refuses them. A
-/// book that is not archived is answered as it is, and nothing is written.
+/// book that is not archived is answered as it is, and nothing is written. Then 409
+/// `ENTRY_RELEASE_PENDING` while an entry of the book has an open `release` or `rereserve` op (the
+/// mirror of the archive's `ENTRY_CONFIRMATION_PENDING`), and nothing is written: an entry skipped
+/// here would stay `released` and read-only once its release finished.
 ///
-/// In the same transaction each `released` entry gets a `rereserve` op, unless a release or a
-/// re-reservation of it is still open; the door drives them after the commit. An entry whose SKU
-/// refuses the new reservation (retired, say) stays `released` and read-only, and the book is
-/// unarchived anyway.
+/// In the same transaction each `released` entry gets a `rereserve` op; the door drives them after
+/// the commit. An entry whose SKU refuses the new reservation (retired, say) stays `released` and
+/// read-only, and the book is unarchived anyway.
 /// # Errors
 /// The refusals above; storage failures.
 pub async fn unarchive(
@@ -321,6 +323,21 @@ pub async fn unarchive(
             ops: Vec::new(),
         });
     }
+    // The entries are the book's aggregate; read tenant-scoped, as the archive reads them.
+    let children = AccessScope::for_tenant(tenant);
+    let entries = price_book_entry_repo::for_book(tx, &children, tenant, id).await?;
+    let open = reference_op_repo::open_refs(
+        tx,
+        &children,
+        tenant,
+        RefKind::Entry,
+        &entries.iter().map(|e| e.id).collect::<Vec<_>>(),
+        &[OpKind::Release, OpKind::Rereserve],
+    )
+    .await?;
+    if !open.is_empty() {
+        return Err(conflict("ENTRY_RELEASE_PENDING").into());
+    }
     let now = crate::infra::storage::stored_now();
     book_repo::set_archived(tx, scope, tenant, id, m.version, None, now).await?;
     m.version += 1;
@@ -328,25 +345,10 @@ pub async fn unarchive(
     m.archived_by = None;
     m.updated_at = now;
     audit(tx, ctx, correlation, "price_book.unarchive", id, m.version).await?;
-    let children = AccessScope::for_tenant(tenant);
-    let released: Vec<_> = price_book_entry_repo::for_book(tx, &children, tenant, id)
-        .await?
-        .into_iter()
-        .filter(|e| e.reference_state == ReferenceState::Released.as_str())
-        .collect();
-    let open = reference_op_repo::open_refs(
-        tx,
-        &children,
-        tenant,
-        RefKind::Entry,
-        &released.iter().map(|e| e.id).collect::<Vec<_>>(),
-        &[OpKind::Release, OpKind::Rereserve],
-    )
-    .await?;
     let due = now + crate::infra::reference_work::IN_FLIGHT_GRACE;
-    let ops = released
+    let ops = entries
         .iter()
-        .filter(|e| !open.contains(&e.id))
+        .filter(|e| e.reference_state == ReferenceState::Released.as_str())
         .map(|e| crate::infra::reference_work::rereserve_op(ctx, e, now, due))
         .collect::<Result<Vec<_>, _>>()?;
     let ids = ops.iter().map(|op| op.op_id).collect();
