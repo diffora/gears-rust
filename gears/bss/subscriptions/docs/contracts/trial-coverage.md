@@ -1,0 +1,382 @@
+---
+description: "Proposed Pricing trial terms and shared Billing benefit lifecycle with conformance scenarios."
+---
+
+# Trial terms and coverage contract
+
+**Scope.** New paid and trial subscriptions originate through Orders. These operations are deferred:
+
+- Trial extension and repeat trials.
+- Standalone acquisition without Orders.
+- Scheduled composition changes and scheduled resume.
+- Linked predecessor/successor subscription replacement.
+- Changes of an existing subscription's base plan.
+
+Reject these operations before effects, including through operator/direct wrappers. Supported operations remain existing-subscription lifecycle actions, immediate quantity increases/component additions, future order starts, cancellation scheduling, renewal and normal trial timers. Technical retry/successor attempts recover the same acquisition. They do not replace an existing subscription.
+
+Free-period and credit trials, normal expiry/conversion and early conversion to the already accepted paid target remain in scope with their Pricing/Billing/financial gates. Trial-to-paid conversion is not a general changePlan capability. Preserve trial history/eligibility evidence and refuse repeat requests for the same payer/plan, including via a new subscription; a transport retry is not a repeat trial. No extension or repeat becomes available from a Pricing policy alone.
+
+Independent cancellation and new purchase have separate resource/data lifecycles: there is no automatic resource adoption, data transfer, place handover or continuity promise. Cancellation retains its existing retention/disposition rules; it does not mean immediate deletion. Unsupported plan changes cannot silently become cancel+new.
+
+**Status:** consumer contract for initial free-period and credit trials, normal/early paid conversion and shared Billing bonus accounting. Immutable PlanRevision/receipt, conditional grant coverage effective at activation, same-grant recording, original expiry, eligible carryover and full-result correction/liability are specified below. Trial exceptions, standalone acquisition and tenant transfer are deferred. External owner ratification, SDK mapping, financial posting implementation and runtime evidence remain open; no Rust implementation is claimed.
+
+**Credit-trial activation contract.** Billing commits one reserved promotional grant to the accepted acquisition and exact activation operation before Entitlements prepares access. Its amount, currency, scope and duration are fixed; the commitment guarantees coverage effective at the successful Subscriptions activation T. Entitlements establishes usable readiness under that commitment, with authorized pre-T preparation borne by the platform and no pre-T bonus drawdown. Subscriptions records T, episode, commitment and publication intent atomically.
+
+Billing then records the same effective grant without another issuance decision; delayed recording does not gate initial access, shift T/expiry or create another grant. Only a proved non-activation fence permits release; unknown outcomes retain the commitment. Current cancellation, expiry and exhaustion still govern eligibility. Exact SDK/provider mappings, bounded exposure/enforcement and executed recovery evidence remain delivery gates.
+
+<!-- toc -->
+
+- [1. Supported trial variants](#1-supported-trial-variants)
+- [2. Ownership](#2-ownership)
+- [3. Commercial evidence](#3-commercial-evidence)
+  - [3.1 Reusable offer and immutable revision](#31-reusable-offer-and-immutable-revision)
+  - [3.2 Customer acceptance and subscription episode](#32-customer-acceptance-and-subscription-episode)
+  - [3.3 Shared trial-credit accounting](#33-shared-trial-credit-accounting)
+- [4. Required provider capabilities](#4-required-provider-capabilities)
+- [5. Consumer lifecycle and validity](#5-consumer-lifecycle-and-validity)
+- [6. Refusal and recovery outcomes](#6-refusal-and-recovery-outcomes)
+- [7. Joint conformance cases](#7-joint-conformance-cases)
+- [8. Enablement gates](#8-enablement-gates)
+- [9. Contract references](#9-contract-references)
+- [10. Reciprocal trial delivery contract](#10-reciprocal-trial-delivery-contract)
+
+<!-- /toc -->
+
+## 1. Supported trial variants
+
+The existing Pricing Plan/PlanRevision defines the storefront offer. The storefront combines Products descriptions/SKU identity with the selected Pricing version. Pricing owns an optional trial commercial block on that revision; Subscriptions retains the customer acceptance and owns actual episode dates, expiry and conversion; extension is deferred. Independently reusable TrialOffer revisions across plans are not approved scope. Products stores no trial-policy fields; Entitlements materializes access.
+
+| Variant | Pricing terms | Financial treatment | Ending condition |
+| --- | --- | --- | --- |
+| Free period | Explicit zero-price bindings for the specified trial scope and explicit duration semantics | Rating uses those accepted zero terms; missing money is not free pricing | Accepted duration/expiry policy |
+| Trial credit | Ordinary price bindings unchanged; explicit bonus amount, currency, applicable products/items/charge kinds and duration | Rating values served trial facts at ordinary tariffs; one shared Billing grant covers eligible value through the agreed benefit/invoice contract | Accepted credit expiry or authoritative exhaustion policy |
+
+A revision selects one variant; combining them is not approved. Trial bonus is not payment capture, prepaid customer funds, authorization to serve on credit, or a zero tariff. General promotions, paid-trial policy, recurring allowances and prepaid-wallet implementations remain outside this authorization. Examples define no numeric default, credit limit or repeat-trial entitlement.
+
+| Concern | Accepted direction | Still proposed/open |
+| --- | --- | --- |
+| Offer structure | Optional trial block on immutable PlanRevision, using existing `planId`/`revisionId` | Exact schema, publication/retirement ordering and supported bindings |
+| Trial lifecycle | Subscriptions owns customer acceptance association and actual episode boundaries; Entitlements owns access | Owner interfaces, replay and completion evidence; extension is deferred |
+| Trial credit | Billing owns the bounded bonus and shared allocation/correction; Pricing owns terms, Rating gross valuation, Ledger necessary postings under an agreed contract | §4 specifies proposed evidence/operations/atomic recovery; owner ratification, wire/schema, implementation and remaining policy/enforcement gates persist; corrected credit stays unavailable after original expiry |
+| Paid conversion | Existing agreed prepay/postpay guards; failed prepay defaults to no paid start | Detailed due/dunning, retry/later paid association and runtime fixtures |
+| Execution validity | Trial and paid-target execution follows accepted scope, explicit eligibility/start restrictions and current lifecycle/financial/security guards | Durable accepted future coverage precedes any advance capture; offer expiry after purchase does not reopen acceptance |
+
+## 2. Ownership
+
+| Owner | Responsibility |
+| --- | --- |
+| Pricing | Immutable PlanRevision trial terms: selected variant, duration semantics, price/bonus policy, paid target, applicability and policy references; authoritative commercial acceptance/fulfilment inputs; no mutable balance |
+| Subscriptions | Accepted revision/receipt association, customer trial history and actual episode dates; guarded expiry/conversion, amount-less commercial facts and `CommercialPostureV1` publication to Entitlements; no raw metering, monetary valuation or remaining-balance calculation |
+| Products | Descriptions, SKU identity/structure/versions and lifecycle/reference protection; no trial-policy fields |
+| Product policy owners (people) / explicitly bound Contracts | Approve policy and permitted bounds; Contracts supplies explicitly referenced legal/commercial terms, not a separate universal trial catalog |
+| Billing trial-benefit accounting | Accepted owner of promotional grant issuance/history, consumed/remaining balance, authoritative outcomes, allocation and correction; operational benefit records are separate from Pricing terms and Subscriptions lifecycle |
+| Rating / Billing / Ledger | Rating supplies canonical versioned full valuations at frozen tariffs. Billing coordinates benefit allocation with its invoice accounting/corrections; Ledger performs necessary financial postings only under the separately agreed integration contract |
+| Payments / designated credit-service owner | Payment outcomes and authorization for postpay service; neither is implied by a promotional trial-credit balance |
+| Entitlements / platform enforcement / resource provider | Desired-state derivation from `CommercialPostureV1`, reconciliation, access materialization and point-of-use/resource enforcement with authoritative outcomes; their asynchronous behavior is separate from financial coverage |
+
+Pricing owns commercial eligibility inputs; Subscriptions owns episode/history evidence. Trial extension and repeat trials are deferred even with Pricing policy permission. Preserve history and refuse repeat acquisition for the same payer/plan across subscription IDs; technical replay retains the original episode. Additional bonus, stacking, transfer, rollover, regrant and reactivation remain unavailable. Early guarded conversion retains eligible unused credit under its original expiry and applicability. Exact initial eligibility, evidence and Billing accounting contracts remain required.
+
+The current [Ledger SDK credit application contract](../../../ledger/ledger-sdk/src/api.rs) funds its reusable-credit grant from the payer's real settled unallocated cash, capped by that live pool, and applies it against open receivables. It is not a free promotional grant. Do not fabricate settled cash or treat `post_credit_application` as a delivered trial-bonus API. The proposed Billing benefit records and necessary Ledger posting integration require a separate agreed contract; no new journal, tax or recognition rules are selected here.
+
+## 3. Commercial evidence
+
+This semantic shape describes the proposed contract, not final SDK field names, API versions or persistence layout. The contract uses existing plan/revision identities.
+
+### 3.1 Reusable offer and immutable revision
+
+| PlanRevision input | Required meaning |
+| --- | --- |
+| Identity and scope | Existing `planId`/`revisionId`, catalog/seller scope and publication provenance; exact SKU/plan-item/price/book/currency bindings |
+| Optional trial block | Absent means no trial offer; present selects **free period OR credit**, never an implicit combined benefit |
+| Duration | Explicit value, unit, start semantics and boundary-calculation policy; Subscriptions derives actual dates from its valid applied start, with no default duration |
+| Free-period benefit | Explicit zero-price bindings and the products/items/intervals covered; unsupported or missing price evidence refuses |
+| Credit benefit | Bonus amount and currency plus explicit eligible products/items and charge kinds; ordinary price bindings remain unchanged. No all-products or FX fallback |
+| Paid target | Intended plan/item/price scope and agreed resolution/acceptance mechanism, distinguishing what is frozen from any separately accepted future resolution |
+| Policy links | Versioned settlement, expiry/exhaustion, initial eligibility and repeat-refusal policy; legal terms only where explicitly bound |
+
+Publication is immutable. Changing a duration, amount, applicability or paid target produces a new PlanRevision; accepted customer evidence is not silently rewritten. A change from fourteen to seven days illustrates this protection, not a default. Retirement may prevent new acceptance but cannot erase accepted history or a protected paid promise. Exact lifecycle ordering remains an owner contract.
+
+### 3.2 Customer acceptance and subscription episode
+
+The reusable policy on PlanRevision is distinct from a customer's accepted receipt, Subscriptions episode and, for the credit variant, individual grant. Acceptance binds the exact revision and commercial evidence to the authorized acquisition/customer scope, preserving frozen policy and applicability. A transport retry cannot create a second acceptance/episode/grant; changed attempts/orders remain subject to S-U01 association rules.
+
+Subscriptions commits actual boundaries and retains immutable episode evidence; extensions are deferred. It consumes authoritative credit outcomes by reference/version; it does not copy a mutable ledger or issue monetary allocation facts. Receipt/grant identity is not an S-Q04 setup-charge occurrence or proof of a newly chargeable business action.
+
+Historical trial and paid-target terms remain readable after publication/retirement. Their execution uses the accepted scope and explicit conditions, current financial admission and lifecycle/security guards. Ordinary catalog or offer changes do not require fresh acceptance. Changed/unaccepted terms require a supported acceptance route; no retry changes original grant expiry or revives a closed trial.
+
+### 3.3 Shared trial-credit accounting
+
+S-U15 must establish Billing's shared promotional-benefit contract rather than a separate full bonus per product or subscription item; owner direction is accepted, delivery is not claimed. A customer grant has durable identity tied to the accepted acquisition/trial episode, immutable source PlanRevision/policy/applicability and the authorized payer/beneficiary scope. The proposed identity/scope and evidence contract is in §4; exact wire mapping still requires owner ratification.
+
+The contract must support exactly-once issuance/replay, issued/consumed/remaining/expiry history, authoritative versioned balances/outcomes and recoverable lost responses. Consumption across eligible items draws from the same grant once. Currency and charge-kind eligibility must be explicit; a one-time charge still needs its separately agreed S-Q04 trigger and cannot become chargeable merely because a bonus could cover it.
+
+Billing consumes canonical versioned **full Rating replacements**, retaining the previously accepted result/allocation and their lineage. It adjusts the same grant once under the original scope, currency and frozen terms. Replay of the same accepted version is a no-op; conflicting version/content refuses or enters explicit recovery, and stale results cannot restore credit again. This does not introduce independent financial delta delivery.
+
+Invoice coordination uses the established draft replacement or posted correction path and the required Ledger integration; no posted invoice is financially rewritten inline.
+
+Illustrative same-currency case: grant 100, accepted consumption 30, remaining 70. Corrected usage at the **same accepted tariff** yields a full replacement value of 25; Billing adjusts the same allocation and restores 5, making 75 available while the grant remains valid and applicable to an active trial or eligible paid usage after early guarded conversion, until the same original expiry.
+
+If this correction arrives after grant expiry, historical net consumption becomes 25 and conceptual accounting remaining becomes 75, but spendable credit is 0. Billing preserves the original expiration; correction never extends the trial. These are semantic outcomes, not prescribed API fields or storage. Repeating that version restores nothing further. This is neither new grant/top-up, cash refund nor catalog repricing; the numbers are not policy defaults.
+
+If a trial already ended by exhaustion, a later correction cannot automatically reopen it even before original expiry. Illustratively, consumption of the full 100 corrected to 95 restores 5 in accounting, but grants no service/spend permission for the closed episode and does not reverse an applied paid conversion. This does not end a still-active trial or prevent valid/applicable same-grant restoration during it.
+
+V1 refuses reactivation of a closed episode, rollover past original expiry and regrant on the same subscription. A separate new acquisition may be a fresh paid purchase; repeat trials are deferred; its association/recovery contract remains gated. Correction alone authorizes none of these actions or a new setup-charge trigger. Eligible pre-boundary trial positive corrections follow the accepted platform-liability rule below; correction/liability cases outside that scope remain gated.
+
+On early valid guarded trial-to-paid conversion, unused credit remains on the **same grant**, available toward eligible paid-plan expenses until the **same original expiration**, under unchanged currency, product, item, charge-kind and other accepted restrictions. Illustratively, a 100-credit/14-day grant with 60 remaining on day 5 keeps that 60 available after conversion only until original day 14; no new 100, new 14-day period, top-up or grant is issued. These are examples, not policy defaults.
+
+This conversion closes the trial episode without making its still-valid grant unspendable. Same-grant full Rating replacement/correction lineage applies to eligible paid usage at that usage's frozen agreed tariffs. A paid-plan SKU outside original grant applicability cannot spend this balance, but does not erase it; no broader product scope or FX is inferred. No expired grant is revived, trial access renewed or applied paid conversion reversed.
+
+The benefit does not by itself satisfy prescribed upfront payment unless the agreed coverage/settlement contract permits it; existing prepay/postpay guards remain. Stacking, transfer and additional bonus are unavailable even with Pricing permission; initial eligibility and supported owner contracts remain required. No automatic new-period rollover or regrant follows.
+
+Keep these distinct: **served evidence → rated gross value → eligible bonus coverage / platform-borne amount / customer obligation**, with the successor paid-target boundary recorded separately. Credit trials produce legitimate served/usage facts before paid-target conversion, valued at ordinary rates. References to policy/grant/coverage evidence may accompany amount-less Subscriptions facts under the agreed contract; bonus amounts, balance and allocation math do not become Subscriptions fact fields.
+
+No-paid-start or expiry-no-debt rules must not erase trial facts needed for rating/drawdown.
+
+For eligible accepted-trial expenses served before the authoritative applied paid boundary, the platform bears full rated value beyond bounded bonus coverage, including positive corrections, errors and accounting/stopping-delay or in-flight overrun; it creates no customer trial-overage debt. Usage actually served after a valid guarded paid transition follows accepted paid-plan/settlement terms after eligible bonus coverage. Classify by served time and the applied boundary, never rating/event/correction arrival; split crossing usage using supported evidence and never backdate paid conversion.
+
+Illustratively, remaining bonus 2 and eligible trial usage value 5 caused by that delay means bonus coverage 2 and platform-borne 3, with no customer debt for that 3. If the usage occurred after valid guarded paid conversion, the remaining 3 instead follows the agreed paid-plan/settlement terms. Late-reported pre-conversion usage keeps its trial classification after conversion. Rating preserves actual gross usage/value; Billing distinguishes bounded bonus allocation, platform-borne amount and customer obligation.
+
+The grant never becomes negative, receives an unlimited top-up or pretends to cover 5. An erroneous billed trial tail uses the existing idempotent Billing correction path; no refund method or new Ledger journal/tax schema is selected.
+
+The coverage rule includes positive corrections and errors for eligible accepted-trial service before the authoritative applied paid boundary. Illustratively, a grant of 100 with prior gross consumption 90 and corrected full gross value 110 yields bonus coverage 100, platform cost 10 and customer obligation 0. Billing replaces the same source allocation once under original tariff/version lineage; gross remains 110. It does not create negative bonus, fabricated coverage/top-up, a new grant or cash refund.
+
+Any erroneous customer posting uses existing idempotent correction/remedy paths. This does not waive prior legitimate debt, explicit retention charges, excluded charge kinds or unrelated recovery/remedy obligations. Financial protection is separate from access enforcement: detect/enforce/recover contracts and supported evidence remain S-U15 launch gates, and other liability cases remain open. No unlimited free operation or instantaneous stop is promised. Unknown balance is neither zero/exhausted nor permission to spend.
+
+Exhaustion/expiry follows authoritative versioned outcomes and the accepted effective-time policy. For an active unconverted trial, it initiates guarded trial end or an eligible paid conversion, never automatic paid permission. After early conversion has already applied, retained-grant expiry/exhaustion ends only bonus coverage; it does not itself stop or revoke paid service, duplicate conversion or reverse it. Remaining paid expenses follow the accepted paid-plan/settlement rules and applicable guards; no unsupported liability or waived payment prerequisite is inferred.
+
+Overage or excluded charges require their own agreed paid basis and applicable guards; there is no default pay-as-you-go fallback or zero-list-rate workaround. Early guarded conversion preserves eligible unused credit as above; stacking and additional bonus are refused, transfer is deferred, and v1 has no new-period rollover, regrant or reactivation route; a new acquisition is a fresh purchase; repeat trials are deferred.
+
+A correction cannot automatically revive a closed episode, retrigger conversion or reverse an applied paid conversion. No blanket forgiveness, customer-funds refund or fixed balance policy is adopted.
+
+## 4. Required provider capabilities
+
+These capabilities describe proposed behavior. They do not define shipped endpoint/type names, new grants or versions.
+
+| Candidate capability | Required boundary |
+| --- | --- |
+| Exact PlanRevision trial read | Authorized immutable revision, selected variant and complete semantic inputs; no separate TrialOffer lookup/catalog requirement |
+| Commercial eligibility and acceptance | Evaluate the published policy using authoritative permitted evidence; bind exact revision/terms to the acquisition and recover the same frozen receipt on replay |
+| Operation-time fulfilment evidence | Verify the named accepted trial/paid operation against current lifecycle/financial/security guards; a fresh catalog observation cannot redefine the purchase |
+| Shared trial-credit issue/read/outcomes | Proposed Billing S-U15 provider supplies durable grant identity, idempotent issuance and authorized versioned history/balance/expiry/exhaustion outcomes |
+| Credit allocation and invoice coordination | Billing consumes canonical full Rating replacements and preserves prior allocation/result/version lineage; idempotent same-grant adjustment integrates with draft replacement or posted correction and agreed Ledger postings |
+
+The following S-U15 contract defines the required provider behavior. It does not deliver an API, final SDK/wire version or storage schema, and does not establish external-owner ratification. Accepted product rules in §3.3 constrain it; remaining product policies cannot be filled in by an adapter. The capability names and fields below name meanings only. Exact receipt encoding, supported policy bounds, retention and capability negotiation still require owner agreement. Offer/price/SKU retirement races need authoritative fences, not detached reads.
+
+V1 continues to refuse unsupported trial/credit inputs.
+
+**Proposed evidence envelope**
+
+| Semantic field group | Meaning and authority |
+| --- | --- |
+| Identity and business association | `grant_id`; immutable benefit-issuance identity scoped to seller and accepted acquisition; an explicit acquisition-origin discriminator and accepted receipt. Orders acquisitions carry order/version/line; standalone acquisition is unavailable. Exact activation operation/preparation generation and designated consumer bind the conditional commitment; the posture carries its authenticated reference/digest. Subscription/episode association is retained where established. Transport command and attempt identities are correlation, not permission to mint another grant. S-U01 governs any successor/rebinding |
+| Frozen source | Exact PlanRevision and accepted policy/receipt references plus digests; issued amount, currency, eligible products/items/charge kinds and payer/beneficiary scope. Billing verifies the authorized Pricing evidence instead of accepting caller-invented money or silently reading today's catalog |
+| Original validity | Preparation freezes duration/start semantics and intended episode without inventing T or expiry. Billing's commitment makes the reserved grant effective at successful Subscriptions T and original expiration follows that T and frozen policy. Later recording/correction never moves expiry. Before T the bonus is not spendable; afterward coverage follows the applied commitment even while its Billing record is pending. |
+| Lifecycle evidence | Subscription/episode identity, authoritative lifecycle revision and applied trial/paid/end boundaries, including reason and retained-grant eligibility after early conversion. An observation timestamp is distinct from effective served time; payment/credit-service permissions retain their separate owners |
+| Current accounting evidence | Authoritative grant revision, issued amount, accepted allocation totals, historical remaining and the policy/evidence controlling current eligibility. A positive historical remaining amount is not a service permission or unconditional spend authorization; expired grants remain unavailable |
+| Valuation and prior application | Canonical Rating result identity/version/digest and full replacement reference; fact/version, frozen tariff/calculation evidence and served extents; prior accepted result/allocation version and digest. No independent monetary delta input; Subscriptions supplies amount-less boundary/attribution references, not raw usage or allocation math |
+| Allocation and financial lineage | Allocation revision; per supported extent, gross value, bonus coverage, platform-borne amount and customer obligation, in the result's currency/precision; original grant scope plus served-time/applied-boundary evidence. Invoice/period identity and draft/posted correction or required Ledger-operation references record financial completion separately |
+| Recovery metadata | Durable operation correlation, payload digest, accepted/current revision, explicit pending/refused/applied disposition, effective time versus recorded time, ordered outcome sequence and read barrier. Preserve prior applied financial evidence when a new result is staged but not yet applicable |
+
+Billing owns the proposed allocation breakdown. It adds no Subscriptions fact fields or Ledger journal accounts. For each fully classified supported charge extent, gross value is apportioned once among bonus coverage, platform-borne amount and customer obligation before separate invoice-level rounding/tax/other financial functions. Incomplete attribution, an unresolved policy case or missing paid-boundary evidence produces an unresolved allocation, never a guessed customer amount.
+
+Grant applicability remains unchanged; no FX, excluded-charge coverage or trial tariff applied to a different paid-plan fact is inferred.
+
+**Proposed operations and response semantics**
+
+| Operation | Request evidence | Durable response / refusal boundary |
+| --- | --- | --- |
+| Prepare or recover coverage | Authorized Orders acquisition and benefit identity, command correlation/digest, exact accepted Pricing receipt, frozen scope/currency/amount/duration and intended episode | Return one durable coverage commitment, designated consumer/association, exact activation operation/preparation generation and reserved grant identity with revision/digest. Billing guarantees that the same grant becomes effective upon that operation's successful activation at T, without further approval. Before T this supports authorized preparation, not customer bonus spending or an invented activation time. Replay returns the same preparation; changed content conflicts. Unsupported origin or missing policy/evidence refuses or remains explicitly unresolved |
+| Finalize the prepared grant | Same prepared/grant identity plus authoritative Subscriptions applied operation/revision, episode and actual S-Q01 T, with current cancellation/end evidence | Record the same grant already effective under the commitment at authoritative T, deriving original expiry from T and frozen duration; this is not a new issuance decision. Replay/lost response returns the same finalization; no new grant or fresh start. Delayed recording cannot gate initial access. Late finalization preserves original expiry, even if already expired, and cannot revive a closed episode |
+| Settle an unapplied preparation | Same preparation and authoritative non-application/tombstone evidence fenced against local activation for the intended episode | Release/settle only the proven unapplied preparation; unknown activation is recovered, not assumed absent. An already applied T takes the finalization/history path, not an abort that erases it |
+| Read grant / recover outcome | Authorized grant or business identity; required source/grant revision where applicable; prior operation identity or outcome cursor | Return an authoritative versioned snapshot, source references, eligibility reasons and separate allocation/financial-completion status. Explicit not-found is distinct from unavailable/unknown; neither proves zero balance or failed issuance. Lost issuance responses are recovered by the business identity, not a new grant request |
+| Apply canonical full Rating replacement | Authorized canonical result reference/version/digest, expected prior result/allocation and grant revisions, complete frozen tariff/served-time/attribution evidence and applicable lifecycle/paid-boundary references | Return the new allocation/grant revisions and breakdown, or the stored same-version result. A newer result awaiting evidence/policy is visibly pending with its prior applied allocation preserved. Positive corrections outside eligible accepted-trial expenses served before the applied paid boundary return a policy gate rather than an invented debt/waiver |
+| Recover ordered outcomes and financial work | Authorized grant/acquisition scope, cursor/barrier or durable financial-work identity | Return issue/allocation/exhaustion/expiry outcomes with authoritative revisions, effective/recorded times and gap evidence, plus recoverable invoice/Ledger disposition. Expiry/exhaustion is evidence for the guarded consumer, not direct access revocation or paid-transition authorization |
+
+An issued grant cannot be claimed twice by changed attempts or rebuilt drafts. The provider proposes one durable benefit identity per accepted acquisition and selected grant policy; an accepted rebind changes association under a fenced S-U01 operation while preserving the original grant. An unsupported replacement path refuses. This deduplication rule grants no repeat-trial/regrant entitlement.
+
+The startup contract separates Billing's durable coverage commitment, its effectiveness at actual T and later recording, so preparation need not invent T. Neither a transport key nor a different attempt can mint another benefit for the same authorized business origin.
+
+The Subscriptions [payer/plan admission fence](../features/06-trials.md#single-episode-arbitration) precedes preparation and any trial-acquisition capture. Billing deduplication by purchase origin alone does not enforce no-repeat across two different Orders. The local fence and retained history are required for free-period trials as well.
+
+**Credit startup and effective grant**
+
+1. After the payer/plan admission fence, Billing durably commits one grant to the authorized Orders acquisition, accepted policy/receipt and exact activation operation/preparation generation. It freezes amount, currency, eligible scope and duration and guarantees effectiveness if that operation applies. The commitment cannot be reused by another attempt or withdrawn on a housekeeping timeout. No customer bonus is spendable before T.
+2. Subscriptions saves the commitment reference/digest in its preparation posture and outbox. Entitlements authenticates the Billing evidence, binds it to the operation/posture/manifest and selected service profile, and prepares all required usable access. Adapter-facing evidence is scoped to assignment and desired revision, never a subscription ID. Held readiness includes the ability to continue those rights across activation without waiting for a later Billing write. Pre-T usage is platform-borne, including preparation that never activates.
+3. Subscriptions checks the accepted terms, exact commitment, current order/financial/security/occupancy guards and held readiness, then atomically records applied T, episode/original expiry, commitment reference, commercial posture and Billing recording intent. Under Billing's prior guarantee, this result makes the same grant effective from T. No remote call or cross-gear transaction occurs under the local lock. The commitment is not proof that activation occurred; the immutable applied outcome supplies that proof.
+4. Billing consumes or recovers the authoritative applied outcome and records that same grant effective at T and its original expiry, without another eligibility or issuance decision. Duplicate/reordered delivery and lost replies recover the same identity. Entitlements retains the already prepared access through this recording delay. A later cancellation, expiry or exhaustion still restricts eligibility; recovery never revives access or starts a new duration.
+5. Activation and non-activation serialize on the same Subscriptions operation fence. A proved terminal non-activation releases the reserved grant and permits authorized preparation cleanup. Unknown or missing outcomes retain the commitment and require recovery/escalation, never guessed release. If activation won, later cancellation follows historical grant recording and current eligibility, not an unapplied abort.
+
+Billing remains the sole grant/balance/allocation owner. Subscriptions and Entitlements retain authorized evidence references, not a second bonus ledger or local monetary calculation. The selected profile must bound preparation and unresolved-outcome exposure, retain authoritative usage/operation evidence and support enforcement/recovery while Billing recording is delayed. Usage before T cannot consume the bonus; eligible usage from T uses the same grant and accepted liability rules even if reported or recorded later.
+
+Unknown boundary evidence remains pending, not zero balance, unlimited spending or customer debt. Inability to satisfy these guarantees keeps the profile unavailable; allocation-dependent preparation also requires the supported same-source preparation/continuity and resource-release contract; consumable-limit readiness uses provider readiness evidence under the supported runtime profile; readiness-check requests carry a purpose marker and their execution/quota treatment follows the provider contract. Exact SDK/provider mappings and executed conformance remain delivery work.
+
+**Proposed allocation and recovery transaction**
+
+1. Authenticate the caller and authorize the seller/payer/beneficiary scope. Resolve the canonical full Rating result and immutable accepted policy, then obtain the required lifecycle/served-time evidence. Separate original grant applicability from the corrected fact's frozen tariff. Missing or ambiguous crossing-boundary evidence stays pending and cannot be allocated wholly by arrival time.
+2. Serialize affected grant/allocation revisions within Billing and compare the expected prior accepted result and financial lineage. Concurrent eligible items cannot both consume the last available credit. Ordering among competing allocations and multiple benefits must follow the supported explicit Pricing policy/contract. Stacking is unavailable in this release; no priority value is silently selected.
+3. Replay the same accepted result version and digest as a no-op with its stored outcome. Same identity/version with different content is a conflict. A stale version cannot overwrite the head or restore credit again; recover the authoritative head. A required predecessor/manifest gap triggers source recovery instead of applying an independent delta.
+4. Derive a replacement allocation from the full result and prior accepted allocation under frozen grant restrictions and authoritative effective boundaries. Eligible delay-caused trial gross 5 with remaining bonus 2 yields bonus 2/platform 3/customer 0; actual post-paid-boundary residual follows accepted paid terms. Preserve chronological expiry, early-conversion grant retention and closed-episode rules. Eligible pre-boundary trial gross corrected from 90 to 110 against grant 100 yields bonus 100/platform 10/customer 0 under the same full-result lineage.
+
+   Liability/correction cases outside that scope remain pending for policy resolution.
+5. Atomically commit the accepted result/allocation revision, bounded grant totals, operation receipt and durable financial/outcome work in Billing. History retains the replaced versions; no negative grant or fictional top-up is allowed. An unresolved replacement records its pending reason without claiming a fully applied new allocation or erasing the prior applied version.
+6. Execute/recover invoice work through the established full-result/replacement contract: replace eligible drafts; use the standard versioned correction path for posted invoices. Keep an invoice-version guard and stable financial-work identity bound to allocation/result lineage. A duplicate or crash after a remote effect recovers that same effect/acknowledgement; it does not post a second credit or rerun grant issuance. Local allocation acceptance is not proof that a required Ledger posting completed.
+
+   No cross-gear database transaction or inline posted-invoice rewrite is assumed.
+7. Publish ordered versioned outcomes from the committed record. Readers can recover a snapshot at an immutable barrier plus subsequent outcomes; cursors bind authorized scope and explicitly report a gap/retention loss or partial page. Never translate lost history or unavailable balance into empty success, zero balance, permission or customer debt. Exact retention budgets belong to S-U11.
+8. Consumers reconcile outcome versions with the current episode/paid state before any lifecycle intent. Corrected exhaustion never automatically reopens a closed trial; retained-grant exhaustion/expiry after paid conversion ends coverage only. Duplicate/reordered outcomes cannot duplicate or reverse conversion. Access enforcement and payment authorization remain separate contracts.
+
+**Proposed typed outcomes**
+
+| Outcome category | Required caller behavior |
+| --- | --- |
+| Prepared / finalization pending | Retain the same commitment/grant and operation identity. Before T, only authorized platform-borne preparation is allowed and no bonus is consumed. After authoritative applied T, recover/record the effective grant without blocking its prepared access. Unknown outcome retains the commitment and bounded exposure; recover the exact activation resolution, never guess T or spendable balance. |
+| Applied / replayed | Retain the operation, grant/allocation revision and digest; financial completion may still be pending. A read of remaining balance is not an authorization token |
+| Evidence unavailable / unresolved boundary | Recover authoritative Pricing/Rating/Subscriptions evidence; no default zero, guessed date, waived guard or fabricated customer obligation |
+| Policy not supported / decision required | Refuse deferred trial exceptions even with explicit policy. Preserve authorization/financial guards; correction or liability outside the accepted rule keeps the affected replacement pending with prior applied lineage |
+| Identity or payload conflict / scope-currency mismatch | Refuse mutation and expose the conflicting identity/version for authorized recovery; never create a substitute grant, perform FX or broaden applicability |
+| Revision conflict / stale or gapped source | Read the current authoritative head or recover the missing source proof, then retry the same business operation; no blind overwrite or independent delta |
+| Financial work pending / outcome unknown | Recover the exact invoice/Ledger operation and its durable acknowledgement; do not report posting complete, release protected rights, double collect or duplicate a correction |
+
+This contract aligns with [commercial-fact replacements and completeness](../features/08-commercial-facts.md) and [consumer recovery](../features/09-consumer-contracts.md). The mirrored Billing/Rating and Ledger contracts remain ratification work; historical Rating `Adjustment` delivery does not reintroduce a delta-only path here. No existing cash-funded Ledger API is designated as the promotional provider. A conformance fixture can exercise the proposed semantics before runtime work, but only provider/consumer implementation and joint evidence enable it.
+
+## 5. Consumer lifecycle and validity
+
+1. Read the existing Pricing PlanRevision with its optional trial block and obtain exact customer acceptance. The storefront uses Products descriptions plus Pricing version; customer dates and grants are separate records. Missing commercial inputs cannot become a free or credit offer.
+2. For the credit variant, use the proposed §4 staged protocol to prepare durable coverage under the explicit authorized Orders business origin, accepted policy/duration and intended episode. Retain the same preparation/reserved grant identity; the bonus is not spendable before T and actual T/expiry is not invented. The committed grant becomes effective at successful activation, without a later discretionary decision. Startup/cancellation fences require owner ratification; a provider without this capability gates the profile.
+3. Where money is captured before a future start, secure the S-Q02 durable place and original future-term commitment **before capture**. This conditional path changes no supported unreserved admission and requires no capture for a bonus-funded trial, explicitly free trial or authorized postpay merely because the prepay profile captures money.
+4. Complete current authorization, order/financial admission and held-readiness guards plus the variant's required evidence. Subscriptions atomically applies the accepted acquisition and own reservation (or supported unreserved admission), records actual T and, for credit, the prepared coverage identity and finalization outbox. Billing records the same grant effective at T under the saved commitment and original expiry rules.
+
+   Entitlements must have prepared usable access under that guarantee before the local commit; later recording cannot be an initial access prerequisite. Recovery preserves original T, accepted terms and grant expiry without creating another sale.
+5. Free-period facts use accepted zero bindings. Credit-trial facts preserve ordinary tariff bindings and served history; Rating values them, and Billing allocates the shared bonus with invoice coordination. They do not imply the successor paid period or automatic customer liability.
+6. For an active unconverted trial at duration expiry or accepted credit exhaustion, apply the normal guarded expiry/revocation or separately eligible paid transition. After early conversion has already applied, retained-grant expiry/exhaustion ends only bonus coverage; it does not itself stop or revoke paid service, duplicate conversion or reverse it. Remaining paid expenses follow the accepted paid-plan/settlement rules and applicable guards; no unsupported liability or waived payment prerequisite is inferred.
+
+   Prepay needs prescribed payment; authorized postpay needs accepted terms and credit-service permission, not immediate payment/card. A balance event or bonus is neither permission. An earlier valid guarded conversion preserves the same unused grant for eligible paid expenses under its original expiry/applicability, without a new grant or trial extension; bonus coverage satisfies no upfront-payment guard unless the agreed settlement contract allows it. Postpay due/dunning remains unchanged.
+7. Definitive failed prepay defaults to recorded failure/retry and normal expiry with retention, not paid start or automatic free extension. Unknown payment/balance stays recoverable and cannot duplicate collection/bonus allocation or release protected paid claims. Trial extension is deferred.
+8. Later successful payment supports only a valid applied paid transition without waiting-gap accrual/backdating. Closed episodes/subscriptions do not reopen. Conversion, expiry, cancellation and ordered grant outcomes require guarded replay; corrected exhaustion cannot automatically restart access, replenish a grant or create a setup occurrence.
+
+## 6. Refusal and recovery outcomes
+
+| Condition | Required visible outcome |
+| --- | --- |
+| Missing/unauthorized revision, trial variant, money or duration | Explicit unavailable/incomplete outcome; no guessed current version, free-price or default-bonus fallback |
+| Unsupported variant combination, currency or charge-kind scope | Refuse unsupported terms; no implicit FX, all-product coverage, allowance, new fee trigger or paid permission |
+| Required ledger/eligibility/owner evidence unknown | Pending/refused capability, not absence, zero balance, exhaustion, credit-service permission or unlimited free access |
+| Replay with changed acquisition/policy content | Conflict retaining historical identity; no second episode/grant/collection/allocation |
+| Stale/reordered exhaustion or corrected rated result | Versioned recovery and explicit replacement; no terminal revival, duplicate credit or second paid transition |
+| Closed episode, cancellation winner or expired execution authority | Refuse application/reconcile late effects; preserve historical terms and protected financial remedies without refreshing authority |
+
+Exact typed outcomes and release/coverage rules are owner work. Credit capability stays disabled until S-U15 implements the selected trial-delay coverage boundary and ratifies remaining late/in-flight/correction behavior; a healthy offer read alone does not establish safe launch.
+
+## 7. Joint conformance cases
+
+| Case | Scenario | Required evidence before enablement |
+| --- | --- | --- |
+| TP-C01 | Storefront and immutable revision | Existing plan/revision identifies the trial block; no separate offer catalog. A 14-to-7-day revision change leaves previous customer terms intact; numbers are illustrative |
+| TP-C02 | Free-period versus credit trial | Free variant has explicit zero bindings; credit variant retains normal tariffs, explicit amount/currency/applicability and a separate grant. Missing terms and combined variants refuse |
+| TP-C03 | Multiple eligible items and issuance replay | One shared grant is issued once and consumed across items; retry never clones its full amount per item or duplicates issuance |
+| TP-C04 | Rating correction/invoice retry | Full result corrects 30 to 25 at the same tariff for a valid/applicable grant of 100: remaining 70 becomes 75 once, spendable only until the same original expiry. Duplicate version restores no more; conflicting version/content refuses/recovers. No new grant, cash refund or repricing; draft/posted invoice correction and Ledger integration preserve lineage |
+| TP-C05 | Exhaustion, delayed usage and unknown balance | Authoritative versions recover ordered outcomes; unknown is not zero/spend permission. Eligible delay-caused trial usage 5 with bonus 2 allocates 2 to bonus and 3 to platform, without negative bonus/top-up/customer debt. Enforce/recover behavior remains required |
+| TP-C06 | Usage before, after and across paid conversion | Late trial facts remain trial liability even when received after conversion; actual post-boundary usage residual follows agreed paid terms. Split crossing usage using supported served-time/applied-boundary evidence, never arrival/correction time or backdated conversion. Preserve gross usage/value and idempotently correct any erroneous billed trial tail |
+| TP-C07 | Positive full-result correction of eligible trial service | Grant 100, prior gross 90, corrected pre-paid-boundary gross 110: bonus 100/platform 10/customer 0 once; preserve gross, source/version and original tariff. Late arrival after conversion does not change classification. Actual post-boundary usage follows accepted paid terms. Replay cannot double-adjust, top up, refund cash or revive an exhausted trial; erroneous posted customer excess follows existing Billing correction/remedy |
+| TP-C08 | Correction after grant expiry | For the same 100 grant and 30→25 correction, history records net consumption 25 and conceptual remaining 75, but spendable credit is 0. Original expiration is unchanged; no trial extension, new grant/top-up, cash refund, access revival or repeated conversion. Duplicate correction is a no-op; v1 has no closed-episode reactivation or same-subscription regrant, and a separate fresh paid purchase requires its supported Orders acquisition contract; repeat trials are deferred even with explicit policy |
+| TP-C09 | Correction after exhaustion ended the trial | Before original expiry, full consumption 100 corrected to 95 restores 5 in accounting once, but does not restart the trial, grant service/spend permission for the closed episode or reverse an applied paid conversion. No new grant/top-up, setup trigger or cash refund; an active valid/applicable trial or eligible paid usage after early guarded conversion still permits same-grant restoration until original expiry |
+| TP-C10 | Currency, charge-kind or scope mismatch | Unsupported application refuses; no FX/all-product default or automatic setup charge. Excluded/overage charges require an agreed paid basis |
+| TP-C11 | Early guarded paid conversion with unused credit | Illustrative 100-credit/14-day grant, day-5 conversion with 60 left: same 60 covers eligible paid expenses until original day 14, under unchanged restrictions. No new grant/top-up/term or revived expiry; full-result corrections retain lineage and paid tariffs. Normal settlement guards still apply; no assumed upfront-payment satisfaction. Later retained-grant expiry/exhaustion ends only bonus coverage, with no paid-service stop/revocation or duplicate/reversed conversion; remaining charges follow accepted paid-plan/settlement rules and applicable guards |
+| TP-C12 | Business origin and lost reply | Orders uses order/version/line; standalone acquisition is refused. Another transport key/attempt cannot create another preparation/grant for that business origin; conflict/unsupported rebind refuses and unknown outcome recovers the same identity |
+| TP-C13 | Billing recording is delayed/lost after local activation | Commitment and usable readiness exist before T. Local activation makes the reserved grant effective at T; access continues without waiting for Billing recording. Recovery records the same grant once with original expiry, no new decision or double allocation. Unknown outcome is recovered, never assigned a guessed T. |
+| TP-C14 | Coverage preparation races activation/cancellation; responses are lost | Proven terminal non-activation permits release, with pre-T/never-activated use platform-borne and no bonus drawdown. Unknown retains commitment and bounded preparation. Applied T winning requires historical grant recording even after later cancellation/expiry, without regrant or access revival. |
+| TP-C15 | Concurrent allocation and source versions | Two eligible items racing for the same remainder cannot double-spend it; stale versions cannot overwrite or restore twice. Same-version/different-content conflicts; missing boundary/predecessor evidence stays pending |
+| TP-C16 | Allocation committed, invoice/Ledger reply lost | Recover one stable financial-work identity; grant/allocation versions remain auditable, posting is not falsely complete, and retry creates no duplicate invoice correction/credit. Closed invoices follow the posted correction path |
+| TP-C17 | Read/outcome gap or unknown balance | Snapshot/barrier and ordered outcomes expose gaps/retention loss explicitly; no empty-success fallback, zero balance, permission or inferred debt |
+| TP-C18 | Requested trial exception | Extension/repeat/additional-bonus/transfer/stacking refuse regardless of Pricing permission or operator privilege. Repeat refusal applies across subscription IDs for the same payer/plan; replay of the same acquisition retains its original episode. Early-paid carryover remains unchanged |
+| TP-C19 | Prepay failure and authorized postpay | Default failed prepay records failure/retry and expires (notification delivery is deferred); no waiting-gap debt on later valid start. Authorized postpay still needs no immediate payment/card |
+| TP-C20 | Cancellation/replay and original paid rights | One local episode outcome; grant/financial recovery fences late effects. No duplicate collection or lost protected future-order commitment |
+| TP-C21 | Retired catalog revision, expired offer after purchase or unsupported V1 | Accepted trial/paid-target terms remain recoverable and unchanged; current financial/lifecycle/security guards and explicit accepted restrictions apply. Unsupported initial acceptance capability refuses the profile before purchase. |
+| TP-C22 | Free binding includes all covered contributions | Zero unit price with a nonzero covered mandatory fee is rejected as an incomplete free-period contract; ordinary paid bindings remain unchanged. |
+| TP-C23 | Late or boundary-crossing usage while grant recording is delayed | Preserve T and original expiry. Pre-T use is platform-borne without bonus drawdown; eligible use from T is allocated once against the same grant under accepted scope and liability. Missing boundary evidence stays unresolved, not a fabricated balance, debt or extension. |
+| TP-C24 | Paid-target assent versus operation authority | Unchanged accepted paid terms need no new assent on retry/conversion; current AP/FA authority is still required. An expired original V1 hold cannot authorize it. |
+| TP-C25 | Late historical usage after grant expiry | Classify by original eligible served time and full source lineage; same-grant accounting correction never restores current spend permission or trial access. |
+| TP-C26 | Variant-specific capability gate | A free-period profile requires no promotional-grant service; a credit profile cannot start without supported Billing coverage. Neither variant creates a card/capture prerequisite merely by being a trial. |
+
+These conformance cases extend V12 under [cross-contract acceptance](../DECOMPOSITION.md#31-cross-contract-acceptance).
+
+
+## 8. Enablement gates
+
+Pricing and Subscriptions ratify the PlanRevision block, acceptance/evidence, exact variant schema and validity. Product policy owners approve initial applicability/eligibility and repeat refusal; Contracts participates only for explicitly bound terms. Billing ownership is accepted; S-U15 must ratify grant identity/scope, ordered recovery, canonical full-result allocation/correction, required Ledger integration, implementation of the selected eligible pre-boundary trial coverage rule including positive corrections, access enforcement and liability contracts outside that scope before credit launch.
+
+Early guarded conversion preserves unused credit under original grant restrictions/expiration; exact coordination remains S-U15 work. The policy-required/refusal framework, the v1 ceiling and the no-rollover/regrant/reactivation rule are accepted; liability cases outside the eligible trial scope remain open decisions. Correction alone cannot reopen an exhausted closed episode or reverse an applied paid conversion.
+
+Owners then implement and demonstrate the agreed cases and applicable S-Q01–S-Q06/S-U01/S-U04/S-U07/S-U12/S-U13/S-U15 gates. Direction approval is not other-owner sign-off, a new numbered Pricing decision, merged code or runtime evidence. General promotions, paid-trial policy, recurring allowances and prepaid wallets are not authorized by this focused extension.
+
+## 9. Contract references
+
+Local authority: [S-Q06 decisions](../DECISIONS.md#open-cross-owner-decisions), [trial feature](../features/06-trials.md), [provider requests](../UPSTREAM_REQS.md#25-provider-prerequisites-and-bilateral-acceptance), [activation contract](activation.md), and Pricing [PRD](../../../pricing/docs/PRD.md), [DESIGN](../../../pricing/docs/DESIGN.md) and [decisions](../../../pricing/docs/DECISIONS.md). Current V1 exclusions remain distinct from this target extension.
+
+## 10. Reciprocal trial delivery contract
+
+This contract defines the required boundaries from sections 3-7 for Pricing, Orders, Rating and Ledger. It covers the two retained trial variants and conversion to the already accepted paid target. Financial admission follows [FA](../DESIGN.md#3311-financial-admission-integration-contract); execution authority and future protection follow [AP](activation.md#13-orders-and-pricing-reciprocal-activation-contract).
+
+**Required integration behavior**
+
+| Boundary | Required contract |
+| --- | --- |
+| TP01 storefront and authoring | Add a separately versioned optional trial block to existing PlanRevision authoring/read/publication. Preserve current V1; absent block means no trial. Products remains SKU/description authority with no trial fields. |
+| TP02 accepted evidence and execution | Extend acceptance and immutable read/replay to cover selected trial terms, the paid target and supported future execution. A copied revision or quote-lifetime V1 hold cannot establish accepted future coverage. |
+| TP03 shared promotional grant | A separate Billing benefit provider implements durable coverage commitment, same-grant effectiveness at Subscriptions T, later recording, fenced abort/read, shared allocation and ordered recovery from section 4. Do not fabricate settlement, grant per item or reuse the cash wallet as a bonus API. |
+| TP04 gross and correction | The trial profile requires canonical full gross replacements with source/version lineage, served-time and lifecycle boundary evidence; Billing owns bonus/platform/customer allocation. Legacy delta-only delivery cannot enable this profile. The [financial consumer boundary](../DESIGN.md#financial-consumer-boundary) specifies the required commercial handoff; provider/transport implementation remains open. |
+| TP05 startup and conversion | Prove the payer/plan admission fence, operation-bound conditional coverage and usable readiness before T, same-grant recording after T without an access gap, and guarded conversion/recovery. Grant balance/outcome alone never starts paid service. |
+| TP06 provider mapping | Publish the provider contract and financial posting mapping, then execute section 7 cases. Ledger boundary notes are not a grant implementation or approval of journal/tax/recognition rules. |
+
+**Pricing evidence and validation**
+
+The new versioned authoring/read contract must preserve the following semantic shape; names are descriptive, not shipped DTO fields. The selected provider encoding must be unambiguous and validated before publication and acceptance.
+
+| Evidence group | Required validation |
+| --- | --- |
+| Trial union | Absent, free-period or credit. Reject unknown variants, incomplete terms and a combined free-plus-credit block. Old consumers must reject unsupported capability explicitly rather than strip the block and sell the paid plan. |
+| Duration | Explicit duration value/unit and elapsed-time or calendar-boundary semantics, including explicit UTC boundary rules for the current supported profile. No new timezone capability is implied. Derive start from actual applied T and use an exclusive original expiry. Subscriptions records the policy and derived boundary; Billing finalization must reproduce/verify that boundary and refuse inconsistent evidence. Finalization/access delay never resets duration. No default duration or new extension route. |
+| Free-period bindings | Exact covered items/charge kinds and explicit zero-valued binding evidence, independent of the accepted paid bindings. Every covered contribution, including applicable minimum-fee behavior, must yield zero under the supported rating contract; a zero unit rate with a nonzero mandatory fee is not a free binding. Missing/unsupported evidence refuses. Do not mutate shared live prices or infer zero from absent money. |
+| Credit benefit | Exact representable amount/currency, original restrictions and eligible item/charge-kind scope. Ordinary tariff bindings remain unchanged. Billing owns monetary precision/allocation; no FX, implicit all-product coverage or one bonus per item. Unsupported precision/scope fails before grant preparation. |
+| Paid target | Exact accepted target and settlement terms, with the frozen bindings or explicitly accepted future-resolution rule distinguished. Early/normal conversion stays within that agreed target; no general plan switch. A different target or unaccepted terms requires separate authorized commercial handling, not an automatic substitution. |
+| Acceptance and history | Authorized acquisition/order/version/line, tenant axes, revision/variant, trial and paid-term digests, duration/applicability/initial eligibility evidence and acceptance provenance. Historical read/replay retains this exact evidence after revision replacement/retirement. Subscriptions supplies authoritative payer/plan trial history; Pricing eligibility does not replace its atomic no-repeat fence. |
+
+Pricing publication/acceptance and reference protection use the AP owner fences; a detached Products read is insufficient. An active customer's trial is not rewritten by a newer offer. Storefront description, accepted policy, customer episode and individual grant remain four distinct records with existing Plan/PlanRevision as the offer identity; no TrialOffer catalog is introduced.
+
+**Credit preparation, application and delayed work**
+
+The staged preparation in section 4 must provide commit-valid coverage for the exact episode/consumer/association. It cannot be withdrawn between local validation and application without an acknowledged consumer fence. Apply exclusive consumption and acknowledged withdrawal fencing: prepare outside the transaction; serialize local application against withdrawal; store actual T, original expiry policy, coverage reference and finalization outbox atomically; recover the winning receipt before abort/reassignment. A preparation timeout is not proof of non-application.
+
+Billing owns grant finalization and monetary history; no remote call occurs inside Subscriptions' transaction.
+
+If application won, finalize the original grant from that applied evidence even when the acknowledgement arrives after cancellation or original expiry, preserving current closed eligibility and history. If a proven unapplied fence won, release only that preparation and trial-admission reservation. Neither a new transport key nor a replacement draft creates a new bonus. The commitment-backed prepared access continues across T without waiting for the Billing materialized record; a later cancellation/revocation wins over stale enable work.
+
+Do not move T or promise an extra trial interval because finalization was delayed.
+
+Original grant expiry limits spend/service eligibility; it does not erase historical evidence. A late fact for an originally eligible served interval must be classified against the original interval and source, not its arrival date or today's zero spendable balance. Billing resolves historical allocation/correction on the same grant without making expired credit spendable again. Facts spanning trial/paid or grant-expiry boundaries require supported authoritative attribution; otherwise that allocation remains pending.
+
+No guessed prorating or shifted paid boundary is permitted.
+
+Corrections retain canonical full-result and prior-allocation lineage. For supported eligible trial expenses before the applied paid boundary, bonus coverage is bounded and residual is platform-borne, including positive corrections and technical-delay overrun. Actual post-paid-boundary expenses use accepted paid terms and unchanged retained-grant restrictions. Other liability cases remain explicit policy gates; no general customer waiver is invented. Draft replacement and posted financial correction remain distinct, and local benefit allocation does not prove invoice/Ledger completion.
+
+**Paid transition and access**
+
+Validate the already accepted paid target and current financial, security and lifecycle conditions; unchanged accepted conversion or an idempotent retry needs no new assent. Changed/unaccepted terms require supported new acceptance. A future paid target may outlive an initial quote/hold; its durable accepted coverage remains the basis for conversion. Financial admission and original grant expiry retain their own independent rules, and one episode/aggregate fence selects the applied transition.
+
+Initial free/bonus-funded trial access does not imply acquisition-time collection or a linked card. Any separately prescribed upfront payment follows AP/FA, but future paid-target payment is not silently moved to trial start. On paid conversion prepay needs prescribed-payment satisfaction and postpay needs an accepted credit-service commitment. Reuse financial coverage already committed for that paid target; only an uncovered obligation requires a new financial decision.
+
+Technical proof expiry or later credit-limit changes do not invalidate an existing purchase commitment. The grant is neither. Unknown permission cannot extend the trial; late payment cannot reopen an expired episode or backdate service.
+
+Early valid conversion retains the same eligible unused grant until its original expiry, without resetting amount/duration or broadening its scope. Later exhaustion/expiry of that retained grant changes coverage only, not paid service state; a subsequent financial delinquency follows FA and the accepted lifecycle policy. Correction never restarts a closed episode or reverses an applied paid transition. Conversion itself is not a new setup-fee trigger.
+
+**Delivery and enablement**
+
+| Deliverable | Owner and completion evidence |
+| --- | --- |
+| Versioned trial authoring/read/acceptance and future coverage | Pricing maps the semantic union, validation, immutable terms and historical recovery. Existing V1 quote/hold methods are not reinterpreted as durable future purchase coverage. |
+| Single-episode startup and conversion | Subscriptions/Orders preserve acquisition evidence and payer/plan fencing, staged startup, actual boundary and cancellation/retry semantics. Orders does not run trial expiry or paid conversion. |
+| Promotional-grant protocol and accounting integration | Billing/selected benefit provider delivers shared preparation/finalization, authoritative history/outcomes, serialized full-result allocations and invoice/Ledger recovery. Select/prove the posting mapping without fake customer cash. |
+| Gross full-result and served-time evidence | Rating/Subscriptions supply complete frozen gross valuations and boundary lineage; Billing does not infer them from a monetary delta or event arrival time. Exact transport mapping remains open. |
+| Runtime conformance | Implement and execute the numbered section 7 cases for the selected profile. Free-period trials do not depend on promotional-credit APIs; credit trials additionally require the grant/correction/enforcement contract. Both require Pricing extension, Orders origin, episode fencing and applicable paid-transition gates. |
+
+This specifies the Subscriptions-side contract; reciprocal owner-document adoption remains open. Missing provider versions, unsupported boundary/financial mappings or unexecuted conformance keep the affected capability disabled. Extensions, repeat trials, stacking/regrant, migration/import, transfer and general plan changes remain deferred.
