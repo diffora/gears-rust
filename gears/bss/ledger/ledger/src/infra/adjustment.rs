@@ -45,4 +45,27 @@
 pub mod credit_note_service;
 pub mod debit_note_service;
 pub mod manual_adjustment_service;
+mod refund_errors;
 pub mod refund_service;
+
+/// Map a repository failure inside an adjustment flow. A lost version race or
+/// classified contention becomes `ConcurrentModification`, which the posting
+/// retry loop retries; a caller money mismatch (currency or scale against the
+/// stored invoice) is the client's error; anything else is an infrastructure
+/// fault.
+pub(crate) fn map_adjustment_repo_err(
+    context: &str,
+    error: crate::domain::model::RepoError,
+) -> crate::domain::error::DomainError {
+    use crate::domain::error::DomainError;
+    use crate::domain::model::RepoError;
+    match error {
+        RepoError::Conflict(m) => DomainError::ConcurrentModification(format!("{context}: {m}")),
+        RepoError::Money(m) => crate::domain::exact_money::map_money_error(m),
+        other => DomainError::Internal(format!("{context}: {other}")),
+    }
+}
+
+#[cfg(test)]
+#[path = "adjustment_tests.rs"]
+mod tests;

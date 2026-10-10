@@ -48,7 +48,9 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use bss_ledger_sdk::{PostEntry, PostLine, PostingRef, SourceDocType};
+use bss_ledger_sdk::{
+    CurrencySpec, PostEntry, PostLine, PostedMoney, PostingRef, SourceDocType, canonical_decimal,
+};
 use chrono::Datelike;
 use toolkit_db::secure::AccessScope;
 use toolkit_db::{DBProvider, DbError};
@@ -56,15 +58,15 @@ use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
 use crate::domain::error::DomainError;
+use crate::domain::exact_money::{map_exact_error, matching_spec, sum_posted, zero_posted};
 use crate::domain::instant::to_naive_date;
 use crate::domain::model::{NewEntry, NewLine};
 use crate::domain::payment::credit::{
-    ApplyInput, CreditDebit, GrantInput, build_apply_entry, build_grant_entry, plan_wallet_debit,
-    validate_credit_targets,
+    ApplyInput, CreditDebit, CreditSubgrain, GrantInput, build_apply_entry, build_grant_entry,
+    plan_wallet_debit, validate_credit_targets,
 };
 use crate::domain::payment::precedence::{Allocated, Candidate};
 use crate::domain::ports::metrics::{LedgerMetricsPort, PostFlow, PostResult};
-use crate::infra::currency_scale::CurrencyScaleResolver;
 use crate::infra::events::publisher::LedgerEventPublisher;
 use crate::infra::posting::chart::{ChartIndex, load_chart};
 use crate::infra::posting::idempotency::IdempotencyGate;
@@ -84,11 +86,9 @@ pub struct GrantRequest {
     pub payer_tenant_id: Uuid,
     /// The `CREDIT_APPLY` idempotency business id.
     pub credit_application_id: String,
-    /// ISO currency of the grant.
-    pub currency: String,
-    /// Amount to park into the wallet, in minor units. Capped at the payer's live
-    /// unallocated pool.
-    pub amount_minor: i64,
+    /// Amount to park into the wallet, in major units with its stored currency.
+    /// Capped at the payer's live unallocated pool.
+    pub amount: PostedMoney,
     /// The wallet sub-grain bucket the credit accrues to.
     pub credit_grant_event_type: String,
 }
@@ -103,8 +103,8 @@ pub struct ApplyRequest {
     pub payer_tenant_id: Uuid,
     /// The `CREDIT_APPLY` idempotency business id.
     pub credit_application_id: String,
-    /// ISO currency of the application.
-    pub currency: String,
+    /// The application's stored currency and scale.
+    pub currency: CurrencySpec,
     /// The per-invoice receivable shares to apply the wallet to. Validated against
     /// the payer's open AR candidates (presence / per-invoice cap / positivity /
     /// no-duplicate); their total sizes the wallet draw-down.
@@ -127,7 +127,6 @@ pub struct CreditApplicationOutcome {
 pub struct CreditApplicationService {
     posting: PostingService,
     reference: ReferenceRepo,
-    resolver: CurrencyScaleResolver,
     repo: PaymentRepo,
     metrics: Arc<dyn LedgerMetricsPort>,
 }
@@ -144,12 +143,10 @@ impl CreditApplicationService {
     ) -> Self {
         let posting = PostingService::new(db.clone(), publisher);
         let reference = ReferenceRepo::new(db.clone());
-        let resolver = CurrencyScaleResolver::new(ReferenceRepo::new(db.clone()));
         let repo = PaymentRepo::new(db);
         Self {
             posting,
             reference,
-            resolver,
             repo,
             metrics,
         }
@@ -264,15 +261,15 @@ impl CreditApplicationService {
         //    fund credit it doesn't hold. SQL-level BOLA: a foreign tenant reads 0.
         let available = self
             .repo
-            .read_unallocated(scope, req.tenant_id, req.payer_tenant_id, &req.currency)
+            .read_unallocated(
+                scope,
+                req.tenant_id,
+                req.payer_tenant_id,
+                req.amount.currency().code(),
+            )
             .await
             .map_err(|e| DomainError::Internal(format!("read unallocated: {e}")))?;
-        if req.amount_minor > available {
-            return Err(DomainError::GrantExceedsUnallocated(format!(
-                "grant {} exceeds available unallocated {} for payer {}",
-                req.amount_minor, available, req.payer_tenant_id
-            )));
-        }
+        check_grant_cap(&req.amount, available, req.payer_tenant_id)?;
 
         // 2. Build the balanced grant entry (DR UNALLOCATED / CR REUSABLE_CREDIT),
         //    overwrite the placeholder header, bind chart account_ids, and post —
@@ -281,8 +278,7 @@ impl CreditApplicationService {
             tenant_id: req.tenant_id,
             payer_tenant_id: req.payer_tenant_id,
             credit_application_id: req.credit_application_id.clone(),
-            currency: req.currency.clone(),
-            amount_minor: req.amount_minor,
+            amount: req.amount.clone(),
             credit_grant_event_type: req.credit_grant_event_type.clone(),
             // Credit posts effective-now; thread a request field here if a
             // back-dated grant is ever needed.
@@ -358,14 +354,19 @@ impl CreditApplicationService {
         //    cap basis. SQL-level BOLA: a foreign tenant yields no rows.
         let rows = self
             .repo
-            .list_open_ar_invoices(scope, req.tenant_id, req.payer_tenant_id, &req.currency)
+            .list_open_ar_invoices(
+                scope,
+                req.tenant_id,
+                req.payer_tenant_id,
+                req.currency.code(),
+            )
             .await
             .map_err(|e| DomainError::Internal(format!("list open ar invoices: {e}")))?;
         let candidates: Vec<Candidate> = rows
             .into_iter()
             .map(|r| Candidate {
                 invoice_id: r.invoice_id,
-                open_minor: r.balance_minor,
+                open: r.balance,
                 original_posted_at: r.original_posted_at,
             })
             .collect();
@@ -378,20 +379,32 @@ impl CreditApplicationService {
         //    i128 to avoid an i64 overflow on a large validated target set
         //    (mirrors the domain builder's i128 accumulation), then narrow — an
         //    out-of-range total is rejected, never silently wrapped.
-        let total_minor: i128 = targets.iter().map(|t| i128::from(t.amount_minor)).sum();
-        let total = i64::try_from(total_minor).map_err(|_| {
-            DomainError::AmountOutOfRange("credit target total exceeds i64 range".to_owned())
-        })?;
+        let total = sum_posted(
+            &targets.iter().map(|t| t.amount.clone()).collect::<Vec<_>>(),
+            req.currency.clone(),
+        )
+        .map_err(map_exact_error)?;
 
         // 4. Read the payer's spendable wallet sub-grains (oldest-grant-first) and
         //    plan the draw-down for the total — the wallet-side cap is enforced
         //    here (Σ available < total ⇒ CreditExceedsWallet).
-        let subgrains = self
+        let subgrains: Vec<CreditSubgrain> = self
             .repo
-            .list_credit_subgrains(scope, req.tenant_id, req.payer_tenant_id, &req.currency)
+            .list_credit_subgrains(
+                scope,
+                req.tenant_id,
+                req.payer_tenant_id,
+                req.currency.code(),
+            )
             .await
-            .map_err(|e| DomainError::Internal(format!("list credit subgrains: {e}")))?;
-        let debits = plan_wallet_debit(&subgrains, total)?;
+            .map_err(|e| DomainError::Internal(format!("list credit subgrains: {e}")))?
+            .into_iter()
+            .map(|v| CreditSubgrain {
+                credit_grant_event_type: v.credit_grant_event_type,
+                available: v.available,
+            })
+            .collect();
+        let debits = plan_wallet_debit(&subgrains, &total)?;
 
         // 5. Build the balanced apply entry (N×DR REUSABLE_CREDIT / M×CR AR),
         //    overwrite the placeholder header, bind chart account_ids, and post —
@@ -435,7 +448,7 @@ impl CreditApplicationService {
                     "no provisioned account for class {} / stream {:?} / currency {}",
                     line.account_class.as_str(),
                     line.revenue_stream,
-                    line.currency
+                    line.money.currency().code()
                 ))
             })?;
         }
@@ -478,12 +491,7 @@ impl CreditApplicationService {
         };
         let mut new_lines: Vec<NewLine> = Vec::with_capacity(entry.lines.len());
         for line in entry.lines {
-            let scale = self
-                .resolver
-                .resolve(scope, entry.tenant_id, &line.currency)
-                .await
-                .map_err(|e| DomainError::Internal(format!("currency scale resolve: {e}")))?;
-            new_lines.push(new_line(line, scale));
+            new_lines.push(new_line(line));
         }
         self.posting
             .post_with_request_hash(ctx, scope, new_entry, new_lines, sidecar, request_hash)
@@ -524,14 +532,14 @@ fn overwrite_header(entry: &mut PostEntry, ctx: &SecurityContext) {
 fn resolve_line(chart: &ChartIndex, line: &PostLine) -> Option<Uuid> {
     chart.resolve(
         line.account_class,
-        &line.currency,
+        line.money.currency().code(),
         line.revenue_stream.as_deref(),
     )
 }
 
 /// Map one SDK [`PostLine`] + its resolved scale to the engine's [`NewLine`]
 /// (mirrors `allocate::new_line`).
-fn new_line(line: PostLine, scale: u8) -> NewLine {
+fn new_line(line: PostLine) -> NewLine {
     NewLine {
         line_id: line.line_id,
         payer_tenant_id: line.payer_tenant_id,
@@ -541,15 +549,12 @@ fn new_line(line: PostLine, scale: u8) -> NewLine {
         account_class: line.account_class,
         gl_code: line.gl_code,
         side: line.side,
-        amount_minor: line.amount_minor,
-        currency: line.currency,
-        currency_scale: scale,
+        money: line.money,
         invoice_id: line.invoice_id,
         due_date: line.due_date,
         revenue_stream: line.revenue_stream,
         mapping_status: line.mapping_status,
-        functional_amount_minor: line.functional_amount_minor,
-        functional_currency: line.functional_currency,
+        functional_money: line.functional_money,
         tax_jurisdiction: line.tax_jurisdiction,
         tax_filing_period: line.tax_filing_period,
         tax_rate_ref: line.tax_rate_ref,
@@ -572,12 +577,13 @@ fn new_line(line: PostLine, scale: u8) -> NewLine {
 /// `credit_application_id` reused with a different payload.
 fn grant_request_hash(req: &GrantRequest) -> String {
     let canonical = format!(
-        "grant\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}",
+        "grant\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}",
         req.tenant_id,
         req.payer_tenant_id,
         req.credit_application_id,
-        req.currency,
-        req.amount_minor,
+        req.amount.currency().code(),
+        req.amount.currency().scale(),
+        canonical_decimal(req.amount.amount()),
         req.credit_grant_event_type,
     );
     IdempotencyGate::content_hash(&canonical)
@@ -593,16 +599,54 @@ fn apply_request_hash(req: &ApplyRequest) -> String {
     let mut targets: Vec<String> = req
         .targets
         .iter()
-        .map(|t| format!("{}\u{1d}{}", t.invoice_id, t.amount_minor))
+        .map(|t| {
+            format!(
+                "{}\u{1d}{}",
+                t.invoice_id,
+                canonical_decimal(t.amount.amount())
+            )
+        })
         .collect();
     targets.sort();
     let canonical = format!(
-        "apply\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}",
+        "apply\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}",
         req.tenant_id,
         req.payer_tenant_id,
         req.credit_application_id,
-        req.currency,
+        req.currency.code(),
+        req.currency.scale(),
         targets.join("\u{1e}"),
     );
     IdempotencyGate::content_hash(&canonical)
 }
+
+/// Cap a grant at the payer's unallocated pool: an absent pool holds zero, a
+/// pool stored at another currency or scale is the named metadata rejection,
+/// and a grant above the pool is `GrantExceedsUnallocated`.
+///
+/// # Errors
+/// [`DomainError::CurrencyMismatch`] / [`DomainError::InconsistentScale`] for a pool
+/// in other metadata; [`DomainError::GrantExceedsUnallocated`] above the pool.
+fn check_grant_cap(
+    amount: &PostedMoney,
+    available: Option<PostedMoney>,
+    payer: Uuid,
+) -> Result<(), DomainError> {
+    let available = match available {
+        Some(available) => available,
+        None => zero_posted(amount)?,
+    };
+    matching_spec(amount, &available)?;
+    if amount.amount() > available.amount() {
+        return Err(DomainError::GrantExceedsUnallocated(format!(
+            "grant {} exceeds available unallocated {} for payer {payer}",
+            amount.amount(),
+            available.amount(),
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "credit_cap_tests.rs"]
+mod cap_tests;

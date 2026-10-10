@@ -34,6 +34,10 @@ reason = "Ignore 'rest' shared utility library (weak ETag and If-None-Match for 
 patterns = ["gears/bss/libs/rest/*"]
 
 [[ignore]]
+reason = "Ignore 'money' shared utility library (validated decimal money, exact arithmetic and canonical decimal text; infrastructure crate used by ledger, rate-provider and pricing, documented in their design sets and its README, not an SDLC-documented product module)."
+patterns = ["gears/bss/libs/money/*"]
+
+[[ignore]]
 reason = "Ignore 'fixtures' joint golden conformance corpus (cf-gears-bss-fixtures + its conformance harness; test-support infrastructure crates consumed by the BSS gears, not an SDLC-documented product module — no PRD/DESIGN required, README-documented). Same class as 'coord' above."
 patterns = ["gears/bss/fixtures/*"]
 

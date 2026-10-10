@@ -30,7 +30,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use bss_ledger_sdk::{PostEntry, PostLine, PostingRef};
+use bss_ledger_sdk::{CurrencySpec, PostEntry, PostLine, PostingRef};
 use chrono::Datelike;
 use toolkit_db::secure::AccessScope;
 use toolkit_db::{DBProvider, DbError};
@@ -38,6 +38,7 @@ use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
 use crate::domain::error::DomainError;
+use crate::domain::exact_money::map_money_error;
 use crate::domain::instant::to_naive_date;
 use crate::domain::model::{NewEntry, NewLine};
 use crate::domain::payment::settlement::{SettlementInput, build_settlement_entry};
@@ -49,7 +50,7 @@ use crate::infra::payment::queue_apply::QueueApplier;
 use crate::infra::payment::sidecar::SettlementSidecar;
 use crate::infra::posting::chart::{ChartIndex, load_chart};
 use crate::infra::posting::service::{PostSidecar, PostingService};
-use crate::infra::storage::repo::ReferenceRepo;
+use crate::infra::storage::repo::{PaymentRepo, ReferenceRepo};
 use time::OffsetDateTime;
 
 /// Origin literal stamped on posts made through this service.
@@ -66,6 +67,7 @@ pub struct SettlementService {
     posting: PostingService,
     reference: ReferenceRepo,
     resolver: CurrencyScaleResolver,
+    payment: PaymentRepo,
     metrics: Arc<dyn LedgerMetricsPort>,
     // Retained so the post-settle drain hook (D3) can build a `QueueApplier`
     // (same db/publisher/metrics deps as `AllocationService`): a settlement is
@@ -91,10 +93,12 @@ impl SettlementService {
         let posting = PostingService::new(db.clone(), Arc::clone(&publisher));
         let reference = ReferenceRepo::new(db.clone());
         let resolver = CurrencyScaleResolver::new(ReferenceRepo::new(db.clone()));
+        let payment = PaymentRepo::new(db.clone());
         Self {
             posting,
             reference,
             resolver,
+            payment,
             metrics,
             db,
             publisher,
@@ -201,7 +205,7 @@ impl SettlementService {
                     "no provisioned account for class {} / stream {:?} / currency {}",
                     line.account_class.as_str(),
                     line.revenue_stream,
-                    line.currency
+                    line.money.currency().code()
                 ))
             })?;
         }
@@ -212,9 +216,9 @@ impl SettlementService {
         let sidecar: Arc<dyn PostSidecar> = Arc::new(SettlementSidecar {
             tenant: input.tenant_id,
             payment_id: input.payment_id.clone(),
-            currency: input.currency.clone(),
-            gross_minor: input.gross_minor,
-            fee_minor: input.fee_minor,
+            gross: input.gross.clone(),
+            fee: input.fee.clone(),
+            payment: self.payment.clone(),
         });
         self.post_bound(ctx, scope, entry, sidecar).await
     }
@@ -251,12 +255,7 @@ impl SettlementService {
         };
         let mut new_lines: Vec<NewLine> = Vec::with_capacity(entry.lines.len());
         for line in entry.lines {
-            let scale = self
-                .resolver
-                .resolve(scope, entry.tenant_id, &line.currency)
-                .await
-                .map_err(|e| DomainError::Internal(format!("currency scale resolve: {e}")))?;
-            new_lines.push(new_line(line, scale));
+            new_lines.push(new_line(line));
         }
         // S2 settle FX lock: when configured AND the receipt currency differs from
         // the seller's functional currency, resolve + snapshot the locked rate and
@@ -272,13 +271,27 @@ impl SettlementService {
             if let Some(fc) = functional_ccy
                 && fc != new_entry.entry_currency
             {
+                // The lines carry the validated transaction spec; the functional
+                // spec is resolved from the registry (no implied scale).
+                let transaction = new_lines
+                    .first()
+                    .map(|l| l.money.currency().clone())
+                    .ok_or_else(|| {
+                        DomainError::Internal("settlement entry has no lines".to_owned())
+                    })?;
+                let scale = self
+                    .resolver
+                    .resolve(scope, new_entry.tenant_id, &fc)
+                    .await
+                    .map_err(functional_scale_error)?;
+                let functional = CurrencySpec::try_new(fc, scale).map_err(map_money_error)?;
                 new_entry.rate_snapshot_ref = locker
                     .lock_and_stamp(
                         scope,
                         new_entry.tenant_id,
                         &mut new_lines,
-                        &new_entry.entry_currency,
-                        &fc,
+                        &transaction,
+                        &functional,
                         OffsetDateTime::now_utc(),
                     )
                     .await?;
@@ -328,14 +341,14 @@ fn overwrite_header(
 fn resolve_line(chart: &ChartIndex, line: &PostLine) -> Option<Uuid> {
     chart.resolve(
         line.account_class,
-        &line.currency,
+        line.money.currency().code(),
         line.revenue_stream.as_deref(),
     )
 }
 
 /// Map one SDK [`PostLine`] + its resolved scale to the engine's [`NewLine`]
 /// (mirrors `invoice_post::new_line`).
-fn new_line(line: PostLine, scale: u8) -> NewLine {
+fn new_line(line: PostLine) -> NewLine {
     NewLine {
         line_id: line.line_id,
         payer_tenant_id: line.payer_tenant_id,
@@ -345,15 +358,12 @@ fn new_line(line: PostLine, scale: u8) -> NewLine {
         account_class: line.account_class,
         gl_code: line.gl_code,
         side: line.side,
-        amount_minor: line.amount_minor,
-        currency: line.currency,
-        currency_scale: scale,
+        money: line.money,
         invoice_id: line.invoice_id,
         due_date: line.due_date,
         revenue_stream: line.revenue_stream,
         mapping_status: line.mapping_status,
-        functional_amount_minor: line.functional_amount_minor,
-        functional_currency: line.functional_currency,
+        functional_money: line.functional_money,
         tax_jurisdiction: line.tax_jurisdiction,
         tax_filing_period: line.tax_filing_period,
         tax_rate_ref: line.tax_rate_ref,
@@ -367,3 +377,23 @@ fn new_line(line: PostLine, scale: u8) -> NewLine {
         ar_status: line.ar_status,
     }
 }
+
+/// Classify a functional-currency scale failure as the posting paths do: a
+/// functional currency with no registered scale is the caller's provisioning
+/// gap (`InvalidRequest`), not a server fault; a storage failure or a corrupt
+/// stored scale stays `Internal`.
+fn functional_scale_error(error: crate::domain::money::ScaleError) -> DomainError {
+    use crate::domain::money::ScaleError;
+    match error {
+        ScaleError::UnknownCurrencyScale(currency) => {
+            DomainError::InvalidRequest(format!("no scale for functional currency: {currency}"))
+        }
+        other @ (ScaleError::Repo(_) | ScaleError::CorruptStoredScale { .. }) => {
+            DomainError::Internal(format!("functional currency scale resolve: {other}"))
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "settle_scale_tests.rs"]
+mod functional_scale_tests;
