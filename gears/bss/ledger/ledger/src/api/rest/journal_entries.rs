@@ -58,6 +58,7 @@ use crate::api::rest::dto::{
 };
 use crate::api::rest::error::{
     authz_error_to_canonical, entry_not_found, reversal_error_to_canonical,
+    stored_reversal_error_to_canonical,
 };
 use crate::api::rest::odata_list::{
     list_seller_tenant, reject_non_odata_list_params, reject_non_odata_list_params_allowing,
@@ -350,10 +351,10 @@ pub fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Router {
              default). Supports OData `$filter` over `tenant_id`, `account_class` \
              and `currency`. The `$filter` ANDs the caller's authorized subtree, \
              so rows outside it are excluded (SQL-level BOLA). Each row carries \
-             BOTH the transaction-currency `balance_minor` and the Slice-5 \
-             functional valuation (`functional_balance_minor` / \
-             `functional_currency`); the latter is `null` on a single-currency \
-             grain, where the functional value equals `balance_minor` by identity \
+             BOTH the transaction-currency `balance` and the Slice-5 \
+             functional valuation `functional_balance` (a money object with \
+             its own currency); the latter is `null` on a single-currency \
+             grain, where the functional value equals `balance` by identity \
              (`?valuation=functional` fallback, P1 decision 8).",
         )
         .tag(TAG)
@@ -503,9 +504,15 @@ async fn post_invoice(
                 crate::domain::approval::intent::BackdatedInvoiceSnapshot::from(&inv),
             ),
         );
+        // The exact gross (`Σ items + Σ tax`) in the invoice's own currency and
+        // scale; a currency/scale disagreement is the same named 400 the post
+        // path raises.
+        let gross = inv
+            .gross()
+            .map_err(|e| CanonicalError::from(crate::infra::invoice_post::map_invoice_error(e)))?;
         let facts = crate::domain::approval::policy::OperationFacts {
             kind: crate::domain::approval::ApprovalKind::MaterialBackdating,
-            amount_usd_eq_minor: Some(inv.gross_minor()),
+            amount: Some(gross),
             effective_at: Some(inv.effective_at),
             has_outstanding_balance: false,
         };
@@ -616,12 +623,7 @@ async fn reverse_entry(
     // threshold routes to the preparer→approver queue (409) instead of posting
     // inline; below threshold it stays single-actor (unchanged).
     if let Some(approval) = &state.approval {
-        let reverse_amount: i64 = original
-            .lines
-            .iter()
-            .filter(|l| l.side == bss_ledger_sdk::Side::Debit)
-            .map(|l| l.amount_minor)
-            .sum();
+        let reverse_amount = reverse_governed_amount(&original).map_err(CanonicalError::from)?;
         let intent = crate::domain::approval::intent::ApprovalIntent::Reverse(
             crate::domain::approval::intent::ReverseIntent {
                 entry_id: original.entry_id,
@@ -632,7 +634,7 @@ async fn reverse_entry(
         );
         let facts = crate::domain::approval::policy::OperationFacts {
             kind: crate::domain::approval::ApprovalKind::Reverse,
-            amount_usd_eq_minor: Some(reverse_amount),
+            amount: reverse_amount,
             effective_at: None,
             has_outstanding_balance: false,
         };
@@ -660,7 +662,7 @@ async fn reverse_entry(
         ctx.subject_id(),
         original.correlation_id,
     )
-    .map_err(reversal_error_to_canonical)?;
+    .map_err(stored_reversal_error_to_canonical)?;
 
     let reference = state
         .posting
@@ -668,6 +670,30 @@ async fn reverse_entry(
         .await
         .map_err(CanonicalError::from)?;
     Ok(posting_response(reference))
+}
+
+/// The governed magnitude of reversing `original`: the exact debit total in its
+/// entry currency. Functional-only lines (zero amount, another currency) carry
+/// no transaction value and are left out; a scale disagreement among the
+/// remaining lines is a named error, never a silent sum. `None` when no debit
+/// line is in the entry currency.
+fn reverse_governed_amount(
+    original: &bss_ledger_sdk::EntryView,
+) -> Result<Option<bss_ledger_sdk::PostedMoney>, crate::domain::error::DomainError> {
+    let mut debits = original.lines.iter().filter(|l| {
+        l.side == bss_ledger_sdk::Side::Debit
+            && l.money.currency().code() == original.entry_currency
+    });
+    let Some(first) = debits.next() else {
+        return Ok(None);
+    };
+    let spec = first.money.currency();
+    crate::domain::exact_money::sum_posted_refs(
+        std::iter::once(&first.money).chain(debits.map(|l| &l.money)),
+        spec,
+    )
+    .map(Some)
+    .map_err(crate::domain::exact_money::map_exact_error)
 }
 
 /// `MAPPING_CORRECTION` is **two posts in two transactions** — a reversal of the
@@ -728,11 +754,7 @@ async fn correct_mapping(
     // drift on the corrected grains, which `m031` cannot catch because they seed as
     // single-currency). Reject up front until Slice 7 carries the functional onto
     // the corrected lines; single-currency corrections are unaffected.
-    if original
-        .lines
-        .iter()
-        .any(|l| l.functional_currency.is_some())
-    {
+    if original.lines.iter().any(|l| l.functional_money.is_some()) {
         return Err(CanonicalError::from(
             crate::domain::error::DomainError::FxOperationUnsupported(format!(
                 "cross-currency mapping correction for entry {} is not yet supported \
@@ -750,7 +772,7 @@ async fn correct_mapping(
         ctx.subject_id(),
         original.correlation_id,
     )
-    .map_err(reversal_error_to_canonical)?;
+    .map_err(stored_reversal_error_to_canonical)?;
     let reversal_ref = state
         .posting
         // A mapping-correction's reversal leg is internal plumbing, not a §6
@@ -764,7 +786,7 @@ async fn correct_mapping(
     //    fresh direct-split entry, then re-keyed under the correction.
     let invoice_id = &original.source_business_id;
     let mapped: Vec<_> = corrected_items.iter().map(resolve).collect();
-    let rebuilt = corrected_invoice(&original, invoice_id, &corrected_items, &mapped);
+    let rebuilt = corrected_invoice(&original, invoice_id, &corrected_items, &mapped)?;
     let correction = build_mapping_correction(
         &original,
         reversal_ref.entry_id,
@@ -774,7 +796,8 @@ async fn correct_mapping(
         ctx.subject_id(),
         original.correlation_id,
         rebuilt.lines,
-    );
+    )
+    .map_err(reversal_error_to_canonical)?;
     // The corrected re-post's lines carry nil placeholder account_ids (freshly
     // built); `post_correction` binds them from the chart before posting.
     let reference = state
@@ -795,7 +818,7 @@ fn corrected_invoice(
     invoice_id: &str,
     items: &[crate::domain::invoice::builder::InvoiceItem],
     mapped: &[crate::domain::invoice::mapping::MappedLine],
-) -> bss_ledger_sdk::PostEntry {
+) -> Result<bss_ledger_sdk::PostEntry, CanonicalError> {
     // Reconstruct a minimal PostedInvoice over the original's dims. The payer +
     // seller come from the original AR line / entry tenant; tax is empty (the
     // correction re-books the recognized revenue split — a tax correction is a
@@ -818,7 +841,10 @@ fn corrected_invoice(
         posted_by_actor_id: original.posted_by_actor_id,
         correlation_id: original.correlation_id,
     };
+    // A rebuilt entry that fails the exact money contract (mixed currency /
+    // scale, out-of-range total) is the same named 400 the post path raises.
     build_invoice_entry(&inv, mapped)
+        .map_err(|e| CanonicalError::from(crate::infra::invoice_post::map_invoice_error(e)))
 }
 
 async fn get_entry(
@@ -1063,10 +1089,23 @@ async fn ar_aging_handler(
         }
         None => AgingThresholds::default(),
     };
-    let buckets = ar_aging(&rows, to_naive_date(OffsetDateTime::now_utc()), &thresholds);
+    // Buckets are exact per-currency sums over stored balances; a total outside
+    // the bounded decimal contract, or two stored scales for one grain, is a
+    // stored-data failure the caller of this body-less GET cannot fix, so it is
+    // an internal error (500), never a client 400 or a truncated figure.
+    let buckets =
+        ar_aging(&rows, to_naive_date(OffsetDateTime::now_utc()), &thresholds).map_err(|e| {
+            CanonicalError::from(crate::domain::error::DomainError::Internal(format!(
+                "ar aging over stored balances failed: {e}"
+            )))
+        })?;
     Ok(Json(ArAgingDto::from(buckets)))
 }
 
 #[cfg(test)]
 #[path = "journal_entries_tests.rs"]
 mod metadata_tests;
+
+#[cfg(test)]
+#[path = "journal_entries_governed_tests.rs"]
+mod governed_tests;

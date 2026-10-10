@@ -9,13 +9,13 @@
 //! ## Error handling across the transaction boundary
 //!
 //! [`DBProvider::transaction`] fixes the closure error type to [`DbError`].
-//! The only distinct business rejection that must survive the boundary is a
-//! scale that exceeds `i64` headroom ([`RepoError::ScaleOutOfRange`]): the
-//! closure encodes it into a sentinel [`DbError::Sea`] (`DbErr::Custom`) and
-//! returns `Err`, forcing a rollback; once `transaction()` returns the
-//! sentinel is decoded back into [`DomainError::ScaleOutOfRange`]. Every
-//! other [`RepoError`]/[`DbError`] is an infrastructure fault and surfaces as
-//! [`DomainError::Internal`].
+//! The request's scales arrive as validated `CurrencySpec`s, so the repo's
+//! scale-out-of-range refusal ([`RepoError::ScaleOutOfRange`]) is a defence
+//! for other callers; should it fire, the closure encodes it into a sentinel
+//! [`DbError::Sea`] (`DbErr::Custom`) and returns `Err`, forcing a rollback;
+//! once `transaction()` returns the sentinel is decoded back into
+//! [`DomainError::ScaleOutOfRange`]. Every other [`RepoError`]/[`DbError`] is
+//! an infrastructure fault and surfaces as [`DomainError::Internal`].
 
 use bss_ledger_sdk::{AccountInfo, ProvisionOutcome, ProvisionRequest};
 use sea_orm::DbErr;
@@ -60,9 +60,9 @@ impl ProvisioningService {
     ///
     /// # Errors
     /// [`DomainError::InvalidRequest`] on a malformed fiscal calendar;
-    /// [`DomainError::ScaleOutOfRange`] when a non-ISO scale exceeds the
-    /// supported headroom; [`DomainError::Internal`] on a storage/
-    /// transaction failure.
+    /// [`DomainError::Internal`] on a storage/transaction failure, including a
+    /// scale row refused because the currency is already posted under another
+    /// scale.
     pub async fn provision(&self, req: ProvisionRequest) -> Result<ProvisionOutcome, DomainError> {
         // --- PRE-TRANSACTION (fail fast, no writes) ---
         plan::validate_calendar(&req.fiscal_calendar)?;
@@ -148,11 +148,8 @@ impl ProvisioningService {
         for scale in req.currency_scales {
             let row = CurrencyScaleRow {
                 tenant_id,
-                currency: scale.currency,
-                minor_units: i16::from(scale.minor_units),
-                plausible_max_major: scale
-                    .plausible_max_major
-                    .unwrap_or(crate::domain::money::DEFAULT_PLAUSIBLE_MAX_MAJOR),
+                currency: scale.currency.code().to_owned(),
+                currency_scale: scale.currency.scale(),
                 source: scale.source,
             };
             if reference

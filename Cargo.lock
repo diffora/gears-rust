@@ -1998,6 +1998,7 @@ dependencies = [
  "async-trait",
  "aws-lc-rs",
  "axum",
+ "bigdecimal",
  "cf-gears-account-management",
  "cf-gears-account-management-sdk",
  "cf-gears-authz-resolver",
@@ -2005,6 +2006,7 @@ dependencies = [
  "cf-gears-bss-coord",
  "cf-gears-bss-ledger",
  "cf-gears-bss-ledger-sdk",
+ "cf-gears-bss-money",
  "cf-gears-tenant-resolver",
  "cf-gears-tenant-resolver-sdk",
  "cf-gears-test-containers",
@@ -2023,6 +2025,7 @@ dependencies = [
  "gts",
  "opentelemetry",
  "opentelemetry_sdk",
+ "rust_decimal",
  "sea-orm",
  "sea-orm-migration",
  "serde",
@@ -2031,6 +2034,7 @@ dependencies = [
  "thiserror 2.0.20",
  "time",
  "tokio",
+ "tokio-retry",
  "tokio-util",
  "tower",
  "tracing",
@@ -2043,6 +2047,7 @@ name = "cf-gears-bss-ledger-sdk"
 version = "0.1.8"
 dependencies = [
  "async-trait",
+ "cf-gears-bss-money",
  "cf-gears-toolkit-canonical-errors",
  "cf-gears-toolkit-gts",
  "cf-gears-toolkit-odata",
@@ -2050,12 +2055,24 @@ dependencies = [
  "cf-gears-toolkit-security",
  "chrono",
  "gts",
+ "rust_decimal",
  "schemars 1.2.1",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
  "time",
  "uuid",
+]
+
+[[package]]
+name = "cf-gears-bss-money"
+version = "0.1.0"
+dependencies = [
+ "bigdecimal",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -2072,6 +2089,7 @@ dependencies = [
  "cf-gears-bss-approval",
  "cf-gears-bss-approvals-sdk",
  "cf-gears-bss-coord",
+ "cf-gears-bss-money",
  "cf-gears-bss-pricing",
  "cf-gears-bss-pricing-sdk",
  "cf-gears-bss-products-sdk",
@@ -2257,6 +2275,7 @@ dependencies = [
  "cf-gears-toolkit-security",
  "cf-gears-types-registry",
  "inventory",
+ "rust_decimal",
  "secrecy",
  "serde",
  "serde-saphyr 1.3.0",
@@ -2276,6 +2295,7 @@ dependencies = [
  "anyhow",
  "axum",
  "cf-gears-bss-ledger-sdk",
+ "cf-gears-bss-money",
  "cf-gears-toolkit",
  "cf-gears-toolkit-gts",
  "cf-gears-toolkit-http",

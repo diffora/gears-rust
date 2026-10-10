@@ -49,12 +49,6 @@ pub(crate) fn put_opt_uuid(buf: &mut Vec<u8>, u: Option<Uuid>) {
 pub(crate) fn put_i64(buf: &mut Vec<u8>, n: i64) {
     put(buf, &n.to_be_bytes());
 }
-pub(crate) fn put_opt_i64(buf: &mut Vec<u8>, n: Option<i64>) {
-    match n {
-        Some(n) => put_i64(buf, n),
-        None => put_none(buf),
-    }
-}
 pub(crate) fn put_i32(buf: &mut Vec<u8>, n: i32) {
     put(buf, &n.to_be_bytes());
 }
@@ -64,4 +58,31 @@ pub(crate) fn digest32(buf: &[u8]) -> [u8; 32] {
     let mut out = [0u8; 32];
     out.copy_from_slice(d.as_ref());
     out
+}
+
+/// [`digest32`] rendered as lowercase hexadecimal.
+pub(crate) fn digest32_hex(buf: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut s = String::with_capacity(64);
+    for b in digest32(buf) {
+        let _ = write!(s, "{b:02x}");
+    }
+    s
+}
+
+/// Frame canonical major-unit text with both stored currency dimensions.
+pub(crate) fn put_money(buf: &mut Vec<u8>, money: &bss_ledger_sdk::PostedMoney) {
+    put_str(buf, &bss_ledger_sdk::canonical_decimal(money.amount()));
+    put_str(buf, money.currency().code());
+    put(buf, &[money.currency().scale()]);
+}
+/// Optional money keeps an absent triple distinct from every present value.
+pub(crate) fn put_opt_money(buf: &mut Vec<u8>, money: Option<&bss_ledger_sdk::PostedMoney>) {
+    if let Some(money) = money {
+        put_money(buf, money);
+    } else {
+        put_none(buf);
+        put_none(buf);
+        put_none(buf);
+    }
 }

@@ -159,18 +159,22 @@ fn scope_to_db(e: ScopeError) -> DbError {
     }
 }
 
-/// Map a repo error into `DbError`. The gate's `exception_queue` / `period_close`
-/// statements are serialised against peer closes by the `coord` lease, so the
-/// lost-retryability of a stringified repo error here is benign (a rare conflict
-/// fails the close; the caller retries). The post-vs-close race is caught by the
-/// tie-out reads + the flip, which preserve the retryable `DbErr` via
-/// [`scope_to_db`].
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "error adapter used as a map_err fn-pointer; takes the error by value to match the closure signature"
-)]
+/// Map a repo error into `DbError`. A classified contention
+/// ([`RepoError::Conflict`]) stays retryable: repositories reduce a driver
+/// serialization failure to `Conflict`, and the recognition read of the gate runs
+/// against segments the recognition run writes outside the close lease. It is
+/// re-raised as a `DbErr::Custom` carrying the PostgreSQL and SQLite contention
+/// signatures, which the close transaction's extractor ([`as_db_err`]) hands to
+/// `toolkit_db::contention::is_retryable_contention`. Every other repo failure
+/// is a non-retryable infrastructure fault.
 fn repo_to_db(e: RepoError) -> DbError {
-    DbError::Other(anyhow::anyhow!("period-close repo: {e}"))
+    match e {
+        RepoError::Conflict(detail) => DbError::Sea(sea_orm::DbErr::Custom(format!(
+            "period-close repo contention ({detail}): could not serialize access; \
+             (code: 5) database is locked"
+        ))),
+        other => DbError::Other(anyhow::anyhow!("period-close repo: {other}")),
+    }
 }
 
 /// Closes a clean fiscal period after a single-active, gated pre-close check;
@@ -507,8 +511,10 @@ async fn close_in_txn(
     }
 
     // 2c. Recognition segments due `<=` this period that have not released.
-    let due_not_done =
-        RecognitionRepo::count_due_not_done_in_txn(txn, &scope, tenant_id, period_id).await?;
+    let due_not_done = RecognitionRepo::new(db.clone())
+        .count_due_not_done_in_txn(txn, &scope, tenant_id, period_id)
+        .await
+        .map_err(repo_to_db)?;
     if due_not_done > 0 {
         reasons.push(format!(
             "{due_not_done} recognition segment(s) due <= {period_id} not DONE"
@@ -835,3 +841,7 @@ async fn reopen_in_txn(
 
     Ok(ReopenTxnResult::Reopened)
 }
+
+#[cfg(test)]
+#[path = "period_close_retry_tests.rs"]
+mod retry_tests;
