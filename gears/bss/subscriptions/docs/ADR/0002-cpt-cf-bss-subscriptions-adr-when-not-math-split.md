@@ -1,8 +1,11 @@
 ---
+description: "Decision separating subscription commercial boundaries from Rating monetary calculation and Billing accounting."
 status: proposed
 date: 2026-07-15
 decision-makers: "BSS Subscriptions team"
 ---
+
+**Current applicability, 2026-10-15:** the [PRD scope](../PRD.md#11-purpose) governs this ADR. Base-plan changes, scheduled composition/resume, collection pause and other deferred capabilities are not implementation examples or acceptance requirements for this release. The underlying state, fact and scheduling principles apply only to retained operations.
 
 Created:  2026-08-24 by Virtuozzo International GmbH
 Updated:  2026-08-24 by Virtuozzo International GmbH
@@ -33,9 +36,11 @@ Updated:  2026-08-24 by Virtuozzo International GmbH
 > the sibling pricing gear's working tree previously carried "proration math owned by Subscriptions"
 > wording in ~11 places — corrected to this split on 2026-07-15.
 
+> **2026-10-07 applicability.** The commercial-WHEN / tariff-valuation split remains applicable. SUB-D-29 replaces old catalog snapshot, phase and cohort mechanics with accepted PriceBook bindings. Rating schedules child usage windows; Subscriptions publishes commercial parent facts. S-Q03 now records the user-accepted direction: Pricing owns agreed prices/rules, Subscriptions emits amount-less qualifying facts, Rating values one-time tariffs from frozen terms, and Billing owns invoice accounting/posting, existing-prepayment application and final invoice rounding/corrections. Taxes and payments retain their owners. Mirrored owner contracts and runtime evidence remain OPEN under S-U08/S-U13; S-Q04 durable identity per separately agreed chargeable action is user-accepted; exact schema/legacy migration and runtime evidence remain open, with no automatic lifecycle-trigger fee. See [current decisions](../DECISIONS.md#current-disposition) and [canonical design](../DESIGN.md). Historical rationale below is retained; it is not a separate current implementation contract or evidence of bilateral acceptance.
+
 ## Context and Problem Statement
 
-A plan change, add-on change, or seat change splits a billing period at an instant and prorates the
+A supported component addition or quantity increase splits a billing period at an instant and prorates the
 recurring component across the two sub-intervals. Two questions must have **one owner each**: *when*
 does the change take effect (`changeEffectiveAt`, `changeMode`), and *how much* is the prorated
 amount (day-count basis, tier-`Q` carry-vs-reset, override resolution, FX). If both live in one gear,
@@ -109,4 +114,4 @@ rating design slice `09-period-plan-change`.
 
 - **PRD**: [`../PRD.md`](../PRD.md) §6.3 (`fr-plan-change-boundary`, `fr-proration-ownership`, `fr-proration-triggers`, `fr-update-quantity`), §6.8 (no-retro).
 - **Seams**: [`../SEAMS.md`](../SEAMS.md) SUB-R1, SUB-R3.
-- **Design**: [`../design/03-plan-changes.md`](../design/03-plan-changes.md) §4.1–§4.2.
+- **Design**: [Composition Changes](../features/03-changes.md); former slice 03 §4.1–§4.2 is readable from git at `fa9334a34`.

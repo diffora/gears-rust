@@ -1,8 +1,11 @@
 ---
+description: "Decision to keep the subscription status enum closed and represent orthogonal lifecycle concerns as attributes."
 status: proposed
 date: 2026-07-15
 decision-makers: "BSS Subscriptions team"
 ---
+
+**Current applicability, 2026-10-15:** the [PRD scope](../PRD.md#11-purpose) governs this ADR. Base-plan changes, scheduled composition/resume, collection pause and other deferred capabilities are not implementation examples or acceptance requirements for this release. The underlying state, fact and scheduling principles apply only to retained operations.
 
 Created:  2026-08-24 by Virtuozzo International GmbH
 Updated:  2026-08-24 by Virtuozzo International GmbH
@@ -31,6 +34,8 @@ Updated:  2026-08-24 by Virtuozzo International GmbH
 > **Status: proposed / flagged for veto.** Autonomous design decision recording the rationale behind
 > [`../DECISIONS.md`](../DECISIONS.md) SUB-D-03 and SUB-D-05; ratified when Product/Architecture
 > confirms.
+
+> **2026-10-07 applicability.** The closed status machine remains applicable. References to trial phases describe the historical model; current trial authoring is gated by S-Q06 after PriceBook removed Pricing phases. Entitlement materialization follows the proposed License Manager boundary, S-U04. See [current decisions](../DECISIONS.md#current-disposition) and [canonical design](../DESIGN.md). Historical rationale below is retained; it is not a separate current implementation contract.
 
 ## Context and Problem Statement
 
@@ -109,4 +114,4 @@ SUB-D-01/03/05.
 
 - **PRD**: [`../PRD.md`](../PRD.md) §6.1 (`fr-status-enum`, `fr-trials-not-a-status`, `fr-scheduled-intents`, `fr-activation-instants`), §6.4 (`fr-collection-pause`), §15.
 - **Decisions**: [`../DECISIONS.md`](../DECISIONS.md) SUB-D-01, SUB-D-03, SUB-D-05.
-- **Design**: [`../design/01-foundation-lifecycle.md`](../design/01-foundation-lifecycle.md) §4.1–§4.4.
+- **Design**: [Lifecycle Foundation](../features/01-foundation.md) states and transitions; former slice 01 §4.1–§4.4 is readable from git at `fa9334a34`.
