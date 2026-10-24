@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1270" viewBox="0 0 1600 1270" role="img" aria-labelledby="title desc">
+<title id="title">Entitlements — adapter instance selection</title>
+<desc id="desc">Plugins register at startup. For a new assignment, Entitlements resolves an authorized route by capability, profile and resource scope, validates an instance and persists its binding. Later requests reuse that binding without selecting another instance.</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#557084"/></marker><marker id="green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="#168270"/></marker></defs>
+<style>text{font-family:Arial,Helvetica,sans-serif;fill:#173247} .title{font-size:38px;font-weight:700} .section{font-size:23px;font-weight:700} .head{font-size:22px;font-weight:700} .body{font-size:19px} .small{font-size:17px;fill:#526a7b} .mono{font-family:Menlo,Consolas,monospace;font-size:17px} .tag{font-size:16px;font-weight:700;letter-spacing:1px;fill:#168270}</style>
+<rect width="1600" height="1270" fill="#f5f8fb"/>
+
+<text x="48" y="47" class="tag">ENTITLEMENTS / TARGET ARCHITECTURE</text>
+<text x="48" y="97" class="title">How an adapter instance is selected</text>
+<text x="48" y="133" class="body">One BSS → multiple OSS systems. Selection is pinned to a specific assignment + capability.</text>
+<rect x="48" y="165" width="1504" height="108" rx="16" fill="#eaf0f8" stroke="#d3dfe7" stroke-width="1.5"/>
+<text x="70" y="200" class="head">At deployment startup</text>
+<text x="70" y="234" class="body">Included plugins → GTS instances in Types Registry + typed clients in scoped ClientHub.</text>
+<text x="48" y="319" class="section">01   New assignment: select and persist</text>
+<rect x="48" y="345" width="330" height="224" rx="16" fill="#ffffff" stroke="#d3dfe7" stroke-width="1.5"/>
+<text x="70" y="380" class="head">Assignment context</text>
+<text x="70" y="414" class="mono">capability: quota</text>
+<text x="70" y="442" class="mono">contract major: 1</text>
+<text x="70" y="470" class="mono">profile: allocation-hard-v1</text>
+<text x="70" y="498" class="mono">scope: customer-42 / cloud-eu</text>
+<rect x="414" y="345" width="330" height="224" rx="16" fill="#ffffff" stroke="#d3dfe7" stroke-width="1.5"/>
+<text x="436" y="380" class="head">Authorized route</text>
+<text x="436" y="414" class="body">Profile + resource scope</text>
+<text x="436" y="442" class="body">→ route: quota-cloud-eu</text>
+<text x="436" y="470" class="body">→ eligible instances</text>
+<text x="436" y="498" class="body">→ target OSS / namespace</text>
+<rect x="780" y="345" width="360" height="224" rx="16" fill="#ffffff" stroke="#d3dfe7" stroke-width="1.5"/>
+<text x="802" y="380" class="head">Validate and select</text>
+<text x="802" y="414" class="body">GTS schema / major version</text>
+<text x="802" y="442" class="body">Profile and conformance</text>
+<text x="802" y="470" class="body">GtsPluginSelector</text>
+<text x="802" y="498" class="body">Client available; target verified</text>
+<rect x="1176" y="345" width="376" height="224" rx="16" fill="#e7f5f0" stroke="#a6d6c7" stroke-width="1.5"/>
+<text x="1198" y="380" class="head">Persist AdapterBinding</text>
+<text x="1198" y="414" class="mono">assignment + capability</text>
+<text x="1198" y="442" class="mono">instance + contract/profile</text>
+<text x="1198" y="470" class="mono">route generation + target</text>
+<text x="1198" y="498" class="mono">namespace + producer</text>
+<path d="M 378 455 H 414" fill="none" stroke="#557084" stroke-width="2.5" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<path d="M 744 455 H 780" fill="none" stroke="#557084" stroke-width="2.5" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<path d="M 1140 455 H 1176" fill="none" stroke="#168270" stroke-width="2.5" stroke-linejoin="round" marker-end="url(#green)"/>
+<text x="1198" y="540" class="small">Binding + work + outbox before call</text>
+<path d="M 960 569 V 614" fill="none" stroke="#557084" stroke-width="2.5" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<rect x="780" y="614" width="360" height="91" rx="16" fill="#fff0e8" stroke="#e9c6b2" stroke-width="1.5"/>
+<text x="802" y="649" class="head">No compatible route</text>
+<text x="802" y="679" class="small">Explicit error; no external calls</text>
+<rect x="48" y="614" width="696" height="91" rx="16" fill="#eef3f8" stroke="#d3dfe7" stroke-width="1.5"/>
+<text x="70" y="649" class="head">Example routes for the same VM product</text>
+<text x="70" y="679" class="mono">cloud-eu → oss-eu-quota     /     cloud-us → oss-us-quota</text>
+<text x="48" y="757" class="section">02   Execute through the selected instance</text>
+<rect x="48" y="790" width="440" height="158" rx="16" fill="#ffffff" stroke="#d3dfe7" stroke-width="1.5"/>
+<text x="70" y="825" class="head">First call after commit</text>
+<text x="70" y="859" class="body">Load the persisted binding</text>
+<text x="70" y="887" class="body">Send scope, assignment, revision,</text>
+<text x="70" y="915" class="body">digest, operation and expected target</text>
+<rect x="552" y="790" width="448" height="158" rx="16" fill="#ffffff" stroke="#d3dfe7" stroke-width="1.5"/>
+<text x="574" y="825" class="head">Scoped ClientHub → adapter</text>
+<text x="574" y="859" class="body">ClientScope::gts_id(instance_id)</text>
+<text x="574" y="887" class="body">Example: oss-eu-quota</text>
+<text x="574" y="915" class="body">Verify binding and actual target</text>
+<rect x="1064" y="790" width="488" height="158" rx="16" fill="#ffffff" stroke="#d3dfe7" stroke-width="1.5"/>
+<text x="1086" y="825" class="head">OSS EU · Quota Manager</text>
+<text x="1086" y="859" class="body">Apply through the provider API</text>
+<text x="1086" y="887" class="body">Result: applied / pending / refused / unknown</text>
+<text x="1086" y="915" class="body">Entitlements persists the outcome</text>
+<path d="M 1364 569 V 774 H 268 V 790" fill="none" stroke="#168270" stroke-width="2.5" stroke-linejoin="round" marker-end="url(#green)"/>
+<path d="M 488 869 H 552" fill="none" stroke="#168270" stroke-width="2.5" stroke-linejoin="round" marker-end="url(#green)"/>
+<path d="M 1000 869 H 1064" fill="none" stroke="#168270" stroke-width="2.5" stroke-linejoin="round" marker-end="url(#green)"/>
+<text x="48" y="1001" class="section">03   Quota update, revocation, retry or readback</text>
+<rect x="48" y="1027" width="696" height="115" rx="16" fill="#e7f5f0" stroke="#a6d6c7" stroke-width="1.5"/>
+<text x="70" y="1062" class="head">Look up the existing binding</text>
+<text x="70" y="1096" class="body">Authorized scope + assignment-123 + quota → same binding</text>
+<path d="M 744 1085 H 776 V 948" fill="none" stroke="#168270" stroke-width="2.5" stroke-linejoin="round" marker-end="url(#green)"/>
+<rect x="836" y="1027" width="716" height="115" rx="16" fill="#eef3f8" stroke="#d3dfe7" stroke-width="1.5"/>
+<text x="858" y="1062" class="head">No new selection</text>
+<text x="858" y="1096" class="body">An OSS EU outage does not redirect the request to OSS US.</text>
+<text x="48" y="1190" class="small">Instance names, profile and cloud-eu scope are illustrative; the route-rule format is not yet specified.</text>
+<text x="48" y="1221" class="small">Source: Entitlements DESIGN §3.3.3. Priority changes affect new bindings; migration requires a separate transition.</text>
+</svg>
