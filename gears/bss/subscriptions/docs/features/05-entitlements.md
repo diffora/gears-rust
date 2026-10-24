@@ -40,7 +40,7 @@ description: "Commercial posture derived from committed terms and lifecycle, pub
 
 Derive the commercial posture from committed terms and lifecycle, commit it atomically with the transition, publish it to Entitlements, and expose the readiness and materialization state Entitlements reports.
 
-Subscriptions supplies the desired commercial rights and records the observations Entitlements reports against the matching revision. Entitlements owns the readiness manifest, the adapters and the provider integration; they are specified in the Entitlements design (next PR). Subscriptions does not take over materialization or point-of-use enforcement.
+Subscriptions supplies the desired commercial rights and records the observations Entitlements reports against the matching revision. Entitlements owns the readiness manifest, the adapters and the provider integration; see the [Entitlements DESIGN](../../../entitlements/docs/DESIGN.md). Subscriptions does not take over materialization or point-of-use enforcement.
 
 ### 1.2 Purpose
 
@@ -57,7 +57,7 @@ Subscriptions supplies the desired commercial rights and records the observation
 
 ### 1.4 References
 
-- **PRD:** [PRD.md](../PRD.md); **Design:** [entitlement contract](../DESIGN.md#335-entitlement-and-retention-contracts); the Entitlements design (next PR).
+- **PRD:** [PRD.md](../PRD.md); **Design:** [entitlement contract](../DESIGN.md#335-entitlement-and-retention-contracts); [Entitlements DESIGN](../../../entitlements/docs/DESIGN.md#331-commercial-posture-contract).
 - **Build prerequisites:** [foundation](./01-foundation.md) and [composition](./02-composition.md), as allocated in [DECOMPOSITION.md](../DECOMPOSITION.md).
 - **Provider prerequisites / integration acceptance:** Entitlements accepts the selected adapter against its capability profile before a capability is enabled. Cross-lifecycle handoff verification is an integration acceptance step, not a build dependency on each lifecycle feature.
 
@@ -73,7 +73,7 @@ Subscriptions supplies the desired commercial rights and records the observation
 
 All rights essential for initial usable service must be ready before this commit. The post-commit outbox may reconcile the same satisfied assignment or deliver nonessential/ongoing changes; it cannot be the first action that makes required initial access usable. Initial readiness is not an uptime guarantee, and later service failure does not reopen or backdate the completed acquisition.
 
-The manifest, the observation envelope, producer rules, uncertainty handling and cleanup are specified in the Entitlements design (next PR).
+The manifest, the observation envelope, producer rules, uncertainty handling and cleanup are specified in [Entitlements: readiness manifest and observation envelope](../../../entitlements/docs/features/02-initial-readiness.md#readiness-manifest-and-observation-envelope).
 
 **Trial compatibility gate.** Free-period initial trials follow this readiness boundary with their existing trial-admission and financial guards. The earlier S-U15 staged credit proposal finalizes the same grant from applied T and can postpone credit-dependent access until afterward. It cannot satisfy this initial gate when that final grant is a prerequisite for usable access. Such credit-dependent initial profiles remain disabled pending a joint Billing/entitlement readiness and coverage contract that breaks the dependency cycle. Prepared coverage remains unissued/unspendable; do not invent T, pre-T grant issuance, new bonus or a bypass. Same-grant history, original expiry and late-finalization/correction rules remain intact; this amendment does not redesign conversion or ongoing trial accounting.
 

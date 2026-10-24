@@ -26,7 +26,7 @@ Free-period and credit trials, normal expiry/conversion and early conversion to 
 
 <!-- /toc -->
 
-**Provider abstraction, 2026-10-14:** historical LM/OSS labels below identify the original integration sources. The current design uses replaceable entitlement fulfillment, resource execution and inventory/evidence adapters; native provider APIs are deferred to integration specifications. The provider boundary is owned by Entitlements and specified in the Entitlements design (next PR).
+**Provider abstraction, 2026-10-14:** historical LM/OSS labels below identify the original integration sources. The current design uses replaceable entitlement fulfillment, resource execution and inventory/evidence adapters; native provider APIs are deferred to integration specifications. The provider boundary is owned by Entitlements; see [Entitlements DESIGN](../../entitlements/docs/DESIGN.md#11-architectural-vision).
 
 This file preserves the SUB-/CHG- addresses cited by other gears. Current obligations
 and provider status live in [UPSTREAM_REQS](UPSTREAM_REQS.md), architecture in
@@ -92,7 +92,7 @@ Pricing phases/cohorts, direct entitlement checks or old one-time dedup rules.
 | --- | --- | --- |
 | **SUB-E1** | Fail-closed Policy gate | [01-foundation.md](features/01-foundation.md); Policy gate required; external observations never replace commit fences |
 | **SUB-E2** | OSS provisioning confirmation | [04-renewal-retention.md](features/04-renewal-retention.md); Non-destructive pause TARGET; resource stop/purge provider S-U05 |
-| **SUB-E3** | Entitlement enforcement split | Moved to Entitlements 2026-10-23; specified in the Entitlements design (next PR) |
+| **SUB-E3** | Entitlement enforcement split | Moved to Entitlements 2026-10-23: [Entitlements DESIGN](../../entitlements/docs/DESIGN.md#333-adapter-capability-profile) |
 | **SUB-E4** | Resource and data disposition (added 2026-10-01) | [04-renewal-retention.md](features/04-renewal-retention.md); Retention/purge TARGET; S-Q05 post-stop and confirmed cancellation charging-cutoff directions ACCEPTED, internal stops split by cause and v1 retention defaults ACCEPTED 2026-10-08; confirmation protocol and financial/stop/correction owner/runtime evidence OPEN S-U05/S-U13 |
 | **SUB-E5** | Resource adoption on import (added 2026-10-01) | [07-tenancy-import.md](features/07-tenancy-import.md); Import/adoption DEFERRED; S-U09 is not a current gate |
 
@@ -151,10 +151,10 @@ SUB-O7, SUB-O8 and SUB-O9 were not allocated in the Subscriptions register. Hist
 
 | Stable address | Historical subject | Current authority / disposition |
 | --- | --- | --- |
-| **SUB-L1** | Issuance request | Moved to Entitlements 2026-10-23; specified in the Entitlements design (next PR) |
-| **SUB-L2** | License state and findings back | Moved to Entitlements 2026-10-23; specified in the Entitlements design (next PR) |
-| **SUB-L3** | Trials, suspension and conversion map to License Manager verbs | Moved to Entitlements 2026-10-23; specified in the Entitlements design (next PR) |
-| **SUB-L4** | `license-enforcement` actor naming | Moved to Entitlements 2026-10-23; specified in the Entitlements design (next PR) |
+| **SUB-L1** | Issuance request | Moved to Entitlements 2026-10-23: [license grants](../../entitlements/docs/features/04-license-grants.md) |
+| **SUB-L2** | License state and findings back | Moved to Entitlements 2026-10-23: [license grants](../../entitlements/docs/features/04-license-grants.md) |
+| **SUB-L3** | Trials, suspension and conversion map to License Manager verbs | Moved to Entitlements 2026-10-23: [license grants](../../entitlements/docs/features/04-license-grants.md) |
+| **SUB-L4** | `license-enforcement` actor naming | Moved to Entitlements 2026-10-23: [license grants](../../entitlements/docs/features/04-license-grants.md) |
 
 ## Ownership matrix (contested / adjacent responsibilities)
 

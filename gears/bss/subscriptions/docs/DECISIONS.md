@@ -6,7 +6,7 @@ description: "Historical subscription decisions, current scope dispositions and 
 
 **Current decision index — 2026-10-23:** [PRD scope](PRD.md#11-purpose) and the [current closure register](RECONCILIATION.md#61-remaining-work-and-closure-order) govern implementation. Decisions accepted since 2026-10-16 carry identifiers SUB-D-39…SUB-D-56 in the [current decisions](#current-decisions-2026-10-16-onward) section; the dated entries before them preserve history. Superseded trial exceptions, linked replacement, tenant transfer, migration/import and other deferred capabilities are not active launch gates. Technical contract elaborations specify accepted behavior and do not claim external-owner ratification.
 
-**Application layer split accepted, 2026-10-23.** The user accepted the split: a separate Entitlements design, delivered in the next PR, owns rule semantics, derivation of provider-desired state, readiness manifests, adapter specifications and reconciliation; Subscriptions publishes `CommercialPostureV1` and consumes `ReadinessObservationV1`; Pricing stores and freezes rules on PlanRevision. This moves no commercial decision and changes no deferred scope.
+**Application layer split accepted, 2026-10-23.** The user accepted the split: Entitlements (`gears/bss/entitlements`) owns rule semantics, derivation of provider-desired state, readiness manifests, adapter specifications and reconciliation; Subscriptions publishes `CommercialPostureV1` and consumes `ReadinessObservationV1`; Pricing stores and freezes rules on PlanRevision. See Entitlements `ENT-D-01…03`. This moves no commercial decision and changes no deferred scope.
 
 <!-- Related: ./PRD.md | Owners: BSS Subscriptions team -->
 
@@ -461,8 +461,8 @@ These entries are the accepted product and contract decisions since 2026-10-16. 
 
 #### SUB-D-56 [H] Application layer split into Entitlements
 
-- **Where**: RECONCILIATION.md §7; the separate Entitlements design, delivered in the next PR.
-- **Decision (2026-10-23)**: The user accepted splitting the application of quotas, licenses and resources out of this design set into a new BSS gear, Entitlements. Entitlements owns rule semantics, derivation of provider-desired state, readiness manifests, adapter contracts and reconciliation. Subscriptions keeps the commercial posture, committed atomically with each transition and published as `CommercialPostureV1`, and the consumer-side initial readiness gate of SUB-D-55. Pricing stores quota and grant rules on PlanRevision and freezes them in acceptance. The adapter boundary carries scope, assignment and desired revision, never `subscriptionId`. This moves no commercial decision and changes no deferred scope; the Entitlements design itself is delivered in the next PR. Executed in this design: PRD §17.2 retires the four baseline ids and adds `fr-commercial-posture`.
+- **Where**: RECONCILIATION.md §7; the Entitlements design set `gears/bss/entitlements/docs`.
+- **Decision (2026-10-23)**: The user accepted splitting the application of quotas, licenses and resources out of this design set into a new BSS gear, Entitlements. Entitlements owns rule semantics, derivation of provider-desired state, readiness manifests, adapter contracts and reconciliation. Subscriptions keeps the commercial posture, committed atomically with each transition and published as `CommercialPostureV1`, and the consumer-side initial readiness gate of SUB-D-55. Pricing stores quota and grant rules on PlanRevision and freezes them in acceptance. The adapter boundary carries scope, assignment and desired revision, never `subscriptionId`. This moves no commercial decision and changes no deferred scope; the Entitlements design set is `gears/bss/entitlements/docs` (ENT-D-01…03). Executed: PRD §17.2 retires the four baseline ids and adds `fr-commercial-posture`.
 - **Propagated**: RECONCILIATION.md §7; DESIGN.md §1.1; PRD.md §6.7, §6.9
 
 ## Current disposition
@@ -495,7 +495,7 @@ Subscriptions records the commercial posture with each committed transition and
 publishes it as `CommercialPostureV1`; initial activation waits for readiness
 (SUB-D-55). Applying the posture to license, quota and resource providers
 (issuance, replacement, suspension, revocation, recovery and reconciliation)
-belongs to the Entitlements design (next PR); platform services enforce checks and
+belongs to [Entitlements](../../entitlements/docs/DESIGN.md); platform services enforce checks and
 limits. A subscription receipt never proves applied access. Old direct
 point-of-use FRs are retained as retired identifiers, not active responsibilities.
 

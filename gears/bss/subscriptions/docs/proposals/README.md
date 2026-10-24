@@ -50,7 +50,7 @@ PR descriptions can lag their files. The statements here use the pinned file con
 | Contracts | [contracts-proposal.md](contracts-proposal.md) | Immutable term evaluation and next-renewal routing |
 | Inventory / usage evidence | [usage-evidence-proposal.md](usage-evidence-proposal.md) | Historical membership, independent coverage and exact recoverable usage |
 
-Quota, license and resource adapter proposals belong to the Entitlements design (next PR).
+Quota, license and resource adapter proposals belong to the [Entitlements proposals](../../../entitlements/docs/proposals/README.md).
 
 The detailed [Rating/Billing replacement contract](rating-billing-contract.md) preserves RB01–RB07 and RB-C01–RB-C16 within Subscriptions. AP, FA, TP and RO remain in their linked Subscriptions documents. Adoption in a provider document is a separate owner task.
 
