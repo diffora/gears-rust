@@ -141,7 +141,7 @@ Subscriptions MUST expose authorized pull recovery for facts, bindings, membersh
 
 Subscriptions MUST publish `CommercialPostureV1` with its committed revision. Initial activation requires held `ReadinessObservationV1` for the exact operation, preparation revision and complete manifest. Applied activation and terminal non-activation share one durable fence and remain recoverable. A local receipt alone does not prove usable access.
 
-- **Consumer:** Entitlements.
+- **Consumer:** [Entitlements](../../entitlements/docs/UPSTREAM_REQS.md).
 - **Contract:** [Commercial posture and readiness](features/05-entitlements.md).
 - **Acceptance:** V11 and V19 cover replay, lost outcomes, held preparation and stale execution.
 
@@ -164,7 +164,7 @@ Each enabled profile requires agreed provider versions, an authorization and rec
 | S-U01 | Orders / Workflow / Pricing / Products | [Protected acquisition](contracts/activation.md): durable accepted future terms, capture/cancel ordering, attempt association and recovery. | AP-C01–AP-C12; acquisition, initial activation and supported successor attempts. |
 | S-U02 | Inventory / resource evidence provider | [Historical inventory](features/09-consumer-contracts.md#39-replace-attribution-without-erasing-financial-history), including deleted resources, lifecycle barriers and typed gaps. | V09; attribution and sealed ownership scopes. |
 | S-U03 | Usage emitter / Products / Rating | [Usage coverage](features/09-consumer-contracts.md#39-replace-attribution-without-erasing-financial-history), independent of ownership and collector progress. | V07 and V09; final usage valuation and invoicing. |
-| S-U04 | Entitlements | [Posture and held readiness](features/05-entitlements.md#initial-activation-readiness-contract), exact terminal resolution, timeout and unknown-outcome recovery. Entitlements owns adapter conformance. | V11 and V19; entitlement-dependent activation and lifecycle application. |
+| S-U04 | Entitlements | [Posture and held readiness](features/05-entitlements.md#initial-activation-readiness-contract), exact terminal resolution, timeout and unknown-outcome recovery. [Entitlements](../../entitlements/docs/DESIGN.md#11-architectural-vision) owns adapter conformance. | V11 and V19; entitlement-dependent activation and lifecycle application. |
 | S-U05 | Entitlements / Products / Billing / Rating | [Offboarding](features/04-renewal-retention.md): confirmed cutoff, actual stop, retention and effect-owner hold/delete fencing. | V13 and RO cases; safe offboarding and financial closeout. |
 | S-U06 | Contracts / Products | [Renewal terms](features/04-renewal-retention.md): explicit bound-term precedence, frozen evaluated deadlines and next-renewal decisions. | V14 and RO cases; contract-driven renewal and retention. |
 | S-U07 | Financial admission owner / Orders / Payments / Billing | [Financial admission](DESIGN.md#3311-financial-admission-integration-contract): retained payment or future postpay coverage, explicit dispositions, capture and recovery fences. | FA-C01–FA-C12 and V18; financially guarded operations without duplicate collection or live reassessment of an accepted purchase. |
