@@ -301,6 +301,7 @@ impl Gear for QuotaEnforcementGear {
                 cache_ttl: cfg.operations.idempotency_cache_ttl(),
                 preparation_max_attempts: policy_limits.preparation_max_attempts,
                 leases: cfg.leases.to_limits(),
+                batch: cfg.operations.to_batch_limits(),
             },
         ));
         // In-process clients share the REST domain boundary.

@@ -19,7 +19,7 @@
 //! lifecycle; the consumer and operator traits land with their features.
 //!
 //! Enable the `test-util` feature for a complete in-memory double of the
-//! storage contract in [`testing`].
+//! storage contract in `testing`.
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
 pub mod client;
@@ -49,8 +49,9 @@ pub use gts::{
 };
 pub use models::{
     AcquireLeaseOutcome, AcquireLeaseRequest, ActiveQuotaCounts, ApplicableQuotas, AppliedMutation,
-    ApportionError, AttributionDigest, BatchDebitItem, BootstrapBundle, CapPatch,
-    CommitLeaseRequest, ConfigDefaults, ContractRef, CounterSnapshot, CreditRequest,
+    ApportionError, AttributionDigest, BatchDebitItem, BatchDebitRequest, BatchDecision,
+    BatchItemOutcome, BatchItemRequest, BatchMode, BatchRecord, BatchResult, BootstrapBundle,
+    CapPatch, CommitLeaseRequest, ConfigDefaults, ContractRef, CounterSnapshot, CreditRequest,
     DECISION_BLOB_VERSION, DeactivateOutcome, DebitPlan, DebitRequest, Decision, DecisionPreview,
     DecisionResult, EnforcementMode, EvaluatedDebit, EvaluatedLease, EvaluationAttribution,
     EventId, ExpiredLease, IdempotencyRecord, IdempotencyScope, IdempotencySubjectKey,
@@ -67,8 +68,8 @@ pub use models::{
     positive_amount,
 };
 pub use storage_plugin::{
-    CONTRACT_MAJOR, EvaluatedBatch, EvaluatedMutation, QuotaEnforcementStoragePluginV1,
-    StorageError,
+    BatchEntry, BatchTimer, CONTRACT_MAJOR, EvaluatedBatch, EvaluatedMutation,
+    QuotaEnforcementStoragePluginV1, StorageError,
 };
 pub use thresholds::threshold_crossings;
 
