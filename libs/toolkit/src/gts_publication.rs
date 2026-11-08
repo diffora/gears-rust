@@ -246,6 +246,7 @@ pub fn check_ownership<'a>(
 /// URL, HTTP timeout and HTTP retries remain in `consumer_wiring`.
 ///
 /// `timeout` caps the budget from `publish` and never extends a caller's deadline.
+/// At most [`GtsPublicationOptions::MAX_TIMEOUT`] (one year), on every OS.
 /// Without it, startup uses the adapter's default (120 s for the registry SDK);
 /// a deployment deadline replaces that default, even when longer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -270,13 +271,17 @@ impl Default for GtsPublicationOptions {
 impl GtsPublicationOptions {
     const FIELDS: &str = "timeout, retry_backoff, retry_backoff_max, batch_size";
 
+    /// The longest accepted `timeout`: one year. A fixed bound, not the range of
+    /// `Instant`, which differs per OS (about 9.2e18 s on Unix, 1.8e19 s on Windows).
+    pub const MAX_TIMEOUT: Duration = Duration::from_hours(365 * 24);
+
     /// The policy of `gear` in `config`; the default without a `gts_publication` section.
     ///
     /// # Errors
     /// Naming the gear and the config path: a section that is not a mapping (`null`
     /// included), an unknown field, a value of the wrong type, a zero duration or batch
     /// size, a `retry_backoff_max` below `retry_backoff` (defaults included), or a
-    /// `timeout` too large to be a deadline.
+    /// `timeout` above [`Self::MAX_TIMEOUT`] (one year).
     pub fn from_config(gear: &str, config: &dyn ConfigProvider) -> anyhow::Result<Self> {
         let path = format!(
             "gears.{gear}.config.{}",
@@ -323,10 +328,15 @@ impl GtsPublicationOptions {
                 options.retry_backoff
             );
         }
+        // The bound is the same on every OS; `checked_add` only guards the overflow.
         if let Some(timeout) = options.timeout
-            && tokio::time::Instant::now().checked_add(timeout).is_none()
+            && (timeout > Self::MAX_TIMEOUT
+                || tokio::time::Instant::now().checked_add(timeout).is_none())
         {
-            anyhow::bail!("{path}.timeout: too large to be a deadline");
+            anyhow::bail!(
+                "{path}.timeout: too large to be a deadline (at most {:?})",
+                Self::MAX_TIMEOUT
+            );
         }
         Ok(options)
     }
