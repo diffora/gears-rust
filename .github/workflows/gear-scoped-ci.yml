@@ -63,7 +63,7 @@ jobs:
 
           git fetch --no-tags origin "$BASE_SHA" "$HEAD_SHA" || true
 
-          python <<'PY'
+          python3 <<'PY'
           import os
           import subprocess
           import tomllib
