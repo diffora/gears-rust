@@ -637,7 +637,7 @@ fn an_invalid_section_is_an_error_naming_the_gear_and_the_path() {
             "retry_backoff_max (30s) is less than retry_backoff (60s)",
         ),
         (
-            json!({ "timeout": "2years" }),
+            json!({ "timeout": "500000000000years" }),
             "gts_publication.timeout",
             "too large to be a deadline",
         ),
@@ -659,7 +659,13 @@ fn the_timeout_bound_is_the_same_on_every_os() {
     let at_bound = options_of(&json!({ "gts_publication": { "timeout": "365days" } })).unwrap();
     assert_eq!(at_bound.timeout(), Some(GtsPublicationOptions::MAX_TIMEOUT));
     let over = options_of(&json!({ "gts_publication": { "timeout": "366days" } })).unwrap_err();
-    assert!(format!("{over:#}").contains("too large to be a deadline"));
+    let message = format!("{over:#}");
+    assert!(
+        message.contains("gts_publication.timeout")
+            && message.contains("too large to be a deadline")
+            && message.contains(&format!("{:?}", GtsPublicationOptions::MAX_TIMEOUT)),
+        "{message}"
+    );
 }
 
 #[test]
