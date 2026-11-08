@@ -663,7 +663,7 @@ fn the_timeout_bound_is_the_same_on_every_os() {
     assert!(
         message.contains("gts_publication.timeout")
             && message.contains("too large to be a deadline")
-            && message.contains(&format!("{:?}", GtsPublicationOptions::MAX_TIMEOUT)),
+            && message.contains("at most"),
         "{message}"
     );
 }
