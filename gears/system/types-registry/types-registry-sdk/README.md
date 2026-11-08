@@ -214,8 +214,9 @@ gears:
 ```
 
 Without `timeout`, startup keeps the 120-second default and a deployment job's deadline
-replaces it, even when longer. Unknown fields, wrong types, zero values and
-`retry_backoff_max < retry_backoff` fail startup before any publication writes, naming the
+replaces it, even when longer. Unknown fields, wrong types, zero values,
+`retry_backoff_max < retry_backoff` and a `timeout` above one year (365 days, the same on
+every OS) fail startup before any publication writes, naming the
 gear and the config path. The policy applies per publication, alike for a local and a
 remote registry; the registry client's URL, HTTP timeout and retries stay in
 `consumer_wiring.types-registry`. Publication reuses the gear's own client view and settings.
