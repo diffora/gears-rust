@@ -1090,6 +1090,8 @@ def gear_test_env(request):
         config_path=MODULE_DIR / "config" / "base.yaml",
         config_patch=_patch_mini_chat_config,
         port=8087,
+        # Wait for application readiness before provisioning secrets;
+        # an OpenAPI response alone does not establish readiness.
         health_path="/cf/readyz",
         # 90 s predates the shared budget; kept so this suite does not get less time.
         health_timeout=max(90, SERVER_STARTUP_TIMEOUT_SECS),
