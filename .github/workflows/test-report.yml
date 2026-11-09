@@ -164,7 +164,7 @@ jobs:
           SHA: ${{ github.event.workflow_run.head_sha }}
           PATHS: ${{ steps.plan.outputs.paths }}
           NAMES: ${{ steps.plan.outputs.names }}
-        shell: python
+        shell: python3 {0}
         run: |
           import glob, json, os, urllib.error, urllib.parse, urllib.request
           import xml.etree.ElementTree as ET

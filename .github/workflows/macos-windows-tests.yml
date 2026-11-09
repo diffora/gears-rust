@@ -109,7 +109,7 @@ jobs:
       # helps tell a flake from a real break.
       - name: Summarize failures
         if: needs.test.result == 'failure'
-        shell: python
+        shell: python3 {0}
         run: |
           import glob, os, re
           import xml.etree.ElementTree as ET
