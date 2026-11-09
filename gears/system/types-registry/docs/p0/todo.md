@@ -3,7 +3,7 @@
 Plan: [`plan.md`](./plan.md) · Spec: [`SPEC.md`](./SPEC.md)
 
 **Status:** 36 of 52 executable tasks are complete (through T35, including T34a).
-**16 remain:** T35a/T35b and T36–T49. The next SDK task is **T35a**, after its compatible released-GTS prerequisite.
+**16 remain:** T35a/T35b and T36–T49. T35a's compiled API is implemented using the existing released GTS API; its standing verification remains open before T35b.
 
 The database-backed SDK contracts, local and REST clients, AM request-context reads and the managed AM/IdP/resolver/policy/admission publication paths are implemented. T37/T39 and the implemented portions of T41/T42 still need their full acceptance and checkpoint verification. T32's final verification and the remaining Checkpoint 7A gates stay open.
 
@@ -30,7 +30,7 @@ OAGW E2E remains a transitional legacy composition: its profiles retain the regi
 
 Global inventory and the legacy API remain required. Existing embedded configurations still rely on that transitional inventory: `config/e2e-local.yaml`'s customer type depends on AM's tenant base, and `config/event-broker-standalone.yaml`'s configured event/topic documents depend on event-broker SDK bases. These configurations are not proof of a self-contained registry seed set or remote bootstrap. T40 must move such external-dependent setup to the owning application or explicit platform API setup before T42 removes global seeding; preserve their application scenarios.
 
-The dedicated remote AM executable/configuration pair/two-process suite is absent; T41/T43 retain the final process/isolation proof. T35a/T35b, T36's new SDK cache, T44/T45's server-side publisher guard and T46–T49's journal are not implemented. No full-fleet or full-P0 completion is claimed.
+The dedicated remote AM executable/configuration pair/two-process suite is absent; T41/T43 retain the final process/isolation proof. T35a's compiled API is implemented; its remaining verification is tracked below. T35b, T36's new SDK cache, T44/T45's server-side publisher guard and T46–T49's journal are not implemented. No full-fleet or full-P0 completion is claimed.
 
 **Recorded verification (2026-11-06).** Regression tests cover Firebase managed publication, rejection of deleted policy resource types and preservation of caller 401/403 refusals in mandatory AM tenant-type reads. AM/policy-engine library suites pass (964/216 tests), Firebase passes 38, the SDK with `rest-client` passes 346, and the toolkit publication/deployment and runtime-preparation suites pass 34 tests each. Inverting the policy lifecycle guard makes its regression fail again. The embedded example-server composition with static AuthN/AuthZ/TR/IdP, AM, resource-group and admission-control passed cold SQLite startup, platform REST schema readback, readiness, restart with unchanged schema metadata and graceful shutdown; its isolated copy of `e2e-local.yaml` adds a policy-engine database for the selected feature set. This is embedded smoke coverage, not the deferred two-process AM, full E2E or three-backend checkpoint proof.
 
@@ -40,7 +40,7 @@ The dedicated remote AM executable/configuration pair/two-process suite is absen
 
 **Lifecycle plan:** Publication is not a lifecycle hook: the general `Gear::pre_init`/`post_init` hooks run per gear within its startup group and must not wait for a remote service. Gears publish with `gts_publication(...)`; the runtime publishes application gears’ GTS Type Schemas and Instances concurrently before any application `init` (the system group serves meanwhile), each gear binds its plugin clients in `init`; business availability stays as before (AM's bootstrap runs in `serve`; no business gate — future #5547/#5562). T41/T42 use the same capability for gear-owned configured entities and the remaining publishers; registry `cfg.entities` retain the inline exception. See [GTS publication by gears](../DESIGN.md#inventory-and-startup-reconciliation).
 
-- **Phase 7 — both clients, real local AM, every gear on the persistent registry:** SDK contracts/adapters, local ClientHub registration, the AM/IdP/TR migration and both REST transports are implemented (T29–T35, including T34a). Remaining work: payload validation, mock admission, SDK caching, grouped-runtime verification and the remaining-fleet/REST cutover (T35a–T38).
+- **Phase 7 — both clients, real local AM, every gear on the persistent registry:** SDK contracts/adapters, local ClientHub registration, the AM/IdP/TR migration and both REST transports are implemented (T29–T35, including T34a). Remaining work: payload-validation verification, mock admission, SDK caching, grouped-runtime verification and the remaining-fleet/REST cutover (T35a–T38).
 - **Phase 8 — publication after wiring and out-of-process operation:** T39 → T40 → T41 → T42 → T43. Collectors, ownership and selection; Account Management after wiring and remotely (Checkpoint 8A); the remaining fleet and the end of the pull; the out-of-process run (Checkpoint 8).
 - **Phase 9 — mixed-version rollout (publisher-version guard):** T44 → T45. Final P0 deployment is gated by Checkpoints 9 and 10.
 
@@ -2902,24 +2902,37 @@ Hosts with managed publishers configure a registry database for embedded operati
 
 ---
 
-### - [ ] T35a: SDK payload validation over a resolved Type Schema
+### - [ ] T35a: SDK payload validator over a resolved Type Schema
 
-**Description:** Add `TypeSchema::validate_value(&serde_json::Value)` as a thin adapter to `gts::ResolvedType::validate_payload`, so consumers can use the common GTS validation rules without building a store or configuring their own `jsonschema` validator. A compatible published `gts-rust` release containing `ResolvedType::validate_payload` is a prerequisite; dependency adoption remains to be completed. Any GTS/spec migration required by that release must be planned and verified separately before this task, rather than hidden in the wrapper change. One implementation commit after the prerequisite is satisfied; consumer migration stays in T38.
+**Status:** compiled API implemented; scoped checks below are green. Standing and checkpoint
+verification remain open; consumer migration is T38.
 
-**QE consumer note (T38):** QE already wraps `gts::PayloadValidator` in `CompiledContract` and compiles each selected contract once at catalogue bootstrap. Review the SDK wrapper against this use case: a convenience `validate_value` method that recompiles on every call is insufficient for replacing QE's request-path validator. Preserve a reusable compiled-validator path over the materialized Type Schema; keep the thin QE wrapper if the SDK offers only one-shot validation. The main migration saving is in registry resolution, as recorded under T38, rather than in `domain/catalog/model.rs`.
+**Description:** Add `TypeSchema::compile_payload_validator()` returning the native reusable
+`gts::PayloadValidator`. The bridge delegates to the released
+`gts::ResolvedType::compile_payload_validator` already available in the locked GTS version;
+no dependency/spec migration is needed. It uses the materialized `resolved_schema` and the
+selected leaf's authored `content` for abstractness, with no new store, resolution or cache.
+Consumer migration remains T38; AM's create/patch projections and gear-specific payload
+envelopes remain with consumers.
+
+**QE consumer note (T38):** QE can retain `CompiledContract` and reuse the returned validator
+compiled once at catalogue bootstrap. A one-shot helper that recompiles on every request is
+not required. Registry reads replace QE's reference-closure resolution separately in T38.
 
 **Acceptance criteria:**
-- [ ] The public method delegates payload validation to the upstream helper, using the returned resolved schema and the selected leaf's authored metadata for abstractness. It neither reconstructs effective artifacts nor reimplements dialect, format, regex or reference rules; it creates no registry client or local store
-- [ ] Rustdoc and the SDK README state the required projection fields (including `content` and `resolved_schema`) and define the error mapping for missing fields and upstream failures without parsing diagnostic strings. Missing fields or unavailable schema resources fail explicitly; validation never silently succeeds. The wrapper does not modify the payload or insert defaults
-- [ ] The contract explicitly checks reference syntax and pattern conformance only (`GtsRefValidation::None` semantics); target presence/validity, lifecycle and availability remain separate registry checks. Type-schema admission and trait/derivation validation remain upstream responsibilities; gear-specific payload envelopes remain with their consumers
+- [x] Public compilation delegates GTS dialect, format, regex and reference rules to the native compiler and returns its reusable validator. Abstractness comes only from the authored leaf; unused `ResolvedType` fields are neutral and the temporary value never escapes the bridge
+- [x] Missing `content`/`resolved_schema` projections have a typed SDK error; selected non-object authored content has `InvalidContent`. Native abstract/invalid-schema errors and their sources remain accessible, including via an SDK alias. No diagnostic strings are parsed
+- [x] Rustdoc and SDK README document the minimum projection, compile-once usage, reference-resource requirements and lossy-inlining limitation. Syntax/pattern checks use `GtsRefValidation::None`; target presence/validity, lifecycle and availability are separate checks. Neither input mutation nor defaults insertion occurs
 
 **Verification:**
-- [ ] SDK tests compare valid and invalid payload outcomes with the upstream helper for Draft-07, 2019-09 and 2020-12, including format assertions, GTS references, pattern references, inherited `/$id` and concrete descendants of abstract bases
-- [ ] SDK tests reject abstract types, missing projection fields and unresolved external schema resources; defaults do not satisfy a missing required payload property, and inputs remain unchanged
-- [ ] `cargo test -p cf-gears-types-registry-sdk --all-features`; `cargo check -p cf-gears-types-registry-sdk --all-targets --all-features`; the standing `make fmt`, `make clippy` and gear-test gates pass
-- [ ] Manual: the README example reads a Type Schema with the documented projection and validates a payload without retaining a `GtsStore` or making another registry call
+- [x] Eight bridge tests cover minimal projection and reuse, each missing required field, non-object authored content, native abstract/error-source preservation, concrete leaves with inherited abstractness, null/unavailable resolved resources, native boolean schemas and selected-ID binding for inherited `/$id`. The GTS library owns the full validator-rule matrix
+- [x] SDK all-feature nextest: **357 passed**; all-target/all-feature `cargo check`; README doctests: **7 passed, 4 existing ignored**; `make fmt`; `make clippy GEAR=types-registry` (registry + SDK, all targets/features, warnings denied)
+- [x] `cargo nextest run --offline --locked -p cf-gears-types-registry -p cf-gears-types-registry-sdk`: **1657 passed** across 66 binaries, without the registry's `integration` feature. Inverting the authored abstractness comparison fails its bridge regression; the production file was restored byte-for-byte
+- [ ] Standing `make fmt`, `make clippy` and gear-test gates pass; targeted SDK results do not close workspace/checkpoint verification gates
 
-**Dependencies:** T29 and T30; a compatible published `gts-rust` release containing `ResolvedType::validate_payload`. T35 is the queue predecessor, not a transport dependency. **Files likely touched:** `TR-SDK/src/models.rs`, `TR-SDK/src/models_tests.rs`, `TR-SDK/README.md`; `Cargo.toml` and `Cargo.lock` only for compatible released-dependency adoption. **Scope:** M (up to five files; broader dependency/spec migration is a separate prerequisite)
+**Dependencies:** T29 and T30; existing released GTS compiled-payload API. **Files touched:**
+SDK `src/{lib,payload,payload_tests}.rs`, SDK README and P0 tracking docs. This is an additive
+Rust API; REST contracts and dependency versions are unchanged.
 
 ---
 

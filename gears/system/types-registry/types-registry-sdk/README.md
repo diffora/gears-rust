@@ -69,6 +69,58 @@ The GTS identifier types the models use (`GtsId`, `GtsTypeId`, `GtsInstanceId`,
 `GtsIdPattern`, `GtsIdSegment`) are re-exported, so building a request needs no direct
 `gts` dependency.
 
+## Payload validation
+
+`TypeSchema::compile_payload_validator()` compiles a reusable `gts::PayloadValidator`
+from the registry's materialized schema. Select `content` and `resolved_schema`;
+traits, origin and provenance are not needed. The SDK neither builds a `GtsStore`
+nor resolves schemas again, and compilation and validation make no registry calls.
+
+```rust,no_run
+use toolkit_security::SecurityContext;
+use types_registry_sdk::{
+    EntityField, FieldSelection, GtsTypeId, Projection, ReadOptions,
+    TypesRegistryApi, TypesRegistryApiExt,
+};
+
+async fn validate_records(
+    registry: &dyn TypesRegistryApi,
+    caller: &SecurityContext,
+    type_id: &GtsTypeId,
+    payloads: &[serde_json::Value],
+) -> anyhow::Result<()> {
+    let schema = registry.get_type_schema(caller, type_id, ReadOptions {
+        projection: Projection::Select(FieldSelection::with(&[
+            EntityField::Content,
+            EntityField::ResolvedSchema,
+        ])),
+        ..ReadOptions::default()
+    }).await?;
+    let validator = schema.compile_payload_validator()?;
+    for payload in payloads {
+        validator.validate(payload)?;
+    }
+    Ok(())
+}
+```
+
+`CompilePayloadValidatorError::MissingField` identifies an unselected required field;
+`InvalidContent` rejects a selected non-object authored document, including JSON null.
+`Upstream` preserves `gts::CompilePayloadValidatorError` and its error source; it is
+also exported as `GtsCompilePayloadValidatorError` for typed matching without a direct
+`gts` dependency. `PayloadValidator` and `PayloadValidationError` are re-exported too.
+Only the authored leaf's boolean `x-gts-abstract: true` makes it abstract; an inherited
+flag in `resolved_schema` does not. Other schema-admission checks are not repeated.
+
+Validation uses native GTS dialect, format, regex and reference-keyword rules. It checks
+reference syntax/patterns (`GtsRefValidation::None`), not target presence or validity.
+Every referenced schema resource must be present in the materialized schema; unresolved
+external resources fail compilation. Lossy reference inlining can change verdicts relative
+to store-based validation. Selected null `resolved_schema` is an upstream compilation
+error, while boolean schemas retain their native meaning. Payloads are not modified and
+defaults are not inserted. Consumers choose freshness, lifecycle and availability policy,
+and construct their own payload envelopes; existing consumers migrate separately in T38.
+
 **Intermediate AM topology (implemented for the current execution slice).** An embedded
 registry configured `mode: legacy_only` keeps only the legacy client and v1 routes for RG:
 it registers neither new API locally, routes neither, runs no seeding or admission over a

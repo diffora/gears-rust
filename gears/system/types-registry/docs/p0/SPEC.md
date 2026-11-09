@@ -10,7 +10,7 @@ The **52 executable tasks** and their IDs are defined by [todo.md](./todo.md):
 36 are complete (through T35, including T34a); 16 remain (T35a/T35b and T36–T49).
 The publication foundation is merged into `main`; this branch adds the managed core migration.
 T37/T39 and portions of T41/T42 are implemented without closing their remaining gates.
-The next SDK task is T35a, after its released-GTS prerequisite. T46–T49 add the planned
+T35a's compiled payload API is implemented using the existing released GTS API; its standing verification remains open. T46–T49 add the planned
 service-local publication journal after the publisher guard; it is separate from T36's read cache.
 Historical test evidence retains its dates and limitations; real local AM remains the
 Checkpoint 7A gate and remote AM the 8A gate. [plan.md](./plan.md) uses the same IDs.
