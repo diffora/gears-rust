@@ -9,6 +9,76 @@ release-plz updates this file in the Release PR.
 
 ## [Unreleased]
 
+## [0.1.4](https://github.com/constructorfabric/gears-rust/compare/cf-gears-flight-control-v0.1.3...cf-gears-flight-control-v0.1.4) - 2026-11-09
+
+### Other
+
+- updated the following local packages: cf-gears-api-gateway
+
+## [0.2.2](https://github.com/constructorfabric/gears-rust/compare/cf-gears-sqlite-event-broker-plugin-v0.2.1...cf-gears-sqlite-event-broker-plugin-v0.2.2) - 2026-11-09
+
+### Other
+
+- updated the following local packages: cf-gears-event-broker-sdk
+
+## [0.1.2](https://github.com/constructorfabric/gears-rust/compare/cf-gears-postgres-event-broker-plugin-v0.1.1...cf-gears-postgres-event-broker-plugin-v0.1.2) - 2026-11-09
+
+### Other
+
+- updated the following local packages: cf-gears-event-broker-sdk
+
+## [0.1.2](https://github.com/constructorfabric/gears-rust/compare/cf-gears-mysql-event-broker-plugin-v0.1.1...cf-gears-mysql-event-broker-plugin-v0.1.2) - 2026-11-09
+
+### Other
+
+- updated the following local packages: cf-gears-event-broker-sdk
+
+## [0.1.2](https://github.com/constructorfabric/gears-rust/compare/cf-gears-memory-event-broker-plugin-v0.1.1...cf-gears-memory-event-broker-plugin-v0.1.2) - 2026-11-09
+
+### Other
+
+- updated the following local packages: cf-gears-event-broker-sdk
+
+## [0.1.2](https://github.com/constructorfabric/gears-rust/compare/cf-gears-kafka-event-broker-plugin-v0.1.1...cf-gears-kafka-event-broker-plugin-v0.1.2) - 2026-11-09
+
+### Other
+
+- updated the following local packages: cf-gears-event-broker-sdk
+
+## [0.4.3](https://github.com/constructorfabric/gears-rust/compare/cf-gears-file-storage-v0.4.2...cf-gears-file-storage-v0.4.3) - 2026-11-09
+
+### Other
+
+- update Cargo.lock dependencies
+
+## [0.5.1](https://github.com/constructorfabric/gears-rust/compare/cf-gears-event-broker-v0.5.0...cf-gears-event-broker-v0.5.1) - 2026-11-09
+
+### Other
+
+- update Cargo.lock dependencies
+
+## [0.4.1](https://github.com/constructorfabric/gears-rust/compare/cf-gears-cluster-v0.4.0...cf-gears-cluster-v0.4.1) - 2026-11-09
+
+### Other
+
+- update Cargo.lock dependencies
+
+## [0.7.2](https://github.com/constructorfabric/gears-rust/compare/cf-gears-api-gateway-v0.7.1...cf-gears-api-gateway-v0.7.2) - 2026-11-09
+
+### Fixed
+
+- *(api-gateway)* the request-timeout test passes the bootstrap flag the stack now takes (by @vasylcf)
+
+### Contributors
+
+* @vasylcf
+
+## [0.5.1](https://github.com/constructorfabric/gears-rust/compare/cf-gears-event-broker-sdk-v0.5.0...cf-gears-event-broker-sdk-v0.5.1) - 2026-11-09
+
+### Other
+
+- update Cargo.lock dependencies
+
 ## [0.2.1](https://github.com/constructorfabric/gears-rust/compare/cf-gears-llm-gateway-sdk-v0.2.0...cf-gears-llm-gateway-sdk-v0.2.1) - 2026-11-09
 
 ### Other
