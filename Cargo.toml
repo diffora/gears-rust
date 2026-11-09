@@ -598,7 +598,8 @@ utoipa = { version = "5.5", features = [
 
 # HTTP stack dependencies
 hyper = "1.12.0"
-hyper-util = "0.1"
+# 0.1.21: the CONNECT reply parsing `toolkit-http` relies on.
+hyper-util = "0.1.21"
 hyper-rustls = { version = "0.27", default-features = false, features = [
     "aws-lc-rs",
     "http1",
