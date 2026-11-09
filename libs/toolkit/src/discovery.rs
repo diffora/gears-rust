@@ -130,8 +130,8 @@ impl EndpointResolver for NullEndpointResolver {
 /// An [`EndpointResolver`] that always resolves to a single, fixed endpoint —
 /// the ADR-0004 static-endpoint override escape hatch for local development and
 /// integration testing. It bypasses the service directory: a consumer configured
-/// with `gears.<owner>.config.consumer_wiring.<dep> = "http://host:port"` wires a
-/// resolving client whose endpoint is this constant. Not for production use.
+/// with `gears.<owner>.clients.consumes.<dep>.endpoint` wires a resolving client
+/// whose endpoint is this constant. Not for production use.
 pub struct StaticEndpointResolver {
     endpoint: String,
 }
@@ -184,7 +184,7 @@ pub enum WireOutcome {
 ///
 /// The runtime passes the owner gear's view ([`ClientHub::for_gear`]) when
 /// `owner_gear` is a gear in this process, so each consumer gets its own proxy
-/// built from its own `consumer_wiring.<dep>` settings; otherwise it passes the
+/// built from its own `clients.consumes.<dep>` settings; otherwise it passes the
 /// process-wide hub.
 ///
 /// Step 1 must use `try_get_local`, not `try_get`: `try_get` also returns a
@@ -204,7 +204,7 @@ pub struct ConsumerRegistration {
 
 /// The wiring function pointer emitted by `#[toolkit::consumes]`: registers the
 /// client into the `ClientHub` from an endpoint resolver and a prepared
-/// [`ClientTuning`](toolkit_contract::wiring::ClientTuning) (the `consumer_wiring`
+/// [`ClientTuning`](toolkit_contract::wiring::ClientTuning) (the `clients.consumes`
 /// knobs plus the process's platform-plane credential source). Aliased to keep
 /// the fn-pointer type readable.
 pub type WireFn = fn(

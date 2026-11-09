@@ -1133,7 +1133,7 @@ operator-only per `cpt-cf-quota-enforcement-fr-authorization` and deliberately a
 Each trait is a ToolKit `#[toolkit::contract]` (`version = "v1"`); a method with more than one argument takes one
 request struct, so every method maps to one JSON body. The gear provides each contract with
 `#[toolkit::provides(transports = [local, rest])]`: by default `ClientHub` holds the in-process implementation, and
-`client_wiring.<contract>` in the gear configuration can wire a generated REST client instead. The SDK's
+`gears.quota-enforcement.clients.provides.<contract>` can wire a generated REST client instead. The SDK's
 `#[toolkit::rest_contract]` projections (`rest` module; features `rest-client` and `rest-server`) generate those
 clients and the server routes: `POST /quota-enforcement/v1/...`, one route per method, internal (not exposed at the
 edge) and authenticated. They run on the tenant plane: the client forwards the caller's bearer token, the route

@@ -19,7 +19,7 @@
 //!
 //! The runtime passes the consuming gear's view of the hub
 //! (`ClientHub::for_gear`), so the proxy belongs to that gear and is built from
-//! its own `consumer_wiring.<dep>` settings. Two gears consuming one contract
+//! its own `clients.consumes.<dep>` settings. Two gears consuming one contract
 //! get two proxies. One gear declaring the same contract twice would get one
 //! proxy for both: on one struct that is a compile error, and the wire fn also
 //! refuses it at boot for spellings the macro cannot compare.
@@ -35,7 +35,7 @@
 //!
 //! **Gear name.** The emitted `owner_gear` is the gear's name, because the
 //! runtime uses it as a config key for the ADR-0004 static-endpoint override and
-//! the criticality flag (`gears.<owner_gear>.config.consumer_wiring.<dep>`), as
+//! the criticality flag (`gears.<owner_gear>.clients.consumes.<dep>`), as
 //! the owner of the hub view the proxy is wired into, and in log/error fields.
 //! When this attribute sits **above** `#[toolkit::gear]`, the gear attribute is
 //! still on the item and its `name = "..."` is used, so a
@@ -211,7 +211,7 @@ fn declared_gear_name(item: &ItemStruct) -> Option<String> {
 /// Top-level entry point invoked by the proc-macro shim in `lib.rs`.
 pub fn generate(attr: &ConsumesAttr, item: &ItemStruct) -> SynResult<TokenStream> {
     // `owner_gear` is the *gear name*, not the Rust type name: the runtime uses
-    // it as a config key (`gears.<owner_gear>.config.consumer_wiring.<dep>`) for
+    // it as a config key (`gears.<owner_gear>.clients.consumes.<dep>`) for
     // the ADR-0004 static-endpoint override, and as a log/error field. Gear
     // names are kebab-case, so derive it from the struct ident rather than
     // emitting `stringify!` — `stringify!(ApiContractsConsumer)` would look up
@@ -298,7 +298,7 @@ fn generate_one(attr: &ConsumedContract, owner_gear: &str) -> SynResult<TokenStr
             }
             // Otherwise register the directory-resolving REST client. The tuning
             // is prepared by the runtime's proxy-wiring phase from the consumer's
-            // `consumer_wiring.<dep>` config and carries the process's platform-plane
+            // `clients.consumes.<dep>` config and carries the process's platform-plane
             // credential source, so platform-plane methods attach
             // `X-ToolKit-Internal-Token` (`cpt-cf-adr-two-plane-auth`).
             let __client = #resolving_client_path::new(
@@ -333,7 +333,7 @@ mod tests {
         generate(&attr, item).unwrap().to_string()
     }
 
-    /// `owner_gear` is a config key (`gears.<owner_gear>.config.consumer_wiring.<dep>`),
+    /// `owner_gear` is a config key (`gears.<owner_gear>.clients.consumes.<dep>`),
     /// so it must be the kebab gear name — not the Rust type name. Emitting
     /// `stringify!(ApiContractsConsumer)` made the static override unresolvable.
     #[test]

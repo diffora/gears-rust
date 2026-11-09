@@ -43,7 +43,7 @@ with the OoP bootstrap and the embedded (in-process) runtime.
 * **No static endpoint configuration** — the endpoint of a remote provider is resolved at runtime
   through `DirectoryService`, not hard-coded in `config.yaml` or source code. **Amended by
   `cpt-cf-adr-optional-service-discovery`:** this driver holds for directory-based deployments, but is superseded for
-  the explicit directory-less mode (`discovery: none`), where a static `consumer_wiring.<dep>.endpoint` is the
+  the explicit directory-less mode (`discovery: none`), where a static `clients.consumes.<dep>.endpoint` is the
   supported resolution mechanism (e.g. a k8s Service URL) rather than a dev/test-only escape hatch.
 * **Transparency across runtime profiles** — in Profile 1 (embedded), the local in-process
   implementation is used without any HTTP hop; in Profile 2/3 (OoP), the generated REST client is
@@ -136,7 +136,7 @@ inventory::submit! {
                 return Ok(WireOutcome::Remote);
             }
             // `tuning` is prepared by the proxy-wiring phase from the consumer's
-            // `consumer_wiring.<dep>` config and already carries the process's
+            // `clients.consumes.<dep>` config and already carries the process's
             // platform-plane credential source, so the resolving client's
             // platform-plane methods attach `X-ToolKit-Internal-Token`
             // (no credential in Profile 1 attaches nothing).
@@ -151,7 +151,7 @@ inventory::submit! {
 **Each consumer gets its own proxy.** The runtime calls `wire` with the owner gear's view of the
 hub, `ClientHub::for_gear(owner_gear)`. Local and scoped registrations are shared by all views;
 a proxy registered through `register_remote_proxy` belongs to the view's owner. So two gears that
-consume the same contract each get a proxy built from their own `consumer_wiring.<dep>` settings
+consume the same contract each get a proxy built from their own `clients.consumes.<dep>` settings
 (endpoint, timeout, retry, `require_tls`, pool), whatever the wiring order. `GearCtx::client_hub()`
 returns the gear's view, and `get`/`try_get` there return, in order: a local impl, the gear's own
 proxy, a process-wide proxy. A local impl registered after wiring still wins. A registration whose
@@ -253,31 +253,54 @@ in `deps` when you want the local path guaranteed.
 
 ### Consumer wiring: endpoint override + client tuning
 
-Each consumed dependency is configured per gear under the same `config` block the provider side uses
-for `client_wiring`, keyed by the dependency (provider) gear name. `consumer_wiring.<dep>` is an
-**object** (`ConsumerWiring`) carrying an optional `endpoint` plus a flattened `ClientTuning`:
+Client settings live in their own section of the gear's entry, `gears.<gear>.clients`, next to
+`config`, `database` and `runtime`, not inside the gear's `config`:
 
 ```yaml
 # config.yaml
 gears:
   orders:
-    config:
-      consumer_wiring:
-        api-contracts:
-          timeout: "5s"
+    config: { ... }                         # the gear's own configuration only
+    clients:
+      defaults:                             # tuning for every client this gear builds
+        timeout: "5s"
+      consumes:
+        api-contracts:                      # #[toolkit::consumes(from = "api-contracts")]
           max_concurrent_requests: 256
           pool_max_idle_per_host: 256
           # endpoint: "http://localhost:8081"   # optional; omit to keep discovery
+      provides:
+        payment_api:                        # #[toolkit::provides], contract in snake case
+          transport: rest
+          endpoint: "http://payments:8080"
 ```
 
-The bare-string form earlier drafts accepted (`billing: "http://localhost:8081"`) is **no longer
-supported**: the override lives on the optional `endpoint` field, and a bare string is a boot error
-whose message names the object form.
+* `clients.consumes.<dep>` is keyed by the dependency (provider) gear name. It is an **object**
+  (`ConsumerWiring`) with an optional `endpoint` and a flattened `ClientTuning`. A bare string
+  (`billing: "http://localhost:8081"`) is a boot error.
+* `clients.provides.<contract>` is the provider side's `ClientWiring`, keyed by the contract trait in
+  snake case.
+* `clients.defaults` holds `ClientTuning` keys only. It is merged under every entry key by key,
+  nested objects (`retry`, `stream_reconnect`) included; the entry wins. A dep with no entry of its
+  own still gets the defaults. `defaults` alone never makes a provided contract remote.
+* Unknown keys anywhere in the section, and `endpoint` / `transport` in `defaults`, are boot errors
+  that name the full path (`gears.orders.clients.consumes.billing.timout`). serde's
+  `deny_unknown_fields` does not work with a flattened struct, so the reader
+  (`toolkit::clients_config`) checks against `ClientTuning::KEYS`.
+* An OoP child receives the section from the master with its rendered config (`RenderedGearConfig`);
+  a `clients` section in the child's local `--config` replaces it, as `config` does.
+
+**Why a separate section.** The keys belong to the framework, not to the gear. Inside `config` they
+reached the gear's own deserializer: a gear with `#[serde(deny_unknown_fields)]` refused them, so
+gears declared placeholder fields only to let them through. The same arrangement is common elsewhere:
+Spring Cloud OpenFeign keeps per-client settings under `spring.cloud.openfeign.client.config.<name>`
+with a `default` entry, Quarkus REST Client under `quarkus.rest-client."<key>"`, Resilience4j under
+`instances.<name>` with `configs.default`. The earlier `config.consumer_wiring` and
+`config.client_wiring` keys are not read any more.
 
 Because the consumer path is **REST-only** (`#[toolkit::consumes]` always wires a
 `<Contract>RestResolvingClient`; there is no gRPC resolving client), `ConsumerWiring` carries **no**
-`transport` tag and every `ClientTuning` knob applies — no gRPC disambiguation and no
-`rest_only_knobs_set` warning (contrast the provider-side `client_wiring`).
+`transport` tag and every `ClientTuning` knob applies (contrast the provider-side `ClientWiring`).
 
 This is the caller-owned config surface that [DESIGN §1.3](../DESIGN.md#13-operational-semantics)
 specifies for remote contracts — "Own config (URL, timeout, retry policy) via `ClientConfig`" — now
@@ -285,11 +308,11 @@ reachable on the actual high-concurrency gear-to-gear caller. `ConsumerWiring` d
 `ClientTuning` whose `apply_to(endpoint)` produces that per-call `ClientConfig`.
 
 The proxy-wiring phase (`host_runtime::run_proxy_wiring_phase`) reads the entry via
-`read_consumer_wiring(...)`, splits it into `(endpoint, tuning)`, threads the process's platform-plane
+`toolkit::clients_config::consumer_wiring(...)`, splits it into `(endpoint, tuning)`, threads the process's platform-plane
 credential onto the tuning, and hands it to `ConsumerRegistration::wire`. A present-but-unparseable
 entry — wrong shape, wrong-typed tuning, or a non-absolute `endpoint` (validated at parse time by
 `ConsumerWiring`'s `deserialize_with`) — is a boot error (`RegistryError::ProxyWiring`), matching the
-provider side's `client_wiring` (`toolkit::wiring::read_wiring`); it is never downgraded to discovery.
+provider side (`toolkit::wiring::read_wiring`); it is never downgraded to discovery.
 
 **`endpoint` present** → the dep is wired through a `StaticEndpointResolver` (`toolkit::discovery`),
 bypassing the directory and readiness-resolved immediately (no probe loop). This is the dev/test
@@ -483,6 +506,6 @@ Document the current pattern; require authors to configure static endpoints.
   shared by both runtime paths (in-process host and OoP serving); `bootstrap/oop.rs` contains no
   consumer-wiring code.
 * Consumer client tuning: this ADR's original scope was *discovery* (the endpoint alone), so the
-  wired client used a hardcoded `ClientTuning::default()`. It now parses `consumer_wiring.<dep>` into
+  wired client used a hardcoded `ClientTuning::default()`. It now parses `clients.consumes.<dep>` into
   `ConsumerWiring` (optional `endpoint` + flattened `ClientTuning`) and threads it through `WireFn`
   into the resolving client — the caller-owned config specified for remote contracts.

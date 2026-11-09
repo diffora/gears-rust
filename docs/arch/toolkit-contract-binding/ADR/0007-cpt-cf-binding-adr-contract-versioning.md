@@ -151,7 +151,7 @@ already work with the shipped codegen:
   fully-qualified `type_name`). A consumer picks its version by the type it
   resolves — a compile-time choice.
 * **`#[toolkit::provides]`**: each version gets its own `wire_payment_api` /
-  `wire_payment_api_v2` method and its own `client_wiring` config key, so one
+  `wire_payment_api_v2` method and its own `clients.provides` config key, so one
   gear can provide both.
 * **Plugins** may implement both traits during the migration window (DESIGN §7
   (b)); each is an ordinary Rust trait impl.

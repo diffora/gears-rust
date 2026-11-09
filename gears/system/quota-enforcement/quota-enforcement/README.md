@@ -16,7 +16,7 @@ surface in `api-gateway`.
   cached before bootstrap succeeds.
 - **Client contracts.** The gear provides `QuotaManagerApi`,
   `QuotaEnforcementApi` and `QuotaOperatorApi` through `#[toolkit::provides]`:
-  in process by default, or a REST client when `client_wiring.<contract>` says
+  in process by default, or a REST client when `clients.provides.<contract>` says
   so. It also hosts their internal REST routes under `/quota-enforcement/v1`,
   served from its own domain service beside the public API.
 - **Cluster coordination.** The sweeper singletons run under the platform

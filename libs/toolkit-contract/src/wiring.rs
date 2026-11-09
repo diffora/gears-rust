@@ -90,6 +90,20 @@ pub struct ClientTuning {
 }
 
 impl ClientTuning {
+    /// Every key a [`ClientTuning`] reads. It is flattened into
+    /// [`ConsumerWiring`] and [`ClientWiring`], so serde cannot reject unknown
+    /// keys there; the config reader checks against this list instead.
+    pub const KEYS: &'static [&'static str] = &[
+        "timeout",
+        "retry",
+        "stream_reconnect",
+        "sse_reconnect",
+        "require_tls",
+        "pool_max_idle_per_host",
+        "pool_idle_timeout",
+        "max_concurrent_requests",
+    ];
+
     /// REST-only transport knobs that were explicitly set on this tuning.
     ///
     /// Used to warn when a non-REST transport is selected: the gRPC client reads
@@ -117,6 +131,7 @@ impl ClientTuning {
 /// [`RetryConfig`](crate::runtime::config::RetryConfig). All fields optional;
 /// missing values keep the runtime default.
 #[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RetrySettings {
     pub max_attempts: Option<u32>,
     #[serde(default, with = "toolkit_utils::humantime_serde::option")]
@@ -129,6 +144,7 @@ pub struct RetrySettings {
 /// Deserializable mirror of
 /// [`ReconnectConfig`](crate::runtime::config::ReconnectConfig).
 #[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReconnectSettings {
     pub max_attempts: Option<u32>,
     #[serde(default, with = "toolkit_utils::humantime_serde::option")]
@@ -140,8 +156,9 @@ pub struct ReconnectSettings {
 /// Transport choice + endpoint + tuning for one provided contract.
 ///
 /// Read by `#[toolkit::provides]` from
-/// `gears.<gear>.config.client_wiring.<contract_snake>`. If the key is
-/// absent the wiring defaults to [`ClientWiring::Local`].
+/// `gears.<gear>.clients.provides.<contract_snake>`, with
+/// `gears.<gear>.clients.defaults` merged under it. If the key is absent the
+/// wiring defaults to [`ClientWiring::Local`].
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "lowercase", tag = "transport")]
 pub enum ClientWiring {
@@ -191,19 +208,20 @@ where
 }
 
 /// Consumer-side wiring for one dependency, read from
-/// `gears.<owner>.config.consumer_wiring.<dep>` by the runtime's proxy-wiring
-/// phase and applied to the directory-resolving REST client that
-/// `#[toolkit::consumes]` registers.
+/// `gears.<owner>.clients.consumes.<dep>` (with `gears.<owner>.clients.defaults`
+/// merged under it) by the runtime's proxy-wiring phase and applied to the
+/// directory-resolving REST client that `#[toolkit::consumes]` registers.
 ///
 /// An object with an optional `endpoint` (omit to keep discovery) plus a
 /// flattened [`ClientTuning`]:
 ///
 /// ```yaml
-/// consumer_wiring:
-///   api-contracts:
-///     timeout: "5s"
-///     max_concurrent_requests: 256
-///     # endpoint: "http://..."   # optional; omit to keep discovery
+/// clients:
+///   consumes:
+///     api-contracts:
+///       timeout: "5s"
+///       max_concurrent_requests: 256
+///       # endpoint: "http://..."   # optional; omit to keep discovery
 /// ```
 ///
 /// Unlike [`ClientWiring`] there is **no** `transport` tag: the

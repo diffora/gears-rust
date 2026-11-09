@@ -4,7 +4,7 @@
 //! inherent async method `wire_<contract_snake>(&self, &GearCtx)` that:
 //!   1. validates the contract IR (fail-fast at startup),
 //!   2. reads typed wiring config from
-//!      `gears.<gear>.config.client_wiring.<contract_snake>`,
+//!      `gears.<gear>.clients.provides.<contract_snake>`,
 //!   3. instantiates the local/REST/gRPC client per the wiring,
 //!   4. registers the resulting `Arc<dyn Trait>` in the
 //!      [`ClientHub`](toolkit::ClientHub).

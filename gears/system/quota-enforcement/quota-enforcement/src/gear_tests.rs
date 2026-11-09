@@ -53,7 +53,7 @@ fn make_ctx(hub: Arc<ClientHub>) -> GearCtx {
     make_ctx_wired(hub, serde_json::Value::Null)
 }
 
-/// [`make_ctx`] with a `client_wiring` section; `Null` leaves it out.
+/// [`make_ctx`] with a `clients.provides` section; `Null` leaves it out.
 fn make_ctx_wired(hub: Arc<ClientHub>, wiring: serde_json::Value) -> GearCtx {
     let mut cfg = json!({
         "quota-enforcement": {
@@ -71,7 +71,7 @@ fn make_ctx_wired(hub: Arc<ClientHub>, wiring: serde_json::Value) -> GearCtx {
         }
     });
     if !wiring.is_null() {
-        cfg["quota-enforcement"]["config"]["client_wiring"] = wiring;
+        cfg["quota-enforcement"]["clients"]["provides"] = wiring;
     }
     GearCtx::new(
         QuotaEnforcementGear::MODULE_NAME,
