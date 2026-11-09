@@ -147,7 +147,9 @@ async fn list_event_types_of_a_topic_returns_a_paged_list() {
                 "partition_key": "/tenant_id",
                 "data_schema": {
                     "allOf": [
-                        { "type": ["object", "null"] },
+                        {
+                            "type": ["object", "null"],
+                        },
                         { "type": ["object", "null"] },
                     ],
                 },

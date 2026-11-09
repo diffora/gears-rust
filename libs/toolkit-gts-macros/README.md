@@ -36,3 +36,21 @@ See **[`cf-gears-toolkit-gts` README](../toolkit-gts/README.md)**:
 
 Integration tests covering both macros live in
 [`libs/toolkit-gts/tests/macro_integration.rs`](../toolkit-gts/tests/macro_integration.rs).
+
+Crate-local collector macro tests and compile-fail cases live in
+[`tests/local_collectors.rs`](tests/local_collectors.rs). Their
+[`declaring-crate` fixture](tests/fixtures/declaring-crate) provides a second
+compiled crate and uses a renamed `toolkit-gts` dependency. Merge behaviour is
+tested in [`toolkit-gts`](../toolkit-gts/tests/local_collectors.rs).
+
+Run the macro and merge tests with:
+
+```sh
+cargo test -p cf-gears-toolkit-gts-macros -p cf-gears-toolkit-gts
+```
+
+CI runs release/fat-LTO through `make test-macros`. For an explicit local run:
+
+```sh
+cargo test -p cf-gears-toolkit-gts-macros --test release_lto -- --ignored
+```

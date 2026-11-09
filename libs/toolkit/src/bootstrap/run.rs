@@ -1,5 +1,7 @@
 use super::config::{get_gear_runtime_config, render_gear_config_for_oop};
 use super::host::{init_logging_unified, init_panic_tracing, normalize_path};
+#[cfg(feature = "otel")]
+use super::telemetry::tracing_shutdown;
 use super::{AppConfig, RuntimeKind};
 use crate::backends::LocalProcessBackend;
 use crate::runtime::{
@@ -76,26 +78,40 @@ pub async fn run_server(config: AppConfig) -> Result<()> {
     // Build OoP spawn configuration
     let oop_options = build_oop_spawn_options(&config, oop_backend)?;
 
+    // Remote platform-plane calls carry `X-ToolKit-Internal-Token` from
+    // `oop_http.internal_auth` (cpt-cf-adr-two-plane-auth); without it they fail.
+    // Co-hosted dependencies use local ClientHub objects and need no credential.
+    let internal_token_provider = match config
+        .oop_http
+        .as_ref()
+        .and_then(|http| http.internal_auth.as_ref())
+    {
+        Some(internal_auth) => {
+            super::oop::build_platform_credentials(internal_auth, &cancel)
+                .await?
+                .1
+        }
+        None => None,
+    };
+
+    // Apply configured lifecycle deadlines (absent fields keep framework defaults).
+    let init_deadline = config.server.init_deadline();
+    let shutdown_deadline = config.server.shutdown_deadline();
+
     // Run the ToolKit runtime with the root cancellation token.
     // Shutdown is driven by the signal handler spawned above, not by ShutdownOptions::Signals.
-    // OoP gears are spawned after the start phase (once grpc-hub has bound its port).
-    //
-    // No `internal_token_provider` is set here on purpose: this is the
-    // in-process (Profile 1) host. Gear-to-gear calls resolve to LOCAL trait
-    // objects through the `ClientHub` — there is no transport, so no
-    // `X-ToolKit-Internal-Token` header/metadata is ever emitted and no outbound
-    // platform credential is needed. The provider is only consulted inside the
-    // generated REST/gRPC transport clients, which the monolith does not use for
-    // co-hosted dependencies. A genuinely remote (directory-resolved) dependency
-    // is the resolving-client path, which threads its own provider
-    // (`cpt-cf-adr-two-plane-auth`).
+    // OoP gears are spawned after parent publication, application startup and
+    // REST provider registration, so the parent's complete API is available.
     let run_options = RunOptions::new(
         Arc::new(config),
         db_options,
         ShutdownOptions::Token(cancel.clone()),
         instance_id,
     )
-    .with_oop(oop_options);
+    .with_oop(oop_options)
+    .with_internal_token_provider(internal_token_provider)
+    .with_init_deadline(init_deadline)
+    .with_shutdown_deadline(shutdown_deadline);
 
     let result = run(run_options).await;
 
@@ -185,6 +201,119 @@ pub async fn run_migrate(config: AppConfig) -> Result<()> {
     Ok(())
 }
 
+/// Options of [`run_publish_gts`].
+#[derive(Debug, Clone)]
+pub struct PublishGtsOptions {
+    /// Base URI of the remote registry, e.g. `https://registry:8443`.
+    pub registry_endpoint: String,
+    /// The overall deadline for every publication.
+    pub deadline: std::time::Duration,
+}
+
+/// Publish the GTS manifests of every linked gear to a remote registry and exit:
+/// a deployment step.
+///
+/// No gear runs: no `init`, database, bootstrap or plugin binding. Manifests
+/// come from the effective configuration (file, environment overrides,
+/// defaults), as at application startup. Requests carry the platform
+/// credential of `oop_http.internal_auth`. All publications run concurrently;
+/// see [`crate::gts_publication::deployment`].
+///
+/// # Errors
+/// No platform credential is configured, setup fails (manifest, ownership,
+/// wiring), or any publisher is refused or misses the deadline: the report is
+/// in the error, naming each publisher and its GTS ids.
+pub async fn run_publish_gts(config: AppConfig, options: PublishGtsOptions) -> Result<()> {
+    init_procedure(&config).map_err(|e| {
+        tracing::error!(error = %e, "Initialization failed");
+        e
+    })?;
+    // SIGTERM/SIGINT end the job, reported as cancelled. Dropping this future
+    // cancels too: the guard also ends the credential watcher.
+    let cancel = CancellationToken::new();
+    spawn_signal_handler(cancel.clone(), "publish-gts");
+    let _cancel_on_drop = cancel.clone().drop_guard();
+    let result = publish_gts(&config, &options, &cancel).await;
+
+    // The outcome is logged before the telemetry flush, on every path.
+    match &result {
+        Ok(()) => tracing::info!("GTS publication complete"),
+        Err(e) => tracing::error!(error = format!("{e:#}"), "GTS publication failed"),
+    }
+    #[cfg(feature = "otel")]
+    tracing_shutdown().await;
+    result
+}
+
+/// [`run_publish_gts`] after initialization.
+async fn publish_gts(
+    config: &AppConfig,
+    options: &PublishGtsOptions,
+    cancel: &CancellationToken,
+) -> Result<()> {
+    // Match startup validation without running gear lifecycle hooks.
+    let registry = crate::registry::GearRegistry::discover_and_build()?;
+    validate_deployment_configuration(&registry, config)?;
+    let internal_auth = platform_credential(config)?;
+    let (_, provider) = super::oop::build_platform_credentials(internal_auth, cancel).await?;
+    let provider = provider.ok_or_else(|| {
+        anyhow::anyhow!("oop_http.internal_auth gives no outbound platform credential")
+    })?;
+    let tuning = toolkit_contract::wiring::ClientTuning::default()
+        .with_internal_token_provider(Some(provider));
+    let descriptors = crate::gts_publication::linked_descriptors();
+    tracing::info!(
+        publishers = descriptors.len(),
+        registry = %options.registry_endpoint,
+        "publishing GTS manifests"
+    );
+    let report = crate::gts_publication::deployment::publish(
+        &descriptors,
+        config,
+        &options.registry_endpoint,
+        &tuning,
+        options.deadline,
+        cancel,
+    )
+    .await?;
+    publication_result(&report)
+}
+
+fn validate_deployment_configuration(
+    registry: &crate::registry::GearRegistry,
+    config: &dyn crate::config::ConfigProvider,
+) -> Result<()> {
+    for entry in registry.gears() {
+        entry.validate_gts_publication_config(config)?;
+    }
+    Ok(())
+}
+
+/// The platform credential `publish-gts` sends: `oop_http.internal_auth`.
+fn platform_credential(config: &AppConfig) -> Result<&toolkit_security::InternalAuthConfig> {
+    config
+        .oop_http
+        .as_ref()
+        .and_then(|http| http.internal_auth.as_ref())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "publish-gts needs a platform credential: configure oop_http.internal_auth"
+            )
+        })
+}
+
+/// The job's result: an error carrying the report unless every publisher succeeded.
+fn publication_result(
+    report: &crate::gts_publication::deployment::GtsDeploymentReport,
+) -> Result<()> {
+    if report.succeeded() {
+        tracing::info!("GTS publication report:\n{report}");
+        Ok(())
+    } else {
+        anyhow::bail!("GTS publication failed:\n{report}")
+    }
+}
+
 fn resolve_db_options(config: &AppConfig) -> Result<DbOptions> {
     if config.database.is_none() {
         tracing::warn!("No global database section found; running without databases");
@@ -203,7 +332,7 @@ fn resolve_db_options(config: &AppConfig) -> Result<DbOptions> {
 /// Build `OoP` spawn configuration from `AppConfig`.
 ///
 /// This collects all gears with `type=oop` and prepares their spawn configuration.
-/// The actual spawning happens in the `HostRuntime` after the start phase.
+/// The actual spawning happens in the `HostRuntime` after parent startup.
 fn build_oop_spawn_options(
     config: &AppConfig,
     backend: LocalProcessBackend,
@@ -351,22 +480,68 @@ pub fn init_procedure(config: &AppConfig) -> Result<()> {
     Ok(())
 }
 
-#[cfg(feature = "otel")]
-/// Flush compatibility shutdown hooks for OpenTelemetry tracing and metrics.
-///
-/// This delegates to the current telemetry shutdown helpers so callers can use a
-/// single bootstrap-level function during graceful shutdown.
-///
-/// `shutdown_metrics`/`shutdown_tracing` drain the SDK's batch processor, which
-/// blocks on exporting the final batch (real network I/O to the OTLP endpoint).
-/// Run that on a blocking-pool thread so it never stalls a Tokio worker thread.
-pub async fn tracing_shutdown() {
-    if let Err(e) = tokio::task::spawn_blocking(|| {
-        crate::telemetry::init::shutdown_metrics();
-        crate::telemetry::init::shutdown_tracing();
-    })
-    .await
-    {
-        tracing::warn!(error = %e, "Telemetry shutdown task panicked");
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod publish_gts_tests {
+    use super::*;
+    use crate::gts_publication::deployment::{GtsDeploymentOutcome, GtsDeploymentReport};
+
+    #[test]
+    fn deployment_rejects_publication_options_on_a_nonpublishing_gear() {
+        struct PlainGear;
+        #[async_trait::async_trait]
+        impl crate::Gear for PlainGear {
+            async fn init(&self, _ctx: &crate::GearCtx) -> Result<()> {
+                panic!("deployment validation must not initialize gears")
+            }
+        }
+
+        let mut builder = crate::registry::RegistryBuilder::default();
+        builder.register_core_with_meta("plain-gear", &[], Arc::new(PlainGear));
+        let registry = builder.build_topo_sorted().unwrap();
+        let mut config = AppConfig::default();
+        validate_deployment_configuration(&registry, &config).unwrap();
+        config.gears.insert(
+            "plain-gear".to_owned(),
+            serde_json::json!({"config": {"gts_publication": {"timeout": "1s"}}}),
+        );
+        let error = validate_deployment_configuration(&registry, &config).unwrap_err();
+        assert!(error.to_string().contains("plain-gear"), "{error}");
+        assert!(error.to_string().contains("gts_publication"), "{error}");
+    }
+
+    #[test]
+    fn publish_gts_needs_the_platform_credential() {
+        let err = platform_credential(&AppConfig::default()).unwrap_err();
+        assert!(err.to_string().contains("oop_http.internal_auth"), "{err}");
+    }
+
+    #[test]
+    fn a_failed_publisher_fails_the_job_with_the_report() {
+        let failed = GtsDeploymentReport {
+            publishers: vec![
+                ("ok", GtsDeploymentOutcome::Published { documents: 1 }),
+                (
+                    "late",
+                    GtsDeploymentOutcome::DeadlineExceeded {
+                        unconfirmed: vec![
+                            toolkit_gts::gts_id!("cf.test.publication.late.v1~").to_owned(),
+                        ],
+                    },
+                ),
+            ],
+        };
+        let err = publication_result(&failed).unwrap_err();
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("late: deadline exceeded")
+                && message.contains(toolkit_gts::gts_id!("cf.test.publication.late.v1~")),
+            "{message}"
+        );
+
+        let succeeded = GtsDeploymentReport {
+            publishers: vec![("ok", GtsDeploymentOutcome::Published { documents: 1 })],
+        };
+        publication_result(&succeeded).expect("every publisher succeeded");
     }
 }

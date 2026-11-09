@@ -63,7 +63,7 @@ jobs:
 
           git fetch --no-tags origin "$BASE_SHA" "$HEAD_SHA" || true
 
-          python <<'PY'
+          python3 <<'PY'
           import os
           import subprocess
           import tomllib
@@ -235,7 +235,7 @@ jobs:
 
       - name: Install cargo tools
         if: runner.environment == 'github-hosted'
-        uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+        uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
         with:
           tool: cargo-hack, nextest, cargo-llvm-cov
 
