@@ -1,13 +1,15 @@
 //! GTS identifiers and schemas owned by admission-control.
 //!
 //! Compile-time entries reach `types-registry` through the `toolkit-gts`
-//! link-time inventory: the engine plugin specification, the admission
+//! crate-local declarations: the engine plugin specification, the admission
 //! resource type, the shared audit topic instance and the refusal event type,
 //! declared in Rust as [`RefusalEventV1`] under the broker's event base.
+//! Every declaration also enters the process-wide inventory.
 
 use gts::{GtsInstanceId, GtsSchema};
 use serde_json::Value;
-use toolkit_gts::{PluginV1, gts_id, gts_instance, gts_type_schema};
+use toolkit_gts::local::{gts_instance, gts_type_schema};
+use toolkit_gts::{PluginV1, gts_id};
 use uuid::Uuid;
 
 use event_broker_sdk::gts::{EventV1, EventV1Traits, TopicV1};
