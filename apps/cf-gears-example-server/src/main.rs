@@ -67,7 +67,7 @@ enum Commands {
         /// Base URI of the remote types-registry
         #[arg(long)]
         registry: String,
-        /// Overall deadline in seconds; a nonzero exit when it passes
+        /// Overall deadline in seconds, at most 600; a nonzero exit when it passes
         #[arg(long, default_value_t = 300)]
         deadline_secs: u64,
     },

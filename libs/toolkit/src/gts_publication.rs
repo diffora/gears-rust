@@ -246,7 +246,8 @@ pub fn check_ownership<'a>(
 /// URL, HTTP timeout and HTTP retries remain in `consumer_wiring`.
 ///
 /// `timeout` caps the budget from `publish` and never extends a caller's deadline.
-/// At most [`GtsPublicationOptions::MAX_TIMEOUT`] (one year), on every OS.
+/// At most [`MAX_PUBLICATION_BUDGET`] (10 minutes), the same bound as a deployment
+/// deadline, on every OS.
 /// Without it, startup uses the adapter's default (120 s for the registry SDK);
 /// a deployment deadline replaces that default, even when longer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -268,12 +269,31 @@ impl Default for GtsPublicationOptions {
     }
 }
 
+/// The longest budget any publication path accepts: `gts_publication.timeout`, a
+/// deployment job's deadline (`publish-gts --deadline-secs`) and programmatic callers of
+/// [`deployment::publish`]. One bound, so a mistyped value cannot hold startup or a
+/// deployment step for an impractically long time.
+pub const MAX_PUBLICATION_BUDGET: Duration = Duration::from_mins(10);
+
+/// Reject a publication budget above [`MAX_PUBLICATION_BUDGET`]: an error naming `what`,
+/// never a silent clamp. Exactly the maximum is accepted.
+///
+/// # Errors
+/// `budget` exceeds [`MAX_PUBLICATION_BUDGET`].
+pub fn check_publication_budget(what: &str, budget: Duration) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        budget <= MAX_PUBLICATION_BUDGET,
+        "{what}: {budget:?} is too large to be a publication budget (at most {MAX_PUBLICATION_BUDGET:?})"
+    );
+    Ok(())
+}
+
 impl GtsPublicationOptions {
     const FIELDS: &str = "timeout, retry_backoff, retry_backoff_max, batch_size";
 
-    /// The longest accepted `timeout`: one year. A fixed bound, not the range of
-    /// `Instant`, which differs per OS (about 9.2e18 s on Unix, 1.8e19 s on Windows).
-    pub const MAX_TIMEOUT: Duration = Duration::from_hours(365 * 24);
+    /// The longest accepted `timeout`: [`MAX_PUBLICATION_BUDGET`]. A fixed bound, not the
+    /// range of `Instant`, which differs per OS (about 9.2e18 s on Unix, 1.8e19 s on Windows).
+    pub const MAX_TIMEOUT: Duration = MAX_PUBLICATION_BUDGET;
 
     /// The policy of `gear` in `config`; the default without a `gts_publication` section.
     ///
@@ -281,7 +301,7 @@ impl GtsPublicationOptions {
     /// Naming the gear and the config path: a section that is not a mapping (`null`
     /// included), an unknown field, a value of the wrong type, a zero duration or batch
     /// size, a `retry_backoff_max` below `retry_backoff` (defaults included), or a
-    /// `timeout` above [`Self::MAX_TIMEOUT`] (one year).
+    /// `timeout` above [`Self::MAX_TIMEOUT`] (10 minutes).
     pub fn from_config(gear: &str, config: &dyn ConfigProvider) -> anyhow::Result<Self> {
         let path = format!(
             "gears.{gear}.config.{}",
@@ -328,15 +348,8 @@ impl GtsPublicationOptions {
                 options.retry_backoff
             );
         }
-        // The bound is the same on every OS; `checked_add` only guards the overflow.
-        if let Some(timeout) = options.timeout
-            && (timeout > Self::MAX_TIMEOUT
-                || tokio::time::Instant::now().checked_add(timeout).is_none())
-        {
-            anyhow::bail!(
-                "{path}.timeout: too large to be a deadline (at most {:?})",
-                Self::MAX_TIMEOUT
-            );
+        if let Some(timeout) = options.timeout {
+            check_publication_budget(&format!("{path}.timeout"), timeout)?;
         }
         Ok(options)
     }

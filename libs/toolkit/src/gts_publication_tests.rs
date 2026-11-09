@@ -639,7 +639,7 @@ fn an_invalid_section_is_an_error_naming_the_gear_and_the_path() {
         (
             json!({ "timeout": "500000000000years" }),
             "gts_publication.timeout",
-            "too large to be a deadline",
+            "too large to be a publication budget",
         ),
     ];
     for (section, path, reason) in cases {
@@ -655,14 +655,15 @@ fn an_invalid_section_is_an_error_naming_the_gear_and_the_path() {
 }
 
 #[test]
-fn the_timeout_bound_is_the_same_on_every_os() {
-    let at_bound = options_of(&json!({ "gts_publication": { "timeout": "365days" } })).unwrap();
+fn the_timeout_bound_is_ten_minutes_on_every_os() {
+    let at_bound = options_of(&json!({ "gts_publication": { "timeout": "10min" } })).unwrap();
+    assert_eq!(at_bound.timeout(), Some(Duration::from_mins(10)));
     assert_eq!(at_bound.timeout(), Some(GtsPublicationOptions::MAX_TIMEOUT));
-    let over = options_of(&json!({ "gts_publication": { "timeout": "366days" } })).unwrap_err();
+    let over = options_of(&json!({ "gts_publication": { "timeout": "601s" } })).unwrap_err();
     let message = format!("{over:#}");
     assert!(
         message.contains("gts_publication.timeout")
-            && message.contains("too large to be a deadline")
+            && message.contains("too large to be a publication budget")
             && message.contains("at most"),
         "{message}"
     );
