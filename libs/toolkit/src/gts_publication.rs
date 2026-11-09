@@ -271,7 +271,8 @@ impl Default for GtsPublicationOptions {
 
 /// The longest budget any publication path accepts: `gts_publication.timeout`, a
 /// deployment job's deadline (`publish-gts --deadline-secs`) and programmatic callers of
-/// [`deployment::publish`]. One bound, so a mistyped value cannot hold startup or a
+/// [`deployment::publish`], and an absolute deadline given to [`GtsPublicationBackend::publish`]
+/// (how far ahead it lies). One bound, so a mistyped value cannot hold startup or a
 /// deployment step for an impractically long time.
 pub const MAX_PUBLICATION_BUDGET: Duration = Duration::from_mins(10);
 
@@ -480,6 +481,14 @@ impl GtsPublicationBackend {
     /// # Errors
     /// See above.
     pub async fn publish(&self, request: GtsPublicationRequest) -> anyhow::Result<()> {
+        // Every caller-supplied absolute deadline, from any path, is held to the same
+        // maximum as `timeout`: rejected here, before the adapter runs, never clamped.
+        if let Some(deadline) = request.deadline() {
+            check_publication_budget(
+                "the publication deadline",
+                deadline.saturating_duration_since(tokio::time::Instant::now()),
+            )?;
+        }
         (self.0)(request).await
     }
 }

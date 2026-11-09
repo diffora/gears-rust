@@ -897,3 +897,49 @@ fn an_invalid_static_id_fails_preparation_before_binding() {
         "{message}"
     );
 }
+
+/// An absolute deadline reaches the adapter only when it lies at most 10 minutes ahead.
+#[tokio::test(start_paused = true)]
+async fn an_absolute_deadline_is_held_to_the_same_maximum() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let backend = {
+        let calls = Arc::clone(&calls);
+        GtsPublicationBackend::new(move |_request| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async { Ok(()) }
+        })
+    };
+    let request = |deadline| {
+        GtsPublicationRequest::new(
+            Arc::new(GtsManifest::build("widgets", "1.0.0", []).unwrap()),
+            CancellationToken::new(),
+            Arc::new(|_: &str| {}),
+        )
+        .with_deadline(Some(deadline))
+    };
+    let now = tokio::time::Instant::now();
+
+    backend
+        .publish(request(now + super::MAX_PUBLICATION_BUDGET))
+        .await
+        .expect("exactly the maximum is accepted");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    let err = backend
+        .publish(request(
+            now + super::MAX_PUBLICATION_BUDGET + Duration::from_secs(1),
+        ))
+        .await
+        .unwrap_err();
+    let message = format!("{err:#}");
+    assert!(
+        message.contains("the publication deadline")
+            && message.contains("too large to be a publication budget"),
+        "{message}"
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "rejected before the adapter ran"
+    );
+}
