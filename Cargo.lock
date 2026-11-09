@@ -3681,8 +3681,10 @@ name = "cf-gears-model-registry-sdk"
 version = "0.1.14"
 dependencies = [
  "async-trait",
+ "cf-gears-toolkit-canonical-errors",
  "cf-gears-toolkit-gts",
  "cf-gears-toolkit-odata",
+ "cf-gears-toolkit-odata-macros",
  "cf-gears-toolkit-security",
  "chrono",
  "gts",

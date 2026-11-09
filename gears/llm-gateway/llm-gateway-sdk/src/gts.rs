@@ -6,8 +6,9 @@
 //! plugin at runtime.
 //!
 //! Selection keys on **provider identity**: the instance's `provider_type`
-//! carries the Model Registry model-info `gts_type` the plugin serves
-//! (e.g. `gts.cf.genai.model.info.v1~cf.genai._.openai.v1~`). The gateway
+//! carries the provider type the plugin serves, derived from Model Registry's
+//! provider base type `gts.cf.genai.model.provider.v1~` (e.g.
+//! `gts.cf.genai.model.provider.v1~cf.genai._.openai.v1~`). The gateway
 //! resolves the model, reads its `gts_type`, and picks the plugin whose
 //! `provider_type` matches (ties broken on `PluginV1.priority`).
 //!
@@ -40,7 +41,7 @@ use toolkit_gts::gts_type_schema;
 ///     vendor: "constructorfabric".to_owned(),
 ///     priority: 100,
 ///     properties: LlmGatewayProviderPluginSpecV1 {
-///         provider_type: GtsTypeId::new("gts.cf.genai.model.info.v1~cf.genai._.openai.v1~"),
+///         provider_type: GtsTypeId::new("gts.cf.genai.model.provider.v1~cf.genai._.openai.v1~"),
 ///         tool_namespace: "openai".to_owned(),
 ///     },
 /// };
@@ -55,9 +56,10 @@ use toolkit_gts::gts_type_schema;
     properties = "provider_type,tool_namespace",
 )]
 pub struct LlmGatewayProviderPluginSpecV1 {
-    /// Model Registry provider identity this plugin serves — the model-info
-    /// `gts_type` (e.g. `gts.cf.genai.model.info.v1~cf.genai._.openai.v1~`).
-    /// Matched against `ModelInfoV1.gts_type` during plugin resolution.
+    /// Provider type this plugin serves, derived from
+    /// `gts.cf.genai.model.provider.v1~` (e.g.
+    /// `gts.cf.genai.model.provider.v1~cf.genai._.openai.v1~`). Matched against
+    /// `ModelInfoV1.gts_type` during plugin resolution.
     pub provider_type: GtsTypeId,
     /// Prefix of the provider-specific tools this plugin accepts (e.g.
     /// `openai` for `openai:shell`).

@@ -1,35 +1,36 @@
 // Created: 2026-04-17 by Constructor Tech
-// Updated: 2026-05-07 by Constructor Tech
+// Updated: 2026-11-05 by Constructor Tech
 //! Model Registry SDK
 //!
-//! This crate provides the public API for the `model-registry` module:
-//! - [`ModelRegistryClientV1`] trait for inter-module communication
-//! - Generic [`ModelV1<P>`] / [`ModelInfoV1<P>`] parameterized over a provider's
-//!   typed settings (e.g. [`OpenAiSettingsV1`]); the set of shipped
-//!   provider settings types is open-ended and lives in [`models::providers`]
-//! - Default `P = serde_json::Value` for heterogeneous lists; typed
-//!   narrowing via `ModelV1::try_into_typed::<P>()` resolves by GTS schema id
-//!   (`info.gts_type` vs `P::TYPE_ID`)
-//! - User-facing default inference parameters
-//!   ([`DefaultInferenceParametersV1`]) plus supporting types
-//!   ([`TextFormat`], [`ReasoningConfig`], [`ToolChoice`],
-//!   [`TruncationStrategy`])
-//! - Domain entities ([`ModelV1`], [`ProviderV1`])
-//! - Error type ([`ModelRegistryError`])
+//! Public contract of the `model-registry` gear (DESIGN §3.2 SDK):
+//! - [`ModelRegistryClientV1`] — the client trait, obtained from `ClientHub`;
+//!   every method returns [`toolkit_canonical_errors::CanonicalError`]
+//! - Models: [`ProviderV1`], [`ModelV1`], [`ModelInfoV1`], [`ApprovalV1`],
+//!   the management entries [`ProviderEntryV1`] / [`ModelEntryV1`], and the
+//!   create / update requests; records carry a row `version` and writes
+//!   take an optional `expected_version`
+//! - [`ProviderTypeV1`] — the provider base GTS type
+//!   `gts.cf.genai.model.provider.v1~` that LLM Gateway provider plugins
+//!   derive their provider types from
+//! - [`ModelRegistryError`] — opt-in typed projection of the canonical error
+//!   (see [`errors`]), with the wire vocabulary in [`reason`], [`field`],
+//!   and [`gts`]
+//! - `OData` filter / order allowlists of the list methods ([`odata`])
 //!
-//! Consumers obtain the client from `ClientHub`:
 //! ```ignore
-//! use model_registry_sdk::{ModelRegistryClientV1, OpenAiSettingsV1};
+//! use model_registry_sdk::{ModelRegistryClientV1, ModelRegistryError};
 //!
-//! let client = hub.get::<dyn ModelRegistryClientV1>()?;
-//! let model = client.get_tenant_model(ctx, "openai::gpt-4o").await?;
-//! // narrow to typed view if the caller knows the provider in advance
-//! let typed = model.try_into_typed::<OpenAiSettingsV1>()?;
-//! // flat access — no `connection.` / `parameters.` namespacing
-//! let _ = typed.info.provider_settings.oagw_alias;
-//! let _ = typed.info.provider_settings.temperature;
-//! let _ = typed.info.default_parameters.temperature;
-//! let _ = typed.info.allow_parameter_override;
+//! let registry = hub.get::<dyn ModelRegistryClientV1>()?;
+//! match registry.resolve_model(&ctx, "openai::gpt-4o").await.map_err(ModelRegistryError::from) {
+//!     Ok(model) => {
+//!         // `model.info.gts_type` selects the provider plugin; the plugin
+//!         // narrows `model.info.provider_settings` to its own settings type.
+//!         let _ = model.info.base_url.as_deref();
+//!         let _ = model.info.secret_ref.as_deref();
+//!     }
+//!     Err(ModelRegistryError::ModelNotApproved { .. }) => { /* … */ }
+//!     Err(other) => return Err(other.into()),
+//! }
 //! ```
 
 #![forbid(unsafe_code)]
@@ -37,24 +38,18 @@
 
 pub mod api;
 pub mod errors;
+pub mod field;
+pub mod gts;
 pub mod models;
+pub mod odata;
+pub mod reason;
 
 pub use api::ModelRegistryClientV1;
 pub use errors::ModelRegistryError;
+pub use gts::{MODEL_RESOURCE_TYPE, PROVIDER_BASE_TYPE, PROVIDER_RESOURCE_TYPE};
 pub use models::{
-    // anthropic provider — shipped today; additional providers can be added
-    // in `models::providers` without touching the rest of the SDK
-    AnthropicCost,
-    AnthropicJsonOutputFormat,
-    AnthropicOutputConfig,
-    AnthropicOutputEffort,
-    AnthropicServiceTier,
-    AnthropicSettingsV1,
-    AnthropicThinking,
-    AnthropicThinkingDisplay,
-    AnthropicToolChoice,
-    ApprovalStatus,
-    // common types
+    ApprovalState,
+    ApprovalV1,
     ContextWindow,
     CreateModelRequestV1,
     CreateProviderRequestV1,
@@ -63,35 +58,33 @@ pub use models::{
     DefaultInferenceParametersV1,
     DisabledCapabilities,
     DisabledMediaCapability,
+    DisabledOutputCapability,
     DisabledReasoningCapability,
+    DisabledSamplingCapability,
+    DisabledToolsCapability,
     DisabledWebSearchCapability,
-    LifecycleStatus,
     // shared media-typed capability (vision, file_input, image_generation,
     // audio_input, audio_output)
     MediaCapability,
     ModelCapabilities,
-    // info / entities
+    ModelCostV1,
+    ModelEntryV1,
     ModelInfoV1,
     ModelPerformance,
     ModelV1,
     // tagged-object form of `ToolChoice` (`{"type":"function","name":"…"}`)
     NamedToolChoice,
-    // openai provider — shipped today
-    OpenAiCost,
-    OpenAiEmbeddingEncoding,
-    OpenAiEndpoint,
-    OpenAiPromptCacheRetention,
-    OpenAiReasoningEffort,
-    OpenAiResponseFormat,
-    OpenAiServiceTier,
-    OpenAiSettingsV1,
-    ProviderStatus,
+    OutputCapability,
+    ProviderEntryV1,
+    ProviderTypeV1,
     ProviderV1,
     ReasoningCapability,
     ReasoningConfig,
     ReasoningEffort,
     ReasoningSummary,
+    SamplingCapability,
     ServiceTier,
+    SharingMode,
     SupportedApi,
     TextFormat,
     TextFormatKind,
@@ -99,8 +92,10 @@ pub use models::{
     ToolChoice,
     // bare-string mode form of `ToolChoice` (`"auto"`/`"required"`/`"none"`)
     ToolChoiceMode,
+    ToolsCapability,
     TruncationStrategy,
     UpdateModelRequestV1,
     UpdateProviderRequestV1,
     WebSearchCapability,
 };
+pub use odata::{MODEL_FILTER_ONLY_FIELDS, ModelFilterField, ProviderFilterField};
