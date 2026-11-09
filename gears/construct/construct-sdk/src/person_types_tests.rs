@@ -1,41 +1,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::LazyLock;
 
-use graph_storage_sdk::gts::{
-    ATTRIBUTE_BASE_TYPE, NODE_BASE_TYPE, OWNED_NODE_TYPE, PROVENANCE_ATTRIBUTE_TYPE,
-};
+use graph_storage_sdk::gts::{OWNED_NODE_TYPE, PROVENANCE_ATTRIBUTE_TYPE};
 use jsonschema::{Retrieve, Uri, Validator};
 use serde_json::{Value, json};
 
 use super::*;
 use crate::gts::PREFERENCE_TYPE;
 
-const GRAPH_STORAGE_SCHEMAS: [(&str, &str); 4] = [
-    (
-        NODE_BASE_TYPE,
-        include_str!(
-            "../../../graph-storage/graph-storage-sdk/schemas/gts.cf.core.graph.node.v1~.schema.json"
-        ),
-    ),
-    (
-        OWNED_NODE_TYPE,
-        include_str!(
-            "../../../graph-storage/graph-storage-sdk/schemas/gts.cf.core.graph.node.v1~cf.core.graph.owned_node.v1~.schema.json"
-        ),
-    ),
-    (
-        ATTRIBUTE_BASE_TYPE,
-        include_str!(
-            "../../../graph-storage/graph-storage-sdk/schemas/gts.cf.core.graph.attribute.v1~.schema.json"
-        ),
-    ),
-    (
-        PROVENANCE_ATTRIBUTE_TYPE,
-        include_str!(
-            "../../../graph-storage/graph-storage-sdk/schemas/gts.cf.core.graph.attribute.v1~cf.core.graph.provenance.v1~.schema.json"
-        ),
-    ),
-];
+// The graph-storage SDK embeds its published schemas, so the tests read the
+// same documents without a path into another gear's tree.
+const GRAPH_STORAGE_SCHEMAS: [(&str, &str); 9] = graph_storage_sdk::gts::BASE_SCHEMAS;
 
 struct GraphStorageSchemas;
 

@@ -1,23 +1,12 @@
-use graph_storage_sdk::gts::{NODE_BASE_TYPE, OWNED_NODE_TYPE, STATIC_EDGE_TYPE};
+use graph_storage_sdk::gts::{OWNED_NODE_TYPE, STATIC_EDGE_TYPE};
 use jsonschema::{Retrieve, Uri, Validator};
 use serde_json::{Value, json};
 
 use super::*;
 
-const GRAPH_STORAGE_SCHEMAS: [(&str, &str); 2] = [
-    (
-        NODE_BASE_TYPE,
-        include_str!(
-            "../../../graph-storage/graph-storage-sdk/schemas/gts.cf.core.graph.node.v1~.schema.json"
-        ),
-    ),
-    (
-        OWNED_NODE_TYPE,
-        include_str!(
-            "../../../graph-storage/graph-storage-sdk/schemas/gts.cf.core.graph.node.v1~cf.core.graph.owned_node.v1~.schema.json"
-        ),
-    ),
-];
+// The graph-storage SDK embeds its published schemas, so the tests read the
+// same documents without a path into another gear's tree.
+const GRAPH_STORAGE_SCHEMAS: [(&str, &str); 9] = graph_storage_sdk::gts::BASE_SCHEMAS;
 
 struct GraphStorageSchemas;
 
