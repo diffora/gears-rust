@@ -1039,19 +1039,25 @@ impl ReviewQueueService {
             key,
             claim: ClaimId(Uuid::new_v4()),
             resolver,
+            deadline,
             pended: Mutex::new(None),
         };
-        let (request, pending) = match self
-            .requests
-            .claim(
+        // A claim answered after the budget may have been taken: it holds
+        // the request, with what an earlier resolution recorded, until
+        // CLAIM_HOLD, and the next resolution settles it.
+        let claimed = ProfileWrites::before_write(
+            deadline,
+            "resolution",
+            self.requests.claim(
                 scope,
                 key,
                 hold.claim,
                 OffsetDateTime::now_utc(),
                 CLAIM_HOLD,
-            )
-            .await?
-        {
+            ),
+        )
+        .await?;
+        let (request, pending) = match claimed {
             Claimed::Taken { request, pending } => {
                 // An earlier resolution's record stays with the claim until
                 // it is settled.
@@ -1534,6 +1540,8 @@ struct Hold<'a> {
     key: RequestKey,
     claim: ClaimId,
     resolver: Resolver,
+    /// The end of the resolution's budget, which bounds each record.
+    deadline: Instant,
     /// What the request records as about to be written: this resolution's
     /// last [`Hold::pend`], or an earlier resolution's record the claim took
     /// over. None when nothing was written or is to be settled.
@@ -1553,12 +1561,17 @@ impl Hold<'_> {
 
     /// Record `pending` on the request before it is written, so a
     /// resolution that ends without closing the request is closed later as
-    /// this one. Nothing is written when the claim no longer holds.
+    /// this one. Nothing is written when the claim no longer holds, or when
+    /// the record is not answered within the budget: the profile has not
+    /// been written yet, so the resolution gives the claim back.
     async fn pend(&self, pending: &Closed) -> Result<(), DomainError> {
-        if self
-            .requests
-            .pend(self.scope, self.key, self.claim, pending)
-            .await?
+        if ProfileWrites::before_write(
+            self.deadline,
+            "resolution",
+            self.requests
+                .pend(self.scope, self.key, self.claim, pending),
+        )
+        .await?
         {
             *self.pended.lock() = Some(pending.clone());
             return Ok(());
@@ -1566,11 +1579,13 @@ impl Hold<'_> {
         // The claim no longer holds: the request was closed meanwhile, by
         // the subject's delete, or another resolution took it after the
         // claim lapsed. The answer tells the two apart.
-        let open = self
-            .requests
-            .find(self.scope, self.key)
-            .await?
-            .is_some_and(|request| request.is_open());
+        let open = ProfileWrites::before_write(
+            self.deadline,
+            "resolution",
+            self.requests.find(self.scope, self.key),
+        )
+        .await?
+        .is_some_and(|request| request.is_open());
         Err(DomainError::ReviewConflict(if open {
             ReviewConflict::Held(self.key.id)
         } else {

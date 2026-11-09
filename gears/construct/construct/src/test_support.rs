@@ -1454,6 +1454,11 @@ pub struct MemoryReviews {
     /// Fail the close of an open request on a fact as unavailable, and
     /// nothing else.
     pub close_open_fails: std::sync::atomic::AtomicBool,
+    /// Answer each claim this long after taking it, as a slow database
+    /// that committed would.
+    pub claim_delay: std::sync::Mutex<std::time::Duration>,
+    /// Answer each record of a write this long after making it.
+    pub pend_delay: std::sync::Mutex<std::time::Duration>,
     /// What each request's claim recorded, by request id.
     pub pending:
         std::sync::Mutex<std::collections::HashMap<Uuid, crate::domain::review_queue::Closed>>,
@@ -1640,23 +1645,30 @@ impl crate::domain::review_queue::ReviewRequests for MemoryReviews {
     ) -> Result<crate::domain::review_queue::Claimed, DomainError> {
         use crate::domain::review_queue::Claimed;
         self.check()?;
-        let mut requests = self.requests.lock().unwrap();
-        let Some((request, holder)) = requests.iter_mut().find(|(r, _)| r.key() == key) else {
-            return Ok(Claimed::Closed);
-        };
-        if !request.is_open() {
-            return Ok(Claimed::Closed);
+        let claimed = (|| {
+            let mut requests = self.requests.lock().unwrap();
+            let Some((request, holder)) = requests.iter_mut().find(|(r, _)| r.key() == key) else {
+                return Claimed::Closed;
+            };
+            if !request.is_open() {
+                return Claimed::Closed;
+            }
+            if holder.is_some_and(|(_, since)| since >= at - hold) {
+                return Claimed::Held;
+            }
+            *holder = Some((claim.0, at));
+            let claimed = request.clone();
+            let pending = self.pending_of(request.id);
+            Claimed::Taken {
+                request: Box::new(claimed),
+                pending,
+            }
+        })();
+        let delay = *self.claim_delay.lock().unwrap();
+        if !delay.is_zero() {
+            tokio::time::sleep(delay).await;
         }
-        if holder.is_some_and(|(_, since)| since >= at - hold) {
-            return Ok(Claimed::Held);
-        }
-        *holder = Some((claim.0, at));
-        let claimed = request.clone();
-        let pending = self.pending_of(request.id);
-        Ok(Claimed::Taken {
-            request: Box::new(claimed),
-            pending,
-        })
+        Ok(claimed)
     }
 
     async fn pend(
@@ -1705,6 +1717,10 @@ impl crate::domain::review_queue::ReviewRequests for MemoryReviews {
                     reason: None,
                 },
             );
+        }
+        let delay = *self.pend_delay.lock().unwrap();
+        if !delay.is_zero() {
+            tokio::time::sleep(delay).await;
         }
         Ok(held)
     }

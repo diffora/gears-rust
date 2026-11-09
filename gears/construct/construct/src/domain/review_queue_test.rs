@@ -1240,6 +1240,70 @@ async fn a_write_that_may_have_landed_keeps_the_claim() {
     );
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_claim_answered_after_the_budget_writes_nothing_and_holds_until_it_lapses() {
+    let budget = std::time::Duration::from_secs(5);
+    let fixture = Fixture::new(0);
+    let request = fixture.flagged().await;
+    let flagged = fixture.events.taken();
+    *fixture.reviews.claim_delay.lock().unwrap() = budget * 2;
+    let started = tokio::time::Instant::now();
+
+    let resolved = fixture
+        .service()
+        .resolve(
+            &fixture.reviewer(),
+            request.id,
+            Resolution::Deleted { reason: None },
+        )
+        .await;
+
+    assert!(
+        matches!(resolved, Err(DomainError::Unavailable(_))),
+        "{resolved:?}"
+    );
+    assert_eq!(started.elapsed(), budget);
+    assert!(fixture.writer.plans().is_empty());
+    assert!(matches!(fixture.status(), ReviewStatus::Open { .. }));
+    assert_eq!(
+        fixture.reviews.held(),
+        [true],
+        "the late claim was taken; it frees itself after its hold"
+    );
+    assert_eq!(fixture.events.taken(), flagged, "nothing recorded");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_record_answered_after_the_budget_writes_nothing_and_gives_the_claim_back() {
+    let budget = std::time::Duration::from_secs(5);
+    for resolution in [
+        Resolution::Deleted { reason: None },
+        Fixture::corrected("Go"),
+    ] {
+        let fixture = Fixture::new(0);
+        let request = fixture.flagged().await;
+        let flagged = fixture.events.taken();
+        *fixture.reviews.pend_delay.lock().unwrap() = budget * 2;
+        let started = tokio::time::Instant::now();
+
+        let resolved = fixture
+            .service()
+            .resolve(&fixture.reviewer(), request.id, resolution)
+            .await;
+
+        assert!(
+            matches!(resolved, Err(DomainError::Unavailable(_))),
+            "{resolved:?}"
+        );
+        assert_eq!(started.elapsed(), budget);
+        assert!(fixture.writer.plans().is_empty(), "nothing was written");
+        assert!(matches!(fixture.status(), ReviewStatus::Open { .. }));
+        assert_eq!(fixture.reviews.held(), [false], "the claim was given back");
+        assert_eq!(fixture.reviews.pending_of(request.id), None);
+        assert_eq!(fixture.events.taken(), flagged, "nothing recorded");
+    }
+}
+
 #[test]
 fn a_claim_outlasts_the_budget_and_the_writer() {
     use crate::domain::profile_writes::{WRITE_BUDGET, WRITER_LIMIT};
