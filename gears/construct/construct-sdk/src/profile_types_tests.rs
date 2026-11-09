@@ -1,27 +1,9 @@
 use graph_storage_sdk::gts::{OWNED_NODE_TYPE, STATIC_EDGE_TYPE};
-use jsonschema::{Retrieve, Uri, Validator};
+use jsonschema::Validator;
 use serde_json::{Value, json};
 
 use super::*;
-
-// The graph-storage SDK embeds its published schemas, so the tests read the
-// same documents without a path into another gear's tree.
-const GRAPH_STORAGE_SCHEMAS: [(&str, &str); 9] = graph_storage_sdk::gts::BASE_SCHEMAS;
-
-struct GraphStorageSchemas;
-
-impl Retrieve for GraphStorageSchemas {
-    fn retrieve(
-        &self,
-        uri: &Uri<String>,
-    ) -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
-        GRAPH_STORAGE_SCHEMAS
-            .iter()
-            .find(|(id, _)| format!("gts://{id}") == uri.as_str())
-            .map(|(_, text)| serde_json::from_str(text).expect("a JSON schema"))
-            .ok_or_else(|| format!("unresolved schema reference `{uri}`").into())
-    }
-}
+use crate::graph_schemas_tests::GraphStorageSchemas;
 
 fn schema(graph_type: GraphType) -> Value {
     serde_json::from_str(graph_type.schema).expect("a JSON schema")

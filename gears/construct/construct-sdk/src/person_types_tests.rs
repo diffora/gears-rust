@@ -2,30 +2,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::LazyLock;
 
 use graph_storage_sdk::gts::{OWNED_NODE_TYPE, PROVENANCE_ATTRIBUTE_TYPE};
-use jsonschema::{Retrieve, Uri, Validator};
+use jsonschema::Validator;
 use serde_json::{Value, json};
 
 use super::*;
+use crate::graph_schemas_tests::GraphStorageSchemas;
 use crate::gts::PREFERENCE_TYPE;
-
-// The graph-storage SDK embeds its published schemas, so the tests read the
-// same documents without a path into another gear's tree.
-const GRAPH_STORAGE_SCHEMAS: [(&str, &str); 9] = graph_storage_sdk::gts::BASE_SCHEMAS;
-
-struct GraphStorageSchemas;
-
-impl Retrieve for GraphStorageSchemas {
-    fn retrieve(
-        &self,
-        uri: &Uri<String>,
-    ) -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
-        GRAPH_STORAGE_SCHEMAS
-            .iter()
-            .find(|(id, _)| format!("gts://{id}") == uri.as_str())
-            .map(|(_, text)| serde_json::from_str(text).expect("a JSON schema"))
-            .ok_or_else(|| format!("unresolved schema reference `{uri}`").into())
-    }
-}
 
 static NODE_VALIDATORS: LazyLock<BTreeMap<&str, Validator>> = LazyLock::new(|| {
     PERSON_TYPES
