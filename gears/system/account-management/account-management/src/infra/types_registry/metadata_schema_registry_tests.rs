@@ -175,6 +175,65 @@ async fn validates_the_payload_against_the_resolved_schema() {
 }
 
 #[tokio::test]
+async fn metadata_validation_uses_native_gts_reference_constraints() {
+    let registry = registry();
+    registry.seed(
+        INHERITING,
+        json!({
+            "$id": gts_uri!(INHERITING),
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "allOf": [{"$ref": gts_uri!("cf.core.am.tenant_metadata.v1~")}],
+            "properties": {"payload": {
+                "type": "object",
+                "required": ["target"],
+                "properties": {"target": {
+                    "type": "string",
+                    "x-gts-type-ref": "gts.cf.core.am.tenant_type.v1~"
+                }}
+            }}
+        }),
+    );
+    let adapter = GtsMetadataSchemaRegistry::new(registry);
+    adapter
+        .validate_value(
+            &caller(1),
+            &GtsTypeId::new(INHERITING),
+            &json!({"target": "gts.cf.core.am.tenant_type.v1~"}),
+        )
+        .await
+        .expect("valid GTS type reference");
+    let error = adapter
+        .validate_value(
+            &caller(1),
+            &GtsTypeId::new(INHERITING),
+            &json!({"target": "not a GTS identifier"}),
+        )
+        .await
+        .expect_err("native GTS constraint must apply to the metadata payload");
+    assert!(
+        matches!(error, DomainError::MetadataValidation { .. }),
+        "{error:?}"
+    );
+}
+
+#[tokio::test]
+async fn value_validation_requires_the_selected_authored_content() {
+    let adapter = GtsMetadataSchemaRegistry::new(Arc::new(Tampered::new(registry(), |entity| {
+        entity.content = None;
+    })));
+    let error = adapter
+        .validate_value(
+            &caller(1),
+            &GtsTypeId::new(INHERITING),
+            &json!({"tier": "gold"}),
+        )
+        .await
+        .expect_err("incomplete compilation projection");
+    assert!(matches!(error, DomainError::Internal { .. }), "{error:?}");
+}
+
+#[tokio::test]
 async fn the_envelope_constraints_apply_to_a_derived_schema() {
     // The envelope requires an object payload; the derived schema inherits it
     // through the reference inlined into `resolved_schema`.

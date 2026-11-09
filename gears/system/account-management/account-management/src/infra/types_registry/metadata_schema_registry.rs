@@ -5,6 +5,8 @@
 //! from effective traits: only `"inherit"` selects [`InheritancePolicy::Inherit`];
 //! missing, null or other values select [`InheritancePolicy::OverrideOnly`].
 //! Reverse lookup returns the schema's chained `type_id` by UUID.
+//! Value validation selects authored content and the resolved schema, then uses
+//! the SDK's native GTS payload compiler on the `{"payload": value}` envelope.
 //!
 //! Missing selected documents are internal contract errors. The adapter keeps
 //! no cache; short-lived caching belongs to the SDK client.
@@ -245,56 +247,28 @@ impl MetadataSchemaRegistry for GtsMetadataSchemaRegistry {
             self.registry.as_ref(),
             ctx,
             type_id,
-            Projection::Select(FieldSelection::with(&[EntityField::ResolvedSchema])),
+            Projection::Select(FieldSelection::with(&[
+                EntityField::Content,
+                EntityField::ResolvedSchema,
+            ])),
         )
         .await?;
-        let resolved = schema
-            .resolved_schema
-            .ok_or_else(|| missing_document(type_id, "resolved_schema"))?;
-        // The base AM metadata envelope declares `$schema:
-        // "http://json-schema.org/draft-07/schema#"`, and derived metadata
-        // schemas carry `$schema: gts_uri!("cf.core.am.tenant_metadata.v1~")`
-        // -- the GTS chain identifier that AM uses for inheritance. The
-        // generic `jsonschema::validator_for` auto-detects the draft from
-        // `$schema` and fails closed when the URI is not a registered
-        // meta-schema (which custom GTS chain ids never are). Pin the
-        // draft to 7 explicitly so the chain id is treated as opaque
-        // metadata and validation runs against the well-known draft the
-        // envelope was authored for.
-        let validator = jsonschema::options()
-            .with_draft(jsonschema::Draft::Draft7)
-            .build(&resolved)
-            .map_err(|err| {
-                // Catalog drift: the schema body in the registry is not a
-                // valid JSON Schema. Operator action required; surface as
-                // `Internal` so the public envelope does not pretend the
-                // caller's payload is the problem.
-                DomainError::Internal {
-                    diagnostic: format!(
-                        "GTS metadata schema `{type_id}` is not a valid JSON Schema \
-                         (catalog drift): {err}"
-                    ),
-                    cause: None,
-                }
-            })?;
+        let validator = schema.compile_payload_validator().map_err(|error| {
+            DomainError::internal(format!(
+                "GTS metadata schema `{type_id}` cannot compile a payload validator \
+                 (catalog drift): {error}"
+            ))
+        })?;
         // An instance of the metadata type is `{"payload": {…}}`, not the bare
         // object (§4.4.1, `TenantMetadataEnvelopeV1`). AM stores the payload content,
         // so the envelope is composed here rather than demanded of callers — the only
         // seam that validates a metadata value as a whole document.
         let enveloped = serde_json::json!({ "payload": value });
-        let errors: Vec<String> = validator
-            .iter_errors(&enveloped)
-            .map(|e| e.to_string())
-            .collect();
-        if !errors.is_empty() {
-            return Err(DomainError::MetadataValidation {
-                detail: format!(
-                    "metadata value violates registered schema `{type_id}`: {}",
-                    errors.join("; ")
-                ),
-            });
-        }
-        Ok(())
+        validator
+            .validate(&enveloped)
+            .map_err(|error| DomainError::MetadataValidation {
+                detail: format!("metadata value violates registered schema `{type_id}`: {error}"),
+            })
     }
 }
 
