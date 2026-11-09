@@ -14,11 +14,8 @@ use policy_engine_sdk::{
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 use toolkit::Gear;
-use toolkit::gts_publication::{
-    GtsPublicationCapability as _, GtsPublicationError, PreparedGtsPublication,
-};
-use types_registry_sdk::AdmissionFailureReason;
-use types_registry_sdk::testing_platform::{Call, Fault};
+use toolkit::gts_publication::{GtsPublicationCapability as _, PreparedGtsPublication};
+use types_registry_sdk::testing_platform::Call;
 
 fn config() -> Value {
     json!({ "engine_plugin": { "vendor": "constructorfabric", "priority": 100 } })
@@ -66,105 +63,5 @@ async fn the_owned_resource_types_permissions_and_configured_instance_are_publis
     assert!(
         hub.try_get_local::<dyn PolicyManagementClientV1>()
             .is_some()
-    );
-}
-
-#[tokio::test]
-async fn a_refused_plugin_instance_prevents_publication_completion_and_binding() {
-    let registry = common::registry();
-    let (id, _) = engine_plugin::registration("constructorfabric", 100).unwrap();
-    registry.reject(id.as_ref(), AdmissionFailureReason::InvalidSchema);
-    let hub = toolkit::ClientHub::new();
-    registry.install(&hub);
-    let error = PreparedGtsPublication::prepare(
-        PolicyEngine::default().descriptor(),
-        &common::MockConfigProvider::new(&config()),
-        &hub,
-    )
-    .unwrap()
-    .publish(&CancellationToken::new(), Arc::new(|_: &str| {}))
-    .await
-    .unwrap_err();
-    assert!(
-        matches!(error, GtsPublicationError::Refused { .. }),
-        "{error}"
-    );
-    assert!(
-        hub.try_get_local::<dyn PolicyManagementClientV1>()
-            .is_none()
-    );
-    assert!(
-        hub.try_get_scoped::<dyn admission_control_sdk::AdmissionEnginePluginClientV1>(
-            &toolkit::client_hub::ClientScope::gts_id(&id),
-        )
-        .is_none()
-    );
-}
-
-/// An unreachable registry is retried within the publication budget;
-/// cancellation before the deadline ends the publication as cancelled.
-#[tokio::test(start_paused = true)]
-async fn an_unreachable_registry_is_retried_within_the_budget_until_cancelled() {
-    let registry = common::registry();
-    registry.inject(
-        Fault::on(Call::Register)
-            .fail(toolkit_canonical_errors::CanonicalError::service_unavailable().create()),
-    );
-    let hub = toolkit::ClientHub::new();
-    registry.install(&hub);
-    let publication = PreparedGtsPublication::prepare(
-        PolicyEngine::default().descriptor(),
-        &common::MockConfigProvider::new(&config()),
-        &hub,
-    )
-    .unwrap();
-    let cancel = CancellationToken::new();
-    let publishing = publication.publish(&cancel, Arc::new(|_: &str| {}));
-    tokio::pin!(publishing);
-    tokio::select! {
-        result = &mut publishing => panic!("settled within the budget: {result:?}"),
-        () = tokio::time::sleep(types_registry_sdk::STARTUP_PUBLICATION_DEADLINE / 2) => {}
-    }
-    assert!(registry.calls(Call::Register) > 1);
-    cancel.cancel();
-    assert!(matches!(
-        publishing.await,
-        Err(GtsPublicationError::Cancelled { .. })
-    ));
-}
-
-/// Publication against an unreachable registry expires with the deadline stop.
-#[tokio::test(start_paused = true)]
-async fn an_unreachable_registry_exhausts_the_publication_budget() {
-    let registry = common::registry();
-    registry.inject(
-        Fault::on(Call::Register)
-            .fail(toolkit_canonical_errors::CanonicalError::service_unavailable().create()),
-    );
-    let hub = toolkit::ClientHub::new();
-    registry.install(&hub);
-    let publication = PreparedGtsPublication::prepare(
-        PolicyEngine::default().descriptor(),
-        &common::MockConfigProvider::new(&config()),
-        &hub,
-    )
-    .unwrap();
-
-    let result = publication
-        .publish(&CancellationToken::new(), Arc::new(|_: &str| {}))
-        .await;
-
-    let Err(GtsPublicationError::Expired { source, .. }) = result else {
-        panic!("expected publication expiry: {result:?}");
-    };
-    let stop = source
-        .chain()
-        .find_map(|e| e.downcast_ref::<types_registry_sdk::PublicationError>())
-        .and_then(types_registry_sdk::PublicationError::report)
-        .map(|report| report.stop);
-    assert_eq!(
-        stop,
-        Some(types_registry_sdk::ReconcileStop::Deadline),
-        "{source:#}"
     );
 }

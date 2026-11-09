@@ -22,7 +22,6 @@ toolkit.workspace = true
 toolkit-macros.workspace = true
 toolkit-gts.workspace = true
 toolkit-security.workspace = true
-tokio-util.workspace = true
 toolkit-odata.workspace = true
 account-management-sdk.workspace = true
 credstore-sdk = { workspace = true }
@@ -55,7 +54,6 @@ regex.workspace = true
 rand.workspace = true
 
 [dev-dependencies]
-types-registry-sdk = { workspace = true, features = ["test-util"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tracing-subscriber = { workspace = true, features = ["registry"] }
 serde-saphyr = { workspace = true }

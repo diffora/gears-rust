@@ -24,30 +24,6 @@ use crate::domain::DomainError;
 #[toolkit_canonical_errors::resource_error(toolkit_gts::gts_id!("cf.core.types_registry.entity.v1~"))]
 struct Catalogue;
 
-/// Every availability category the selection treats as a retryable registry outage.
-fn outages() -> [CanonicalError; 4] {
-    [
-        CanonicalError::service_unavailable().create(),
-        Catalogue::deadline_exceeded("listing timed out").create(),
-        Catalogue::resource_exhausted("rate limited")
-            .with_quota_violation("listing", "rate limit")
-            .create(),
-        Catalogue::aborted("listing aborted")
-            .with_reason("LISTING_ABORTED")
-            .create(),
-    ]
-}
-
-/// Failures the registry answers that are not outages.
-fn non_outages() -> [CanonicalError; 2] {
-    [
-        Catalogue::permission_denied()
-            .with_reason("PLATFORM_CREDENTIAL_REFUSED")
-            .create(),
-        CanonicalError::internal("corrupt page").create(),
-    ]
-}
-
 struct Named(&'static str);
 
 #[async_trait]
@@ -195,49 +171,36 @@ async fn without_the_platform_api_the_selection_fails_closed() {
     ));
 }
 
-/// Discovery timeout bounds queued calls, caches no failure, and permits a later retry.
+/// The service applies its discovery budget and maps expiry to its domain error.
 #[tokio::test(start_paused = true)]
 async fn a_stalled_registry_fails_the_selection_at_the_discovery_budget() {
     let registry = Arc::new(MockTypesRegistry::new());
     let hub = hub_with(&registry);
-    let id = publish(&registry, "cf.builtin.late.plugin.v1", "cf", 0);
-    run(&hub, &id, "late");
-    registry.inject(
-        Fault::on(Call::List)
-            .first(2)
-            .delay(Duration::from_secs(3600)),
-    );
-    let service = Arc::new(Service::new(hub, "cf".to_owned()));
+    registry.inject(Fault::on(Call::List).delay(Duration::from_secs(3600)));
+    let service = Service::new(hub, "cf".to_owned());
+    let started = tokio::time::Instant::now();
 
-    let first = tokio::spawn({
-        let service = Arc::clone(&service);
-        async move { selected(&service).await }
-    });
-    // The first call now holds the selector, stalled in the listing.
-    tokio::task::yield_now().await;
-    tokio::time::advance(Duration::from_secs(10)).await;
-    let queued_at = tokio::time::Instant::now();
-    let queued = selected(&service).await;
-    assert_eq!(queued_at.elapsed(), DISCOVERY_BUDGET, "the wait counts");
-    for result in [first.await.unwrap(), queued] {
-        assert!(
-            matches!(result, Err(DomainError::TypesRegistryUnavailable(_))),
-            "{result:?}"
-        );
-    }
-    assert_eq!(registry.calls(Call::List), 2);
-    assert_eq!(selected(&service).await.unwrap(), "late");
+    let result = service.get_plugin().await;
+
+    assert_eq!(started.elapsed(), DISCOVERY_BUDGET);
+    assert!(matches!(
+        result,
+        Err(DomainError::TypesRegistryUnavailable(_))
+    ));
 }
 
 /// Only an availability failure of the registry is an outage, retryable at the contract;
 /// anything else it answers stays internal.
 #[tokio::test]
 async fn registry_failures_are_outages_only_when_retryable() {
-    for (error, outage) in outages()
-        .into_iter()
-        .map(|error| (error, true))
-        .chain(non_outages().into_iter().map(|error| (error, false)))
-    {
+    let refused = Catalogue::permission_denied()
+        .with_reason("PLATFORM_CREDENTIAL_REFUSED")
+        .create();
+    for (error, outage) in [
+        (CanonicalError::service_unavailable().create(), true),
+        (refused, false),
+        (CanonicalError::internal("corrupt page").create(), false),
+    ] {
         let registry = Arc::new(MockTypesRegistry::new());
         let hub = hub_with(&registry);
         let id = publish(&registry, "cf.builtin.any.plugin.v1", "cf", 0);

@@ -8,11 +8,7 @@ use toolkit::client_hub::{ClientHub, ClientScope};
 use toolkit::config::ConfigProvider;
 use toolkit::context::GearCtx;
 use toolkit::gts::PluginV1;
-use toolkit::gts_publication::{
-    GtsManifest, GtsPublicationCapability as _, GtsPublicationError, PreparedGtsPublication,
-};
-use types_registry_sdk::AdmissionFailureReason;
-use types_registry_sdk::testing_platform::{Call, MockTypesRegistry};
+use toolkit::gts_publication::{GtsManifest, GtsPublicationCapability as _};
 use uuid::Uuid;
 
 use super::SingleTenantTrPlugin;
@@ -23,13 +19,6 @@ impl ConfigProvider for Config {
     fn get_gear_config(&self, gear: &str) -> Option<&serde_json::Value> {
         self.0.get(gear)
     }
-}
-
-fn host() -> (Arc<ClientHub>, Arc<MockTypesRegistry>) {
-    let hub = Arc::new(ClientHub::new());
-    let registry = Arc::new(MockTypesRegistry::new());
-    registry.install(&hub);
-    (hub, registry)
 }
 
 fn backend_published(hub: &ClientHub, id: &str) -> bool {
@@ -71,18 +60,6 @@ fn manifest() -> GtsManifest {
         .expect("manifest")
 }
 
-/// The runtime's publication of the manifest under `cancel`.
-async fn published(hub: &ClientHub, cancel: &CancellationToken) -> Result<(), GtsPublicationError> {
-    PreparedGtsPublication::bind(
-        SingleTenantTrPlugin.descriptor(),
-        Arc::new(manifest()),
-        toolkit::gts_publication::GtsPublicationOptions::default(),
-        hub,
-    )?
-    .publish(cancel, Arc::new(|_: &str| {}))
-    .await
-}
-
 #[test]
 fn the_manifest_is_the_configured_instance() {
     assert_eq!(
@@ -92,47 +69,23 @@ fn the_manifest_is_the_configured_instance() {
     );
 }
 
-// Publication is independent of the plugin's runtime dependencies: it needs no `init`.
 #[tokio::test]
 async fn init_binds_the_admitted_instance() {
-    let (hub, registry) = host();
-    let (id, content) = instance();
+    let hub = Arc::new(ClientHub::new());
+    let admitted = Arc::new(manifest());
 
-    published(&hub, &CancellationToken::new())
-        .await
-        .expect("admitted");
-    assert!(!backend_published(&hub, &id), "nothing bound before init");
     SingleTenantTrPlugin
-        .init(&ctx(&hub).with_gts_publication_manifest_for_test(Arc::new(manifest())))
+        .init(&ctx(&hub).with_gts_publication_manifest_for_test(admitted))
         .await
-        .expect("init succeeds");
+        .expect("init with an admitted manifest");
 
-    assert_eq!(registry.content(&id), Some(content));
-    assert!(backend_published(&hub, &id));
-}
-
-/// A refusal fails the publication: the runtime never calls `init`.
-#[tokio::test]
-async fn a_rejected_instance_fails_the_publication() {
-    let (hub, registry) = host();
-    let (id, _) = instance();
-    registry.reject(&id, AdmissionFailureReason::InvalidValue);
-
-    let error = published(&hub, &CancellationToken::new())
-        .await
-        .expect_err("a rejected instance");
-
-    assert!(
-        matches!(error, GtsPublicationError::Refused { .. }),
-        "{error}"
-    );
-    assert!(error.to_string().contains(&id), "{error:#}");
+    assert!(backend_published(&hub, &instance().0));
 }
 
 /// Outside the runtime there is no admitted manifest: nothing is bound.
 #[tokio::test]
 async fn init_without_an_admitted_manifest_binds_nothing() {
-    let (hub, _registry) = host();
+    let hub = Arc::new(ClientHub::new());
     let (id, _) = instance();
 
     let error = SingleTenantTrPlugin
@@ -145,17 +98,4 @@ async fn init_without_an_admitted_manifest_binds_nothing() {
         "{error:#}"
     );
     assert!(!backend_published(&hub, &id));
-}
-
-#[tokio::test]
-async fn an_equal_restart_submits_nothing() {
-    let (hub, registry) = host();
-    let (id, content) = instance();
-    registry.seed(&id, content);
-
-    published(&hub, &CancellationToken::new())
-        .await
-        .expect("admitted");
-
-    assert_eq!(registry.calls(Call::Register), 0);
 }

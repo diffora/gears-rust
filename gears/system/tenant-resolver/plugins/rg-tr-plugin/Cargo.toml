@@ -54,7 +54,6 @@ inventory = { workspace = true }
 toolkit = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true, features = ["rt", "macros"] }
 tokio-util = { workspace = true }
-types-registry-sdk = { workspace = true, features = ["test-util"] }
 # Test fakes synthesize the `CanonicalError` envelope the RG trait now
 # returns (ADR 0005). Production code only projects it via the SDK's
 # `ResourceGroupError::from`, so this is dev-only.

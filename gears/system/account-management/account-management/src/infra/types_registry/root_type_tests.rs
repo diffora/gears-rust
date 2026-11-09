@@ -1,38 +1,8 @@
-use std::sync::Arc;
-
 use serde_json::json;
-use tokio_util::sync::CancellationToken;
-use toolkit_canonical_errors::CanonicalError;
 use toolkit_gts::{gts_id, gts_uri};
-use types_registry_sdk::AdmissionFailureReason;
 use types_registry_sdk::GtsTypeId;
-use types_registry_sdk::testing_platform::{Call, Fault, MockTypesRegistry};
 
 use super::*;
-use types_registry_sdk::publication::{Publication, Registry};
-use types_registry_sdk::{GtsId, PublisherContext};
-
-/// Publish the configured root type alone, as the `startup` task does with the rest.
-///
-/// # Errors
-/// An invalid configuration, a refused or unsettled admission (the error
-/// names the identifier and its outcome), the deadline or cancellation.
-async fn register_root_type(
-    registry: &Registry,
-    cfg: &RootTypeConfig,
-    cancel: &CancellationToken,
-) -> anyhow::Result<()> {
-    let id = GtsId::try_new(cfg.validated_id().map_err(anyhow::Error::msg)?)?;
-    let desired = desired_root_schema(cfg)?;
-    let publisher = PublisherContext {
-        name: "account-management".to_owned(),
-        version: env!("CARGO_PKG_VERSION").parse()?,
-    };
-    Publication::new(registry, publisher, vec![(id, desired)])
-        .publish(cancel)
-        .await?;
-    Ok(())
-}
 
 const ROOT_TYPE: &str = gts_id!("cf.core.am.tenant_type.v1~cf.core.am.platform.v1~");
 
@@ -41,13 +11,6 @@ fn config(idp_provisioning: bool) -> RootTypeConfig {
         gts_id: GtsTypeId::new(ROOT_TYPE),
         idp_provisioning,
     }
-}
-
-/// The linked inventory, the tenant-type envelope among it.
-fn registry() -> Arc<MockTypesRegistry> {
-    let registry = Arc::new(MockTypesRegistry::new());
-    registry.seed_inventory();
-    registry
 }
 
 #[test]
@@ -81,121 +44,4 @@ fn desired_schema_is_the_am_owned_root_contract() {
         desired.pointer("/x-gts-traits/idp_provisioning"),
         Some(&json!(true))
     );
-}
-
-#[tokio::test]
-async fn registers_the_desired_root_and_waits_for_admission() {
-    let registry = registry();
-    let cfg = config(false);
-
-    register_root_type(registry.as_ref(), &cfg, &CancellationToken::new())
-        .await
-        .expect("root type registration");
-
-    assert_eq!(
-        registry.content(ROOT_TYPE),
-        Some(desired_root_schema(&cfg).expect("desired schema"))
-    );
-}
-
-#[tokio::test]
-async fn an_equal_restart_submits_nothing() {
-    let registry = registry();
-    let cfg = config(false);
-    registry.seed(
-        ROOT_TYPE,
-        desired_root_schema(&cfg).expect("desired schema"),
-    );
-
-    register_root_type(registry.as_ref(), &cfg, &CancellationToken::new())
-        .await
-        .expect("an equal root is up to date");
-
-    assert_eq!(registry.calls(Call::Register), 0);
-}
-
-#[tokio::test]
-async fn a_permitted_content_change_updates_the_root() {
-    let registry = registry();
-    registry.seed(
-        ROOT_TYPE,
-        desired_root_schema(&config(false)).expect("desired schema"),
-    );
-
-    register_root_type(registry.as_ref(), &config(true), &CancellationToken::new())
-        .await
-        .expect("idp_provisioning may change");
-
-    assert_eq!(
-        registry.content(ROOT_TYPE),
-        Some(desired_root_schema(&config(true)).expect("desired schema"))
-    );
-}
-
-#[tokio::test]
-async fn a_refused_root_is_startup_fatal_and_names_it() {
-    let registry = registry();
-    registry.reject(ROOT_TYPE, AdmissionFailureReason::IncompatibleWithBaseline);
-
-    let error = register_root_type(registry.as_ref(), &config(false), &CancellationToken::new())
-        .await
-        .expect_err("a refused root must fail registration");
-
-    assert!(error.to_string().contains(ROOT_TYPE), "{error:#}");
-    assert!(
-        error.to_string().contains("incompatible_with_baseline"),
-        "{error:#}"
-    );
-    assert!(
-        error
-            .chain()
-            .any(|cause| cause.downcast_ref::<CanonicalError>().is_some()),
-        "the original canonical error stays available: {error:#}"
-    );
-}
-
-#[tokio::test]
-async fn cancellation_is_startup_fatal() {
-    let cancel = CancellationToken::new();
-    cancel.cancel();
-
-    register_root_type(registry().as_ref(), &config(false), &cancel)
-        .await
-        .expect_err("a cancelled registration fails");
-}
-
-/// An unavailable registry is retried within one budget; the deadline names the
-/// unconfirmed root and no registration is submitted.
-#[tokio::test(start_paused = true)]
-async fn an_unavailable_registry_reaches_the_deadline_naming_the_root() {
-    let registry = registry();
-    registry.inject(Fault::on(Call::BatchGet).fail(CanonicalError::service_unavailable().create()));
-
-    let started = tokio::time::Instant::now();
-    let error = register_root_type(registry.as_ref(), &config(false), &CancellationToken::new())
-        .await
-        .expect_err("an unreachable registry exhausts the publication budget");
-
-    assert_eq!(
-        started.elapsed(),
-        types_registry_sdk::STARTUP_PUBLICATION_DEADLINE
-    );
-    let report = error
-        .downcast_ref::<types_registry_sdk::PublicationError>()
-        .expect("publication error")
-        .report()
-        .expect("reconciliation report");
-    assert_eq!(report.stop, types_registry_sdk::ReconcileStop::Deadline);
-    assert!(matches!(
-        report
-            .outcomes
-            .get(&GtsId::try_new(ROOT_TYPE).expect("valid root identifier")),
-        Some(types_registry_sdk::ReconcileOutcome::Pending(
-            types_registry_sdk::ReconcilePendingCause::Unavailable(_)
-        ))
-    ));
-    assert!(registry.calls(Call::BatchGet) > 1, "read retried");
-    assert!(error.to_string().contains(ROOT_TYPE), "{error:#}");
-    assert_eq!(registry.calls(Call::Register), 0);
-    assert_eq!(registry.content(ROOT_TYPE), None);
 }

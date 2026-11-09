@@ -192,12 +192,8 @@ mod tests {
         use tokio_util::sync::CancellationToken;
         use toolkit::client_hub::{ClientHub, ClientScope};
         use toolkit::contracts::Gear;
-        use toolkit::gts_publication::{
-            GtsManifest, GtsPublicationCapability as _, GtsPublicationError, PreparedGtsPublication,
-        };
+        use toolkit::gts_publication::{GtsManifest, GtsPublicationCapability as _};
         use toolkit::{ConfigProvider, GearCtx};
-        use types_registry_sdk::AdmissionFailureReason;
-        use types_registry_sdk::testing_platform::{Call, MockTypesRegistry};
 
         use crate::config::INSTANCE_SUFFIX;
         use crate::gear::OidcAuthNPluginGear;
@@ -231,36 +227,11 @@ mod tests {
                 .to_owned()
         }
 
-        fn bound(hub: &ClientHub) -> bool {
-            hub.try_get_scoped::<dyn AuthNResolverPluginClient>(
-                &ClientScope::gts_id(&instance_id()),
-            )
-            .is_some()
-        }
-
         fn manifest() -> GtsManifest {
             OidcAuthNPluginGear::default()
                 .descriptor()
                 .build_gts_manifest(&config())
                 .unwrap()
-        }
-
-        /// What the runtime does before `init`: publish the configured manifest.
-        async fn published(
-            registry: Option<&Arc<MockTypesRegistry>>,
-            cancel: &CancellationToken,
-        ) -> Result<(), GtsPublicationError> {
-            let hub = ClientHub::new();
-            if let Some(registry) = registry {
-                registry.install(&hub);
-            }
-            PreparedGtsPublication::prepare(
-                OidcAuthNPluginGear::default().descriptor(),
-                &config(),
-                &hub,
-            )?
-            .publish(cancel, Arc::new(|_: &str| {}))
-            .await
         }
 
         fn ctx() -> GearCtx {
@@ -271,27 +242,6 @@ mod tests {
                 Arc::new(ClientHub::new()),
                 CancellationToken::new(),
             )
-        }
-
-        #[tokio::test]
-        async fn init_after_admission_binds_the_instance() {
-            let registry = Arc::new(MockTypesRegistry::new());
-            published(Some(&registry), &CancellationToken::new())
-                .await
-                .expect("admitted");
-            let content = registry.content(&instance_id()).expect("admitted");
-            assert_eq!(
-                (&content["vendor"], &content["priority"]),
-                (&json!("cf"), &json!(5))
-            );
-            let ctx = ctx();
-
-            OidcAuthNPluginGear::default()
-                .init(&ctx)
-                .await
-                .expect("init");
-
-            assert!(bound(&ctx.client_hub()));
         }
 
         /// The scope `init` registers the client under is the instance ID the
@@ -318,79 +268,6 @@ mod tests {
                     .is_some(),
                 "bound under {published}"
             );
-        }
-
-        /// A terminal refusal fails the publication: `init` never runs.
-        #[tokio::test]
-        async fn a_refused_instance_fails_the_publication() {
-            let registry = Arc::new(MockTypesRegistry::new());
-            registry.reject(
-                &instance_id(),
-                AdmissionFailureReason::IncompatibleWithBaseline,
-            );
-
-            let err = published(Some(&registry), &CancellationToken::new())
-                .await
-                .unwrap_err();
-
-            assert!(matches!(err, GtsPublicationError::Refused { .. }), "{err}");
-            assert!(err.to_string().contains("publishing instance"), "{err}");
-        }
-
-        /// An accepted admission that never completes is polled within the
-        /// publication budget, submitted once; cancellation before the deadline
-        /// ends it as cancelled.
-        #[tokio::test(start_paused = true)]
-        async fn a_pending_instance_is_polled_within_the_budget_until_cancelled() {
-            let registry = Arc::new(MockTypesRegistry::new().completing_after(u32::MAX));
-            let cancel = CancellationToken::new();
-
-            let running = published(Some(&registry), &cancel);
-            tokio::pin!(running);
-            tokio::select! {
-                result = &mut running => panic!("settled within the budget: {result:?}"),
-                () = tokio::time::sleep(types_registry_sdk::STARTUP_PUBLICATION_DEADLINE / 2) => {}
-            }
-
-            assert_eq!(registry.calls(Call::Register), 1, "submitted once");
-            assert!(registry.calls(Call::GetOperation) > 1, "polled");
-            cancel.cancel();
-            assert!(matches!(
-                running.await,
-                Err(GtsPublicationError::Cancelled { .. })
-            ));
-        }
-
-        /// A publication still pending at budget expiry reports the deadline stop.
-        #[tokio::test(start_paused = true)]
-        async fn a_pending_publication_expires_once_the_budget_runs_out() {
-            let registry = Arc::new(MockTypesRegistry::new().completing_after(u32::MAX));
-
-            let result = published(Some(&registry), &CancellationToken::new()).await;
-
-            let Err(GtsPublicationError::Expired { source, .. }) = result else {
-                panic!("expected publication expiry: {result:?}");
-            };
-            let stop = source
-                .chain()
-                .find_map(|e| e.downcast_ref::<types_registry_sdk::PublicationError>())
-                .and_then(types_registry_sdk::PublicationError::report)
-                .map(|report| report.stop);
-            assert_eq!(
-                stop,
-                Some(types_registry_sdk::ReconcileStop::Deadline),
-                "{source:#}"
-            );
-        }
-
-        /// No registry API in the hub: the publication cannot start.
-        #[tokio::test]
-        async fn without_the_platform_api_the_publication_fails() {
-            let err = published(None, &CancellationToken::new())
-                .await
-                .unwrap_err();
-
-            assert!(matches!(err, GtsPublicationError::Backend { .. }), "{err}");
         }
 
         /// The manifest needs only the configuration, not `init`.

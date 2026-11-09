@@ -50,7 +50,5 @@ inventory = { workspace = true }
 
 [dev-dependencies]
 toolkit = { workspace = true, features = ["test-support"] }
-tokio = { workspace = true, features = ["rt", "macros", "test-util"] }
+tokio = { workspace = true, features = ["rt", "macros"] }
 tokio-util = { workspace = true }
-# The in-memory platform registry the publication tests run against.
-types-registry-sdk = { package = "cf-gears-types-registry-sdk", path = "../../../types-registry/types-registry-sdk", features = ["test-util"] }

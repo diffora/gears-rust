@@ -52,4 +52,3 @@ inventory = { workspace = true }
 toolkit = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true, features = ["rt", "macros"] }
 tokio-util = { workspace = true }
-types-registry-sdk = { workspace = true, features = ["test-util"] }

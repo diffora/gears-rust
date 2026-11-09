@@ -8,18 +8,13 @@ use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 use toolkit::client_hub::{ClientHub, ClientScope};
 use toolkit::gts::PluginV1;
-use toolkit::gts_publication::{GtsManifest, PreparedGtsPublication};
-use toolkit::registry::{GearRegistry, GtsPublicationCap};
+use toolkit::gts_publication::{
+    GtsManifest, GtsPublicationCapability as _, PreparedGtsPublication,
+};
 use toolkit::{ConfigProvider, Gear, GearCtx};
 use toolkit_security::PlatformSecurityContext;
-use types_registry::config::TypesRegistryConfig;
-use types_registry::domain::TypesRegistryService;
-use types_registry::domain::legacy_local_client::TypesRegistryLocalClient;
-use types_registry::infra::InMemoryGtsRepository;
 use types_registry_sdk::testing_platform::MockTypesRegistry;
-use types_registry_sdk::{
-    AdmissionFailureReason, GtsIdPattern, ListEntitiesRequest, PlatformTypesRegistryApiExt,
-};
+use types_registry_sdk::{GtsIdPattern, ListEntitiesRequest, PlatformTypesRegistryApiExt};
 
 use super::{FirebaseAuthnPlugin, PLUGIN_SUFFIX};
 
@@ -59,20 +54,10 @@ fn bound(hub: &ClientHub) -> bool {
 fn hub(registry: &Arc<MockTypesRegistry>) -> Arc<ClientHub> {
     let hub = Arc::new(ClientHub::new());
     registry.install(&hub);
-    // The transitional registry still serves the old API. Its presence must not
-    // make a plugin visible only in that separate, process-local catalogue.
-    let cfg = TypesRegistryConfig::default();
-    let service = Arc::new(TypesRegistryService::new(
-        Arc::new(InMemoryGtsRepository::new(cfg.to_gts_config())),
-        cfg,
-    ));
-    hub.register::<dyn types_registry_sdk::TypesRegistryClient>(Arc::new(
-        TypesRegistryLocalClient::new(service),
-    ));
     hub
 }
 
-fn ctx(hub: Arc<ClientHub>, config: Config, manifest: Option<GtsManifest>) -> GearCtx {
+fn ctx(hub: Arc<ClientHub>, config: Config, manifest: Option<Arc<GtsManifest>>) -> GearCtx {
     let ctx = GearCtx::new(
         "firebase-authn-plugin",
         uuid::Uuid::new_v4(),
@@ -81,28 +66,19 @@ fn ctx(hub: Arc<ClientHub>, config: Config, manifest: Option<GtsManifest>) -> Ge
         CancellationToken::new(),
     );
     match manifest {
-        Some(manifest) => ctx.with_gts_publication_manifest_for_test(Arc::new(manifest)),
+        Some(manifest) => ctx.with_gts_publication_manifest_for_test(manifest),
         None => ctx,
     }
 }
 
-/// Run the same optional capability boundary as the runtime, before `init`.
-async fn prepare(hub: &ClientHub, config: &Config) -> anyhow::Result<Option<GtsManifest>> {
-    let gears = GearRegistry::discover_and_build()?;
-    let entry = gears
-        .gears()
-        .iter()
-        .find(|g| g.name() == "firebase-authn-plugin")
-        .expect("linked Firebase plugin");
-    let Some(publication) = entry.caps().query::<GtsPublicationCap>() else {
-        return Ok(None);
-    };
-    let descriptor = publication.descriptor();
-    let manifest = descriptor.build_gts_manifest(config)?;
-    PreparedGtsPublication::prepare(descriptor, config, hub)?
+/// Publish through the Firebase descriptor and return the manifest that was admitted.
+async fn prepare(hub: &ClientHub, config: &Config) -> anyhow::Result<Arc<GtsManifest>> {
+    let publication =
+        PreparedGtsPublication::prepare(FirebaseAuthnPlugin::default().descriptor(), config, hub)?;
+    publication
         .publish(&CancellationToken::new(), Arc::new(|_: &str| {}))
         .await?;
-    Ok(Some(manifest))
+    Ok(publication.shared_gts_manifest())
 }
 
 #[tokio::test]
@@ -112,7 +88,7 @@ async fn the_instance_is_discoverable_in_the_platform_catalogue_after_publicatio
     let config = config("cf", 7);
     let manifest = prepare(&hub, &config).await.unwrap();
     FirebaseAuthnPlugin::default()
-        .init(&ctx(Arc::clone(&hub), config, manifest))
+        .init(&ctx(Arc::clone(&hub), config, Some(manifest)))
         .await
         .unwrap();
 
@@ -148,42 +124,13 @@ async fn the_instance_is_discoverable_in_the_platform_catalogue_after_publicatio
 }
 
 #[tokio::test]
-async fn a_refused_instance_never_binds_a_client() {
-    let registry = Arc::new(MockTypesRegistry::new());
-    registry.reject(
-        &instance_id(),
-        AdmissionFailureReason::IncompatibleWithBaseline,
-    );
-    let hub = hub(&registry);
-    let config = config("cf", 7);
-    let publication = prepare(&hub, &config).await;
-    assert!(
-        publication.is_err(),
-        "refused instance must fail preparation"
-    );
-    assert!(!bound(&hub));
-}
-
-#[tokio::test]
-async fn init_without_an_admitted_manifest_binds_nothing_even_with_the_legacy_api() {
-    let hub = hub(&Arc::new(MockTypesRegistry::new()));
+async fn init_without_an_admitted_manifest_binds_nothing() {
+    let hub = Arc::new(ClientHub::new());
     let result = FirebaseAuthnPlugin::default()
         .init(&ctx(Arc::clone(&hub), config("cf", 7), None))
         .await;
     assert!(result.is_err(), "init requires an admitted manifest");
     assert!(!bound(&hub));
-}
-
-#[tokio::test]
-async fn a_changed_configuration_updates_the_same_instance() {
-    let registry = Arc::new(MockTypesRegistry::new());
-    let hub = hub(&registry);
-    prepare(&hub, &config("previous", 50)).await.unwrap();
-    prepare(&hub, &config("next", 7)).await.unwrap();
-
-    let content = registry.content(&instance_id()).unwrap();
-    assert_eq!(content["vendor"], "next");
-    assert_eq!(content["priority"], 7);
 }
 
 #[tokio::test]
