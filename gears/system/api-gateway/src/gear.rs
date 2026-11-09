@@ -1849,7 +1849,7 @@ mod tests {
             }),
         );
         let (router, _pruner) = api
-            .apply_middleware_stack(router, None)
+            .apply_middleware_stack(router, None, false)
             .expect("stack builds");
         router
             .oneshot(
