@@ -270,7 +270,7 @@ impl Default for GtsPublicationOptions {
 }
 
 /// The longest budget any publication path accepts: `gts_publication.timeout`, a
-/// deployment job's deadline (`publish-gts --deadline-secs`) and programmatic callers of
+/// deployment job's deadline (`publish-gts --timeout`) and programmatic callers of
 /// [`deployment::publish`], and an absolute deadline given to [`GtsPublicationBackend::publish`]
 /// (how far ahead it lies). One bound, so a mistyped value cannot hold startup or a
 /// deployment step for an impractically long time.
@@ -287,6 +287,17 @@ pub(crate) fn check_publication_budget(what: &str, budget: Duration) -> anyhow::
         "{what}: {budget:?} is too large to be a publication budget (at most {MAX_PUBLICATION_BUDGET:?})"
     );
     Ok(())
+}
+
+/// Parse a publication budget given as text, such as `30s`, `2m` or `10m`: the format of
+/// `gts_publication.timeout`. `what` names the setting in errors (for example `--timeout`).
+///
+/// # Errors
+/// Not a humantime duration, zero, or above [`MAX_PUBLICATION_BUDGET`] (never clamped).
+pub fn parse_publication_budget(what: &str, text: &str) -> anyhow::Result<Duration> {
+    let budget = positive_duration(what, &serde_json::Value::String(text.to_owned()))?;
+    check_publication_budget(what, budget)?;
+    Ok(budget)
 }
 
 impl GtsPublicationOptions {

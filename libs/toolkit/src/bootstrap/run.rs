@@ -253,7 +253,7 @@ async fn publish_gts(
     cancel: &CancellationToken,
 ) -> Result<()> {
     // Reject an over-long deadline before touching the registry or the credential.
-    crate::gts_publication::check_publication_budget("--deadline-secs", options.deadline)?;
+    crate::gts_publication::check_publication_budget("--timeout", options.deadline)?;
     // Match startup validation without running gear lifecycle hooks.
     let registry = crate::registry::GearRegistry::discover_and_build()?;
     validate_deployment_configuration(&registry, config)?;
@@ -513,7 +513,7 @@ mod publish_gts_tests {
         assert!(error.to_string().contains("gts_publication"), "{error}");
     }
 
-    /// `publish-gts --deadline-secs` above 10 minutes is refused first, before the
+    /// `publish-gts --timeout` above 10 minutes is refused first, before the
     /// registry, the credential or the network; no clamping.
     #[tokio::test]
     async fn publish_gts_rejects_a_deadline_above_ten_minutes_first() {
@@ -531,7 +531,7 @@ mod publish_gts_tests {
         .unwrap_err();
         let message = format!("{err:#}");
         assert!(
-            message.contains("--deadline-secs")
+            message.contains("--timeout")
                 && message.contains("too large to be a publication budget"),
             "{message}"
         );

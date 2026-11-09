@@ -966,3 +966,25 @@ async fn an_absolute_deadline_is_held_to_the_same_maximum() {
         .expect("no deadline is accepted");
     assert_eq!(calls.load(Ordering::SeqCst), 3);
 }
+
+#[test]
+fn publication_budget_text_accepts_humantime_up_to_the_maximum() {
+    let parse = |t| super::parse_publication_budget("--timeout", t);
+    assert_eq!(parse("30s").unwrap(), Duration::from_secs(30));
+    assert_eq!(parse("2m").unwrap(), Duration::from_mins(2));
+    assert_eq!(parse("10m").unwrap(), super::MAX_PUBLICATION_BUDGET);
+}
+
+#[test]
+fn publication_budget_text_rejects_zero_garbage_and_above_the_maximum() {
+    let parse = |t| super::parse_publication_budget("--timeout", t);
+    for bad in ["0s", "abc", "300", "10m1s", "11m"] {
+        let err = format!("{:#}", parse(bad).unwrap_err());
+        assert!(err.contains("--timeout"), "{bad}: {err}");
+    }
+    let over = format!("{:#}", parse("11m").unwrap_err());
+    assert!(
+        over.contains("too large to be a publication budget"),
+        "{over}"
+    );
+}
