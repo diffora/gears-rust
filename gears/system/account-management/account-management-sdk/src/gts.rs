@@ -126,10 +126,8 @@ pub const USER_RG_TYPE_CODE: &str = gts_id!("cf.core.rg.type.v1~cf.core.am.user.
 //     They use the gts-rust 0.10.0 `traits_schema` + `gts_abstract` macro
 //     params to emit `x-gts-traits-schema` / `x-gts-abstract` from Rust
 //     trait structs (no more hand-authored inline JSON).
-//   * `gts.cf.core.am.user.v1~` -- registered via [`UserV1`] below.
-//     `domain::gts_validation::validate_new_user_payload_via_gts` is
-//     fail-closed and returns `ServiceUnavailable` if this envelope is
-//     absent at boot.
+//   * `gts.cf.core.am.user.v1~` -- resource metadata published via UserV1.
+//     Fixed user commands validate locally through the SDK DTO methods.
 //
 // Registered for RBAC authorizability (PEP target types), id-only bodies:
 //   * `tenant.v1~` -- registered via [`TenantV1`] below so RBAC can name it
@@ -160,16 +158,14 @@ use toolkit_gts::{GtsTraitsSchema, gts_id};
 /// `types-registry` boot path picks it up via
 /// `all_inventory_type_schemas()`.
 ///
-/// The envelope is consumed by
-/// [`account-management::domain::gts_validation::validate_new_user_payload_via_gts`]
-/// on every `create_user`, which is **fail-closed**: without this
-/// schema in the Types Registry the validator returns
-/// `ServiceUnavailable` and `create_user` is unavailable until the
-/// catalog is seeded.
+/// The catalogue entry supports the User resource type and its platform references.
+/// Fixed create/patch commands use [`crate::IdpNewUser::validate`] and
+/// [`crate::IdpUserPatch::validate`]; they do not validate partial User resources.
+/// Username/profile length bounds below share the DTO constants. The existing
+/// input-only email cap does not narrow the published User v1 resource schema.
 ///
-/// Field shape mirrors `docs/schemas/user.v1.schema.json` for
-/// `username` / `email` / `display_name` — the fields AM actually
-/// validates on the create-user payload. The `id` field is typed
+/// Field shape mirrors `docs/schemas/user.v1.schema.json` for the profile
+/// projection; command presence/clear semantics belong to the SDK DTOs. The `id` field is typed
 /// [`gts::GtsInstanceId`] only because `gts-macros` requires base
 /// structs to declare an `id: GtsInstanceId` (or a `gts_type:
 /// GtsTypeId`) field; the real `IdpUser.id` is the IdP-issued UUID
@@ -197,19 +193,31 @@ pub struct UserV1 {
     /// the IdP-issued UUID carried by [`crate::IdpUser`].
     pub id: gts::GtsInstanceId,
     /// Login identifier.
-    #[schemars(length(min = 1, max = 255))]
+    #[schemars(length(
+        min = crate::user_validation::USER_TEXT_MIN_CHARS,
+        max = crate::user_validation::USER_TEXT_MAX_CHARS
+    ))]
     pub username: String,
     /// Optional contact email.
     #[schemars(extend("format" = "email"))]
     pub email: Option<String>,
     /// Optional display name.
-    #[schemars(length(min = 1, max = 255))]
+    #[schemars(length(
+        min = crate::user_validation::USER_TEXT_MIN_CHARS,
+        max = crate::user_validation::USER_TEXT_MAX_CHARS
+    ))]
     pub display_name: Option<String>,
     /// Optional given name (Keycloak `firstName`, OIDC `given_name`).
-    #[schemars(length(min = 1, max = 255))]
+    #[schemars(length(
+        min = crate::user_validation::USER_TEXT_MIN_CHARS,
+        max = crate::user_validation::USER_TEXT_MAX_CHARS
+    ))]
     pub first_name: Option<String>,
     /// Optional family name (Keycloak `lastName`, OIDC `family_name`).
-    #[schemars(length(min = 1, max = 255))]
+    #[schemars(length(
+        min = crate::user_validation::USER_TEXT_MIN_CHARS,
+        max = crate::user_validation::USER_TEXT_MAX_CHARS
+    ))]
     pub last_name: Option<String>,
 }
 
@@ -523,9 +531,7 @@ mod resource_type_tests {
 #[cfg(test)]
 mod user_schema_constraints_tests {
     //! Drift guard: the macro-generated `UserV1` schema — the one that
-    //! reaches the Types Registry at boot and that
-    //! `account-management::domain::gts_validation::validate_new_user_payload_via_gts`
-    //! enforces fail-closed — MUST carry the `minLength` / `maxLength` /
+    //! reaches the Types Registry at boot — MUST carry the `minLength` / `maxLength` /
     //! `format` constraints documented in `docs/schemas/user.v1.schema.json`.
     //! Until <https://github.com/GlobalTypeSystem/gts-rust/issues/86> was
     //! understood these were silently dropped; schemars field helpers on

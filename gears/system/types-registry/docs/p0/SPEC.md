@@ -937,6 +937,13 @@ Named exceptions are process-wide cached IdP selection, AM's hierarchy resolver
 P0's local tenant client ignores context (T30); T35 REST forwards its bearer.
 P29's T32 record remains historical.
 
+**User command validation update (2026-11-10).** AM's fixed user create/patch fields now
+validate locally through SDK DTO methods, without User resource-schema reads or runtime
+schema projection. The mandatory tenant-type read still uses the original caller context.
+Extensible tenant metadata continues to read authored content plus the materialized schema
+and use the SDK's native GTS payload compiler; tenant-name registry reads retain their
+existing caller/platform policy. The User v1 resource declaration remains published.
+
 **Production authentication topology (P30).** Production registry and AM applications choose their AuthN composition independently of the registry gear. When using authn-resolver, each host links it with its selected authentication plugin and uses the local `AuthNResolverClient`; that SDK currently has no remote contract/adapter. A new AuthN RPC transport is not part of this registry effort. The production remote AM proof excludes AM/RG/TR declarations from the registry host, while allowing the linked authn declarations. Aggregate readiness waits for authn schema/plugin admission and tenant reads fail closed before it; platform internal-token admission remains independent and permits that publication. T43 reruns this topology after the process-global inventory pull is removed.
 
 **SDK contract handoff (P31).** T34/T35 supply REST/TCP/auth/resolving contracts verified through existing test hosts; T36 supplies the cache and T37 generic lifecycle/supervision/readiness. Alongside T32's real local AM, these close Checkpoint 7A. It claims no complete process-level startup/recovery proof.

@@ -50,6 +50,11 @@ pub mod precondition;
 pub mod quota;
 pub mod reason;
 pub mod tenant;
+mod user_validation;
+pub use user_validation::UserInputValidationError;
+
+#[cfg(test)]
+mod user_validation_tests;
 
 pub use client::AccountManagementClient;
 pub use error::AccountManagementError;

@@ -1715,6 +1715,7 @@ dependencies = [
  "cf-gears-toolkit-odata",
  "cf-gears-toolkit-odata-macros",
  "cf-gears-toolkit-security",
+ "email_address",
  "gts",
  "schemars 1.2.3",
  "secrecy",

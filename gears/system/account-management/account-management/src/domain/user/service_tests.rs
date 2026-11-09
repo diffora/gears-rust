@@ -25,7 +25,7 @@
 )]
 
 use std::sync::Arc;
-use toolkit_gts::{gts_id, gts_uri};
+use toolkit_gts::gts_id;
 
 use account_management_sdk::{
     IdpNewUser, IdpUser, IdpUserFilterField, IdpUserPagination, IdpUserPatch, ListUsersQuery,
@@ -132,51 +132,18 @@ fn ctx_for(root: Uuid) -> SecurityContext {
 fn seed_user_schema(registry: &MockTypesRegistry) {
     registry.seed(
         USER_SCHEMA,
-        json!({
-            "$id": gts_uri!(USER_SCHEMA),
-            "$schema": "http://json-schema.org/draft-07/schema#",
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["id", "username"],
-            "properties": {
-                "id": { "type": "string", "format": "uuid" },
-                "username": { "type": "string", "minLength": 1, "maxLength": 255 },
-                "email": { "type": "string", "format": "email" },
-                "display_name": { "type": "string", "minLength": 1, "maxLength": 255 },
-            },
-        }),
+        <account_management_sdk::gts::UserV1 as gts::GtsSchema>::gts_schema_with_refs(),
     );
 }
 
 fn make_service(tenants: Arc<FakeTenantRepo>, idp: Arc<FakeIdpUserProvisioner>) -> UserService {
-    // Registry pre-loaded with [`TEST_TENANT_TYPE_ID`] so
-    // `resolve_active_tenant` (which now treats `tenant_type` as
-    // mandatory) can resolve the seeded tenants' chained type, AND
-    // with the `gts.cf.core.am.user.v1~` user-projection schema so
-    // `validate_new_user_payload_via_gts` reaches the registered-
-    // schema path. `create_user` is fail-closed on a missing user
-    // schema (see `validate_new_user_payload_via_gts` doc), so any
-    // happy-path test would otherwise short-circuit to
-    // `ServiceUnavailable` before reaching the IdP. A dedicated test
-    // (`create_user_without_registered_user_schema_returns_service_unavailable`)
-    // pins the fail-closed behaviour with a registry that omits the
-    // user schema.
-    let types_registry = Arc::new(registry_with_test_tenant_type());
-    seed_user_schema(&types_registry);
-    UserService::new(tenants, idp, types_registry, mock_enforcer())
-}
-
-fn make_service_without_user_schema(
-    tenants: Arc<FakeTenantRepo>,
-    idp: Arc<FakeIdpUserProvisioner>,
-) -> UserService {
-    // Mirrors `make_service` but omits the `gts.cf.core.am.user.v1~`
-    // schema so `validate_new_user_payload_via_gts` exercises its
-    // fail-closed arm. Drives the
-    // `create_user_without_registered_user_schema_returns_service_unavailable`
-    // service-layer contract test.
-    let types_registry = Arc::new(registry_with_test_tenant_type());
-    UserService::new(tenants, idp, types_registry, mock_enforcer())
+    // Only the mandatory tenant type is needed; User command validation is local.
+    UserService::new(
+        tenants,
+        idp,
+        Arc::new(registry_with_test_tenant_type()),
+        mock_enforcer(),
+    )
 }
 
 fn seed_tenant(
@@ -296,7 +263,9 @@ async fn create_user_happy_path_with_registered_user_schema_returns_projection()
             .with_email("alice@example.com")
             .with_display_name("Alice"),
     );
-    let svc = make_service(tenants, idp.clone());
+    let registry = Arc::new(registry_with_test_tenant_type());
+    seed_user_schema(&registry);
+    let svc = UserService::new(tenants, idp.clone(), registry, mock_enforcer());
 
     let projection = svc
         .create_user(&ctx(), tenant_id, payload("alice"))
@@ -310,50 +279,102 @@ async fn create_user_happy_path_with_registered_user_schema_returns_projection()
     assert_eq!(
         idp.create_call_count(),
         1,
-        "IdP must be called once when the registered schema admits the payload"
+        "registered resource metadata does not replace the command contract"
     );
 }
 
-/// Service-layer contract test for the fail-closed
-/// `validate_new_user_payload_via_gts` arm: when the registry has no
-/// `gts.cf.core.am.user.v1~` entry, `create_user` MUST surface
-/// `ServiceUnavailable` rather than degrading to length-only checks.
-/// Pins that the deployment cliff (`format: email` and future
-/// `pattern` rules silently disabled before catalog seed) cannot
-/// recur.
+/// Fixed command validation does not depend on the User resource catalogue.
 #[tokio::test]
-async fn create_user_without_registered_user_schema_returns_service_unavailable() {
+async fn create_user_validation_does_not_require_a_user_resource_schema() {
     let tenants = Arc::new(FakeTenantRepo::new());
     let tenant_id = Uuid::from_u128(0x1);
     seed_tenant(&tenants, tenant_id, None, TenantStatus::Active, "acme");
-
     let idp = Arc::new(FakeIdpUserProvisioner::new());
-    let svc = make_service_without_user_schema(tenants, idp.clone());
-
-    let err = svc
+    let user_id = Uuid::from_u128(0xABCF);
+    idp.set_create_projection(IdpUser::new(user_id, "alice"));
+    let svc = make_service(tenants, idp.clone());
+    let result = svc
         .create_user(&ctx(), tenant_id, payload("alice"))
         .await
-        .expect_err(
-            "user schema unregistered MUST fail closed -- no AM-side fallback gate \
-             exists for users, so degrading to length-only would silently disable \
-             format/pattern rules until the catalog is seeded",
-        );
+        .expect("a valid command needs no User resource schema");
+    assert_eq!(result.id, user_id);
+    assert_eq!(idp.create_call_count(), 1);
+}
 
-    match err {
-        DomainError::ServiceUnavailable { detail, .. } => {
-            assert!(
-                detail.contains(USER_SCHEMA) && detail.contains("catalog"),
-                "ServiceUnavailable.detail must name the missing schema and the \
-                 catalog-seed remediation; got: {detail}"
-            );
+#[tokio::test]
+async fn invalid_email_is_rejected_locally_without_a_user_resource_schema() {
+    let tenants = Arc::new(FakeTenantRepo::new());
+    let tenant_id = Uuid::from_u128(0x1);
+    seed_tenant(&tenants, tenant_id, None, TenantStatus::Active, "acme");
+    let idp = Arc::new(FakeIdpUserProvisioner::new());
+    let svc = make_service(tenants, idp.clone());
+    let error = svc
+        .create_user(
+            &ctx(),
+            tenant_id,
+            IdpNewUser::new("alice").with_email("not-an-email"),
+        )
+        .await
+        .expect_err("invalid DTO");
+    assert!(matches!(error, DomainError::Validation { .. }), "{error:?}");
+    assert_eq!(idp.create_call_count(), 0);
+}
+
+#[tokio::test]
+async fn update_user_validation_does_not_require_a_user_resource_schema() {
+    let tenants = Arc::new(FakeTenantRepo::new());
+    let tenant_id = Uuid::from_u128(0x1);
+    seed_tenant(&tenants, tenant_id, None, TenantStatus::Active, "acme");
+    let idp = Arc::new(FakeIdpUserProvisioner::new());
+    let user_id = Uuid::from_u128(0xABCF);
+    idp.set_update_projection(IdpUser::new(user_id, "alice"));
+    let svc = make_service(tenants, idp.clone());
+    svc.update_user(
+        &ctx(),
+        tenant_id,
+        user_id,
+        IdpUserPatch::new()
+            .with_first_name(None)
+            .with_last_name(None)
+            .with_email(None),
+    )
+    .await
+    .expect("a clear-only command needs no User resource schema");
+    assert_eq!(idp.update_call_count(), 1);
+}
+
+#[tokio::test]
+async fn given_and_family_name_bounds_precede_create_and_update_provider_calls() {
+    for first_name in [true, false] {
+        for invalid in [String::new(), "x".repeat(256)] {
+            let tenants = Arc::new(FakeTenantRepo::new());
+            let tenant_id = Uuid::from_u128(0x1);
+            seed_tenant(&tenants, tenant_id, None, TenantStatus::Active, "acme");
+            let idp = Arc::new(FakeIdpUserProvisioner::new());
+            let svc = make_service(tenants, idp.clone());
+            let mut create = payload("alice");
+            let mut patch = IdpUserPatch::new();
+            if first_name {
+                create.first_name = Some(invalid.clone());
+                patch.first_name = Some(Some(invalid));
+            } else {
+                create.last_name = Some(invalid.clone());
+                patch.last_name = Some(Some(invalid));
+            }
+            let error = svc
+                .create_user(&ctx(), tenant_id, create)
+                .await
+                .expect_err("profile bound");
+            assert!(matches!(error, DomainError::Validation { .. }), "{error:?}");
+            let error = svc
+                .update_user(&ctx(), tenant_id, Uuid::from_u128(0xABC), patch)
+                .await
+                .expect_err("set-value profile bound");
+            assert!(matches!(error, DomainError::Validation { .. }), "{error:?}");
+            assert_eq!(idp.create_call_count(), 0);
+            assert_eq!(idp.update_call_count(), 0);
         }
-        other => panic!("expected ServiceUnavailable, got {other:?}"),
     }
-    assert_eq!(
-        idp.create_call_count(),
-        0,
-        "fail-closed validation MUST run before any IdP call"
-    );
 }
 
 #[tokio::test]
@@ -1818,7 +1839,7 @@ mod cleanup {
 // ---- who registry reads are made for (P33) --------------------
 
 /// Two callers through one shared service: the tenant guard's
-/// `tenant_type` read and the payload / patch schema reads are made for
+/// `tenant_type` reads are made for
 /// exactly the caller of each flow, and none reaches the platform API.
 #[tokio::test]
 async fn every_registry_read_names_the_requests_caller() {
@@ -1852,9 +1873,8 @@ async fn every_registry_read_names_the_requests_caller() {
         svc.delete_user(&ctx, tenant_id, user_id)
             .await
             .expect("delete");
-        // create and update: the tenant guard and the schema; list, get
-        // and delete: the tenant guard.
-        assert_eq!(spy.callers().len(), 7);
+        // Every operation reads only the tenant type; DTO validation is local.
+        assert_eq!(spy.callers().len(), 5);
         assert_only_caller(&spy.callers(), &ctx);
         spy.clear();
     }

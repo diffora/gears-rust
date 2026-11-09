@@ -251,8 +251,8 @@ pub trait AccountManagementClient: Send + Sync + 'static {
 
     /// Provision a user inside `tenant_id` via the configured `IdP`
     /// plugin. The plugin owns the user-side identity primitives;
-    /// AM only orchestrates the saga (tenant guard -> `IdP` plugin
-    /// call -> projection back to [`IdpUser`]).
+    /// AM orchestrates tenant/type guards, username normalization and
+    /// [`IdpNewUser::validate`] before the provider call and [`IdpUser`] projection.
     ///
     /// The actor recorded on audit lines is `ctx.subject_id()`.
     ///
@@ -268,7 +268,7 @@ pub trait AccountManagementClient: Send + Sync + 'static {
     ///   the `IdP` plugin rejected the request.
     /// * `Unimplemented` (HTTP 501) -- `IdP` plugin declined the
     ///   operation.
-    /// * `ServiceUnavailable` (HTTP 503) -- `IdP` transport failure.
+    /// * `ServiceUnavailable` (HTTP 503) -- mandatory tenant-type/DB resolution or `IdP` transport failure.
     async fn create_user(
         &self,
         ctx: &SecurityContext,
@@ -353,7 +353,7 @@ pub trait AccountManagementClient: Send + Sync + 'static {
     /// Apply a JSON Merge Patch to a user's mutable attributes in
     /// `tenant_id` via the configured `IdP` plugin. The `IdP` remains
     /// the source of truth; AM orchestrates the saga (tenant guard ->
-    /// GTS validation of changed fields -> `IdP` plugin call ->
+    /// fixed SDK DTO validation of supplied fields -> `IdP` plugin call ->
     /// projection back to [`IdpUser`]) and persists nothing.
     ///
     /// The patch semantics are documented on [`IdpUserPatch`]: omitted
@@ -371,14 +371,14 @@ pub trait AccountManagementClient: Send + Sync + 'static {
     ///   outside the caller's PDP-compiled subtree, or the `IdP`
     ///   reports the target user as absent.
     /// * `InvalidArgument` (HTTP 400) -- empty patch, profile-field
-    ///   validation failure (length / GTS schema), an attempt to clear
+    ///   validation failure (profile bounds / plain-address email policy), an attempt to clear
     ///   the required `username`, a rejected password, or the `IdP`
     ///   plugin rejected the request.
     /// * `AlreadyExists` (HTTP 409) -- a username rename collided with
     ///   an existing login.
     /// * `Unimplemented` (HTTP 501) -- `IdP` plugin does not support
     ///   user updates.
-    /// * `ServiceUnavailable` (HTTP 503) -- `IdP` transport failure.
+    /// * `ServiceUnavailable` (HTTP 503) -- mandatory tenant-type/DB resolution or `IdP` transport failure.
     async fn update_user(
         &self,
         ctx: &SecurityContext,

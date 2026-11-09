@@ -1,194 +1,22 @@
-//! GTS payload validation against AM's registered resource schemas.
+//! Tenant-name validation against the registered tenant resource schema.
 //!
-//! Schemas under `gears/system/account-management/docs/schemas/` describe read
-//! models with server-assigned fields. Validate payload properties individually
-//! with `jsonschema::validator_for` so create requests need no synthetic IDs.
-//! Services must use these schema bounds; additional business rules, such as
-//! rejecting all-whitespace usernames, stay in the service layer.
-//!
-//! User validation reads through `TypesRegistryApi` under the request's
-//! `SecurityContext`. The tenant-name check also serves bootstrap and takes
-//! [`TypesRegistryReader`] to distinguish request and platform reads (P33).
-//!
-//! # Missing schemas and failures
-//!
-//! - Missing user schema: [`DomainError::ServiceUnavailable`] (503). AM stores
-//!   no users, so accepting without schema validation would bypass format and
-//!   pattern rules. Seed the catalog before provisioning users.
-//! - Missing tenant-name schema: `Ok(())`; the database enforces
-//!   `CHECK (length(name) BETWEEN 1 AND 255)`, including during bootstrap.
-//! - Other registry errors: [`TypesRegistryReader::failure`] maps outages to
-//!   503, refusals of the request caller to 401/403, and all others (including
-//!   platform credential refusals) to [`DomainError::Internal`].
-//! - Invalid registered schema: [`DomainError::Internal`] (catalog drift).
-//! - Invalid payload: [`DomainError::Validation`] (400).
-//!
-//! The host must link a database-backed types-registry; as a system gear it
-//! initializes before AM without a `deps` edge.
-//!
-//! Plugin-private metadata remains opaque: AM stores it in `tenant_idp_metadata`
-//! and returns it unchanged on subsequent `IdP` calls.
+//! Fixed user create/patch commands use the SDK DTO validators instead. This
+//! existing tenant-name path retains its caller/platform read split and DB-backed
+//! missing-schema fallback; extensible metadata uses the native GTS payload compiler.
 
 use std::collections::BTreeMap;
 
-use account_management_sdk::{IdpNewUser, IdpUserPatch};
 use serde_json::Value;
 use toolkit_canonical_errors::CanonicalError;
 use toolkit_gts::gts_id;
-use toolkit_security::SecurityContext;
 use types_registry_sdk::{
     EntityField, FieldSelection, GtsTypeId, LifecycleStatus, Projection, ReadOptions,
-    TypesRegistryApi,
 };
 
 use crate::domain::error::DomainError;
 use crate::domain::types_registry_reader::TypesRegistryReader;
 
-/// GTS type id of the Account Management user resource. Pinned to the
-/// same string the published JSON Schema declares as its `$id`.
-pub(crate) const USER_TYPE_ID: &str = gts_id!("cf.core.am.user.v1~");
-
-/// GTS type id of the Account Management tenant resource. Pinned to
-/// the same string the published JSON Schema declares as its `$id`.
 pub(crate) const TENANT_TYPE_ID: &str = gts_id!("cf.core.am.tenant.v1~");
-
-/// Validate the structural fields of a [`IdpNewUser`] against the
-/// registered `gts.cf.core.am.user.v1~` schema.
-///
-/// The schema describes the FULL user projection (`id`, `username`,
-/// `email`, `display_name`) and pins
-/// `required: ["id", "username"]` because `id` is the IdP-issued
-/// authoritative identifier on read. The create payload deliberately
-/// omits `id` (the `IdP` assigns it on success), so we cannot validate
-/// `IdpNewUser` as a full instance — that would always fail the
-/// `required` rule. Instead, fetch the schema once and run each
-/// supplied STRING field against the matching property sub-schema; this
-/// keeps the structural bounds (`minLength`, `maxLength`, `format`)
-/// authoritative without forcing a synthetic `id`.
-///
-/// Response-side validation of the IdP-returned `IdpUser` is
-/// intentionally NOT performed: AM trusts the plugin's published
-/// contract, and a fail-closed response-side gate would either
-/// break listings on a single drifted row or invent phantom-absent
-/// users — both worse than the gap they would close.
-///
-/// AM-business rules wider than the JSON Schema (e.g. "username MUST
-/// not be all-whitespace") stay in the calling service.
-///
-/// # Errors
-///
-/// See gear-level docs.
-pub async fn validate_new_user_payload_via_gts(
-    payload: &IdpNewUser,
-    types_registry: &dyn TypesRegistryApi,
-    ctx: &SecurityContext,
-) -> Result<(), DomainError> {
-    let reader = TypesRegistryReader::caller(types_registry, ctx);
-    let Some(properties) = lookup_effective_properties(USER_TYPE_ID, reader).await? else {
-        // Fail-closed: the user schema MUST be registered before
-        // `provision_user` is exposed. Falling back to length-only
-        // checks would silently disable `format: email` (and any
-        // future `pattern` rules) until the catalog is seeded,
-        // creating a deployment cliff where the same payload is
-        // accepted pre-registration and rejected post-registration.
-        // AM has no storage-side gate for users
-        // (`cpt-cf-account-management-constraint-no-user-storage`),
-        // so the boundary helper is the only structural validator on
-        // the path to the `IdP` plugin — degrading it changes the
-        // public contract. Surface `ServiceUnavailable` instead and
-        // let the operator finish the catalog seed first.
-        return Err(DomainError::service_unavailable(format!(
-            "user payload validation requires `{USER_TYPE_ID}` to be registered \
-             in the Types Registry; provision_user is unavailable until the \
-             catalog is seeded"
-        )));
-    };
-    validate_property_value(
-        USER_TYPE_ID,
-        "username",
-        &Value::String(payload.username.clone()),
-        &properties,
-    )?;
-    if let Some(email) = payload.email.as_deref() {
-        validate_property_value(
-            USER_TYPE_ID,
-            "email",
-            &Value::String(email.to_owned()),
-            &properties,
-        )?;
-    }
-    if let Some(display_name) = payload.display_name.as_deref() {
-        validate_property_value(
-            USER_TYPE_ID,
-            "display_name",
-            &Value::String(display_name.to_owned()),
-            &properties,
-        )?;
-    }
-    Ok(())
-}
-
-/// Validate the changed string fields of an [`IdpUserPatch`] against
-/// the registered `gts.cf.core.am.user.v1~` schema.
-///
-/// Only fields being *set to a value* are validated: a `username`
-/// rename and a nullable profile field with `Some(Some(v))`. Clearing
-/// a nullable field (`Some(None)`) and leaving one untouched (`None`)
-/// carry no value to check. Mirrors the field set validated by
-/// [`validate_new_user_payload_via_gts`] (`username`, `email`,
-/// `display_name`) so the create and update paths enforce the same
-/// structural bounds; `first_name` / `last_name` follow create's
-/// forwarded-but-unbounded treatment, and `password` is not part of the
-/// user projection schema (the `IdP` enforces its own password policy).
-///
-/// Fail-closed identically to [`validate_new_user_payload_via_gts`]:
-/// AM persists no user state
-/// (`cpt-cf-account-management-constraint-no-user-storage`), so a
-/// missing schema surfaces as [`DomainError::ServiceUnavailable`]
-/// rather than silently degrading to length-only caps.
-///
-/// # Errors
-///
-/// See gear-level docs.
-pub async fn validate_user_patch_via_gts(
-    patch: &IdpUserPatch,
-    types_registry: &dyn TypesRegistryApi,
-    ctx: &SecurityContext,
-) -> Result<(), DomainError> {
-    let reader = TypesRegistryReader::caller(types_registry, ctx);
-    let Some(properties) = lookup_effective_properties(USER_TYPE_ID, reader).await? else {
-        return Err(DomainError::service_unavailable(format!(
-            "user patch validation requires `{USER_TYPE_ID}` to be registered \
-             in the Types Registry; update_user is unavailable until the \
-             catalog is seeded"
-        )));
-    };
-    if let Some(username) = &patch.username {
-        validate_property_value(
-            USER_TYPE_ID,
-            "username",
-            &Value::String(username.clone()),
-            &properties,
-        )?;
-    }
-    if let Some(Some(email)) = &patch.email {
-        validate_property_value(
-            USER_TYPE_ID,
-            "email",
-            &Value::String(email.clone()),
-            &properties,
-        )?;
-    }
-    if let Some(Some(display_name)) = &patch.display_name {
-        validate_property_value(
-            USER_TYPE_ID,
-            "display_name",
-            &Value::String(display_name.clone()),
-            &properties,
-        )?;
-    }
-    Ok(())
-}
 
 /// Validate a tenant `name` against the `name` sub-schema of the
 /// registered `gts.cf.core.am.tenant.v1~` (`minLength: 1, maxLength:

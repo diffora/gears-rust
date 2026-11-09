@@ -842,6 +842,8 @@ This interface is an orchestration boundary over the IdP contract rather than a 
 - AM does not create or maintain a local user projection; the IdP remains the source of truth for user existence and tenant binding
 - user operations require an existing tenant context and use resolved tenant metadata to select the effective provider-side identity context
 - user lifecycle errors are surfaced as deterministic public problem categories, but provider-specific request and response shapes remain behind the IdP plugin contract
+- create/patch fixed fields are validated through `IdpNewUser::validate` / `IdpUserPatch::validate` after PEP and mandatory tenant/type guards; username whitespace normalization stays in AM, while optional clears and omitted fields retain their patch meaning
+- command validation does not read or project the full User resource schema. Existing username/profile length constraints share SDK constants with that schema; the email command cap stays input-only to preserve the published User v1 catalogue contract. Typed extensible user data, if added, requires a separate complete GTS payload contract
 - group lifecycle and membership remain delegated to Resource Group; AM does not expose user-group storage from this interface
 
 #### Service Account REST API
