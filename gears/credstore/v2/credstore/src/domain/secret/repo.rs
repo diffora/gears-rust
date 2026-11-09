@@ -397,13 +397,21 @@ pub trait SecretRepo: Send + Sync {
     ) -> Result<WriteVerification<SecretRow>, DomainError>;
 
     /// Verification of [`Self::delete_by_id`] after an ambiguous commit: ONE
-    /// transaction that locks the record row by id (`SELECT … FOR UPDATE`; a
-    /// pending delete holds the lock). No row → [`DeleteVerification::Committed`];
-    /// a row → the delete runs again with the same precondition
-    /// ([`DeleteVerification::Retried`], or
-    /// [`DeleteVerification::PreconditionFailed`] when the row changed). The
-    /// retried delete records its cleanup debt through `cleanup_tasks`
-    /// (`DeadContent::DeadKey`), exactly like [`Self::delete_by_id`].
+    /// transaction that locks the record row by `(tenant_id, id)` (`SELECT …
+    /// FOR UPDATE`; a pending delete holds the lock). The locking read does
+    /// not apply `scope`, so that one read tells a deleted row from one the
+    /// scope does not admit:
+    ///
+    /// * no row → [`DeleteVerification::Committed`];
+    /// * a row `scope` does not admit → [`DeleteVerification::NotFound`],
+    ///   whatever its version; nothing is deleted;
+    /// * a row `scope` admits → the delete runs again under `scope` with the
+    ///   same precondition ([`DeleteVerification::Retried`], or
+    ///   [`DeleteVerification::PreconditionFailed`] when the row changed).
+    ///
+    /// The retried delete records its cleanup debt through `cleanup_tasks`
+    /// (`DeadContent::DeadKey`), exactly like [`Self::delete_by_id`]. `Err`
+    /// means the verification itself failed: the outcome stays unknown.
     async fn verify_delete(
         &self,
         scope: &AccessScope,

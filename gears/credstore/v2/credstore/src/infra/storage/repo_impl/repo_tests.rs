@@ -3803,21 +3803,39 @@ async fn update_metadata_under_another_tenants_scope_returns_none_and_changes_no
 }
 
 #[tokio::test]
-async fn verify_delete_under_another_tenants_scope_is_a_precondition_failure_and_deletes_nothing() {
+async fn verify_delete_of_a_row_the_scope_does_not_admit_is_not_found_whatever_the_version() {
     let repo = setup().await;
     let tenant = Uuid::new_v4();
-    let (id, _) = seed_active(&repo, tenant, Uuid::new_v4(), "k", SharingMode::Tenant).await;
+    let api_key_uuid = SecretType::from_name("api-key").expect("known").uuid();
+    let (id, _) = seed_active_typed(
+        &repo,
+        tenant,
+        Uuid::new_v4(),
+        "k",
+        SharingMode::Tenant,
+        api_key_uuid,
+    )
+    .await;
     let key = StoreKey::new(TenantId(tenant), id);
+    let scopes = [
+        AccessScope::for_tenant(Uuid::new_v4()),
+        tenant_and_type_scope(tenant, vec![SecretType::generic().uuid()]),
+    ];
 
-    let out = repo
-        .verify_delete(&AccessScope::for_tenant(Uuid::new_v4()), &key, Some(1))
-        .await
-        .expect("verify_delete");
-
-    assert!(
-        matches!(out, DeleteVerification::PreconditionFailed),
-        "{out:?}"
-    );
+    // The current version (the scoped DELETE answers), a stale one (the
+    // scope is checked before the version) and no precondition at all.
+    for scope in &scopes {
+        for expected_version in [Some(1), Some(7), None] {
+            let out = repo
+                .verify_delete(scope, &key, expected_version)
+                .await
+                .expect("verify_delete");
+            assert!(
+                matches!(out, DeleteVerification::NotFound),
+                "{expected_version:?}: {out:?}"
+            );
+        }
+    }
     assert_eq!(stored(&repo, tenant, id).await.version, 1);
     assert!(debt_tasks(&repo).await.is_empty());
 }

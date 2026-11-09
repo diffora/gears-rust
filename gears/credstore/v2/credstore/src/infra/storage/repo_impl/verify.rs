@@ -9,6 +9,11 @@
 //!   tx1 deletes that row first, so a pending tx1 holds the lock);
 //! * a delete locks the record row by id (a pending delete holds the lock).
 //!
+//! The locking read never applies the caller's scope: it must see the real
+//! state to tell a committed outcome from a row the scope does not admit
+//! with one read. The scope applies to everything the verification then
+//! decides or changes.
+//!
 //! `SQLite` has no row locks (`lock_exclusive` is a no-op there), and none
 //! are needed: it serializes writers, so a read inside a writing transaction
 //! cannot interleave with another writer's commit.
@@ -183,8 +188,11 @@ pub(super) async fn verify_switch_value(
 }
 
 /// Verification of a record delete ([`super::writes::delete_by_id`]): locks
-/// the record row by id. No row: the delete committed. A row: it did not, so
-/// the delete runs again here with the same precondition.
+/// the record row by id, without the scope. No row: the delete committed. A
+/// row the scope does not admit: `NotFound`, nothing deleted. A row it
+/// admits: the delete did not commit, so it runs again here under the scope
+/// with the same precondition. A matching version needs no extra read: the
+/// scoped `DELETE` itself tells an admitted row from one that is not.
 pub(super) async fn verify_delete(
     repo: &SecretRepoImpl,
     scope: &AccessScope,
@@ -212,16 +220,44 @@ pub(super) async fn verify_delete(
                 return Ok(DeleteVerification::Committed);
             };
             if expected_version.is_some_and(|expected| row.version != expected) {
-                return Ok(DeleteVerification::PreconditionFailed);
+                // The scope goes before the version: a row the scope does not
+                // admit never answers as a changed one.
+                return Ok(if admitted_tx(tx, &scope, &key).await? {
+                    DeleteVerification::PreconditionFailed
+                } else {
+                    DeleteVerification::NotFound
+                });
             }
             match delete_row_tx(tx, &scope, &key, expected_version).await {
                 Ok(debts) => Ok(DeleteVerification::Retried { debts }),
-                // The row is locked and its version was just checked: 0 rows
-                // can only mean the caller's scope no longer covers it.
-                Err(DomainError::NotFound) => Ok(DeleteVerification::PreconditionFailed),
+                // The row is locked and its version was just checked, so 0
+                // rows means the scope does not admit it.
+                Err(DomainError::NotFound) => Ok(DeleteVerification::NotFound),
                 Err(e) => Err(e),
             }
         }) as TxFuture<'_, DeleteVerification>
     })
     .await
+}
+
+/// Whether `scope` admits the record row of `key`, already locked by this
+/// transaction (`SELECT … LIMIT 1`, never a `COUNT`). Read only when the
+/// version did not match, so no scoped `DELETE` runs to answer it.
+async fn admitted_tx(
+    tx: &DbTx<'_>,
+    scope: &AccessScope,
+    key: &StoreKey,
+) -> Result<bool, DomainError> {
+    Ok(entity::secrets::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(entity::secrets::Column::TenantId.eq(key.tenant_id.0))
+                .add(entity::secrets::Column::Id.eq(key.record_id)),
+        )
+        .one(tx)
+        .await
+        .map_err(map_scope_err)?
+        .is_some())
 }
