@@ -552,11 +552,22 @@ event carries `reconcile_id` directly.
 ## Testing (`test-util`)
 
 - `testing_platform::MockTypesRegistry` implements both contracts in memory. Seed it
-  (`seed`, `Seed`, `seed_inventory`) or write through the contract; Type Schema documents
-  resolve with `gts-rust` as admission does. `Fault` delays or fails calls, `reject` and
+  (`seed`, `Seed`, `seed_inventory`) or write through the contract. Changed Type Schemas
+  pass native GTS schema, derivation and trait validation before content or versions change;
+  malformed candidates return `InvalidSchema`. Unordered batches wait for selected schema
+  prerequisites; refused prerequisites block their dependents without supplying their old
+  revisions. Independent candidates may still succeed, and dry runs validate against a
+  disposable copy. Managed schemas must fully materialize, matching the real registry's
+  rejection of unresolved/circular schema resources. `Fault` delays or fails calls, `reject` and
   `depends_on` steer admission, `strict()` panics on an unexpected call, and `calls`,
   `reads` and `submissions` record what happened. `install` registers it in a `ClientHub`
   under both contracts.
+- `seed` and `Seed` deliberately bypass admission for fixtures, including invalid schemas.
+  Explicit call faults and admission refusals retain precedence; lifecycle, precondition,
+  unchanged and idempotent-replay behavior is preserved. An unrelated invalid seed cannot
+  poison valid admission. The mock does not reproduce publisher guards, database locking,
+  compatibility/history checks or every production graph failure classification; Instance
+  payload admission remains outside this schema-only validation contract.
 - `testing_platform::conformance::run` holds the contract checks that the mock, the
   registry's local client and the REST client over TCP all pass.
 

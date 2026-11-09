@@ -7,7 +7,7 @@ implements a DESIGN clause or records an explicit, named deviation from one.
 Status: **approved** for projection/filtering, OoP operation, publication ordering,
 one authenticated plane per route, early local SDK use and full local AM adoption.
 The **52 executable tasks** and their IDs are defined by [todo.md](./todo.md):
-36 are complete (through T35, including T34a); 16 remain (T35a/T35b and T36–T49).
+37 are complete (through T35, including T34a, plus T35b); 15 remain (T35a and T36–T49).
 The publication foundation is merged into `main`; this branch adds the managed core migration.
 T37/T39 and portions of T41/T42 are implemented without closing their remaining gates.
 T35a's compiled payload API is implemented using the existing released GTS API; its standing verification remains open. T46–T49 add the planned
@@ -2089,7 +2089,7 @@ references.
 
 ## 15. Build order
 
-**Superseded by [`plan.md`](./plan.md).** This section originally ordered the work horizontally — schema, then repositories, then a synchronous admission path a later slice would have rewritten. P1 replaces it with vertical slices and [`todo.md`](./todo.md) is the executable task list. The current queue (P32, with P33's T34a complete on this migration branch) has 16 remaining tasks: T35a, T35b and T36–T38 (SDK contracts and the remaining-fleet/REST cutover); T39–T43 (collectors, real remote AM, end-of-pull and HA); T44–T45 (server guard, writer activation and complete mixed-version proof); then T46–T49 (service-local receipts, restart reuse, replica coordination and force resync). Checkpoint 7A follows T37 and makes only the local/SDK-contract promise; Checkpoint 8A follows T41 and proves real process behavior. All mandatory backend/CI gates remain, with the real remote target added in T41, and final deployment still requires Checkpoints 9 and 10. The number is kept because other documents cite it.
+**Superseded by [`plan.md`](./plan.md).** This section originally ordered the work horizontally — schema, then repositories, then a synchronous admission path a later slice would have rewritten. P1 replaces it with vertical slices and [`todo.md`](./todo.md) is the executable task list. The current queue (P32, with P33's T34a complete on this migration branch) has 15 remaining tasks: T35a and T36–T38 (SDK contracts and the remaining-fleet/REST cutover); T39–T43 (collectors, real remote AM, end-of-pull and HA); T44–T45 (server guard, writer activation and complete mixed-version proof); then T46–T49 (service-local receipts, restart reuse, replica coordination and force resync). Checkpoint 7A follows T37 and makes only the local/SDK-contract promise; Checkpoint 8A follows T41 and proves real process behavior. All mandatory backend/CI gates remain, with the real remote target added in T41, and final deployment still requires Checkpoints 9 and 10. The number is kept because other documents cite it.
 
 ---
 

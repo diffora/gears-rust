@@ -31,7 +31,7 @@ and dependent refresh. Both must be positive. Closure accounting is per document
 candidate overlay; the resolved-size budget applies to the canonical bytes of each effective
 artifact. Exceeding either refuses the candidate without committing partial state.
 
-The executable list contains **52 tasks**, using the IDs in `todo.md`: T1–T21, inserted T9a/T20a/T22a–T22d, T28–T49 and T34a/T35a/T35b. Historical T22 is deferred to P1 and not counted; T23–T27 are not executable IDs. This consumer-migration branch includes the foundation and delivers T32/T34a: **36 of 52 executable tasks are complete (through T35, including T34a)**. **16 tasks remain:** T35a/T35b and T36–T49; T35a's compiled API is implemented using the existing released GTS API; its standing verification remains open before T35b. The historical foundation handoff was 34/48 before adding T46–T49. Recorded migration verification in `todo.md` retains its original dates and limitations; T32’s incomplete final verification and the remaining Checkpoint 7A gates stay open.
+The executable list contains **52 tasks**, using the IDs in `todo.md`: T1–T21, inserted T9a/T20a/T22a–T22d, T28–T49 and T34a/T35a/T35b. Historical T22 is deferred to P1 and not counted; T23–T27 are not executable IDs. This consumer-migration branch includes the foundation and delivers T32/T34a: **37 of 52 executable tasks are complete (through T35, including T34a, plus T35b)**. **15 tasks remain:** T35a and T36–T49; T35a's compiled API is implemented using the existing released GTS API; its standing verification remains open before T36. The historical foundation handoff was 34/48 before adding T46–T49. Recorded migration verification in `todo.md` retains its original dates and limitations; T32’s incomplete final verification and the remaining Checkpoint 7A gates stay open.
 
 ## Decisions and task numbering
 
@@ -118,7 +118,7 @@ T6 config ───────────────────────�
                    ▼
         T35a SDK compiled-payload validation (implemented; standing verification pending)
                    ▼
-        T35b valid consumer fixtures, then GTS Type Schema admission in the mock
+        T35b valid consumer fixtures and native mock schema admission (complete)
                    ▼
         T36 platform SDK cache ──► T37 concurrent preparation + admission readiness
                    │
@@ -228,7 +228,7 @@ exists. From T7 onward the graph is vertical.
 - T34a: Account Management request-path reads on `TypesRegistryApi` with the caller's `SecurityContext` (P33)
 - T35: Tenant REST and both resolving clients — complete SDK transport handoff
 - T35a: SDK payload validator over a resolved Type Schema; compiled API implemented, standing verification pending
-- T35b: Mock Type Schema admission uses GTS validation; valid fixtures first, then shared real-client conformance
+- T35b: Mock Type Schema admission uses GTS validation; complete with shared real-client conformance
 - T36: SDK client cache — freshness window, byte bound, `fresh` bypass
 - T37: System-group-first startup and concurrent application publication
 
@@ -352,7 +352,7 @@ collapsed into `invalid_schema`.
 
 ## Sequence
 
-**Accepted queue (P32), adjusted for the PR split.** T31–T35 and T34a are complete on this migration branch; T35a's compiled API is implemented; its standing verification is the next gate before T35b. T32’s incomplete final verification and the remaining Checkpoint 7A gates stay open. Recorded test results retain their original scope and dates.
+**Accepted queue (P32), adjusted for the PR split.** T31–T35, T34a and T35b are complete on this migration branch; T35a's compiled API is implemented; its standing verification is the next gate before T36. T32’s incomplete final verification and the remaining Checkpoint 7A gates stay open. Recorded test results retain their original scope and dates.
 
 1. Phase 7: T31 → T32 → T33 → T34 → T34a → T35 → T35a → T35b → T36 → T37 (Checkpoint 7A) → T38 (Checkpoint 7). T29/T30 are complete; T33 is already merged in toolkit PR #5256. T35a delegates to the existing released GTS compiled-validator API without a dependency/spec migration; its standing verification remains open. T35b prepares valid fixtures before enabling mock Type Schema validation and needs no new upstream helper.
 2. Phase 8: T39 → T40 → T41 (Checkpoint 8A) → T42 → T43 (Checkpoint 8).

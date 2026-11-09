@@ -41,8 +41,24 @@ fn gid(id: &str) -> GtsId {
     GtsId::try_new(id).expect("a valid identifier")
 }
 
+/// A valid GTS schema with the annotations a reconciliation scenario varies.
+fn schema(id: &str, annotations: Value) -> Value {
+    let Value::Object(annotations) = annotations else {
+        panic!("fixture annotations must be an object");
+    };
+    let mut body = json!({
+        "$id": format!("gts://{id}"),
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object"
+    });
+    body.as_object_mut()
+        .expect("schema object")
+        .extend(annotations);
+    body
+}
+
 fn doc(id: &str) -> (GtsId, Value) {
-    (gid(id), json!({ "title": id }))
+    (gid(id), schema(id, json!({ "title": id })))
 }
 
 type Answer = Result<Reconciliation, CanonicalError>;
@@ -239,6 +255,8 @@ async fn a_document_differing_only_in_number_spelling_is_submitted() {
             json!({ "v": [{ "w": [-0.0] }] }),
         ),
     ] {
+        let stored = schema(A, stored);
+        let desired = schema(A, desired);
         let fake = MockTypesRegistry::new();
         fake.seed(A, stored.clone());
 
@@ -276,7 +294,7 @@ async fn a_dependency_published_later_is_picked_up_on_the_next_pass_under_a_new_
     // Decided at submit, so the base is seeded only after the first outcome.
     let fake = Arc::new(MockTypesRegistry::new().completing_after(0));
     fake.depends_on(A, BASE);
-    let desired = vec![(gid(A), json!({}))];
+    let desired = vec![(gid(A), schema(A, json!({})))];
     let task = {
         let fake = Arc::clone(&fake);
         tokio::spawn(async move { run(&fake, desired).await })
@@ -355,7 +373,7 @@ async fn a_permanently_invalid_document_is_rejected_and_not_retried() {
     fake.reject(A, AdmissionFailureReason::InvalidSchema);
 
     let outcomes = unsettled_by(
-        run(&fake, vec![(gid(A), json!({}))]).await,
+        run(&fake, vec![(gid(A), schema(A, json!({})))]).await,
         ReconcileStop::Completed,
     );
 
@@ -431,7 +449,12 @@ async fn later_batches_proceed_when_an_earlier_one_waits_on_a_dependency() {
     };
 
     let outcomes = unsettled_by(
-        run_with(&fake, vec![(gid(A), json!({})), doc(B)], &options).await,
+        run_with(
+            &fake,
+            vec![(gid(A), schema(A, json!({}))), doc(B)],
+            &options,
+        )
+        .await,
         ReconcileStop::PassesExhausted,
     );
 
@@ -458,7 +481,12 @@ async fn a_dependency_nothing_can_store_stalls_the_call_after_one_pass() {
     fake.depends_on(A, BASE);
 
     let outcomes = unsettled_by(
-        run_with(&fake, vec![(gid(A), json!({}))], &until_stalled()).await,
+        run_with(
+            &fake,
+            vec![(gid(A), schema(A, json!({})))],
+            &until_stalled(),
+        )
+        .await,
         ReconcileStop::Stalled,
     );
 
@@ -477,7 +505,12 @@ async fn a_conflict_beside_a_missing_dependency_is_retried_before_the_stall() {
     fake.race_next_submit(B, json!({ "v": 1 }));
 
     let outcomes = unsettled_by(
-        run_with(&fake, vec![(gid(A), json!({})), doc(B)], &until_stalled()).await,
+        run_with(
+            &fake,
+            vec![(gid(A), schema(A, json!({}))), doc(B)],
+            &until_stalled(),
+        )
+        .await,
         ReconcileStop::Stalled,
     );
 
@@ -550,7 +583,10 @@ async fn a_conflicting_duplicate_alone_is_reported_not_up_to_date() {
     let outcomes = unsettled_by(
         run(
             &fake,
-            vec![(gid(C), json!({ "one": 1 })), (gid(C), json!({ "two": 2 }))],
+            vec![
+                (gid(C), schema(C, json!({ "one": 1 }))),
+                (gid(C), schema(C, json!({ "two": 2 }))),
+            ],
         )
         .await,
         ReconcileStop::Completed,
@@ -571,8 +607,8 @@ async fn an_equal_document_beside_a_rejected_one_is_reported_with_it() {
             &fake,
             vec![
                 (id, content),
-                (gid(C), json!({ "one": 1 })),
-                (gid(C), json!({ "two": 2 })),
+                (gid(C), schema(C, json!({ "one": 1 }))),
+                (gid(C), schema(C, json!({ "two": 2 }))),
             ],
         )
         .await,
@@ -592,8 +628,8 @@ async fn an_identifier_declared_twice_differently_is_rejected_and_identical_twin
         run(
             &fake,
             vec![
-                (gid(A), json!({ "one": 1 })),
-                (gid(A), json!({ "two": 2 })),
+                (gid(A), schema(A, json!({ "one": 1 }))),
+                (gid(A), schema(A, json!({ "two": 2 }))),
                 doc(B),
                 doc(B),
             ],
@@ -617,10 +653,10 @@ async fn twins_differing_only_in_number_spelling_conflict_and_reordered_twins_co
         run(
             &fake,
             vec![
-                (gid(A), json!({ "v": 0.0 })),
-                (gid(A), json!({ "v": -0.0 })),
-                (gid(B), json!({ "a": -0.0, "b": [1.5] })),
-                (gid(B), reordered),
+                (gid(A), schema(A, json!({ "v": 0.0 }))),
+                (gid(A), schema(A, json!({ "v": -0.0 }))),
+                (gid(B), schema(B, json!({ "a": -0.0, "b": [1.5] }))),
+                (gid(B), schema(B, reordered)),
             ],
         )
         .await,
@@ -762,7 +798,7 @@ async fn an_equal_identifier_settles_at_once_and_a_later_read_failure_cannot_dow
     );
 
     let outcomes = unsettled_by(
-        run(&fake, vec![(a, content), (gid(B), json!({}))]).await,
+        run(&fake, vec![(a, content), (gid(B), schema(B, json!({})))]).await,
         ReconcileStop::PassesExhausted,
     );
 
@@ -791,7 +827,7 @@ async fn an_equal_identifier_changed_after_settling_is_not_reread_or_resubmitted
     fake.depends_on(B, BASE);
     let (a, content) = doc(A);
     fake.seed(a.id(), content.clone());
-    let desired = vec![(a, content), (gid(B), json!({}))];
+    let desired = vec![(a, content), (gid(B), schema(B, json!({})))];
     let task = {
         let fake = Arc::clone(&fake);
         tokio::spawn(async move { run(&fake, desired).await })
@@ -845,7 +881,7 @@ async fn another_publishers_entity_is_rejected() {
     fake.seed(A, json!({ "theirs": true }));
 
     let outcomes = unsettled_by(
-        run(&fake, vec![(gid(A), json!({}))]).await,
+        run(&fake, vec![(gid(A), schema(A, json!({})))]).await,
         ReconcileStop::Completed,
     );
 
@@ -870,7 +906,7 @@ async fn an_oversized_backoff_is_capped_by_the_deadline() {
     let started = tokio::time::Instant::now();
 
     let outcomes = unsettled_by(
-        run_with(&fake, vec![(gid(A), json!({}))], &options).await,
+        run_with(&fake, vec![(gid(A), schema(A, json!({})))], &options).await,
         ReconcileStop::Deadline,
     );
 
@@ -1396,7 +1432,7 @@ async fn time_pending_passes(passes: u32, backoff: Duration, max: Duration) -> (
     };
     let started = tokio::time::Instant::now();
     let outcomes = unsettled_by(
-        run_with(&fake, vec![(gid(A), json!({}))], &options).await,
+        run_with(&fake, vec![(gid(A), schema(A, json!({})))], &options).await,
         ReconcileStop::PassesExhausted,
     );
     assert!(matches!(
@@ -1491,7 +1527,7 @@ async fn cancelling_a_blocked_read_ends_reconciliation_as_cancelled_without_subm
 async fn cancelling_the_pause_between_passes_ends_reconciliation_without_another_submission() {
     let fake = Arc::new(MockTypesRegistry::new().completing_after(0));
     fake.depends_on(A, BASE);
-    let (cancel, task) = spawn_cancellable(&fake, vec![(gid(A), json!({}))]);
+    let (cancel, task) = spawn_cancellable(&fake, vec![(gid(A), schema(A, json!({})))]);
     first_submission(&fake, &task).await;
     tokio::time::sleep(Duration::from_secs(1)).await;
     let reads = fake.calls(Call::BatchGet);
@@ -1908,7 +1944,13 @@ async fn a_refused_candidate_stops_later_batches_and_keeps_every_earlier_outcome
 
     let result = run_with(
         &fake,
-        vec![doc(A), (gid(B), json!({})), doc(C), doc(D), doc(E)],
+        vec![
+            doc(A),
+            (gid(B), schema(B, json!({}))),
+            doc(C),
+            doc(D),
+            doc(E),
+        ],
         &options,
     )
     .await;
@@ -1947,11 +1989,7 @@ async fn a_refused_candidate_stops_later_batches_and_keeps_every_earlier_outcome
         [vec![A], vec![B], vec![C]],
         "no batch after the refused one"
     );
-    assert_eq!(
-        fake.content(A),
-        Some(json!({ "title": A })),
-        "admitted writes stay"
-    );
+    assert_eq!(fake.content(A), Some(doc(A).1), "admitted writes stay");
 }
 
 #[tokio::test(start_paused = true)]
@@ -2116,9 +2154,9 @@ async fn admission_rejections_fail_the_call_after_every_remaining_batch_is_submi
         &fake,
         vec![
             doc(A),
-            (gid(B), json!({})),
+            (gid(B), schema(B, json!({}))),
             doc(C),
-            (gid(D), json!({})),
+            (gid(D), schema(D, json!({}))),
             doc(E),
         ],
         &options,
@@ -2151,11 +2189,7 @@ async fn admission_rejections_fail_the_call_after_every_remaining_batch_is_submi
         [vec![A], vec![B], vec![C], vec![D], vec![E]],
         "every batch after an admission refusal is still submitted, once"
     );
-    assert_eq!(
-        fake.content(A),
-        Some(json!({ "title": A })),
-        "admitted writes stay"
-    );
+    assert_eq!(fake.content(A), Some(doc(A).1), "admitted writes stay");
 }
 
 #[tokio::test(start_paused = true)]
@@ -2210,7 +2244,10 @@ async fn a_stop_on_invalid_input_keeps_outcomes_known_from_earlier_passes() {
         let outcomes = unsettled_by(
             run_with(
                 &fake,
-                vec![(gid(A), json!({})), (gid(B), json!({}))],
+                vec![
+                    (gid(A), schema(A, json!({}))),
+                    (gid(B), schema(B, json!({}))),
+                ],
                 &options,
             )
             .await,

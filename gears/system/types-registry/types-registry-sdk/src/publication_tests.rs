@@ -26,7 +26,11 @@ fn publisher() -> PublisherContext {
 fn document(id: &str) -> (GtsId, JsonDocument) {
     (
         GtsId::try_new(id).expect("identifier"),
-        json!({"title": id}),
+        json!({
+            "$id": format!("gts://{id}"),
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object", "title": id
+        }),
     )
 }
 
@@ -206,9 +210,7 @@ async fn an_unavailable_registry_keeps_the_pending_cause() {
     assert_eq!(registry.calls(Call::Register), 0);
 }
 fn manifest(ids: &[&str]) -> Vec<(GtsId, JsonDocument)> {
-    ids.iter()
-        .map(|id| (GtsId::try_new(id).expect("valid id"), json!({"title": id})))
-        .collect()
+    ids.iter().map(|id| document(id)).collect()
 }
 
 /// A publication of `ids` by `my-gear` 1.0.0, from a manifest.
@@ -330,7 +332,9 @@ async fn an_expired_deadline_makes_no_request() {
 #[tokio::test]
 async fn publishes_the_manifest_under_the_given_identity() {
     let registry = MockTypesRegistry::new();
-    let documents = [(GtsId::try_new(A).expect("valid id"), json!({"title": "a"}))];
+    let (id, mut content) = document(A);
+    content["title"] = json!("a");
+    let documents = [(id, content.clone())];
 
     let result = Publication::from_manifest(&registry, "my-gear", "1.2.3", &documents)
         .expect("valid manifest")
@@ -345,7 +349,7 @@ async fn publishes_the_manifest_under_the_given_identity() {
         outcomes[&document(A).0],
         ReconcileOutcome::Admitted
     ));
-    assert_eq!(registry.content(A), Some(json!({"title": "a"})));
+    assert_eq!(registry.content(A), Some(content));
     let submissions = registry.submissions();
     assert!(!submissions.is_empty());
     for (_, request) in submissions {
