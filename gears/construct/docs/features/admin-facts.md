@@ -74,6 +74,7 @@ The PRD requires that a tenant administrator can read all facts of any subject i
 - The one-step plan path itself, which belongs to the Review Queue (`cpt-cf-construct-feature-review-queue`).
 - The gateway scope rule on `/api/construct/v1/admin/**`, which a deployment turns on.
 - In-process client methods for these operations.
+- Checking that a subject id belongs to a user of the tenant. Construct has no user directory and takes the subject id as the platform's, as Record Intake does for a connector's record, so an add for an id nobody has creates a profile for it. Only an administrator sees that profile, since nobody acts for the id, and an administrator's delete, an erasure or tenant exit removes it. The check belongs at both entry points, through account-management's user lookup, and is left to a later change.
 
 **Requirements**: `cpt-cf-construct-fr-admin-facts`; shared: `cpt-cf-construct-fr-fact-origin` (the administrator as origin), `cpt-cf-construct-fr-sensitive-data-guardrails` (an added or edited value passes the checks and Admission), `cpt-cf-construct-fr-subject-delete` (the administrator's delete works like the subject's).
 
