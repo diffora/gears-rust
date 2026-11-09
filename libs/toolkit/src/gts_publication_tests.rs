@@ -658,7 +658,7 @@ fn an_invalid_section_is_an_error_naming_the_gear_and_the_path() {
 fn the_timeout_bound_is_ten_minutes_on_every_os() {
     let at_bound = options_of(&json!({ "gts_publication": { "timeout": "10min" } })).unwrap();
     assert_eq!(at_bound.timeout(), Some(Duration::from_mins(10)));
-    assert_eq!(at_bound.timeout(), Some(GtsPublicationOptions::MAX_TIMEOUT));
+    assert_eq!(at_bound.timeout(), Some(super::MAX_PUBLICATION_BUDGET));
     let over = options_of(&json!({ "gts_publication": { "timeout": "601s" } })).unwrap_err();
     let message = format!("{over:#}");
     assert!(
@@ -942,4 +942,27 @@ async fn an_absolute_deadline_is_held_to_the_same_maximum() {
         1,
         "rejected before the adapter ran"
     );
+
+    // An already-expired deadline is not a budget violation: it reaches the adapter,
+    // which reports the expiry itself.
+    tokio::time::advance(Duration::from_secs(5)).await;
+    backend
+        .publish(request(now))
+        .await
+        .expect("a deadline in the past is not rejected by the budget check");
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+    // No deadline at all: nothing to bound.
+    backend
+        .publish(
+            GtsPublicationRequest::new(
+                Arc::new(GtsManifest::build("widgets", "1.0.0", []).unwrap()),
+                CancellationToken::new(),
+                Arc::new(|_: &str| {}),
+            )
+            .with_deadline(None),
+        )
+        .await
+        .expect("no deadline is accepted");
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
 }

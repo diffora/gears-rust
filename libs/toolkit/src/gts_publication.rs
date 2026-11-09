@@ -281,7 +281,7 @@ pub const MAX_PUBLICATION_BUDGET: Duration = Duration::from_mins(10);
 ///
 /// # Errors
 /// `budget` exceeds [`MAX_PUBLICATION_BUDGET`].
-pub fn check_publication_budget(what: &str, budget: Duration) -> anyhow::Result<()> {
+pub(crate) fn check_publication_budget(what: &str, budget: Duration) -> anyhow::Result<()> {
     anyhow::ensure!(
         budget <= MAX_PUBLICATION_BUDGET,
         "{what}: {budget:?} is too large to be a publication budget (at most {MAX_PUBLICATION_BUDGET:?})"
@@ -292,17 +292,13 @@ pub fn check_publication_budget(what: &str, budget: Duration) -> anyhow::Result<
 impl GtsPublicationOptions {
     const FIELDS: &str = "timeout, retry_backoff, retry_backoff_max, batch_size";
 
-    /// The longest accepted `timeout`: [`MAX_PUBLICATION_BUDGET`]. A fixed bound, not the
-    /// range of `Instant`, which differs per OS (about 9.2e18 s on Unix, 1.8e19 s on Windows).
-    pub const MAX_TIMEOUT: Duration = MAX_PUBLICATION_BUDGET;
-
     /// The policy of `gear` in `config`; the default without a `gts_publication` section.
     ///
     /// # Errors
     /// Naming the gear and the config path: a section that is not a mapping (`null`
     /// included), an unknown field, a value of the wrong type, a zero duration or batch
     /// size, a `retry_backoff_max` below `retry_backoff` (defaults included), or a
-    /// `timeout` above [`Self::MAX_TIMEOUT`] (10 minutes).
+    /// `timeout` above [`MAX_PUBLICATION_BUDGET`] (10 minutes).
     pub fn from_config(gear: &str, config: &dyn ConfigProvider) -> anyhow::Result<Self> {
         let path = format!(
             "gears.{gear}.config.{}",
@@ -479,7 +475,8 @@ impl GtsPublicationBackend {
     /// Publish within the budget. `Err` is expiry, a terminal refusal or cancellation.
     ///
     /// # Errors
-    /// See above.
+    /// See above; also a request whose absolute deadline lies more than
+    /// [`MAX_PUBLICATION_BUDGET`] ahead, rejected before the adapter runs.
     pub async fn publish(&self, request: GtsPublicationRequest) -> anyhow::Result<()> {
         // Every caller-supplied absolute deadline, from any path, is held to the same
         // maximum as `timeout`: rejected here, before the adapter runs, never clamped.
