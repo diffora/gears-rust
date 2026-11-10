@@ -72,6 +72,9 @@ jobs:
         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
         with:
+          # git diff instead of the PR-files REST API: that call spends the shared
+          # GITHUB_TOKEN budget (1,000/h per repo) in the job-start burst.
+          token: ''
           filters: |
             docker:
               - 'testing/docker/**'
