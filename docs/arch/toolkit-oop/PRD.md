@@ -66,11 +66,12 @@ application code remains deployment-agnostic. ToolKit Distributed Gears bring th
 | Plugin Host Gear              | A gear that defines a plugin trait in its SDK and discovers/consumes plugin implementations at runtime (e.g., authn-resolver, authz-resolver, mini-chat).                                                                                                                                                                                                          |
 | Flight Control                  | The **minimal** platform **control-plane deployment unit** (crate `apps/cf-gears-flight-control`): the composed process/image that links the orchestrator (`service-discovery` / `DirectoryService`), transport + edge (`grpc-hub`, `api-gateway`), `types-registry`, and edge JWT validation (`authn-resolver`). Responsible for OoP gear orchestration, lifecycle management, discovery coordination, gateway registration, and authentication at the edge. In K8s Native profile, this is just another pod providing infrastructure services — not a central authority. It hosts **no** policy decision point: the AuthZ plane (`authz-resolver`, `tenant-resolver`, `resource-group`) and higher-level services (`account-management`, `credstore`) run as their own OoP units and register with this host's directory. |
 | AuthZ plane                     | The out-of-process unit bundling `authz-resolver` (the PDP) with its trust-coupled chain `tenant-resolver` and `resource-group`. Kept together in one process so the chain's internal `SecurityContext::anonymous()` calls never cross the wire; serves `/authz-resolver/v1/evaluate` over its own HTTP server, which PEPs reach via directory resolution. |
-| service-discovery               | The system gear *inside* Flight Control that hosts the `DirectoryService` (service registration/discovery). This is the concrete gear that fulfils the orchestration role; "Flight Control" names the deployment unit that runs it.                                                                                                                                |
+| service-discovery               | The core gear in the system gear group *inside* Flight Control that hosts the `DirectoryService` (service registration/discovery). This is the concrete gear that fulfils the orchestration role; "Flight Control" names the deployment unit that runs it.                                                                                                                                |
 | OoP Worker                      | A separate OS process or k8s pod running one or more application gears.                                                                                                                                                                                                                                                                                            |
-| System Gear                   | A gear providing platform infrastructure (directory, gateway, auth, types-registry).                                                                                                                                                                                                                                                                            |
-| Application Gear              | A business gear written by framework users.                                                                                                                                                                                                                                                                                                                        |
-| Deployment Profile              | A named, tested configuration of how gears are deployed (Embedded, Host+Workers, K8s Native).                                                                                                                                                                                                                                                                      |
+| Core Gear                     | Any gear under `gears/system/`, including its plugins. The directory may be renamed to `gears/core/` in the future. This repository category does not select a startup group. |
+| System gear group             | Gears declaring the runtime `system` capability; currently Types Registry, Service Discovery, Cluster and gRPC Hub. The group's startup completes before application preparation. |
+| Application gear group        | All gears without the `system` capability, including core gears such as API Gateway and resolvers, as well as business gears written by framework users. |
+| Deployment Profile              | A named, tested configuration of how gears are deployed (Embedded, Self-Hosted, K8s Native).                                                                                                                                                                                                                                                                      |
 | ClientHub                       | A type-safe registry for inter-gear client resolution. Supports unscoped resolution (one impl per trait) and scoped resolution (keyed by GTS instance ID for plugins). The backing implementation may be in-process or a generated remote client.                                                                                                                  |
 | OperationBuilder                | A ToolKit DSL for declaring REST routes, request/response schemas, and OpenAPI metadata.                                                                                                                                                                                                                                                                              |
 | DirectoryService                | A gRPC-based service discovery registry. Gears register instances; consumers resolve endpoints.                                                                                                                                                                                                                                                                    |
@@ -107,7 +108,7 @@ application code remains deployment-agnostic. ToolKit Distributed Gears bring th
 
 **ID**: `cpt-cf-actor-flight-control`
 
-- **Role**: The control-plane deployment unit. Runs the control-plane system gears, spawns OoP workers (on-premise),
+- **Role**: The control-plane deployment unit. Runs the selected core gears, spawns OoP workers (on-premise),
   provides DirectoryService (via `service-discovery`), and optionally runs the built-in api-gateway.
 
 #### External Gateway
@@ -160,7 +161,7 @@ application code remains deployment-agnostic. ToolKit Distributed Gears bring th
 
 **Priority 2:**
 
-- Deployment Profile 2 (Host + Workers): single-node on-premise (OoP Workers over UDS/pipes, bootstrap-token platform
+- Deployment Profile 2 (Self-Hosted): OoP Workers over UDS/pipes, bootstrap-token platform
   auth) and multi-node on-premise (mTLS). Deferred from P1 — the platform-plane `BootstrapToken` / `MtlsIdentity`
   credential variants are defined for forward-compatibility but are not validated/wired in P1 (which targets Profile 1 +
   Profile 3)
@@ -379,7 +380,7 @@ backends of it, so swapping does not change gear code.
 OoP Workers MUST register their REST endpoint and OpenAPI spec with DirectoryService on startup and deregister on
 graceful shutdown.
 
-Active heartbeat-timeout reaping of unresponsive workers by Flight Control is **Profile 2 (Host + Workers)** and is
+Active heartbeat-timeout reaping of unresponsive workers by Flight Control is **Profile 2 (Self-Hosted)** and is
 **deferred to P2**; in **Profile 3 (K8s)** k8s readiness probes + the Endpoints controller handle dead-pod removal.
 
 - **Rationale**: Stale service entries cause routing failures. Clean lifecycle management ensures the directory reflects

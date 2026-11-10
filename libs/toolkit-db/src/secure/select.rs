@@ -6,9 +6,7 @@ use std::sync::Arc;
 
 use crate::secure::cond::build_scope_condition;
 use crate::secure::error::ScopeError;
-use crate::secure::{
-    AccessScope, DBRunner, DBRunnerInternal, ScopableEntity, ScopeProperties, SeaOrmRunner,
-};
+use crate::secure::{AccessScope, DBRunner, DBRunnerInternal, ScopableEntity, SeaOrmRunner};
 
 /// Typestate marker: query has not yet been scoped.
 /// Cannot execute queries in this state.
@@ -62,7 +60,9 @@ pub struct Scoped {
 #[must_use]
 #[derive(Clone, Debug)]
 pub struct SecureSelect<E: EntityTrait, S> {
+    /// The wrapped `SeaORM` select statement.
     pub(crate) inner: sea_orm::Select<E>,
+    /// Typestate marker tracking whether the scope has been applied.
     pub(crate) state: S,
 }
 
@@ -94,7 +94,9 @@ pub struct SecureSelect<E: EntityTrait, S> {
 #[must_use]
 #[derive(Clone, Debug)]
 pub struct SecureSelectTwo<E: EntityTrait, F: EntityTrait, S> {
+    /// The wrapped `SeaORM` select-two statement.
     pub(crate) inner: sea_orm::SelectTwo<E, F>,
+    /// Typestate marker tracking whether the scope has been applied.
     pub(crate) state: S,
 }
 
@@ -126,7 +128,9 @@ pub struct SecureSelectTwo<E: EntityTrait, F: EntityTrait, S> {
 #[must_use]
 #[derive(Clone, Debug)]
 pub struct SecureSelectTwoMany<E: EntityTrait, F: EntityTrait, S> {
+    /// The wrapped `SeaORM` select-two-many statement.
     pub(crate) inner: sea_orm::SelectTwoMany<E, F>,
+    /// Typestate marker tracking whether the scope has been applied.
     pub(crate) state: S,
 }
 
@@ -194,6 +198,18 @@ impl<E> SecureSelect<E, Scoped>
 where
     E: EntityTrait,
 {
+    /// Lock matching scoped rows for concurrent readers inside a transaction.
+    pub fn lock_shared(mut self) -> Self {
+        self.inner = self.inner.lock_shared();
+        self
+    }
+
+    /// Lock matching scoped rows exclusively inside a transaction.
+    pub fn lock_exclusive(mut self) -> Self {
+        self.inner = self.inner.lock_exclusive();
+        self
+    }
+
     /// Execute the query and return all matching results.
     ///
     /// # Errors
@@ -259,7 +275,7 @@ where
         E: ScopableEntity,
         E::Column: ColumnTrait + Copy,
     {
-        let resource_col = E::resource_col().ok_or(ScopeError::Invalid(
+        let resource_col = E::SCOPE.resource().ok_or(ScopeError::Invalid(
             "Entity must have a resource_col to use and_id()",
         ))?;
         let cond = sea_orm::Condition::all().add(Expr::col(resource_col).eq(id));
@@ -471,7 +487,7 @@ where
     /// # Automatic Scoping
     /// - The primary entity `E` is already scoped by the parent `SecureSelect`.
     /// - The related entity `R` will automatically have tenant filtering applied
-    ///   **if it has a tenant column** (i.e., `R::tenant_col()` returns `Some`).
+    ///   **if it has a tenant column** (i.e., `R::SCOPE.tenant()` returns `Some`).
     /// - For **global entities** (those with `#[secure(no_tenant)]`), no additional
     ///   filtering is applied — the scoping becomes a no-op automatically.
     ///
@@ -532,7 +548,7 @@ where
     /// # Automatic Scoping
     /// - The primary entity `E` is already scoped by the parent `SecureSelect`.
     /// - The related entity `R` will automatically have tenant filtering applied
-    ///   **if it has a tenant column** (i.e., `R::tenant_col()` returns `Some`).
+    ///   **if it has a tenant column** (i.e., `R::SCOPE.tenant()` returns `Some`).
     /// - For **global entities** (those with `#[secure(no_tenant)]`), no additional
     ///   filtering is applied — the scoping becomes a no-op automatically.
     ///

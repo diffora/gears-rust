@@ -1,148 +1,531 @@
 # Types Registry SDK
 
-SDK crate for the Types Registry gear, providing the public API contracts for GTS (Global Type System) entity management.
+Transport-agnostic contracts, models and helpers for the Types Registry gear, which stores
+GTS (Global Type System) Type Schemas and Instances.
 
-## Overview
+## Contracts
 
-This crate defines the transport-agnostic interface for the Types Registry gear:
+| Contract | Context | For |
+|---|---|---|
+| `PlatformTypesRegistryApi` | `PlatformSecurityContext` | the gear's own work: batch reads, discovery, registration, deletion, operation reads |
+| `TypesRegistryApi` | a tenant's `SecurityContext` | reads made on a tenant's behalf |
 
-- **`TypesRegistryClient`** - Async trait for inter-gear communication
-- **`GtsEntity`** - Model representing registered GTS entities (types and instances)
-- **`ListQuery`** - Query builder for filtering entity listings
-- **`TypesRegistryError`** - Error types for all operations
+Both are resolved from `ClientHub` as trait objects. Every method returns
+`Result<_, CanonicalError>`; project an error with `TypesRegistryError::from` for typed
+matching, and an operation item's failure with `AdmissionFailure::from_canonical`.
 
-## Usage
+`PlatformTypesRegistryApiExt` and `TypesRegistryApiExt` add kind-narrowed reads
+(`get_type_schema`, `get_instance`, their `_by_uuid` and `batch_get_*` variants),
+identifier and Registry Reference resolution (`resolve_type_uuid`, `resolve_type_id`,
+`resolve_instance_uuid`, `resolve_instance_id` and their plural forms) and
+complete listings (`list_type_schemas`, `list_instances`). The platform extension also
+reconciles explicit documents with `reconcile_entities_and_await`. Import the extension
+trait to call them; with both imported, choose one by UFCS.
 
-### Getting the Client
+### Both APIs over REST (`rest-client`)
 
-Consumers obtain the client from `ClientHub`:
+The current base paths are `/types-registry/v2/platform` and `/types-registry/v2`.
+After legacy v1 is removed in T38, both promote atomically to
+`/types-registry/v1/platform` and `/types-registry/v1`; the SDK bindings and callers
+move together in that cutover.
 
-```rust
-use types_registry_sdk::{TypesRegistryClient, ListQuery};
+`PlatformTypesRegistryApiRestClient` calls `/types-registry/v2/platform/`, resolving
+`ClientConfig::internal_token_provider` afresh per attempt for
+`X-ToolKit-Internal-Token`. It sends no bearer or `PlatformSecurityContext`.
+Safe reads and keyed mutations retry under `ClientConfig::retry`. Mutations read
+back their operation after `Retry-After`, capped by `retry.max_delay`, while running.
+Failed read-back returns `Aborted` / `OPERATION_READ_FAILED` with the operation ID;
+replay the same key to recover it.
 
-// Get the client from ClientHub
-let client = hub.get::<dyn TypesRegistryClient>()?;
+`TypesRegistryApiRestClient` serves the same read models, projections and validators
+on tenant routes. Each call forwards its `SecurityContext` bearer for revalidation;
+it retains no caller context and never uses the internal token. Missing bearer
+returns 401. Both reads retry under `ClientConfig::retry`; paths are client-internal.
+
+`PlatformTypesRegistryApiRestResolvingClient` and `TypesRegistryApiRestResolvingClient`
+wrap the two clients in `DirectoryResolvingClient`, where `#[toolkit::consumes]` looks for
+them: each call resolves the registry from the directory, follows it when it moves, and
+fails `ServiceUnavailable` while none is registered or the directory cannot answer. The
+`rest-server` feature supplies `platform_types_registry_api_rest_http_binding` and
+`types_registry_api_rest_http_binding`, the descriptors `#[toolkit::provides]` validates
+against `platform_types_registry_api_ir` and `types_registry_api_ir`.
+
+The registry gear declares `#[toolkit::provides(transports = [local, rest])]` for both
+contracts and publishes them, locally, only past its seed barrier. A gear that may run
+without the registry in its process declares, beside `#[toolkit::gear]`:
+
+```rust,ignore
+#[toolkit::consumes(contract = types_registry_sdk::PlatformTypesRegistryApi, from = "types-registry")]
+#[toolkit::consumes(contract = types_registry_sdk::TypesRegistryApi, from = "types-registry")]
 ```
 
-### Registering Entities
+with this SDK's `rest-client` feature. Where the registry is linked, its local clients win;
+elsewhere the resolving clients are wired after every `init`, so a remote consumer cannot
+call the registry from its own `init()`.
 
-```rust
-use serde_json::json;
+The `otel` feature adds trace propagation and RED client metrics to both clients.
 
-// Register a type schema
-let schemas = vec![
-    json!({
-        "$id": "gts://gts.acme.core.events.user_created.v1~",
-        "type": "object",
-        "properties": {
-            "user_id": { "type": "string" },
-            "email": { "type": "string" }
+The GTS identifier types the models use (`GtsId`, `GtsTypeId`, `GtsInstanceId`,
+`GtsIdPattern`, `GtsIdSegment`) are re-exported, so building a request needs no direct
+`gts` dependency.
+
+**Intermediate AM topology (implemented for the current execution slice).** An embedded
+registry configured `mode: legacy_only` keeps only the legacy client and v1 routes for RG:
+it registers neither new API locally, routes neither, runs no seeding or admission over a
+bound database and is not advertised in the service directory, so AM and its selected
+publishers reach a remote registry through the wiring that `gts_publication(...)` generates. The runtime
+publishes all application GTS Type Schemas and Instances before any application `init`; readiness waits for
+that barrier. `am-host publish-gts --registry <url>` publishes the same
+GTS Type Schemas and Instances as a deployment step. RG's sealed local
+`ResourceGroupTypeBootstrap` is unchanged. The composition is
+`apps/cf-gears-am-host` with flight-control as the remote registry (`config/am-remote-*.yaml`,
+`make e2e-am-remote`).
+
+## Publishing from a gear
+
+A gear publishes the documents it owns from its own `init()` through the in-process
+platform API, then reads them back. Its `Cargo.toml` depends on this SDK and on the
+registry gear crate, `cf-gears-types-registry`: `deps = [types_registry]` re-exports that
+crate to keep its registration linked, and orders the two `init()` calls.
+
+Ordinary gears can omit the registry dependency: the registry initializes in the system gear group first.
+The host must then link a database-backed registry or consumer init fails.
+This consumer-migration branch moves
+AM and AuthZ/TR publishers onto this local-only path. AM request-path reads use
+`TypesRegistryApi` with the caller’s context; `AuthN` plugins consume the platform
+contract and publish in `post_init`. T41/T42 retain full remote publication and
+readiness work; the remaining legacy consumers move in T38.
+
+```rust,no_run
+# // This doctest cannot depend on the registry gear; stand the SDK in for it.
+# pub extern crate types_registry_sdk as types_registry;
+use toolkit::{Gear, GearCtx};
+use toolkit_security::PlatformSecurityContext;
+use types_registry_sdk::{
+    EntityField, FieldSelection, GtsId, GtsTypeId, Origin, PlatformTypesRegistryApi,
+    PlatformTypesRegistryApiExt, Projection, Publication, PublisherContext, ReadOptions,
+};
+
+// `deps` makes this gear's `init()` run after the registry's.
+#[toolkit::gear(name = "example-events", deps = [types_registry])]
+#[derive(Default)]
+pub struct ExampleEvents;
+
+#[async_trait::async_trait]
+impl Gear for ExampleEvents {
+    async fn init(&self, ctx: &GearCtx) -> anyhow::Result<()> {
+        // Fails when the registry has no database bound: there is no fallback.
+        let registry = ctx.client_hub().get::<dyn PlatformTypesRegistryApi>()?;
+        let platform = PlatformSecurityContext::outbound_marker();
+        let publisher = PublisherContext {
+            name: "example-events".to_owned(),
+            version: env!("CARGO_PKG_VERSION").parse()?,
+        };
+        let desired = [(
+            GtsId::try_new("gts.cf.example.events.user_created.v1~")?,
+            serde_json::json!({
+                "$id": "gts://gts.cf.example.events.user_created.v1~",
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "type": "object"
+            }),
+        )];
+        // Returns only once every desired document is admitted or already up to date.
+        Publication::new(registry.as_ref(), publisher, desired)
+            .publish(ctx.cancellation_token())
+            .await?;
+
+        let type_id = GtsTypeId::try_new("gts.cf.example.events.user_created.v1~")?;
+        let read = registry
+            .get_type_schema(
+                &platform,
+                &type_id,
+                ReadOptions {
+                    projection: Projection::Select(FieldSelection::with(&[
+                        EntityField::Content,
+                        EntityField::Origin,
+                    ])),
+                    ..ReadOptions::default()
+                },
+            )
+            .await?;
+        if let Some(Origin::Managed { resource_version, .. }) = read.origin {
+            tracing::info!(resource_version, "user_created is published");
         }
-    })
-];
-
-let entities = client.register(&ctx, schemas).await?;
-```
-
-### Listing Entities
-
-```rust
-use types_registry_sdk::ListQuery;
-
-// List all entities
-let all = client.list(&ctx, ListQuery::default()).await?;
-
-// List only types from vendor "acme"
-let query = ListQuery::new()
-    .with_is_type(true)
-    .with_vendor("acme");
-let acme_types = client.list(&ctx, query).await?;
-
-// List entities matching a pattern
-let query = ListQuery::new()
-    .with_pattern("gts.acme.core.*");
-let matched = client.list(&ctx, query).await?;
-```
-
-### Getting a Single Entity
-
-```rust
-let entity = client.get(&ctx, "gts.acme.core.events.user_created.v1~").await?;
-
-println!("GTS ID: {}", entity.gts_id);
-println!("Kind: {:?}", entity.kind);
-println!("Vendor: {:?}", entity.vendor());
-```
-
-## Models
-
-### GtsEntity
-
-Represents a registered GTS entity:
-
-```rust
-pub struct GtsEntity<C = serde_json::Value> {
-    pub id: Uuid,                    // Deterministic UUID from GTS ID
-    pub gts_id: String,              // Full GTS identifier
-    pub segments: Vec<GtsIdSegment>, // Parsed segments
-    pub kind: GtsEntityKind,         // Type or Instance
-    pub content: C,                  // Schema or object content
-    pub description: Option<String>, // Optional description
+        Ok(())
+    }
 }
 ```
 
-### GtsIdSegment
+Success is `UpToDate`, or `Reconciled` with every desired identifier `Admitted`. An accepted
+operation, or an `Ok` from a single `register_entities`, is not: an item can still fail in
+admission. Neither `Publication::publish` nor `reconcile_entities_and_await` requires a
+second check of successful outcomes.
 
-Re-exported from `gts-rust`. Represents a parsed segment of a GTS identifier:
+`Publication` takes the required registry, publisher and documents in `new` (typed) or
+`from_manifest` (parsed GTS ids, unparsed version, rejected before any request); `deadline`,
+`timeout`, `retry_backoff`, `batch_size` and `on_pending` are optional. `publish` uses the
+platform outbound marker, unlimited passes, batches of 100 and the shared 120-second
+`STARTUP_PUBLICATION_DEADLINE`, measured from the start of `publish`. An absolute `deadline`
+`D` replaces that budget, may exceed it and is never renewed between retries. A `timeout`
+`T` caps the budget: it ends at `start + T` without a deadline and at `min(D, start + T)`
+with one, so `T` never extends `D`; a `T` no clock can represent fails before any request
+without a deadline and leaves `D` in force with one. `retry_backoff(initial, max)` and
+`batch_size` are the raw reconciliation values: an `initial` above `max` is clamped, a zero
+pause retries at once, and a batch above the registry's `limits.batch_candidates` is
+refused. The `gts_publication` runtime configuration rejects zero values and a maximum below
+the initial pause before they get here. It awaits reconciliation in the current task, without
+spawning or changing the gear's lifecycle, and returns the `Reconciliation`. Pass the owning
+gear's publisher name and version; `env!("CARGO_PKG_VERSION")` must be evaluated in that
+gear, not in the SDK.
 
-```rust
-pub struct GtsIdSegment {
-    pub num: usize,              // Segment number in chain
-    pub offset: usize,           // Character offset in original string
-    pub segment: String,         // Original segment string
-    pub vendor: String,          // e.g., "acme"
-    pub package: String,         // e.g., "core"
-    pub namespace: String,       // e.g., "events"
-    pub type_name: String,       // e.g., "user_created"
-    pub ver_major: u32,          // e.g., 1
-    pub ver_minor: Option<u32>,  // e.g., Some(0) for v1.0
-    pub is_type: bool,           // true if segment ends with ~
-    pub is_wildcard: bool,       // true if segment contains *
+On failure, `PublicationError` names the publisher and each rejected or pending identifier,
+with the stop reason and machine-readable cause. `canonical_error()` and the error's
+`source()` retain the original `CanonicalError`; `report()` exposes the decoded
+`ReconcileReport`, when present. Propagate it with `?` or add `anyhow::Context` so the source
+chain stays intact. Cancellation still names the requested identifiers even without a report.
+For another security context or other reconciliation options (a pass limit, `stop_when_stalled`), call
+`reconcile_entities_and_await` directly.
+
+**Bounded publication.** `Publication::publish` calls reconciliation directly with one
+publication budget. It supplies the platform context,
+formats progress and failure diagnostics, and configures the reconciliation options.
+Transient reads, dependencies and conflicts retry within that budget, with equal-jitter
+exponential backoff (1 s up to 30 s). `on_pending` receives a `PublicationError` describing
+what is still pending before each retrying pass (default: nothing). Admitted identifiers are never re-read or resubmitted, so another writer's
+later changes are left alone. Rejections and call-level refusals stop retries;
+cancellation returns `Cancelled`. Budget expiry reports `deadline`, retaining each
+identifier's last known cause. Accepted writes continue after the caller stops waiting.
+
+`#[toolkit::gear(..., gts_publication(...))]` publishes through `publication::Publication`
+during application preparation, before any application `init`. Ordinary startup uses a
+120-second budget; a deployment job supplies its absolute deadline instead, shared by every
+publisher. Each publishing gear can set its own policy under
+`gears.<gear>.config.gts_publication` (hidden from the gear's typed configuration):
+
+```yaml
+gears:
+  account-management:
+    config:
+      gts_publication:
+        timeout: "120s"          # caps startup and deployment budgets; default: no cap
+        retry_backoff: "1s"
+        retry_backoff_max: "30s"
+        batch_size: 100
+```
+
+Without `timeout`, startup keeps the 120-second default and a deployment job's deadline
+replaces it, even when longer. Unknown fields, wrong types, zero values,
+`retry_backoff_max < retry_backoff` and a `timeout` above 10 minutes (the same on every OS, and the same
+maximum as the `publish-gts` deadline) fail startup before any publication writes, naming the
+gear and the config path. The policy applies per publication, alike for a local and a
+remote registry; the registry client's URL, HTTP timeout and retries stay in
+`consumer_wiring.types-registry`. Publication reuses the gear's own client view and settings.
+Deployment jobs use the same validation and tuning; `--registry` changes only the endpoint
+and must respect `require_tls`. Custom `publisher = ...` adapters provide
+the same `Publication` shape: `from_manifest(registry, name, version, &[(GtsId, JsonDocument)])`,
+`deadline(Option<tokio::time::Instant>)`, `timeout(Option<Duration>)`,
+`retry_backoff(Duration, Duration)`, `batch_size(NonZeroUsize)`,
+`on_pending(FnMut(&impl Display) + Send)` and `publish(cancel)`; see
+`toolkit::gts_publication`.
+
+```rust,ignore
+#[toolkit::gear(
+    name = "my-gear",
+    gts_publication(
+        crates = [crate, my_gear_sdk],      // crates with `declare_gts_inventory!()`
+        entities = Self::configured,        // optional: config-only documents
+    ),
+)]
+pub struct MyGear { /* ... */ }
+```
+
+`init` uses `GearCtx::gts_publication_manifest()` to bind plugin clients from declared instances
+after admission. The returned `GtsManifest` holds publisher name/version and authored
+GTS Type Schemas and Instances; it is a `ToolKit` data structure, not a GTS entity.
+The gear crate depends on this SDK, as `types_registry_sdk`, with the `rest-client` feature.
+See [GTS publication by gears](../docs/DESIGN.md#inventory-and-startup-reconciliation).
+
+The examples use vendor `cf`, the only one a registry admits without configuration. Another
+vendor needs a `registration_policy` entry for its region in the registry's configuration:
+
+```yaml
+gears:
+  types-registry:
+    config:
+      registration_policy:
+        "gts.acme.core.*":
+          allowed_vendors: [acme]
+```
+
+**Local API availability.** Registry init admits linked Type Schemas
+(`#[toolkit_gts::gts_type_schema(..)]`), Instances (`gts_instance!`,
+`gts_instance_raw!`) and configured `entities` before publishing both contracts
+in `ClientHub`. Missing database or failed seeding leaves neither registered;
+`ClientHub::get` fails without legacy fallback.
+
+- `deps` orders `init()`; remote clients are wired afterwards. AM, the `AuthN`, `AuthZ` and
+  tenant resolvers, and the static `AuthN`, `AuthZ`, TR and `IdP` plugins and the OIDC `AuthN`
+  plugin publish with `gts_publication(...)`; the remaining publishers move in T41/T42.
+- `Publication::publish` above runs in its caller's task; it does not perform the
+  lifecycle migration by itself.
+- `PublisherContext` is required but only forwarded/enforced in T44/T45;
+  mixed-version publishers have no earlier guarantee.
+- Local clients trust both context types without validation or tenant scope (C2/C6).
+- Reads hit the database until the SDK cache (T36).
+- Legacy and new catalogues share seeds but no later writes until T38. Dependencies
+  registered only through legacy cannot support publication through the new API.
+- Shared-database outbox polling can delay admission by one minute; keep
+  reconciliation deadlines and `worker.operation_timeout` above it.
+
+## Reading
+
+```rust,no_run
+use toolkit::client_hub::ClientHub;
+use toolkit_security::PlatformSecurityContext;
+use types_registry_sdk::{
+    EntityField, FieldSelection, GtsTypeId, PlatformTypesRegistryApi,
+    PlatformTypesRegistryApiExt, Projection, ReadOptions,
+};
+
+async fn read(hub: &ClientHub) -> anyhow::Result<()> {
+    let registry = hub.get::<dyn PlatformTypesRegistryApi>()?;
+    let ctx = PlatformSecurityContext::outbound_marker();
+    let type_id = GtsTypeId::try_new("gts.cf.example.events.user_created.v1~")?;
+
+    // Document-free by default: identity, kind, lifecycle and origin.
+    let light = registry.get_type_schema(&ctx, &type_id, ReadOptions::default()).await?;
+
+    // Select documents explicitly.
+    let with_schema = ReadOptions {
+        projection: Projection::Select(FieldSelection::with(&[
+            EntityField::Content,
+            EntityField::ResolvedSchema,
+        ])),
+        ..ReadOptions::default()
+    };
+    let schema = registry.get_type_schema(&ctx, &type_id, with_schema).await?;
+
+    // Bypass a client cache for this read.
+    let fresh = registry.get_type_schema(&ctx, &type_id, ReadOptions {
+        fresh: true,
+        ..ReadOptions::default()
+    }).await?;
+    Ok(())
 }
 ```
 
-### GtsEntityKind
+`Projection::Default` is the document-free field set on single and batch reads, while the
+list helpers give it their documents (content, and a Type Schema's materializations). An
+explicit selection is always kept as given.
 
-```rust
-pub enum GtsEntityKind {
-    Type,     // GTS ID ends with ~
-    Instance, // GTS ID does not end with ~
+Single and batch typed read helpers take `ReadOptions`. Its default uses
+`Projection::Default` and `fresh = false`. The options preserve the projection
+and apply `fresh` to every request, including each chunk of a batch read. `fresh`
+controls the client cache and is not sent on the wire. On a client without a
+cache, this flag has no effect.
+
+`resolve_type_uuid` / `resolve_instance_uuid` map registered IDs to Registry
+References; `resolve_type_id` / `resolve_instance_id` reverse them. Plural forms
+follow `batch_get_*` rules. They take no options, select mandatory fields through
+normal caching, and return snapshot values for active or deleted entities.
+Unknown or other-kind references return `NotFound` singly, `None` in batches;
+invalid/wrong-kind identifiers return `InvalidArgument` before reading.
+Use `GtsId::to_uuid` for deterministic UUID derivation without registration or a read.
+
+`EntityField::Provenance` selects a managed Type Schema's `provenance` group as a whole:
+`TypeSchema::provenance` is `None` when unselected and `Some(Provenance { .. })` when
+selected. Its member `compatibility_check_skipped` is a plain `bool`: `true` when
+`skip_compatibility_check` waived an applicable cross-minor compatibility check, `false` when
+it did not — not a claim that a check ran. `Instance` has no `provenance`.
+
+## Listing
+
+```rust,no_run
+use toolkit_security::PlatformSecurityContext;
+use types_registry_sdk::{
+    GtsIdPattern, ListEntitiesRequest, PlatformTypesRegistryApi, PlatformTypesRegistryApiExt,
+};
+
+async fn list(registry: &dyn PlatformTypesRegistryApi) -> anyhow::Result<()> {
+    let ctx = PlatformSecurityContext::outbound_marker();
+    let query = ListEntitiesRequest::matching(GtsIdPattern::try_new("gts.cf.example.*")?);
+    let schemas = registry.list_type_schemas(&ctx, query).await?;
+    Ok(())
 }
 ```
 
-### ListQuery
+Each `with_*` builder sets one field and keeps the others. `list_type_schemas` and
+`list_instances` set the kind themselves and refuse the other one; `list_entities` takes
+`with_kind`.
 
-Builder for filtering entity listings:
+A listing helper follows every page; past `MAX_LIST_PAGES` it fails with
+`ResourceExhausted`. A cursor resumes only the query that issued it.
 
-```rust
-let query = ListQuery::new()
-    .with_pattern("gts.acme.*")
-    .with_is_type(true)
-    .with_vendor("acme")
-    .with_package("core")
-    .with_namespace("events");
+## Reconciling
+
+[Publishing from a gear](#publishing-from-a-gear) shows a complete call and its outcomes.
+Reconciliation creates absent identifiers and updates differing ones; it never deletes. An
+identifier listed twice with different documents is `Rejected` without being submitted.
+`Ok` means every identifier is admitted. Otherwise `FailedPrecondition` carries a report;
+decode it with `ReconcileReport::from_canonical(&error)` for the stop reason and every outcome,
+including admitted identifiers. `Rejected` is terminal for the document; `Pending` may settle
+on a later call. Caller cancellation and an unrepresentable deadline return `Cancelled` and
+`InvalidArgument` without a report.
+
+`ReconcileOptions::batch_size` must fit the registry's configured `limits.batch_candidates`
+(both default to 100). Passes (default 5) re-read and resubmit what a conflict or a dependency in
+a later batch left pending; a caller whose desired set is complete can set `stop_when_stalled` to
+end the call as `stalled` once a pass admits nothing and only dependencies remain. Transient
+read errors retry under the same deadline and pass limit; permanent read refusals and malformed
+responses stop as `read_failed`. A terminal item rejection stops further passes after the current
+pass's batches, reporting `rejected` when other identifiers remain pending. A permanent submission
+refusal stops the call immediately:
+`InvalidArgument`, `FailedPrecondition`, `Unauthenticated`, `PermissionDenied`, `NotFound`,
+`AlreadyExists`, `OutOfRange`, `Cancelled`, or `ResourceExhausted` without a quota
+`retry_after_seconds`. A `ResourceExhausted` with that hint resends the same request under the same
+key after at least the longest hint, within the deadline; `Aborted`, `Internal`, `Unknown` and
+`ServiceUnavailable` allow up to three attempts per batch. The canonical category and context
+decide, the same for local and remote clients, never the HTTP status. Unjudged identifiers keep
+earlier outcomes or become `Pending(Skipped)`; accepted writes continue.
+
+## Operations
+
+`register_entities` and `delete_entities` answer the accepted operation; poll it with
+`get_operation` until `OperationStatus::Completed`. Each item carries an outcome with exactly
+its state's data:
+
+```rust,no_run
+use toolkit_security::PlatformSecurityContext;
+use types_registry_sdk::{Operation, PlatformTypesRegistryApi, RegistrationOutcome};
+
+async fn outcomes(
+    registry: &dyn PlatformTypesRegistryApi,
+    operation_id: uuid::Uuid,
+) -> anyhow::Result<()> {
+    let ctx = PlatformSecurityContext::outbound_marker();
+    if let Operation::Registration(operation) = registry.get_operation(&ctx, operation_id).await? {
+        for item in operation.items {
+            match item.outcome {
+                RegistrationOutcome::Succeeded { resource_version } => {}
+                RegistrationOutcome::Unchanged { resource_version } => {}
+                RegistrationOutcome::WouldSucceed => {} // a dry run: nothing committed
+                RegistrationOutcome::Failed { error } => {}
+                RegistrationOutcome::Pending | RegistrationOutcome::Running => {}
+            }
+        }
+    }
+    Ok(())
+}
 ```
 
-## Error Handling
+A deletion item's `DeletionOutcome` has the same states except `Unchanged`.
 
-All API methods return `Result<T, TypesRegistryError>`:
+## Errors
 
-```rust
-match client.get(&ctx, gts_id).await {
-    Ok(entity) => println!("Found: {}", entity.gts_id),
-    Err(TypesRegistryError::NotFound(id)) => println!("Not found: {}", id),
-    Err(TypesRegistryError::InvalidGtsId(msg)) => println!("Invalid ID: {}", msg),
-    Err(e) => println!("Error: {}", e),
+```rust,no_run
+use toolkit_security::PlatformSecurityContext;
+use types_registry_sdk::{
+    GtsTypeId, PlatformTypesRegistryApi, PlatformTypesRegistryApiExt, ReadOptions,
+    TypesRegistryError,
+};
+
+async fn classify(
+    registry: &dyn PlatformTypesRegistryApi,
+    type_id: &GtsTypeId,
+) -> anyhow::Result<()> {
+    let ctx = PlatformSecurityContext::outbound_marker();
+    match registry.get_type_schema(&ctx, type_id, ReadOptions::default()).await {
+        Ok(schema) => {}
+        Err(error) => match TypesRegistryError::from(error) {
+            TypesRegistryError::NotFound { .. } => {}
+            TypesRegistryError::Validation { issues } => {}
+            other => return Err(other.into()),
+        },
+    }
+    Ok(())
+}
+```
+
+## Observability
+
+`reconcile_entities_and_await` traces with `tracing` at INFO; nothing needs DEBUG to be
+correlated. Every log record has a stable `log_kind` field. Codes only: no document content, and no
+free text of an error (`detail`, a violation's description, an admission message). The full
+error reaches the caller in the returned `ReconcileOutcome` or `Err`; an accepted operation's
+item failures are also persisted and read with `get_operation`. A synchronous refusal, a
+conflicting duplicate or a read fault need not have created an operation: when an error names
+one (an idempotency conflict, a lost read-back, a deadline while it ran), the batch span
+records its `operation_id`; otherwise the caller's error is the only full text.
+
+| Span (INFO) | Fields |
+|---|---|
+| `reconcile` | `reconcile_id`, `publisher`, `publisher_version`, `inputs` (entries given), `desired` (distinct identifiers), `passes`, `batch_size`, `deadline_ms` |
+| `reconcile_batch` | `batch`, `pass`, `size`, `idempotency_key`, `attempt`, `operation_id` (once known) |
+
+| Level | `log_kind` | Meaning |
+|---|---|---|
+| INFO | `reconcile_started` | the call began |
+| INFO | `batch_submitted` | a new payload is about to be sent, under its `idempotency_key`; written before any answer |
+| INFO | `batch_accepted` | the registry accepted the batch as `operation_id` |
+| WARN | `candidate_refused` | one candidate refused synchronously (`gts_id`, `category`, `reason`, `violation_fields`); the call stops |
+| WARN | `batch_refused` | the request as a whole was refused; its candidates stay pending and the call stops |
+| WARN | `transport_exhausted`, `incomplete_read`, `item_unreported` | transport or protocol trouble |
+| INFO / WARN | `reconcile_finished` | `stop`, `elapsed_ms`, `desired`, `admitted`, `rejected`, `pending`, `undecided`, `passes` |
+| WARN | `entity_unsettled` | one per identifier not admitted, on a normal return: `outcome`, `cause`, `category`, `reason`, `dependency_id`, `dependency_kind`, `diagnostic_code`; `rejected` is final for that document, `pending` may settle in a later call |
+| DEBUG | `transport_retry` | a transport failure retried under the same key (`category`, `reason`, `backoff_ms`) |
+
+`reconcile_finished` is written exactly once — also when the call is cancelled, its future
+dropped (`stop = "dropped"`, with what it had observed and the rest `undecided`) or its
+deadline unrepresentable. It is INFO only for `up_to_date`, a `completed` call that admitted
+everything, and cancellation by the caller's token; anything else is WARN. `stop` is
+`up_to_date`, `completed`, `passes_exhausted`, `deadline`, `read_failed`, `invalid_input`, `stalled`, `cancelled`,
+`invalid_deadline`, `dropped` or `panicked`.
+
+The registry writes INFO `operation_accepted` once an operation is durable — `operation_id`,
+`kind`, `dry_run`, `items`, `replayed` — with `idempotency_key` when the key is a canonical
+UUID, as the SDK generates (any other key is logged as `idempotency_key_kind` and
+`idempotency_key_len` only).
+
+**Investigating a call.** Filter by `reconcile_id`. `reconcile_finished` and the
+`entity_unsettled` rows say what ended how. Each `batch_submitted` names its batch's
+`idempotency_key`, before any answer; the registry's `operation_accepted` with that key gives the
+`operation_id`, even when the acknowledgement never reached the client (a replay is
+`replayed = true`). The registry's `types_registry.admission.operation` and `unit` spans carry
+that `operation_id` and each candidate's outcome, and `get_operation` reads an admission
+refusal's full text. Rows from a synchronous refusal (`candidate_refused`,
+`batch_refused`), a conflicting duplicate or `read_failed` may name no operation; their full
+error is the one the caller received. With the local client the registry's acceptance runs inside the caller's spans, so its
+event carries `reconcile_id` directly.
+
+## Testing (`test-util`)
+
+- `testing_platform::MockTypesRegistry` implements both contracts in memory. Seed it
+  (`seed`, `Seed`, `seed_inventory`) or write through the contract; Type Schema documents
+  resolve with `gts-rust` as admission does. `Fault` delays or fails calls, `reject` and
+  `depends_on` steer admission, `strict()` panics on an unexpected call, and `calls`,
+  `reads` and `submissions` record what happened. `install` registers it in a `ClientHub`
+  under both contracts.
+- `testing_platform::conformance::run` holds the contract checks that the mock, the
+  registry's local client and the REST client over TCP all pass.
+
+## Legacy API
+
+**Removed at T38.** Existing consumers still use it until they migrate; new code uses the
+contracts above. `TypesRegistryClient` reads and registers through the registry's in-memory
+catalogue, which is independent of the database the new contracts serve. Its models
+(`GtsTypeSchema`, `GtsInstance`, `AncestorIter`, `RegisterResult`, `RegisterSummary`, …) and
+`testing::MockTypesRegistryClient` remain at the crate root until then.
+
+```rust,no_run
+use toolkit::client_hub::ClientHub;
+use types_registry_sdk::TypesRegistryClient;
+
+async fn legacy(hub: &ClientHub) -> anyhow::Result<()> {
+    let client = hub.get::<dyn TypesRegistryClient>()?;
+    let schema = client
+        .get_type_schema("gts.cf.example.events.user_created.v1~")
+        .await?;
+    Ok(())
 }
 ```
 

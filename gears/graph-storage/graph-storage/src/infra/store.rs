@@ -37,13 +37,6 @@ use crate::config::{GraphStorageConfig, ValidatedConfig};
 pub struct PgGraphStore {
     db: Arc<Db>,
     config: GraphStorageConfig,
-    /// Whether this server serves SQL/PGQ. Probed at init, and cleared by the
-    /// first request whose pattern stops executing: the probe is the last
-    /// time anyone asks the server, so a property graph dropped after boot
-    /// is learned from a request, and readiness reads what that request
-    /// learned. It is never set back -- a capability that returns is picked
-    /// up by a restart, which re-runs the probe.
-    pgq_available: std::sync::atomic::AtomicBool,
 }
 
 impl PgGraphStore {
@@ -52,11 +45,10 @@ impl PgGraphStore {
     /// does not boot into something else, and asking for the checked type here
     /// is what keeps a second construction path from skipping that.
     #[must_use]
-    pub fn new(db: Arc<Db>, config: ValidatedConfig, pgq_available: bool) -> Self {
+    pub fn new(db: Arc<Db>, config: ValidatedConfig) -> Self {
         Self {
             db,
             config: config.into_inner(),
-            pgq_available: std::sync::atomic::AtomicBool::new(pgq_available),
         }
     }
 
@@ -68,20 +60,6 @@ impl PgGraphStore {
     #[must_use]
     pub fn config(&self) -> &GraphStorageConfig {
         &self.config
-    }
-
-    #[must_use]
-    pub fn pgq_available(&self) -> bool {
-        self.pgq_available
-            .load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    /// A pattern over the declared graph stopped executing. Recorded so that
-    /// readiness reports it from now on and an explicitly demanded backend
-    /// is refused rather than found missing on every request.
-    pub fn pgq_lost(&self) {
-        self.pgq_available
-            .store(false, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -150,11 +128,11 @@ fn classify_sqlstate(sqlstate: &str) -> Option<GraphStoreError> {
         // `Serialization` tells a caller -- retry unchanged, as against
         // `Internal`'s retry once and escalate.
         //
-        // `40P01` is not hypothetical here. Ingest takes row locks in a fixed
-        // order because the secure ORM exposes no `FOR UPDATE`, and fixed-order
-        // locking across concurrent writers is the shape that produces
-        // deadlocks. Leaving it out meant the one failure this design invites
-        // was the one the classifier could not name.
+        // `40P01` is kept although ingest no longer invites it: it writes
+        // nodes, endpoints and edges in key order (DESIGN § Concurrent Ingest
+        // Protocol, point 5), so two batches take the locks they share in one
+        // order. A deadlock can still come from outside that order -- a scope
+        // removal, an operator's statement -- and must still name itself.
         //
         // `55P03` is a row lock not granted within `lock_timeout`: rolled
         // back, nothing written, the same answer. It used to read as
@@ -366,43 +344,6 @@ impl GraphStoreV1 for PgGraphStore {
             }
         }
 
-        // The traversal backend, as probed at init and as the requests since
-        // found it, read against what the configuration asked for. The matrix
-        // has two rows for a server
-        // without SQL/PGQ, and they differ only in intent: `Degraded` where
-        // the backend was preferred, `Unhealthy` where it was demanded. This
-        // used to report `Degraded` for both, because a single `pgq` value
-        // could not say which it was; `auto` is the preference now, so a
-        // named `pgq` is the demand, and an operator who named it is told
-        // the gear is not ready rather than being quietly served something
-        // else (DESIGN § Readiness Matrix, ADR-0001 point 2).
-        let row = match (self.config().traversal_hop, self.pgq_available()) {
-            (_, true) | (crate::config::HopStrategy::TwoQuery, false) => {
-                ComponentReadiness::healthy(graph_storage_sdk::models::SQLPGQ)
-            }
-            (crate::config::HopStrategy::Auto, false) => ComponentReadiness::new(
-                graph_storage_sdk::models::SQLPGQ,
-                ReadinessState::Degraded,
-                "the declared property graph did not answer a pattern, at startup or since; \
-                 the server major is not reported, because the attempt says the pattern did \
-                 not run and not why",
-                "nothing: every traversal is served by the two-query hop",
-                "restart after the property-graph migration runs on a server that supports \
-                 SQL/PGQ, or set traversal_hop to `two_query` to state the choice",
-            ),
-            (crate::config::HopStrategy::Pgq, false) => ComponentReadiness::new(
-                graph_storage_sdk::models::SQLPGQ,
-                ReadinessState::Unhealthy,
-                "traversal_hop is `pgq` and this server does not provide SQL/PGQ, at startup \
-                 or since",
-                "everything: the gear is not ready, because an explicitly configured backend \
-                 is not substituted",
-                "run on PostgreSQL 19 with the property-graph migration applied, or set \
-                 traversal_hop to `auto` or `two_query`",
-            ),
-        };
-        out.push(row);
-
         out
     }
 
@@ -499,6 +440,15 @@ impl GraphStoreV1 for PgGraphStore {
         req: ProjectionRequest,
     ) -> Result<toolkit_odata::Page<NodeRow>, GraphStoreError> {
         reads::project_table(self, ctx, req).await
+    }
+
+    async fn count_table(
+        &self,
+        ctx: &StoreCtx<'_>,
+        req: ProjectionRequest,
+        max: u64,
+    ) -> Result<graph_storage_sdk::models::NodeCount, GraphStoreError> {
+        reads::count_table(self, ctx, req, max).await
     }
 
     async fn load_topology(

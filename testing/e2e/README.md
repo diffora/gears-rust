@@ -40,7 +40,7 @@ language:
   build features, ports, or extra infrastructure like a database container), so
   it cannot share the common server. In its `e2e.yaml` this is written as
   `launcher: pytest`, and the suite's own `conftest.py` starts and stops the
-  server. These must be run one at a time (e.g. `make e2e-mini-chat`).
+  server. These must be run one at a time (e.g. `make e2e-local SUITE=mini-chat`).
 - **`launcher`** — the single field in a suite's `e2e.yaml` that says which of
   the two kinds above it is: `e2e-launcher` (shared server) or `pytest`
   (self-managed).
@@ -99,8 +99,14 @@ Local E2E has three cooperating pieces, each with a single responsibility:
   server with the right Cargo features, builds any sidecars, and then dispatches
   to one of two backends depending on the suite's `launcher`.
 - **`tools/scripts/ci.py e2e-local`** — the *orchestration engine*. It starts
-  one server from a config file, waits for `/healthz`, runs pytest against the
+  one server from a config file, waits for `/readyz`, runs pytest against the
   live HTTP API, and tears the server down. Docker mode uses the same engine.
+  The E2E startup timeout is 15 seconds, independent of the production GTS
+  publication budget. `/healthz` only confirms liveness and can return 200
+  while application preparation is still in progress.
+  Local mode defaults the gateway's `advertise_uri` to `E2E_BASE_URL`, avoiding
+  waits for an advertised address when the listener binds to `0.0.0.0`.
+  An explicit `APP__GEARS__API_GATEWAY__CONFIG__ADVERTISE_URI` takes precedence.
 
 Flow:
 
@@ -139,7 +145,7 @@ sequenceDiagram
         Focus->>Focus: write target/e2e-local-x.yaml (pruned)
         Focus->>CI: e2e-local --config <generated>
         CI->>Server: start (E2E_SERVER_BINARY)
-        CI->>Server: poll /healthz
+        CI->>Server: poll /readyz (503 until ready)
         Server-->>CI: 200 OK
         CI->>Pytest: run against base_url
         Pytest->>Server: HTTP requests
@@ -220,10 +226,10 @@ TimescaleDB or ClickHouse container — so they can't use the shared server. Run
 each of them on its own instead:
 
 ```bash
-make e2e-mini-chat                    # or: make e2e-local SUITE=mini-chat
-make e2e-usage-collector              # both storage backends, one after the other
-make e2e-usage-collector-timescaledb  # or: make e2e-local SUITE=usage-collector
-make e2e-usage-collector-clickhouse   # ClickHouse lane (no `make e2e-local` equivalent)
+make e2e-local SUITE=mini-chat                   # mini-chat lane (self-managed, offline)
+make e2e-usage-collector                         # both storage backends, one after the other
+make e2e-usage-collector BACKEND=timescaledb     # or: make e2e-local SUITE=usage-collector
+make e2e-usage-collector BACKEND=clickhouse      # ClickHouse lane (no `make e2e-local` equivalent)
 ```
 
 `e2e.yaml` pins the TimescaleDB feature set, so `make e2e-local
@@ -288,7 +294,7 @@ shared:                              # used by `make e2e-local` with no SUITE=
 sidecars:                           # named build+env, referenced by name
   file-storage:
     build: [cargo, build, -p, cf-gears-file-storage, --bin, sidecar]
-    env: { FS_SIDECAR_BINARY: target/debug/sidecar }
+    env: { FS_SIDECAR_BINARY: target/debug/sidecar, FS_SIDECAR_INTERNAL_TOKEN: dev-file-storage-internal-secret }
 ```
 
 **Per-suite manifest — `testing/e2e/suites/<suite>/e2e.yaml`:**
@@ -309,6 +315,8 @@ config_gears:                        # (e2e-launcher) gears (crates) whose confi
 # sidecars: [file-storage]           # optional: named sidecars to build
 # env: { FOO: bar }                  # optional: extra env ({binary}/{suite} expand). E2E_BINARY
 #                                    #   is auto-set for launcher: pytest — no need to declare it.
+# clean_home: true                   # optional (e2e-launcher): empty env.APP__SERVER__HOME_DIR, which
+#                                    #   must be under target/, before the server starts
 # pytest_args: [--mode, offline, -vv]  # optional: extra pytest args (both launchers)
 # features_file: config/e2e-features.txt  # optional: reuse the shared feature list
 # extra_features: [tr-authz]         # optional: add a few features on top of features/features_file
@@ -475,10 +483,10 @@ async def test_my_endpoint(base_url, auth_headers):
 | `make e2e-local`                     | Local  | Run **many** suites: every shared-server suite against one shared server (self-managed suites skipped) |
 | `make e2e-local SUITE=file-parser`   | Local  | Run **one** suite: build its server + run its tests |
 | `make e2e-local-smoke`               | Local  | Smoke tests only (add `SUITE=<name>` to focus on one suite)  |
-| `make e2e-mini-chat`                 | Local  | Alias for `make e2e-local SUITE=mini-chat` (self-managed, offline) |
+| `make e2e-local SUITE=mini-chat`     | Local  | mini-chat suite (self-managed, offline)   |
 | `make e2e-usage-collector`           | Local  | Usage-collector suite, run against both storage backends: a dedicated binary + container per backend, TimescaleDB then ClickHouse (**requires Docker**) |
-| `make e2e-usage-collector-timescaledb` | Local | Usage-collector suite, TimescaleDB backend only (**requires Docker**) |
-| `make e2e-usage-collector-clickhouse` | Local  | Usage-collector suite, ClickHouse backend only (**requires Docker**) |
+| `make e2e-usage-collector BACKEND=timescaledb` | Local | Usage-collector suite, TimescaleDB backend only (**requires Docker**) |
+| `make e2e-usage-collector BACKEND=clickhouse` | Local  | Usage-collector suite, ClickHouse backend only (**requires Docker**) |
 | `make e2e-tr-authz`                  | Local  | resource-group suite, `tr-authz` profile  |
 
 ## Troubleshooting

@@ -88,8 +88,9 @@ pub struct ImmutablePrice {
     /// Financial-content SHA-256, excluding identity and mutable closing metadata.
     pub money_digest: Digest,
 
-    /// Currency.
-    pub currency: String,
+    /// The price's currency and scale as stored with the price: the book's currency at the scale
+    /// the currency table gave it when the price was written. Never the current table's.
+    pub currency: bss_money::CurrencySpec,
 
     /// Model.
     pub model: PriceModel,
@@ -290,7 +291,7 @@ pub trait PricingReadV1: Send + Sync {
     ) -> Result<RevisionRef, CanonicalError>;
 }
 
-#[toolkit_canonical_errors::resource_error("gts.cf.bss.pricing.plan.v1~")]
+#[toolkit_canonical_errors::resource_error(gts_id!("cf.bss.pricing.plan.v1~"))]
 struct PlanResource;
 /// A priced cell cannot be projected into a complete commercial binding.
 #[derive(Debug, thiserror::Error)]

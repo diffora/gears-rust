@@ -33,7 +33,7 @@ use toolkit::{
 };
 use toolkit_canonical_errors::Problem;
 use toolkit_gts::gts_uri;
-use toolkit_security::SecurityContext;
+use toolkit_security::{PlatformSecurityContext, SecurityContext};
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -1267,4 +1267,1158 @@ async fn test_wildcard_scope_passes_enforcement() {
     );
     // A successful response must not carry a bearer challenge.
     assert!(www_authenticate_all(&response).is_empty());
+}
+
+// Tenant/platform authentication through the embedded gateway (T25).
+
+/// `GET` tenant-authenticated (echo), `POST` platform (context-free).
+const AXIS_PATH: &str = "/tests/v1/api/axis";
+/// `GET` platform (context-free), so `HEAD` inheritance can be tested.
+const AXIS_PLATFORM_PATH: &str = "/tests/v1/api/axis-platform";
+/// `POST` platform (echo), to see which planes reach an admitted handler.
+const AXIS_ECHO_PATH: &str = "/tests/v1/api/axis-echo";
+/// `GET` platform (context-free) on a parameterized template.
+const AXIS_ITEM_PATH: &str = "/tests/v1/api/axis-items/{id}";
+/// `GET` anonymous (context-free).
+const AXIS_PUBLIC_PATH: &str = "/tests/v1/api/axis-public";
+const AXIS_INTERNAL_SECRET: &str = "axis-internal-secret";
+const AXIS_INTERNAL_HEADER: &str = "x-toolkit-internal-token";
+const AXIS_BEARER: &str = "valid-test-token";
+
+/// A tenant route's handler: reports which validated planes, and whether the internal
+/// token header, reached it.
+async fn tenant_handler(
+    Extension(_ctx): Extension<SecurityContext>,
+    platform: Option<Extension<PlatformSecurityContext>>,
+    headers: http::HeaderMap,
+) -> String {
+    format!(
+        "tenant=true platform={} token_header={}",
+        platform.is_some(),
+        headers.contains_key(AXIS_INTERNAL_HEADER)
+    )
+}
+
+/// A platform route's handler: reports which validated planes reached it.
+async fn platform_handler(
+    Extension(_ctx): Extension<PlatformSecurityContext>,
+    tenant: Option<Extension<SecurityContext>>,
+) -> String {
+    format!("tenant={} platform=true", tenant.is_some())
+}
+
+/// Reads no context, so only the gateway's own layers can refuse a request.
+async fn context_free_handler() -> &'static str {
+    "ok"
+}
+
+/// An anonymous route's handler: whether its context is the anonymous one.
+async fn axis_public_handler(Extension(ctx): Extension<SecurityContext>) -> &'static str {
+    if ctx.is_anonymous() {
+        "anonymous"
+    } else {
+        "subject"
+    }
+}
+
+pub struct TestAxisGear;
+
+#[async_trait]
+impl Gear for TestAxisGear {
+    async fn init(&self, _ctx: &GearCtx) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl RestApiCapability for TestAxisGear {
+    fn register_rest(
+        &self,
+        _ctx: &GearCtx,
+        router: Router,
+        openapi: &dyn OpenApiRegistry,
+    ) -> Result<Router> {
+        let router = OperationBuilder::get(AXIS_PATH)
+            .operation_id("test_axis.tenant")
+            .authenticated()
+            .require_license_features::<License>([])
+            .handler(tenant_handler)
+            .text_response(http::StatusCode::OK, "OK", "text/plain")
+            .register(router, openapi);
+        let router = OperationBuilder::post(AXIS_PATH)
+            .operation_id("test_axis.platform")
+            .platform_authenticated()
+            .require_license_features::<License>([])
+            .handler(context_free_handler)
+            .text_response(http::StatusCode::OK, "OK", "text/plain")
+            .register(router, openapi);
+        let router = OperationBuilder::get(AXIS_PLATFORM_PATH)
+            .operation_id("test_axis.platform_get")
+            .platform_authenticated()
+            .require_license_features::<License>([])
+            .handler(context_free_handler)
+            .text_response(http::StatusCode::OK, "OK", "text/plain")
+            .register(router, openapi);
+        let router = OperationBuilder::get(AXIS_ITEM_PATH)
+            .operation_id("test_axis.platform_item")
+            .platform_authenticated()
+            .require_license_features::<License>([])
+            .handler(context_free_handler)
+            .text_response(http::StatusCode::OK, "OK", "text/plain")
+            .register(router, openapi);
+        let router = OperationBuilder::get(AXIS_PUBLIC_PATH)
+            .operation_id("test_axis.public")
+            .anonymous()
+            .handler(axis_public_handler)
+            .text_response(http::StatusCode::OK, "OK", "text/plain")
+            .register(router, openapi);
+        Ok(OperationBuilder::post(AXIS_ECHO_PATH)
+            .operation_id("test_axis.platform_echo")
+            .platform_authenticated()
+            .require_license_features::<License>([])
+            .handler(platform_handler)
+            .text_response(http::StatusCode::OK, "OK", "text/plain")
+            .register(router, openapi))
+    }
+}
+
+/// Disable default auth to test declared route policy, with or without an internal authenticator.
+fn axis_config(internal_auth: bool) -> serde_json::Value {
+    let mut config = json!({
+        "bind_addr": "0.0.0.0:8080",
+        "enable_docs": false,
+        "auth_disabled": false,
+        "require_auth_by_default": false,
+    });
+    if internal_auth {
+        config["internal_auth"] = json!({
+            "provider": "shared_secret",
+            "secret": AXIS_INTERNAL_SECRET,
+        });
+    }
+    config
+}
+
+/// A finalized gateway serving [`TestAxisGear`] under `config`.
+async fn create_axis_router(config: serde_json::Value) -> Router {
+    create_router_serving(config, &TestAxisGear).await
+}
+
+/// A finalized gateway serving `gear`'s routes under `config`.
+async fn create_router_serving(config: serde_json::Value, gear: &dyn RestApiCapability) -> Router {
+    let hub = Arc::new(ClientHub::new());
+    hub.register::<dyn AuthNResolverClient>(Arc::new(mock_accepting_token(
+        AXIS_BEARER,
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+    )));
+    let api_ctx = GearCtx::new(
+        "api-gateway",
+        Uuid::new_v4(),
+        Arc::new(TestConfigProvider {
+            config: json!({ "api-gateway": { "config": config } }),
+        }),
+        hub,
+        tokio_util::sync::CancellationToken::new(),
+    );
+    let api_gateway = api_gateway::ApiGateway::default();
+    api_gateway.init(&api_ctx).await.expect("Failed to init");
+    let router = gear
+        .register_rest(&create_test_gear_ctx(), Router::new(), &api_gateway)
+        .expect("Failed to register routes");
+    api_gateway
+        .rest_finalize(
+            &api_ctx,
+            router,
+            Arc::new(toolkit::RestHealthcheckRegistry::new()),
+        )
+        .expect("Failed to finalize")
+}
+
+/// Returns status, body, and whether the gateway issued the RFC 6750 bearer challenge.
+/// The challenge distinguishes gateway refusal from a handler extractor’s refusal.
+async fn axis_call(
+    router: Router,
+    method: Method,
+    uri: &str,
+    bearer: Option<&str>,
+    token: Option<&str>,
+) -> (StatusCode, String, bool) {
+    let mut builder = Request::builder().method(method).uri(uri);
+    if let Some(value) = bearer {
+        builder = builder.header(header::AUTHORIZATION, format!("Bearer {value}"));
+    }
+    if let Some(value) = token {
+        builder = builder.header(AXIS_INTERNAL_HEADER, value);
+    }
+    let response = router
+        .oneshot(builder.body(Body::empty()).unwrap())
+        .await
+        .expect("Request failed");
+    let status = response.status();
+    let challenged = !www_authenticate_all(&response).is_empty();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (
+        status,
+        String::from_utf8_lossy(&body).into_owned(),
+        challenged,
+    )
+}
+
+type AxisCase<'a> = (Option<&'a str>, Option<&'a str>, StatusCode, &'a str);
+
+/// Every `(bearer, token, expected status, case)` against `method uri`.
+async fn assert_axis_cases(
+    config: &serde_json::Value,
+    method: &Method,
+    uri: &str,
+    cases: &[AxisCase<'_>],
+) {
+    for (bearer, token, want, case) in cases {
+        let router = create_axis_router(config.clone()).await;
+        let (status, body, _) = axis_call(router, method.clone(), uri, *bearer, *token).await;
+        assert_eq!(status, *want, "{method} {uri}: {case}: {body}");
+    }
+}
+
+#[tokio::test]
+async fn tenant_routes_require_a_bearer_at_the_gateway() {
+    for internal_auth in [false, true] {
+        for method in [Method::GET, Method::HEAD] {
+            let router = create_axis_router(axis_config(internal_auth)).await;
+            let (status, _, challenged) = axis_call(
+                router,
+                method.clone(),
+                AXIS_PATH,
+                None,
+                Some(AXIS_INTERNAL_SECRET),
+            )
+            .await;
+            assert_eq!(
+                (status, challenged),
+                (StatusCode::UNAUTHORIZED, true),
+                "{method} on an internal token alone, internal_auth={internal_auth}"
+            );
+            let router = create_axis_router(axis_config(internal_auth)).await;
+            let (status, _, challenged) =
+                axis_call(router, method.clone(), AXIS_PATH, None, None).await;
+            assert_eq!(
+                (status, challenged),
+                (StatusCode::UNAUTHORIZED, true),
+                "{method} without credentials, internal_auth={internal_auth}"
+            );
+            let router = create_axis_router(axis_config(internal_auth)).await;
+            let (status, _, _) =
+                axis_call(router, method.clone(), AXIS_PATH, Some(AXIS_BEARER), None).await;
+            assert_eq!(
+                status,
+                StatusCode::OK,
+                "{method} on a bearer, internal_auth={internal_auth}"
+            );
+        }
+    }
+}
+
+const PLATFORM_CASES: &[AxisCase<'static>] = &[
+    (
+        None,
+        Some(AXIS_INTERNAL_SECRET),
+        StatusCode::OK,
+        "valid token",
+    ),
+    (
+        Some(AXIS_BEARER),
+        Some(AXIS_INTERNAL_SECRET),
+        StatusCode::UNAUTHORIZED,
+        "valid bearer and token",
+    ),
+    (None, None, StatusCode::UNAUTHORIZED, "neither"),
+    (
+        Some(AXIS_BEARER),
+        None,
+        StatusCode::UNAUTHORIZED,
+        "valid bearer alone",
+    ),
+    (
+        None,
+        Some("forged"),
+        StatusCode::UNAUTHORIZED,
+        "forged token",
+    ),
+    (
+        Some("forged"),
+        Some(AXIS_INTERNAL_SECRET),
+        StatusCode::UNAUTHORIZED,
+        "forged bearer beside valid token",
+    ),
+    (
+        Some(AXIS_BEARER),
+        Some("forged"),
+        StatusCode::UNAUTHORIZED,
+        "valid bearer beside forged token",
+    ),
+];
+
+#[tokio::test]
+async fn platform_routes_require_a_validated_internal_token_at_the_gateway() {
+    let config = axis_config(true);
+    assert_axis_cases(&config, &Method::POST, AXIS_PATH, PLATFORM_CASES).await;
+    assert_axis_cases(&config, &Method::GET, AXIS_PLATFORM_PATH, PLATFORM_CASES).await;
+    assert_axis_cases(&config, &Method::HEAD, AXIS_PLATFORM_PATH, PLATFORM_CASES).await;
+}
+
+#[tokio::test]
+async fn platform_routes_are_refused_without_a_gateway_internal_authenticator() {
+    let cases: &[AxisCase<'_>] = &[
+        (
+            None,
+            Some(AXIS_INTERNAL_SECRET),
+            StatusCode::UNAUTHORIZED,
+            "token, nothing to validate it",
+        ),
+        (
+            Some(AXIS_BEARER),
+            Some(AXIS_INTERNAL_SECRET),
+            StatusCode::UNAUTHORIZED,
+            "bearer and token",
+        ),
+        (
+            Some(AXIS_BEARER),
+            None,
+            StatusCode::UNAUTHORIZED,
+            "bearer alone",
+        ),
+    ];
+    assert_axis_cases(&axis_config(false), &Method::POST, AXIS_PATH, cases).await;
+}
+
+#[tokio::test]
+async fn platform_handlers_see_only_the_platform_plane() {
+    let router = create_axis_router(axis_config(true)).await;
+    let (status, body, _) = axis_call(
+        router,
+        Method::POST,
+        AXIS_ECHO_PATH,
+        None,
+        Some(AXIS_INTERNAL_SECRET),
+    )
+    .await;
+    assert_eq!(
+        (status, body.as_str()),
+        (StatusCode::OK, "tenant=false platform=true")
+    );
+}
+
+#[tokio::test]
+async fn parameterized_platform_routes_resolve_by_template() {
+    // Platform routes are looked up by matched template, not by the concrete request path.
+    for prefix in ["", "/cf"] {
+        let mut config = axis_config(true);
+        if !prefix.is_empty() {
+            config["prefix_path"] = json!(prefix);
+        }
+        let cases: &[AxisCase<'_>] = &[
+            (
+                None,
+                Some(AXIS_INTERNAL_SECRET),
+                StatusCode::OK,
+                "valid token",
+            ),
+            (None, None, StatusCode::UNAUTHORIZED, "neither"),
+            (
+                Some(AXIS_BEARER),
+                None,
+                StatusCode::UNAUTHORIZED,
+                "valid bearer alone",
+            ),
+        ];
+        let uri = format!("{prefix}/tests/v1/api/axis-items/42");
+        assert_axis_cases(&config, &Method::GET, &uri, cases).await;
+    }
+}
+
+/// Status and body of `method uri` carrying every `authorizations` value and `token`.
+async fn axis_call_raw(
+    config: &serde_json::Value,
+    method: &Method,
+    uri: &str,
+    authorizations: &[&str],
+    token: Option<&str>,
+) -> (StatusCode, String) {
+    let mut builder = Request::builder().method(method.clone()).uri(uri);
+    for value in authorizations {
+        builder = builder.header(header::AUTHORIZATION, *value);
+    }
+    if let Some(value) = token {
+        builder = builder.header(AXIS_INTERNAL_HEADER, value);
+    }
+    let response = create_axis_router(config.clone())
+        .await
+        .oneshot(builder.body(Body::empty()).unwrap())
+        .await
+        .expect("Request failed");
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (status, String::from_utf8_lossy(&body).into_owned())
+}
+
+#[tokio::test]
+async fn both_credentials_are_refused_on_every_route() {
+    // Refused before either authenticator runs, so validity and form do not matter.
+    let bearer = format!("Bearer {AXIS_BEARER}");
+    let authorizations: [&[&str]; 5] = [
+        &[bearer.as_str()],
+        &["Bearer forged"],
+        &["Basic dXNlcjpwYXNz"],
+        &["Bearer "],
+        &[bearer.as_str(), bearer.as_str()],
+    ];
+    let mut auth_disabled = axis_config(true);
+    auth_disabled["auth_disabled"] = json!(true);
+    let mut prefixed = axis_config(true);
+    prefixed["prefix_path"] = json!("/cf");
+    let routes = [
+        (Method::POST, AXIS_ECHO_PATH),
+        (Method::HEAD, AXIS_PLATFORM_PATH),
+        (Method::GET, AXIS_PATH),
+        (Method::HEAD, AXIS_PATH),
+        (Method::GET, AXIS_PUBLIC_PATH),
+    ];
+    for (config, prefix) in [
+        (axis_config(true), ""),
+        (axis_config(false), ""),
+        (auth_disabled, ""),
+        (prefixed, "/cf"),
+    ] {
+        for (method, path) in &routes {
+            let uri = format!("{prefix}{path}");
+            for authorization in authorizations {
+                for token in [AXIS_INTERNAL_SECRET, "forged"] {
+                    let (status, body) =
+                        axis_call_raw(&config, method, &uri, authorization, Some(token)).await;
+                    let case = format!("{method} {uri} {authorization:?} token={token}");
+                    assert_eq!(status, StatusCode::UNAUTHORIZED, "{case}: {body}");
+                    // HEAD responses carry no body.
+                    if *method != Method::HEAD {
+                        assert!(body.contains("MIXED_CREDENTIALS"), "{case}: {body}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_lone_credential_of_the_other_plane_is_dropped_unvalidated() {
+    let mut auth_disabled = axis_config(true);
+    auth_disabled["auth_disabled"] = json!(true);
+    for config in [axis_config(true), auth_disabled.clone()] {
+        // A forged bearer would fail validation; dropped, the route only misses its token.
+        let (status, body) = axis_call_raw(
+            &config,
+            &Method::POST,
+            AXIS_ECHO_PATH,
+            &["Bearer forged"],
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+        assert!(body.contains("MISSING_INTERNAL_TOKEN"), "{body}");
+    }
+    // A forged token would fail validation; dropped, the route only misses its bearer.
+    let (status, body) = axis_call_raw(
+        &axis_config(true),
+        &Method::GET,
+        AXIS_PATH,
+        &[],
+        Some("forged"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert!(body.contains("MISSING_BEARER"), "{body}");
+    // Without a bearer requirement the tenant handler runs, without the token or its context.
+    for token in [AXIS_INTERNAL_SECRET, "forged"] {
+        let (status, body) =
+            axis_call_raw(&auth_disabled, &Method::GET, AXIS_PATH, &[], Some(token)).await;
+        assert_eq!(
+            (status, body.as_str()),
+            (
+                StatusCode::OK,
+                "tenant=true platform=false token_header=false"
+            ),
+            "token={token}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn platform_routes_under_a_prefix_path() {
+    // Policies must resolve unprefixed templates after gateway nesting under `prefix_path`.
+    let mut config = axis_config(true);
+    config["prefix_path"] = json!("/cf");
+    let cases: &[AxisCase<'_>] = &[
+        (
+            None,
+            Some(AXIS_INTERNAL_SECRET),
+            StatusCode::OK,
+            "valid token",
+        ),
+        (None, None, StatusCode::UNAUTHORIZED, "neither"),
+        (
+            Some(AXIS_BEARER),
+            None,
+            StatusCode::UNAUTHORIZED,
+            "valid bearer alone",
+        ),
+    ];
+    assert_axis_cases(&config, &Method::POST, &format!("/cf{AXIS_PATH}"), cases).await;
+    assert_axis_cases(
+        &config,
+        &Method::HEAD,
+        &format!("/cf{AXIS_PLATFORM_PATH}"),
+        cases,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn platform_routes_with_auth_disabled() {
+    // `auth_disabled` must not synthesize a tenant context on platform routes.
+    let mut config = axis_config(true);
+    config["auth_disabled"] = json!(true);
+    let cases: &[AxisCase<'_>] = &[
+        (
+            None,
+            Some(AXIS_INTERNAL_SECRET),
+            StatusCode::OK,
+            "valid token",
+        ),
+        (None, None, StatusCode::UNAUTHORIZED, "neither"),
+        (
+            Some(AXIS_BEARER),
+            None,
+            StatusCode::UNAUTHORIZED,
+            "bearer alone",
+        ),
+        (
+            Some("forged"),
+            Some(AXIS_INTERNAL_SECRET),
+            StatusCode::UNAUTHORIZED,
+            "unvalidated bearer beside valid token",
+        ),
+    ];
+    assert_axis_cases(&config, &Method::POST, AXIS_PATH, cases).await;
+    let router = create_axis_router(config).await;
+    let (status, body, _) = axis_call(
+        router,
+        Method::POST,
+        AXIS_ECHO_PATH,
+        None,
+        Some(AXIS_INTERNAL_SECRET),
+    )
+    .await;
+    assert_eq!(
+        (status, body.as_str()),
+        (StatusCode::OK, "tenant=false platform=true"),
+        "no synthetic tenant context on a platform route"
+    );
+}
+
+#[tokio::test]
+async fn tenant_scope_rules_do_not_apply_to_platform_routes() {
+    let mut config = axis_config(true);
+    config["route_policies"] = json!({
+        "enabled": true,
+        "rules": [{ "path": "/tests/v1/api/**", "required_scopes": ["axis.write"] }]
+    });
+    // The mock bearer carries no scopes.
+    let cases: &[AxisCase<'_>] = &[
+        (
+            None,
+            Some(AXIS_INTERNAL_SECRET),
+            StatusCode::OK,
+            "valid token",
+        ),
+        (
+            Some(AXIS_BEARER),
+            None,
+            StatusCode::UNAUTHORIZED,
+            "bearer alone",
+        ),
+    ];
+    assert_axis_cases(&config, &Method::POST, AXIS_PATH, cases).await;
+    let router = create_axis_router(config).await;
+    let (status, _, _) = axis_call(router, Method::GET, AXIS_PATH, Some(AXIS_BEARER), None).await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "the rule still binds the tenant route"
+    );
+}
+
+#[tokio::test]
+async fn tenant_handlers_see_only_the_tenant_plane() {
+    for internal_auth in [false, true] {
+        let router = create_axis_router(axis_config(internal_auth)).await;
+        let (status, body, _) =
+            axis_call(router, Method::GET, AXIS_PATH, Some(AXIS_BEARER), None).await;
+        assert_eq!(
+            (status, body.as_str()),
+            (
+                StatusCode::OK,
+                "tenant=true platform=false token_header=false"
+            ),
+            "internal_auth={internal_auth}"
+        );
+    }
+}
+
+/// Profile 3 derives proxy auth from `OpenAPI` security; platform routes are excluded because the
+/// edge strips their token.
+#[tokio::test]
+async fn discovered_axis_routes() {
+    use toolkit::api::{OpenApiInfo, OpenApiRegistryImpl};
+    use toolkit_gateway::{
+        Endpoint, GatewayProvider, GearName, OpenApiSpec, ProxyRegistry, ToolKitGatewayProvider,
+    };
+
+    let openapi = OpenApiRegistryImpl::new();
+    let router = OperationBuilder::get(AXIS_PATH)
+        .operation_id("test_axis.tenant")
+        .authenticated()
+        .no_license_required()
+        .exposed()
+        .handler(tenant_handler)
+        .text_response(http::StatusCode::OK, "OK", "text/plain")
+        .register(Router::<()>::new(), &openapi);
+    let router = OperationBuilder::post(AXIS_PATH)
+        .operation_id("test_axis.platform_shared_path")
+        .platform_authenticated()
+        .no_license_required()
+        .exposed()
+        .handler(platform_handler)
+        .text_response(http::StatusCode::OK, "OK", "text/plain")
+        .register(router, &openapi);
+    let _router = OperationBuilder::post(AXIS_PLATFORM_PATH)
+        .operation_id("test_axis.platform")
+        .platform_authenticated()
+        .no_license_required()
+        .exposed()
+        .handler(platform_handler)
+        .text_response(http::StatusCode::OK, "OK", "text/plain")
+        .register(router, &openapi);
+    let document = openapi
+        .build_openapi(&OpenApiInfo {
+            title: "axis".to_owned(),
+            version: "1.0.0".to_owned(),
+            description: None,
+            servers: vec![],
+        })
+        .expect("build OpenAPI");
+    let published = serde_json::to_vec(&document).expect("serialize OpenAPI");
+
+    let registry = Arc::new(ProxyRegistry::new());
+    ToolKitGatewayProvider::new(Arc::clone(&registry))
+        .register_routes(
+            &GearName::from("axis"),
+            "axis-1",
+            OpenApiSpec::SerializedJson(published.into()),
+            &Endpoint::parse("http://axis:8080").unwrap(),
+        )
+        .await
+        .expect("register discovered routes");
+
+    assert_eq!(registry.requires_auth(&Method::GET, AXIS_PATH), Some(true));
+    // Path-only proxying can forward the excluded platform POST via a tenant GET’s path;
+    // the gear refuses it without the stripped token. Method-aware routing is outside T25.
+    assert_eq!(registry.requires_auth(&Method::POST, AXIS_PATH), Some(true));
+    // A path that is platform on every method is not routed at all.
+    assert_eq!(
+        registry.requires_auth(&Method::POST, AXIS_PLATFORM_PATH),
+        None,
+        "a platform route is not published as a proxied route"
+    );
+
+    // No default bearer requirement: discovered GET/HEAD routes must enforce their own auth.
+    let policy = api_gateway::middleware::auth::GatewayRoutePolicy::new(
+        Arc::new(std::collections::HashMap::new()),
+        Arc::new(std::collections::HashMap::new()),
+        false,
+        Some(registry),
+    );
+    for method in [Method::GET, Method::HEAD] {
+        assert_eq!(
+            policy.resolve(&method, AXIS_PATH),
+            api_gateway::middleware::auth::AuthRequirement::Required,
+            "{method}"
+        );
+    }
+}
+
+/// `POST` platform, bound to the identity-keyed `rl_platform` zone.
+const THROTTLED_PLATFORM_PATH: &str = "/tests/v1/api/throttled-platform";
+
+pub struct TestThrottledPlatformGear;
+
+impl RestApiCapability for TestThrottledPlatformGear {
+    fn register_rest(
+        &self,
+        _ctx: &GearCtx,
+        router: Router,
+        openapi: &dyn OpenApiRegistry,
+    ) -> Result<Router> {
+        Ok(OperationBuilder::post(THROTTLED_PLATFORM_PATH)
+            .operation_id("test_throttled.platform")
+            .platform_authenticated()
+            .require_license_features::<License>([])
+            .with_throttling(toolkit::api::ThrottlingSpec {
+                rate_limit_zone: Some("rl_platform".to_owned()),
+                require_security_context: true,
+                ..Default::default()
+            })
+            .handler(context_free_handler)
+            .text_response(http::StatusCode::OK, "OK", "text/plain")
+            .register(router, openapi))
+    }
+}
+
+#[tokio::test]
+async fn platform_identity_throttling_with_auth_disabled() {
+    // The platform plane still validates callers with `auth_disabled`, so an
+    // identity zone keys on the validated caller after the platform gate.
+    let mut config = axis_config(true);
+    config["auth_disabled"] = json!(true);
+    config["rate_limit_zones"] = json!({
+        "rl_platform": {
+            "rate_limit": "1/s",
+            "burst_limit": 1,
+            "key": { "type": "identity" },
+            "max_keys": 10,
+        }
+    });
+    let router = create_router_serving(config, &TestThrottledPlatformGear).await;
+    let call = |token| {
+        axis_call(
+            router.clone(),
+            Method::POST,
+            THROTTLED_PLATFORM_PATH,
+            None,
+            token,
+        )
+    };
+
+    // Refused by the gate before throttling, so they spend no budget.
+    let (status, body, _) = call(None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert!(body.contains("MISSING_INTERNAL_TOKEN"), "{body}");
+    let (status, body, _) = call(Some("forged")).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+
+    let (status, body, _) = call(Some(AXIS_INTERNAL_SECRET)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body, _) = call(Some(AXIS_INTERNAL_SECRET)).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+}
+
+/// As on an out-of-process listener: a bearer on an anonymous route is ignored,
+/// valid or forged, and the handler gets the anonymous context.
+#[tokio::test]
+async fn a_bearer_on_an_anonymous_route_is_ignored_at_the_gateway() {
+    for bearer in [None, Some(AXIS_BEARER), Some("forged")] {
+        let router = create_axis_router(axis_config(true)).await;
+        let (status, body, _) =
+            axis_call(router, Method::GET, AXIS_PUBLIC_PATH, bearer, None).await;
+        assert_eq!(
+            (status, body.as_str()),
+            (StatusCode::OK, "anonymous"),
+            "bearer {bearer:?}"
+        );
+    }
+}
+
+/// A raw HTTP/1.1 GET with `headers`, returning the complete response.
+async fn listener_response(endpoint: &str, path: &str, headers: &[(&str, &str)]) -> String {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let uri: http::Uri = endpoint.parse().expect("advertised endpoint URI");
+    let addr = uri.authority().expect("endpoint authority").as_str();
+    let mut stream = tokio::net::TcpStream::connect(addr)
+        .await
+        .expect("connects");
+    let mut request = format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n");
+    for (name, value) in headers {
+        request.push_str(name);
+        request.push_str(": ");
+        request.push_str(value);
+        request.push_str("\r\n");
+    }
+    request.push_str("Connection: close\r\n\r\n");
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).await.unwrap();
+    String::from_utf8(response).expect("an HTTP response")
+}
+
+/// A raw HTTP/1.1 GET with `headers`, returning the status code.
+async fn listener_status(endpoint: &str, path: &str, headers: &[(&str, &str)]) -> u16 {
+    listener_response(endpoint, path, headers)
+        .await
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse().ok())
+        .expect("a status line")
+}
+
+/// The application gateway starts once with its complete, prefixed surface.
+/// A healthy listener already serves tenant, platform and `OpenAPI` routes.
+#[tokio::test]
+async fn the_gateway_starts_with_the_complete_prefixed_surface() {
+    use toolkit::contracts::RunnableCapability as _;
+
+    let mut config = axis_config(true);
+    config["bind_addr"] = json!("127.0.0.1:0");
+    config["prefix_path"] = json!("/cf");
+    config["enable_docs"] = json!(true);
+    let hub = Arc::new(ClientHub::new());
+    hub.register::<dyn AuthNResolverClient>(Arc::new(mock_accepting_token(
+        AXIS_BEARER,
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+    )));
+    let ctx = GearCtx::new(
+        "api-gateway",
+        Uuid::new_v4(),
+        Arc::new(TestConfigProvider {
+            config: json!({ "api-gateway": { "config": config } }),
+        }),
+        hub,
+        tokio_util::sync::CancellationToken::new(),
+    );
+    let gateway = api_gateway::ApiGateway::default();
+    gateway
+        .init(&ctx)
+        .await
+        .expect("resolver initialized first");
+    let health = Arc::new(toolkit::RestHealthcheckRegistry::new());
+    let base = gateway
+        .rest_prepare(&ctx, Router::new(), Arc::clone(&health))
+        .unwrap();
+    let routes = TestAxisGear
+        .register_rest(&create_test_gear_ctx(), base, &gateway)
+        .unwrap();
+    let _router = gateway.rest_finalize(&ctx, routes, health).unwrap();
+    assert!(
+        gateway.bound_endpoint().is_none(),
+        "no listener during init"
+    );
+
+    let gear = gateway.into_gear();
+    gear.start(tokio_util::sync::CancellationToken::new())
+        .await
+        .unwrap();
+    // `start` schedules the lifecycle task; the endpoint is published when
+    // that task binds the socket, before it signals readiness.
+    let endpoint = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if let Some(endpoint) = gear.inner().bound_endpoint() {
+                break endpoint;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("listener bound");
+    let bearer = format!("Bearer {AXIS_BEARER}");
+    let tenant = [("authorization", bearer.as_str())];
+    let platform = [(AXIS_INTERNAL_HEADER, AXIS_INTERNAL_SECRET)];
+
+    assert_eq!(listener_status(&endpoint, "/cf/healthz", &[]).await, 200);
+    assert_eq!(listener_status(&endpoint, "/cf/readyz", &[]).await, 200);
+    assert_eq!(
+        listener_status(&endpoint, "/cf/openapi.json", &[]).await,
+        200
+    );
+    assert_eq!(
+        listener_status(&endpoint, &format!("/cf{AXIS_PATH}"), &tenant).await,
+        200,
+        "tenant routes are available on the first serving router"
+    );
+    assert_eq!(
+        listener_status(&endpoint, &format!("/cf{AXIS_PLATFORM_PATH}"), &platform).await,
+        200
+    );
+    assert_eq!(
+        listener_status(&endpoint, &format!("/cf{AXIS_PATH}"), &[]).await,
+        401,
+        "the complete surface enforces authentication"
+    );
+    assert_eq!(listener_status(&endpoint, "/readyz", &[]).await, 404);
+
+    gear.stop(tokio_util::sync::CancellationToken::new())
+        .await
+        .unwrap();
+}
+
+/// Platform calls work before `AuthN` init; tenant calls wait for the final router.
+#[tokio::test]
+async fn bootstrap_listener_serves_probes_and_platform_then_switches_to_tenant_routes() {
+    use toolkit::contracts::RunnableCapability as _;
+    let mut config = axis_config(true);
+    config["bind_addr"] = json!("127.0.0.1:0");
+    config["prefix_path"] = json!("/cf");
+    let hub = Arc::new(ClientHub::new());
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let ctx = GearCtx::new(
+        "api-gateway",
+        Uuid::new_v4(),
+        Arc::new(TestConfigProvider {
+            config: json!({"api-gateway": {"config": config}}),
+        }),
+        Arc::clone(&hub),
+        cancel.clone(),
+    );
+    let checker = Arc::new(toolkit::DependencyChecker::new());
+    checker.register_dep(toolkit::runtime::PREPARATION_GATE);
+    let health = Arc::new(toolkit::RestHealthcheckRegistry::new());
+    health.register(
+        "readiness",
+        Arc::new(toolkit::runtime::ReadinessHealthcheck::new(Arc::clone(
+            &checker,
+        ))),
+    );
+    let gateway = api_gateway::ApiGateway::default();
+    let base = gateway
+        .rest_bootstrap(&ctx, Arc::clone(&health), cancel.clone())
+        .await
+        .unwrap()
+        .expect("the gateway binds before application init");
+    let endpoint = gateway.bound_endpoint().expect("listener already bound");
+    assert_eq!(listener_status(&endpoint, "/cf/healthz", &[]).await, 200);
+    assert_eq!(listener_status(&endpoint, "/cf/readyz", &[]).await, 503);
+    let routes = TestAxisGear
+        .register_rest(&create_test_gear_ctx(), base, &gateway)
+        .unwrap();
+    let routes = OperationBuilder::get("/missing-system-object")
+        .anonymous()
+        .summary("A system handler returning not found")
+        .handler(|| async { StatusCode::NOT_FOUND })
+        .no_content_response(StatusCode::NOT_FOUND, "System object not found")
+        .register(routes, &gateway);
+    gateway
+        .rest_finalize_bootstrap(&ctx, routes.clone(), Arc::clone(&health))
+        .unwrap();
+    let platform = [(AXIS_INTERNAL_HEADER, AXIS_INTERNAL_SECRET)];
+    let pending = listener_response(&endpoint, "/cf/pending-application", &[]).await;
+    assert!(pending.starts_with("HTTP/1.1 503"), "{pending}");
+    assert!(
+        pending
+            .to_ascii_lowercase()
+            .contains("\r\nretry-after: 1\r\n"),
+        "{pending}"
+    );
+    assert!(pending.contains("application preparation has not completed"));
+    assert_eq!(
+        listener_status(&endpoint, "/cf/missing-system-object", &[]).await,
+        404
+    );
+    assert_eq!(
+        listener_status(&endpoint, &format!("/cf{AXIS_PLATFORM_PATH}"), &platform).await,
+        200
+    );
+    assert_eq!(
+        listener_status(&endpoint, &format!("/cf{AXIS_PLATFORM_PATH}"), &[]).await,
+        401
+    );
+    assert_eq!(
+        listener_status(&endpoint, &format!("/cf{AXIS_PATH}"), &[]).await,
+        503
+    );
+
+    hub.register::<dyn AuthNResolverClient>(Arc::new(mock_accepting_token(
+        AXIS_BEARER,
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+    )));
+    gateway.init(&ctx).await.unwrap();
+    let routes = OperationBuilder::get("/pending-application")
+        .anonymous()
+        .summary("An application route attached after preparation")
+        .handler(public_handler)
+        .json_response_with_schema::<TestResponse>(&gateway, StatusCode::OK, "Application ready")
+        .register(routes, &gateway);
+    drop(gateway.rest_finalize(&ctx, routes, health).unwrap());
+    let gear = gateway.into_gear();
+    gear.start(cancel.clone()).await.unwrap();
+    checker.mark_resolved(toolkit::runtime::PREPARATION_GATE);
+    let bearer = format!("Bearer {AXIS_BEARER}");
+    assert_eq!(
+        listener_status(&endpoint, "/cf/pending-application", &[]).await,
+        200
+    );
+    assert_eq!(
+        listener_status(&endpoint, "/cf/not-a-route", &[("authorization", &bearer)]).await,
+        404
+    );
+    assert_eq!(
+        listener_status(
+            &endpoint,
+            &format!("/cf{AXIS_PATH}"),
+            &[("authorization", &bearer)]
+        )
+        .await,
+        200
+    );
+    assert_eq!(
+        listener_status(&endpoint, &format!("/cf{AXIS_PATH}"), &[]).await,
+        401
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while listener_status(&endpoint, "/cf/readyz", &[]).await != 200 {
+            // The framework caches health reports for two seconds.
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("readiness converges after the cached report expires");
+    assert_eq!(gear.inner().bound_endpoint().as_ref(), Some(&endpoint));
+    cancel.cancel();
+    gear.stop(tokio_util::sync::CancellationToken::new())
+        .await
+        .unwrap();
+}
+
+/// A system-provided fallback takes precedence over the bootstrap starting response.
+#[tokio::test]
+async fn bootstrap_listener_preserves_a_custom_system_fallback() {
+    let mut config = axis_config(true);
+    config["bind_addr"] = json!("127.0.0.1:0");
+    config["prefix_path"] = json!("/cf");
+    config["require_auth_by_default"] = json!(false);
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let ctx = GearCtx::new(
+        "api-gateway",
+        Uuid::new_v4(),
+        Arc::new(TestConfigProvider {
+            config: json!({"api-gateway": {"config": config}}),
+        }),
+        Arc::new(ClientHub::new()),
+        cancel.clone(),
+    );
+    let health = Arc::new(toolkit::RestHealthcheckRegistry::new());
+    let gateway = api_gateway::ApiGateway::default();
+    let base = gateway
+        .rest_bootstrap(&ctx, Arc::clone(&health), cancel)
+        .await
+        .unwrap()
+        .unwrap();
+    let routes = base.fallback(|| async { StatusCode::IM_A_TEAPOT });
+    gateway
+        .rest_finalize_bootstrap(&ctx, routes, health)
+        .unwrap();
+    let endpoint = gateway.bound_endpoint().unwrap();
+    assert_eq!(
+        listener_status(&endpoint, "/cf/system-fallback", &[]).await,
+        418
+    );
+    gateway.rest_shutdown_bootstrap().await.unwrap();
+}
+
+/// Counts how often its layer is applied to a route.
+#[derive(Clone)]
+struct CountingLayer(Arc<std::sync::atomic::AtomicUsize>);
+
+impl CountingLayer {
+    fn applied(&self) -> usize {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl<S> tower::Layer<S> for CountingLayer {
+    type Service = S;
+
+    fn layer(&self, inner: S) -> S {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        inner
+    }
+}
+
+/// Publishing builds route layers once, rather than on every request.
+#[tokio::test]
+async fn bootstrap_listener_builds_each_published_router_once() {
+    use toolkit::contracts::RunnableCapability as _;
+    let mut config = axis_config(true);
+    config["bind_addr"] = json!("127.0.0.1:0");
+    config["prefix_path"] = json!("/cf");
+    let hub = Arc::new(ClientHub::new());
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let ctx = GearCtx::new(
+        "api-gateway",
+        Uuid::new_v4(),
+        Arc::new(TestConfigProvider {
+            config: json!({"api-gateway": {"config": config}}),
+        }),
+        Arc::clone(&hub),
+        cancel.clone(),
+    );
+    let health = Arc::new(toolkit::RestHealthcheckRegistry::new());
+    let gateway = api_gateway::ApiGateway::default();
+    let base = gateway
+        .rest_bootstrap(&ctx, Arc::clone(&health), cancel.clone())
+        .await
+        .unwrap()
+        .expect("the gateway binds before application init");
+    let endpoint = gateway.bound_endpoint().expect("listener already bound");
+    let counter = CountingLayer(Arc::default());
+    let routes = TestAxisGear
+        .register_rest(&create_test_gear_ctx(), base, &gateway)
+        .unwrap()
+        .layer(counter.clone());
+
+    // System stage.
+    gateway
+        .rest_finalize_bootstrap(&ctx, routes.clone(), Arc::clone(&health))
+        .unwrap();
+    let platform = [(AXIS_INTERNAL_HEADER, AXIS_INTERNAL_SECRET)];
+    let platform_path = format!("/cf{AXIS_PLATFORM_PATH}");
+    assert_eq!(
+        listener_status(&endpoint, &platform_path, &platform).await,
+        200
+    );
+    let built = counter.applied();
+    assert!(built > 0, "the counting layer wraps the platform route");
+    for _ in 0..3 {
+        assert_eq!(
+            listener_status(&endpoint, &platform_path, &platform).await,
+            200
+        );
+    }
+    assert_eq!(counter.applied(), built, "system stage: built per request");
+
+    // Final stage.
+    hub.register::<dyn AuthNResolverClient>(Arc::new(mock_accepting_token(
+        AXIS_BEARER,
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+    )));
+    gateway.init(&ctx).await.unwrap();
+    drop(gateway.rest_finalize(&ctx, routes, health).unwrap());
+    let gear = gateway.into_gear();
+    gear.start(cancel.clone()).await.unwrap();
+    let bearer = format!("Bearer {AXIS_BEARER}");
+    let tenant = [("authorization", bearer.as_str())];
+    let tenant_path = format!("/cf{AXIS_PATH}");
+    assert_eq!(listener_status(&endpoint, &tenant_path, &tenant).await, 200);
+    let built = counter.applied();
+    for _ in 0..3 {
+        assert_eq!(listener_status(&endpoint, &tenant_path, &tenant).await, 200);
+    }
+    assert_eq!(counter.applied(), built, "final stage: built per request");
+
+    cancel.cancel();
+    gear.stop(tokio_util::sync::CancellationToken::new())
+        .await
+        .unwrap();
 }

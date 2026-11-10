@@ -13,13 +13,15 @@
 //! declared retention survive a deployment that mentions none.
 
 use std::time::Duration;
+use toolkit::domain_model;
 
 use toolkit_gts::GtsInstanceId;
 
 use crate::config::{
-    BUILT_IN_PARTITIONS, BackendSettings, DEFAULT_RETENTION_DURATION, EventBrokerConfig,
-    RetentionSettings, TopicSettingsEntry, TopicSettingsError,
+    BUILT_IN_PARTITIONS, DEFAULT_RETENTION_DURATION, EventBrokerConfig, RetentionSettings,
+    TopicSettingsEntry, TopicSettingsError,
 };
+use crate::domain::backend::{self, Routing};
 
 /// Which statement produced an effective value.
 ///
@@ -27,6 +29,7 @@ use crate::config::{
 /// number bounding their data came from their own configuration, from the
 /// topic's author, or from a default nobody chose - without reproducing the
 /// resolution by hand.
+#[domain_model]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Source {
@@ -38,6 +41,10 @@ pub enum Source {
     Specification,
     /// Nothing stated it, so the broker's built-in value stands.
     BuiltIn,
+    /// What the topic's storage backend holds: once a topic is provisioned,
+    /// its partition count is the backend's, whatever configuration says
+    /// later (feature 0007 §2.6).
+    Backend,
 }
 
 /// One effective value and the statement behind it.
@@ -45,6 +52,7 @@ pub enum Source {
 /// Constructed only through the named constructors below: a positional pair
 /// would let a caller attach the wrong source to a value silently, and the
 /// source is the whole reason this type exists.
+#[domain_model]
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Sourced<T> {
     value: T,
@@ -84,6 +92,14 @@ impl<T> Sourced<T> {
         }
     }
 
+    /// What the topic's storage backend holds.
+    pub const fn held_by_backend(value: T) -> Self {
+        Self {
+            value,
+            source: Source::Backend,
+        }
+    }
+
     #[must_use]
     pub const fn value(&self) -> &T {
         &self.value
@@ -106,6 +122,7 @@ impl<T> Sourced<T> {
 /// A struct rather than the bare value it currently carries: the specification
 /// tier sits in the middle of the ladder, and a second declared field would
 /// otherwise change every signature that passes this one through.
+#[domain_model]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Declaration {
     /// The retention the topic declares, if it declares one. Advisory: an
@@ -115,22 +132,29 @@ pub struct Declaration {
 }
 
 /// One topic's settings, resolved, with the provenance of each.
+#[domain_model]
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EffectiveSettings {
     partitions: Sourced<i32>,
     retention: Sourced<RetentionSettings>,
-    backend: Sourced<BackendSettings>,
+    /// The registry entry the topic routes to, never the entry's type or
+    /// settings: this record is persisted, and nothing the broker persists
+    /// carries an address or a setting (feature 0005 §2.1).
+    backend: Sourced<backend::Name>,
 }
 
 impl EffectiveSettings {
     /// Built through [`EffectiveSettingsBuilder`]: three resolved fields, each
     /// carrying its own source, are not something to assemble positionally.
     #[must_use]
-    pub fn builder(partitions: Sourced<i32>) -> EffectiveSettingsBuilder {
+    pub fn builder(
+        partitions: Sourced<i32>,
+        backend: Sourced<backend::Name>,
+    ) -> EffectiveSettingsBuilder {
         EffectiveSettingsBuilder {
             partitions,
             retention: None,
-            backend: None,
+            backend,
         }
     }
 
@@ -145,15 +169,24 @@ impl EffectiveSettings {
     }
 
     #[must_use]
-    pub const fn backend(&self) -> &Sourced<BackendSettings> {
+    pub const fn backend(&self) -> &Sourced<backend::Name> {
         &self.backend
+    }
+
+    /// The same settings with the partition count the topic's backend holds,
+    /// which is in force once the topic is provisioned.
+    #[must_use]
+    pub fn with_partitions_held_by_backend(mut self, partitions: i32) -> Self {
+        self.partitions = Sourced::held_by_backend(partitions);
+        self
     }
 }
 
+#[domain_model]
 pub struct EffectiveSettingsBuilder {
     partitions: Sourced<i32>,
     retention: Option<Sourced<RetentionSettings>>,
-    backend: Option<Sourced<BackendSettings>>,
+    backend: Sourced<backend::Name>,
 }
 
 impl EffectiveSettingsBuilder {
@@ -163,19 +196,13 @@ impl EffectiveSettingsBuilder {
         self
     }
 
-    #[must_use]
-    pub fn backend(mut self, backend: Sourced<BackendSettings>) -> Self {
-        self.backend = Some(backend);
-        self
-    }
-
     /// Builds the record, filling anything unset with the built-in tier.
     ///
     /// Infallible rather than asserted: the one path that reaches this sets
     /// every field, and a default that says "nothing stated this" is a truer
     /// answer for a caller that did not than a panic would be.
     #[must_use]
-    pub fn build(self, config: &EventBrokerConfig) -> EffectiveSettings {
+    pub fn build(self) -> EffectiveSettings {
         EffectiveSettings {
             partitions: self.partitions,
             retention: self.retention.unwrap_or_else(|| {
@@ -184,17 +211,16 @@ impl EffectiveSettingsBuilder {
                     size_bytes: None,
                 })
             }),
-            backend: self.backend.unwrap_or_else(|| {
-                Sourced::built_in(BackendSettings {
-                    r#type: config.default_storage_backend.clone(),
-                    settings: serde_json::Map::new(),
-                })
-            }),
+            backend: self.backend,
         }
     }
 }
 
 /// Resolves one topic's settings from configuration and its own declaration.
+///
+/// The backend comes from `routing` alone: a topic's specification says
+/// nothing about where its log lives, and the route is the operator's
+/// statement of it.
 ///
 /// # Errors
 /// [`TopicSettingsError::PartitionsOutOfRange`] when a configured count cannot
@@ -204,6 +230,7 @@ impl EffectiveSettingsBuilder {
 /// producer or a consumer sends.
 pub fn resolve(
     config: &EventBrokerConfig,
+    routing: &Routing,
     topic: &GtsInstanceId,
     declared: &Declaration,
 ) -> Result<EffectiveSettings, TopicSettingsError> {
@@ -221,10 +248,11 @@ pub fn resolve(
         });
     }
 
-    Ok(EffectiveSettings::builder(partitions)
-        .retention(retention(own, type_default, declared))
-        .backend(backend(config, own, type_default))
-        .build(config))
+    Ok(
+        EffectiveSettings::builder(partitions, routing.resolve(topic))
+            .retention(retention(own, type_default, declared))
+            .build(),
+    )
 }
 
 /// The first tier that stated a value, with the source that goes with it.
@@ -277,43 +305,8 @@ fn retention(
         Source::TypeEntry => Sourced::configured_for_type(settings),
         Source::Specification => Sourced::declared(settings),
         Source::BuiltIn => Sourced::built_in(settings),
+        Source::Backend => Sourced::held_by_backend(settings),
     }
-}
-
-/// The backend resolves whole rather than field by field: a backend type and
-/// the settings written beside it are one statement, and taking one backend's
-/// settings into another's selection would hand a provider keys it never
-/// defined. A topic's specification says nothing about backends, so this tier
-/// has no declared step.
-fn backend(
-    config: &EventBrokerConfig,
-    own: Option<&TopicSettingsEntry>,
-    type_default: Option<&TopicSettingsEntry>,
-) -> Sourced<BackendSettings> {
-    pick(
-        own.and_then(|entry| entry.backend.as_ref()),
-        type_default.and_then(|entry| entry.backend.as_ref()),
-    )
-    .map_or_else(
-        || {
-            Sourced::built_in(BackendSettings {
-                r#type: config.default_storage_backend.clone(),
-                settings: serde_json::Map::new(),
-            })
-        },
-        |sourced| {
-            let source = sourced.source();
-            let block = sourced.into_value();
-            let settings = BackendSettings {
-                r#type: block.r#type.clone(),
-                settings: block.settings.clone(),
-            };
-            match source {
-                Source::TopicEntry => Sourced::configured_for_topic(settings),
-                _ => Sourced::configured_for_type(settings),
-            }
-        },
-    )
 }
 
 #[cfg(test)]

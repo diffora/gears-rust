@@ -18,9 +18,11 @@ use crate::domain::backend::BackendResolver;
 use crate::domain::consumer_group_coordinator::ConsumerGroupCoordinator;
 use crate::domain::delivery::{DeliveryService, DeliveryServiceImpl};
 use crate::domain::ingest::{IngestService, IngestServiceImpl};
+use crate::domain::outbox::OutboxPartitions;
 use crate::domain::specification::SpecificationManager;
 use crate::domain::streaming::lease::InProcessStreamLeases;
 use crate::infra::loader::backend_source::BackendEventSource;
+use crate::infra::loader::heads::{DEFAULT_RECONCILE, HeadWatcher};
 use crate::infra::loader::poll::PollPolicy;
 use crate::infra::loader::scheduler::{DemandScheduler, SchedulerPolicy};
 use crate::infra::loader::shard::ShardLoader;
@@ -43,7 +45,10 @@ use crate::infra::storage::Storage;
 // single wiring path (called once from `module.rs`), so a builder or deps-struct
 // would add indirection without preventing any real mistake - the same call as
 // `DeliveryServiceImpl::new`, which carries the identical justification.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each is a distinct fully-required dependency, wired at one site"
+)]
 #[must_use]
 pub fn build_handler_state(
     storage: Arc<Storage>,
@@ -54,15 +59,23 @@ pub fn build_handler_state(
     groups: Arc<ConsumerGroupCoordinator>,
     leases: Arc<InProcessStreamLeases>,
     batch: BatchConfig,
+    outbox_partitions: OutboxPartitions,
+    sync_wait_max: std::time::Duration,
     streaming: StreamingConfig,
     heartbeat_interval: std::time::Duration,
 ) -> HandlerState {
+    // The wait registry is `Storage` itself - it holds the ingest outbox whose
+    // trace machinery a synchronous publish subscribes to.
+    let sync_wait: Arc<dyn crate::domain::sync_wait::SyncWaitRegistry> = storage.clone();
     let ingest: Arc<dyn IngestService> = Arc::new(IngestServiceImpl::new(
         Arc::clone(&storage),
         policy_enforcer.clone(),
         Arc::clone(&spec_manager),
         Arc::clone(&backend_resolver),
         batch,
+        outbox_partitions,
+        sync_wait,
+        sync_wait_max,
     ));
     let delivery_impl = DeliveryServiceImpl::new(
         storage,
@@ -102,8 +115,9 @@ pub fn build_topic_manager(cfg: &LoaderConfig) -> Arc<TopicManager> {
     Arc::new(TopicManager::new(policy))
 }
 
-/// Builds the instance's loader - what fills the caches ahead of readers, and
-/// what reclaims behind them - and returns its run future, unspawned.
+/// Builds the instance's loader - what fills the caches ahead of readers, what
+/// reclaims behind them, and the head watch that tells it when a tail has
+/// moved - and returns its run future, unspawned.
 ///
 /// Returning the future rather than a `JoinHandle` lets the caller decide who
 /// owns the task: `serve` registers it with its `Supervisor` so it is
@@ -118,6 +132,7 @@ pub fn loader_future(
     cancel: CancellationToken,
 ) -> impl std::future::Future<Output = ()> + Send + 'static {
     let source = Arc::new(BackendEventSource::new(spec_manager, backend_resolver));
+    let heads = HeadWatcher::new(Arc::clone(&source), Arc::clone(&topics), DEFAULT_RECONCILE);
     let scheduler = Arc::new(DemandScheduler::new(
         source,
         Arc::clone(&topics),
@@ -125,5 +140,8 @@ pub fn loader_future(
             .starvation_weight(StarvationWeight(cfg.starvation_weight))
             .build(),
     ));
-    ShardLoader::new(scheduler, topics, Duration::from_millis(cfg.tick_ms)).run(cancel)
+    let shard = ShardLoader::new(scheduler, topics, Duration::from_millis(cfg.tick_ms));
+    async move {
+        tokio::join!(shard.run(cancel.clone()), heads.run(cancel));
+    }
 }

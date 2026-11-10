@@ -2,7 +2,7 @@
 # Stage 1: Builder
 # Should match rust-toolchain.toml; a stale pin here just makes rustup
 # download a second toolchain on every build.
-FROM rust:1.99.0-bookworm@sha256:59037199c44290f2befcdd58dcc540164763fc296950255aaefeef096a1866b0 AS builder
+FROM rust:1.98.1-bookworm@sha256:93ce27a88655056a51dbdd8f5f2d7ddc071c7b0070fb288a37b5a285fc83971e AS builder
 
 # Build arguments
 ARG CARGO_FEATURES=mini-chat,static-authn,static-authz,single-tenant,static-credstore,k8s
@@ -46,7 +46,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     cp /build/target/$OUTPUT_DIR/cf-gears-example-server /tmp/cf-gears-example-server
 
 # Stage 2: Runtime
-FROM debian:13.7-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a
+FROM debian:13.7-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates && \

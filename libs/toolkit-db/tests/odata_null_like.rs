@@ -14,16 +14,14 @@
 //! found nothing. Postgres defaults to the backslash, which is why only one dialect showed it.
 //!
 //! The rendering tests run in every build; the execution suite runs under the `integration`
-//! feature on each backend compiled in (`make test-sqlite`, `make test-pg`).
+//! feature on each backend compiled in (`make test-integration LANE=toolkit-db-sqlite`, `make test-integration LANE=toolkit-db-pg`).
 
 use sea_orm::entity::prelude::*;
 use sea_orm::{DbBackend, QueryFilter, QueryTrait};
 use toolkit_db::odata::{
     FieldMap, FieldToColumn, ODataFieldMapping, expr_to_condition, filter_node_to_condition,
 };
-use toolkit_db::secure::ScopableEntity;
 use toolkit_odata::filter::{FieldKind, FilterField, FilterNode, parse_odata_filter};
-use toolkit_security::pep_properties;
 
 #[cfg(all(feature = "integration", any(feature = "sqlite", feature = "pg")))]
 mod common;
@@ -32,8 +30,9 @@ mod ent {
     use sea_orm::entity::prelude::*;
     use uuid::Uuid;
 
-    #[derive(Debug, Clone, PartialEq, Eq, DeriveEntityModel)]
+    #[derive(Debug, Clone, PartialEq, Eq, DeriveEntityModel, toolkit_db::secure::Scopable)]
     #[sea_orm(table_name = "odata_null_like")]
+    #[secure(tenant_col = "tenant_id", no_resource, no_owner, no_type)]
     pub struct Model {
         #[sea_orm(primary_key)]
         pub id: i64,
@@ -46,18 +45,6 @@ mod ent {
     pub enum Relation {}
 
     impl ActiveModelBehavior for ActiveModel {}
-}
-
-impl ScopableEntity for ent::Entity {
-    const SCOPE_PROPERTIES: &'static [(&'static str, Self::Column)] =
-        &[(pep_properties::OWNER_TENANT_ID, ent::Column::TenantId)];
-
-    const UNSCOPED_DIMENSIONS: &'static [&'static str] =
-        &[pep_properties::RESOURCE_ID, pep_properties::OWNER_ID];
-
-    fn type_col() -> Option<<Self as EntityTrait>::Column> {
-        None
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::IntoStaticStr)]

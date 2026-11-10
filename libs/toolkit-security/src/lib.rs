@@ -44,6 +44,8 @@ pub mod bin_codec;
 pub mod constants;
 /// The authenticated tenant-plane caller.
 pub mod context;
+/// Application cryptographic primitives with explicit per-OS FIPS routing.
+pub mod crypto;
 /// Platform-plane identity, credentials, and the authenticator contract.
 pub mod internal_auth;
 /// TTL-bounded caching for platform-plane validation.
@@ -51,11 +53,19 @@ pub mod internal_auth;
 pub mod internal_auth_cache;
 /// Configuration selecting how the platform plane authenticates.
 pub mod internal_auth_config;
+/// JWT signing, decoding and claim validation backed by the crypto facade.
+#[cfg(feature = "jwt")]
+pub mod jwt;
 /// The types most gears need, re-exported for a single glob import.
 pub mod prelude;
+mod provider;
+/// Per-route credential requirement.
+pub mod route_auth;
 /// A pre-shared-secret [`InternalAuthenticator`], for development and simple
 /// deployments.
 pub mod shared_secret;
+/// TLS integration using the platform's selected native crypto provider.
+pub mod tls;
 
 pub use access_scope::{
     AccessScope, EmptyScopeConstraint, EqScopeFilter, InGroupScopeFilter,
@@ -78,6 +88,7 @@ pub use internal_auth_cache::{
 pub use internal_auth_config::{
     BuiltAuthenticator, DEFAULT_INTERNAL_PEER_NAME, InternalAuthConfig, InvalidInternalAuth,
 };
+pub use route_auth::RouteAuth;
 pub use shared_secret::{
     InvalidSharedSecret, REDACTED_PLACEHOLDER, SharedSecretInternalAuthenticator,
 };

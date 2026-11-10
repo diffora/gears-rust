@@ -76,7 +76,7 @@ Requirements that significantly influence architecture decisions.
 | `cpt-cf-quota-enforcement-fr-evaluate-preview`                   | Reuses `read_quota_snapshot` + Engine call; no idempotency record, no row mutation (I3).                                                                                                                                                                                                                                                                                                                                                                                       |
 | `cpt-cf-quota-enforcement-fr-quota-resolution-engine`            | `EngineRegistry` (in-process static registry with `most-restrictive-wins` and `cel` built-ins); `QuotaResolutionEngineV1` trait (§3.3); Debit-Plan invariants enforced at boundary by `EvaluationOrchestrator`.                                                                                                                                                                                                                                                                |
 | `cpt-cf-quota-enforcement-fr-quota-resolution-policy`            | `PolicyService` with scope precedence (per-metric > global); seeded `global` Policy at bootstrap.                                                                                                                                                                                                                                                                                                                                                                              |
-| `cpt-cf-quota-enforcement-fr-quota-resolution-policy-versioning` | Two-table layout (`quota_resolution_policy` + `quota_resolution_policy_version`); explicit `latest_version` pointer updated atomically with new version row insert (single tx).                                                                                                                                                                                                                                                                                                |
+| `cpt-cf-quota-enforcement-fr-quota-resolution-policy-versioning` | Two-table layout (`policies` + `policy_versions`, audited in `policy_operation_log`); the `active_version` pointer and `high_water` counter updated atomically with new version row insert (single tx).                                                                                                                                                                                                                                                                        |
 | `cpt-cf-quota-enforcement-fr-quota-lifecycle`                    | `QuotaManagementService` over `create_quota` / `update_quota` / `deactivate_quota` / `read_quotas`; deactivation cascades to active leases via `DeactivateOutcome { resolved_leases }`. Use cases: `cpt-cf-quota-enforcement-usecase-create-quota` (create / validate path), `cpt-cf-quota-enforcement-seq-quota-deactivate-cascade` (deactivate path).                                                                                                                        |
 | `cpt-cf-quota-enforcement-fr-projection-contracts`               | Abstract QE subject/resource/request/constraint bases, owner-derived projections, and one request contract per metric live in `types-registry`; the owner projection is the subject-type half of the counter key; no QE table or registration endpoint.                                                                                                                                                                                                                 |
 | `cpt-cf-quota-enforcement-fr-contract-validation`                | Gateway validates caller-supplied attribution and one operation-level metadata object for every subject-based evaluation request; `QuotaManagementService` validates arbitration constraints on create/update; `PolicyService` snapshots schemas and performs static pair checking; `EvaluationOrchestrator` has no registry dependency.                                                                                                                                       |
@@ -87,8 +87,8 @@ Requirements that significantly influence architecture decisions.
 | `cpt-cf-quota-enforcement-fr-idempotency`                        | Single-tx upsert on `(tenant_id, idempotency_subject_key, operation_type, key)` inside every mutating storage primitive (I1, I2).                                                                                                                                                                                                                                                                                                                                             |
 | `cpt-cf-quota-enforcement-fr-authorization`                      | Two-phase PDP integration: PDP call before transaction (admission); constraint filters applied inside transaction. Fail-closed on PDP unavailability.                                                                                                                                                                                                                                                                                                                          |
 | `cpt-cf-quota-enforcement-fr-tenant-isolation`                   | Defense-in-depth: gateway-level filter (PDP scope) + storage-plugin-level filter (every query bound by tenant).                                                                                                                                                                                                                                                                                                                                                                |
-| `cpt-cf-quota-enforcement-fr-period-rollover`                    | Lazy period-row creation on first evaluate in new period (I3 exception); `period-rollover` event emitted via outbox.                                                                                                                                                                                                                                                                                                                                                           |
-| `cpt-cf-quota-enforcement-fr-quota-snapshot-read`                | Realised by the unified `POST /v1/quota-enforcement/snapshot` endpoint with `subjects.len() == 1` in the request body; cursor-paginated; read-only with the sole exception of lazy period-row materialization.                                                                                                                                                                                                                                                                 |
+| `cpt-cf-quota-enforcement-fr-period-rollover`                    | Lazy period-row creation by the first mutating operation in a new period; `period-rollover` event emitted via outbox.                                                                                                                                                                                                                                                                                                                                                          |
+| `cpt-cf-quota-enforcement-fr-quota-snapshot-read`                | Realised by the unified `POST /v1/quota-enforcement/snapshot` endpoint with `subjects.len() == 1` in the request body; cursor-paginated; read-only (I3).                                                                                                                                                                                                                                                                                                                       |
 | `cpt-cf-quota-enforcement-fr-bulk-quota-snapshot-read`           | Same `POST /v1/quota-enforcement/snapshot` endpoint with `subjects.len() >= 1`; cursor-paginated (default 100 entries / page); single and bulk are degenerate cases of one request shape.                                                                                                                                                                                                                                                                                      |
 | `cpt-cf-quota-enforcement-fr-end-user-quota-snapshot-read`       | A consuming product exposes any end-user view through its backend; the backend invokes the S2S snapshot endpoint with explicit attribution authorized for its service principal. End users never call QE directly.                                                                                                                                                                                                                                                            |
 | `cpt-cf-quota-enforcement-fr-quota-type-allocation`              | Distinct counter shape `quota_allocation_counters(quota_id, in_flight_amount, version)`; debit/lease-acquire increment, credit/lease-commit/release decrement; no period field accepted on creation.                                                                                                                                                                                                                                                                           |
@@ -326,8 +326,9 @@ scale per `cpt-cf-quota-enforcement-nfr-subject-scale` while retaining bounded p
 
 - [ ] `p1` - **ID**: `cpt-cf-quota-enforcement-constraint-in-process-engine-registration`
 
-Engine plugins are registered statically in-process at gearootstrap. P1 ships `most-restrictive-wins` and `cel`;
-additional engines link into the binary at build time. Runtime registration of new Engines (dynamic loading, RPC
+Engine plugins are registered in-process at gear bootstrap from the Engines linked into the binary. P1 ships
+`most-restrictive-wins` and `cel`; an additional Engine, from this repository or outside it, registers by being linked
+into the server binary at build time, with no QE change. Runtime registration of new Engines (dynamic loading, RPC
 engines) is out of P1 scope per PRD §5.9. Configuration of an Engine is done via the Quota Resolution Policy
 (`engine_config` field) — the registration set is fixed at deploy time.
 
@@ -358,12 +359,12 @@ Plugins are registered in-process at gear bootstrap via ClientHub. Domain data s
 | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
 | `Quota`                        | Declarative cap assigned to a single subject for a single metric. Carries `quota_id` (server-assigned **UUIDv7** per `cpt-cf-quota-enforcement-adr-acquisition-ordering`), `tenant_id`, subject reference, metric, type, period spec (consumption only), enforcement mode, cap (`0..=i64::MAX`, or `null` for unbounded), notification thresholds, validity window, source, status, metadata, accepted constraint contract type/version (snapshotted at creation and moved with every accepted metadata update), and record version. First-class stored entity — no separate template/binding concept.                                                                                              | `quotas` table                                                       |
 | `Counter` (allocation)         | Per-Quota in-flight counter for allocation Quotas. Mutated on debit / lease acquire (increment) and credit / lease commit/release (decrement).                                                                                                                                                                                                                                                                                                                                                                                                                 | `quota_allocation_counters` table                                    |
-| `Counter` (consumption)        | Per-(Quota, period) consumed counter. New row materialised lazily on first evaluate in a new period (single I3 exception). Carries `highest_crossed_threshold_pct`.                                                                                                                                                                                                                                                                                                                                                                                            | `quota_consumption_counters` table                                   |
+| `Counter` (consumption)        | Per-(Quota, period) consumed counter. New row materialised lazily by the first mutating operation in a new period; reads never create one (I3). Carries `highest_crossed_threshold_pct`.                                                                                                                                                                                                                                                                                                                                                                       | `quota_consumption_counters` table                                   |
 | `Lease`                        | Two-phase capacity hold (PRD `cpt-cf-quota-enforcement-fr-lease-acquire`). Carries token (UUID), tenant, acquisition `IdempotencySubjectKey`, idempotency key, acquisition timestamp, expiry timestamp, state, and `acquisition_period_id`. State machine: `Active` → `Committed` / `Released` / `AutoReleased` / `ResolvedByDeactivation` (closed enum, terminal states). | `leases` table |
 | `LeaseHold`                    | Per-Quota hold record attached to a lease. One row per Quota in the lease's Debit Plan. Carries `lease_id`, `quota_id`, `held_amount`, `period_id` (consumption Quotas). Separate rows enable atomic multi-Quota acquisition without nested-array semantics.                                                                                                                                                                                                                                                                                                   | `lease_holds` table                                                  |
 | `LeaseCapacityCounter`         | Per-`(tenant, metric)` count of currently active leases. Mutated atomically with lease state transitions. Enforces the per-`(tenant, metric)` active-lease cap (PRD `cpt-cf-quota-enforcement-fr-lease-timeout`, default 1000).                                                                                                                                                                                                                                                                                                                                | `lease_capacity_counters` table                                      |
-| `QuotaResolutionPolicy`        | Operator-managed binding of an Engine + config to a scope (P1: `global` or per-metric). Stable identifier; `latest_version` pointer updated atomically with new version row insert.                                                                                                                                                                                                                                                                                                                                                                            | `quota_resolution_policy` table                                      |
-| `QuotaResolutionPolicyVersion` | Immutable per-version record. Carries `policy_id`, `policy_version`, `engine_id`, `engine_config` (JSON), `timeout_ms`, `version_state` (`active` / `superseded` / `rolled_back` (terminal) / `deleted` (terminal — set on the previously-active version when the entire `policy_id` is soft-deleted via `delete_policy` per PRD §5.9)), `comment` (optional operator note), the schema snapshot resolved at write time (the request, resource, and constraint contract documents the config reads, keyed by their versioned GTS type identifiers, plus each admitted metric's environment schema; empty for `most-restrictive-wins`), audit fields. Bootstrap rebuilds every active version from its stored config and snapshot and fails readiness when the snapshot no longer matches the active catalogue (`POLICY_CATALOG_INCOMPATIBLE`).                                                                                                                                                                     | `quota_resolution_policy_version` table                              |
+| `QuotaResolutionPolicy`        | Operator-managed binding of an Engine + config to a scope (P1: `global` or per-metric). Stable identifier; `active_version` pointer (cleared on delete) and `high_water` version counter updated atomically with new version row insert.                                                                                                                                                                                                                                                                                                                       | `policies` table                                                     |
+| `QuotaResolutionPolicyVersion` | Immutable per-version record. Carries `policy_id`, `policy_version`, `engine_id`, `engine_config` (JSON), `timeout_ms`, `version_state` (`active` / `superseded` / `rolled_back` (terminal) / `deleted` (terminal — set on the previously-active version when the entire `policy_id` is soft-deleted via `delete_policy` per PRD §5.9)), `comment` (optional operator note), the schema snapshot resolved at write time (the request, resource, and constraint contract documents the config reads, keyed by their versioned GTS type identifiers, plus each admitted metric's environment schema; empty for `most-restrictive-wins`), audit fields. Bootstrap rebuilds every active version from its stored config and snapshot and fails readiness when the snapshot no longer matches the active catalogue (`POLICY_CATALOG_INCOMPATIBLE`).                                                                                                                                                                     | `policy_versions` table                                              |
 | `IdempotencyRecord`            | Replay-safety record keyed by typed `IdempotencyScope { tenant_id, subject_key, operation_type, idem_key }`. `subject_key: IdempotencySubjectKey` is the fixed-width fingerprint of the canonical complete applicable-subject set for evaluation operations, the persisted acquisition key for lease follow-ups, or the owning Quota's persisted subject pair for a credit. A rollback recomputes the reversed debit's key from the same authorized attribution, so its scope coincides with the original's however many Quotas that debit's plan spanned. Carries canonical `payload_hash`, schema-versioned `decision_blob`, and `expires_at`. | `idempotency_records` table |
 | `OperationLog`                 | Operation ledger of every successful mutating operation (P1 scope; audit-grade attribution awaits platform audit infra per PRD §4.2 / §6.2, see §4.3). Carries operation kind, actor SecurityContext, target Quota IDs, request fingerprint, Decision outcome, timestamp. Partitioned by date for retention and cold-tier migration.                                                                                                                                                                                                                           | `operation_log` table                                                |
 | `NotificationOutboxEvent`      | Same-tx event row enqueued by mutating storage primitives. Carries `event_id`, `event_kind`, `tenant_id`, target reference, payload, emission timestamp. Drained by `NotificationDispatcher` and dispatched at-least-once.                                                                                                                                                                                                                                                                                                                                     | `notification_outbox` table (toolkit-db Outbox queue)                 |
@@ -593,7 +594,7 @@ through `EvaluationOrchestrator` into the storage plugin (phase-2). Does not own
 
 Public S2S surface for eight consumer operations: `debit`, `rollback`, `reserve`, `commit`, `release`, `batch_debit`,
 `evaluate_preview`, and `snapshot`, plus the management-plane `credit`, which is served on the same surface but
-authorized as its own action and exposed in the SDK on `QuotaManagerClientV1` only.
+authorized as its own action and exposed in the SDK on `QuotaManagerApi` only.
 
 ##### Responsibility scope
 
@@ -663,7 +664,7 @@ Policy at evaluation time (`global` ← per-metric).
 
 ##### Responsibility scope
 
-CRUD on `quota_resolution_policy` and `quota_resolution_policy_version` tables via Storage plugin; the latest-version
+CRUD on `policies` and `policy_versions` tables via Storage plugin; the latest-version
 pointer is read authoritatively from storage on every evaluation (`read_policy` inside the evaluation transaction,
 §3.6), so every replica always evaluates the active version; only immutable version-keyed `ValidatedConfig`
 artifacts are cached; contract resolution/snapshotting via `TypesRegistryClient`; `engine_config` validation
@@ -694,7 +695,7 @@ support). Realises `cpt-cf-quota-enforcement-constraint-in-process-engine-regist
 
 ##### Responsibility scope
 
-Compile-time linkage of built-in Engines; bootstrap-time fail-fast registration (`engine_bootstrap_failures_total`
+Collecting every Engine linked into the binary; bootstrap-time fail-fast registration (`engine_bootstrap_failures_total`
 increments on failure); ID → Engine resolution at evaluation time.
 
 ##### Responsibility boundaries
@@ -867,7 +868,7 @@ Pluggable persistence layer (`cpt-cf-quota-enforcement-fr-pluggable-storage`). D
 ##### Responsibility scope
 
 Quota CRUD; multi-Quota counter mutation atomicity (apply_debit_plan, apply_batch_debit, apply_credit, apply_rollback);
-lease 3-phase primitives; snapshot reads with lazy period-row materialisation (single I3 exception); Policy versioning;
+lease 3-phase primitives; read-only snapshot reads (I3); Policy versioning;
 idempotency lookup; sweeper hooks (lease, idempotency, op log); outbox dispatch (pull / mark delivered / mark failed);
 bootstrap; health. Same-tx outbox (I11) lives **inside** this contract — events enqueued atomically with their producing
 mutation.
@@ -964,7 +965,7 @@ QE exposes three contractual surfaces:
 | `GET`    | `/v1/quota-enforcement/quotas/{id}`            | Read single Quota                                                                                                                                                                                                                                                                                                                           |
 | `PATCH`  | `/v1/quota-enforcement/quotas/{id}`            | Update Quota. The body may name the immutable fields `metric`, `quota_type`, `period`, `subject` only to be rejected: `quota_type = rate` → 501 `NOT_YET_IMPLEMENTED` first, any other present immutable field (explicit `null` included) → 400 `IMMUTABLE_FIELD`; an empty patch → 400 `PATCH_EMPTY`; unknown fields → 422.                    |
 | `POST`   | `/v1/quota-enforcement/quotas/{id}/deactivate` | Deactivate Quota (cascades to active leases)                                                                                                                                                                                                                                                                                                |
-| `GET`    | `/v1/quota-enforcement/quotas`                 | List/filter Quotas (paginated; PDP-scoped). Query: `tenant_id`, `projection_type` + `subject_id` (must appear together, `LIST_SUBJECT_INCOMPLETE`), `metric`, `status`, repeatable `id` (bounded, `LIST_TOO_MANY_IDS`), `limit` (bounded, `LIST_LIMIT_OUT_OF_RANGE`), `cursor` (opaque; one the plugin did not issue is 400 `CURSOR_INVALID`); invalid parameters are 400. Ordered by `quota_id` ascending (`UUIDv7`); the cursor carries position only and tenant and PDP scope are re-applied on every page. Response `{ items: [QuotaView], next_cursor }`. |
+| `GET`    | `/v1/quota-enforcement/quotas`                 | List/filter Quotas (paginated; PDP-scoped) with OData. `$filter` takes `eq` on `tenant_id`, `projection_type`, `subject_id`, `metric` and `status`, and `eq` or `in` on `id`, joined by `and`; each field once, `projection_type` and `subject_id` together (`LIST_SUBJECT_INCOMPLETE`), `id` bounded (`LIST_TOO_MANY_IDS`). Any other field, operator or connective is 400 `INVALID_FILTER`, never ignored, and so is any query key the list does not read (`UNSUPPORTED_QUERY_PARAM`). `$orderby` accepts only `id asc`; `$top` (alias `limit`) is bounded (`INVALID_LIMIT`); `$select` is refused. The `cursor` is a forward-only `CursorV1` wrapping the plugin's opaque one and bound to the effective filter, defaulted tenant included: another filter is 400 `FILTER_MISMATCH`, a backward or foreign cursor `INVALID_CURSOR`. Ordered by `quota_id` ascending (`UUIDv7`); tenant and PDP scope are re-applied on every page. Response `Page<QuotaView>`: `{ items, page_info: { next_cursor, prev_cursor: null, limit } }`. |
 | `POST`   | `/v1/quota-enforcement/operations/debit`       | Debit (`cpt-cf-quota-enforcement-fr-debit`)                                                                                                                                                                                                                                                                                                 |
 | `POST`   | `/v1/quota-enforcement/operations/credit`      | S2S Credit (`cpt-cf-quota-enforcement-fr-credit`)                                                                                                                                                                                                                                                                                            |
 | `POST`   | `/v1/quota-enforcement/operations/rollback`    | Rollback (`cpt-cf-quota-enforcement-fr-rollback`)                                                                                                                                                                                                                                                                                           |
@@ -973,10 +974,10 @@ QE exposes three contractual surfaces:
 | `POST`   | `/v1/quota-enforcement/leases`                 | Acquire Lease (`cpt-cf-quota-enforcement-fr-lease-acquire`)                                                                                                                                                                                                                                                                                 |
 | `POST`   | `/v1/quota-enforcement/leases/{token}/commit`  | Commit Lease (`cpt-cf-quota-enforcement-fr-lease-commit`)                                                                                                                                                                                                                                                                                   |
 | `POST`   | `/v1/quota-enforcement/leases/{token}/release` | Release Lease (`cpt-cf-quota-enforcement-fr-lease-release`)                                                                                                                                                                                                                                                                                 |
-| `POST`   | `/v1/quota-enforcement/snapshot`               | S2S Quota Snapshot read for explicit caller-supplied tenant/subject/metric filters authorized by PDP; cursor-paginated. Product backends use this same surface for end-user views; end users never call QE.                                                                                                                                                                                                      |
+| `POST`   | `/v1/quota-enforcement/snapshot`               | S2S Quota Snapshot read for explicit caller-supplied tenant/subject/metric filters authorized by PDP; cursor-paginated. Product backends use this same surface for end-user views; end users never call QE. Not an OData list: the body names explicit targets the PDP authorizes as one set, which `$filter` could only express with `or`.                                                                                                                                                                                                      |
 | `POST`   | `/v1/quota-enforcement/policies`               | Create Policy                                                                                                                                                                                                                                                                                                                               |
 | `GET`    | `/v1/quota-enforcement/policies/{id}`          | Read latest active Policy                                                                                                                                                                                                                                                                                                                   |
-| `GET`    | `/v1/quota-enforcement/policies/{id}/versions` | List Policy versions (paginated)                                                                                                                                                                                                                                                                                                            |
+| `GET`    | `/v1/quota-enforcement/policies/{id}/versions` | List Policy versions, oldest first. No `$filter`; `$orderby` accepts only `version asc`; `$top` (alias `limit`) is bounded; the forward-only `cursor` is bound to the policy id. Response `Page<PolicyVersionMeta>`                                                                                                                                                                                                                                                                                                            |
 | `PATCH`  | `/v1/quota-enforcement/policies/{id}`          | Update Policy (creates new immutable version)                                                                                                                                                                                                                                                                                               |
 | `POST`   | `/v1/quota-enforcement/policies/{id}/rollback` | Rollback to a prior version                                                                                                                                                                                                                                                                                                                 |
 | `DELETE` | `/v1/quota-enforcement/policies/{id}`          | Soft-delete (narrow-scope only; cannot delete seeded global). Returns **204 No Content** on success. Idempotent on retry per PRD §5.9: repeated DELETE against an already-deleted `policy_id` returns 204 (no-op). 404 only when `policy_id` was never created.                                                                             |
@@ -1046,7 +1047,7 @@ Identifiers under the `gts.cf.core.qe.*` package:
 | Contract lifecycle preconditions: `ProjectionNotResolvable`, `ContractSnapshotUnavailable`, `ConstraintContractMismatch`, `PolicyContractPairIncompatible`                                                                                                                                       | `FailedPrecondition` | 400  | stable precondition reason; Quota/Policy write rejected before persistence                                                                         |
 | Semantic precondition: `ThresholdsRequireBoundedCap`, `CapBelowConsumed`, `LeaseNotActive`, `OverCommitNotAuthorized`, `PeriodClosed`, `MetricNotQuotaGated`, `MetricNotRegistered`, `QuotaDeactivated`, `UnknownEngine`, `CannotDeleteSeededGlobalPolicy`, `UnknownPolicyVersion`, `VersionRolledBack` | `FailedPrecondition` | 400  | matching `UPPER_SNAKE` token (precondition violation)                                                                                              |
 | `PdpDenied`                                                                                                                                                                                                                                                                                             | `PermissionDenied`   | 403  | —                                                                                                                                                  |
-| `NotFound { kind, id }`                                                                                                                                                                                                                                                                                 | `NotFound`           | 404  | `kind` selects `type` and its `UNKNOWN_*` token (`UNKNOWN_QUOTA`, `UNKNOWN_OPERATION`); `id` populates `resource_name`                              |
+| `NotFound { kind, id }`                                                                                                                                                                                                                                                                                 | `NotFound`           | 404  | `kind` selects `type`; a Quota or operation `detail` leads with its token (`UNKNOWN_QUOTA`, `UNKNOWN_OPERATION`); `id` populates `resource_name`    |
 | Concurrency conflict: `IdempotencyPayloadMismatch`, `VersionConflict`, `LeaseContentionTimeout`                                                                                                                                                                                                         | `Aborted`            | 409  | matching `UPPER_SNAKE` token; safe to retry                                                                                                        |
 | `LeaseInflightLimitExceeded`, `EngineCostExceeded`                                                                                                                                                                                                                                                      | `ResourceExhausted`  | 429  | `LEASE_INFLIGHT_LIMIT_EXCEEDED` (`subject = "(tenant, metric)"`); `ENGINE_COST_EXCEEDED` (`subject = "engine"`)                                    |
 | `NotYetImplemented`                                                                                                                                                                                                                                                                                     | `Unimplemented`      | 501  | —                                                                                                                                                  |
@@ -1086,7 +1087,7 @@ Three traits split by actor role; every method is async, takes a `SecurityContex
 engine, notification sink) is bound `Send + Sync + 'static` so it registers in ToolKit's
 `ClientHub` (`ClientHub::register` requires those bounds), and async trait methods return `Send` futures.
 
-**`QuotaEnforcementClientV1`** — Quota Consumer surface:
+**`QuotaEnforcementApi`** — Quota Consumer surface:
 
 | Method                                    | Returns                     | Realises                                                                                                                                                                                                                                                      |
 | ----------------------------------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -1103,36 +1104,44 @@ engine, notification sink) is bound `Send + Sync + 'static` so it registers in T
 `Denied { decision: Decision }`. A bare `LeaseToken` return cannot represent a `Denied` reserve, which PRD §3.4
 requires to surface as a Decision verdict at HTTP 200, never as an error.
 
-**`QuotaManagerClientV1`** — Quota Manager surface:
+**`QuotaManagerApi`** — Quota Manager surface:
 
 | Method                                      | Returns                         | Realises                                                                                                                                          |
 | ------------------------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `create_quota(spec: QuotaSpec)`             | `QuotaId`                       | `cpt-cf-quota-enforcement-fr-quota-lifecycle`; the public create shape carries no `constraint_contract`, the gear fills it from the catalogue        |
-| `update_quota(id, patch)`                   | `()`                            | `cpt-cf-quota-enforcement-fr-quota-lifecycle`                                                                                                     |
+| `update_quota(req: UpdateQuotaRequest)`     | `()`                            | `cpt-cf-quota-enforcement-fr-quota-lifecycle`; the update shape `QuotaUpdate` carries no `constraint_contract`, the gear fills it with `metadata`    |
 | `deactivate_quota(id)`                      | `DeactivateOutcome`             | `cpt-cf-quota-enforcement-fr-quota-lifecycle` (cascade resolved leases)                                                                           |
-| `read_quotas(filter, page)`                 | `PageResult<QuotaView>`         | `cpt-cf-quota-enforcement-fr-quota-lifecycle`; the public read shape is the stored `Quota` plus the server-computed `currently_within_window` (one clock reading per response) and the current `metric_kind` (`null` when the registry no longer knows the metric); storage `read_quotas` keeps returning `PageResult<Quota>` |
+| `read_quotas(req: ReadQuotasRequest)`       | `PageResult<QuotaView>`         | `cpt-cf-quota-enforcement-fr-quota-lifecycle`; the public read shape is the stored `Quota` plus the server-computed `currently_within_window` (one clock reading per response) and the current `metric_kind` (`null` when the registry no longer knows the metric); storage `read_quotas` keeps returning `PageResult<Quota>` |
 | `credit(req: CreditRequest)`                | `Decision`                      | `cpt-cf-quota-enforcement-fr-credit` (management-plane counter correction, authorized as its own action) |
 | `evaluate_preview(req: ManagementPreviewRequest)` | `DecisionPreview`          | Explicit target under manager PDP scope; `cpt-cf-quota-enforcement-fr-evaluate-preview`                                                           |
 | `snapshot(req: ManagementSnapshotRequest)`  | `PageResult<QuotaSnapshot>`      | Explicit target under manager PDP scope; snapshot read requirements                                                                                |
 
-**`QuotaOperatorClientV1`** — Platform Operator surface. Quota Resolution Policy lifecycle methods are
+**`QuotaOperatorApi`** — Platform Operator surface. Quota Resolution Policy lifecycle methods are
 operator-only per `cpt-cf-quota-enforcement-fr-authorization` and deliberately absent from
-`QuotaManagerClientV1`; explicit-target reads and previews are available on both surfaces under different PDP grants:
+`QuotaManagerApi`; explicit-target reads and previews are available on both surfaces under different PDP grants:
 
 | Method                                      | Returns                         | Realises                                                                                                                                          |
 | ------------------------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `create_policy(p: PolicyDraft)`             | `PolicyVersion`                 | `cpt-cf-quota-enforcement-fr-quota-resolution-policy-versioning`; an active Policy at the same scope is rejected with `PolicyScopeOccupied` (409 `POLICY_SCOPE_OCCUPIED`)                                                                                  |
-| `update_policy(scope, if_match_version, p)` | `PolicyVersion`                 | same — creates new immutable version; `if_match_version` enforces lost-update protection (PRD §5.9), rejected with `VERSION_CONFLICT` on mismatch |
-| `rollback_policy(scope, target)`            | `PolicyVersion`                 | same — rollback to prior version                                                                                                                  |
-| `delete_policy(scope)`                      | `()`                            | same — soft-delete, narrow-scope only                                                                                                             |
-| `list_policy_versions(scope, page)`         | `PageResult<PolicyVersionMeta>` | same                                                                                                                                              |
+| `update_policy(req: UpdatePolicyRequest)`   | `PolicyVersion`                 | same — creates new immutable version; `if_match_version` enforces lost-update protection (PRD §5.9), rejected with `VERSION_CONFLICT` on mismatch |
+| `rollback_policy(req: RollbackPolicyRequest)` | `PolicyVersion`                 | same — rollback to prior version                                                                                                                  |
+| `delete_policy(req: DeletePolicyRequest)`   | `()`                            | same — soft-delete, narrow-scope only                                                                                                             |
+| `list_policy_versions(req: ListPolicyVersionsRequest)` | `PageResult<PolicyVersionMeta>` | same                                                                                                                                              |
 | `evaluate_preview(req: ManagementPreviewRequest)` | `DecisionPreview`        | Explicit target under operator PDP scope                                                                                                          |
 | `snapshot(req: ManagementSnapshotRequest)`  | `PageResult<QuotaSnapshot>`     | Explicit target under operator PDP scope                                                                                                          |
 
-All three traits are implemented by `quota-enforcement-sdk-rest-client` (HTTP transport) and by
-`quota-enforcement-sdk-in-process` (direct in-process call when QE is bundled in the caller's binary). Cross-gear
-callers MUST use the SDK and MUST NOT depend on the QE gateway's internal types
-(`cpt-cf-quota-enforcement-constraint-toolkit`).
+Each trait is a ToolKit `#[toolkit::contract]` (`version = "v1"`); a method with more than one argument takes one
+request struct, so every method maps to one JSON body. The gear provides each contract with
+`#[toolkit::provides(transports = [local, rest])]`: by default `ClientHub` holds the in-process implementation, and
+`client_wiring.<contract>` in the gear configuration can wire a generated REST client instead. The SDK's
+`#[toolkit::rest_contract]` projections (`rest` module; features `rest-client` and `rest-server`) generate those
+clients and the server routes: `POST /quota-enforcement/v1/...`, one route per method, internal (not exposed at the
+edge) and authenticated. They run on the tenant plane: the client forwards the caller's bearer token, the route
+rebuilds the `SecurityContext` from the re-validated token, so the PDP judges the original caller. The gear serves
+these routes from its own domain service, never from the `ClientHub` client, and they sit beside the public REST
+API above. OData is the public HTTP grammar only: these routes take the typed `QuotaFilter` and `PageRequest` bodies, so a Rust caller keeps compile-time-checked filters, and the SDK exports `QuotaFilterField`, the field set the public list's `$filter` publishes. Retries follow the idempotency key: reads and keyed writes are retryable, unkeyed
+writes (Quota create, update and deactivate, and every policy write) are not. Cross-gear callers MUST use the SDK
+and MUST NOT depend on the QE gateway's internal types (`cpt-cf-quota-enforcement-constraint-toolkit`).
 
 #### Storage Plugin Trait
 
@@ -1157,7 +1166,7 @@ read likewise receives the `AccessScope` — no scoped operation executes withou
 | **Platform-plane reads (caller-less)** | `read_active_projection_bindings()` → `HashSet<ProjectionBinding>` (distinct `(metric, projection_type)` of active Quotas; bootstrap compatibility check); `read_active_quota_counts()` → `ActiveQuotaCounts { cap_zero, cap_unbounded, by_metric }` (lifecycle status `active` only, window-independent; read periodically by the elected replica's gauge refresh). Neither takes a `SecurityContext` or an `AccessScope`; both are read-only (I3) and fail only with `Unavailable`. |
 | **Counter mutation (transactional)**   | `apply_debit_plan(mutation: EvaluatedMutation, events)` (the plugin selects the Policy and evaluates it through the caller's `TransactionEvaluator` callback, then applies the resulting Debit Plan atomically across N Quotas, persists idempotency with that decision, enqueues events, writes op-log entry — all in a single backend transaction; a compiled artifact the transaction cannot find rolls it back with `PreparationRequired`, writing nothing); `apply_batch_debit(batch: EvaluatedBatch, events)` (envelope batch per `cpt-cf-quota-enforcement-fr-batch-debit`); `apply_credit(quota_id, amount, partial_idem_write, events)` (the scope is completed inside the transaction: its subject key fingerprints the locked Quota row's own subject pair, which a caller may neither know nor supply); `apply_rollback(target, idem_write, events)`, where the target carries the original debit's full `IdempotencyScope` and the digest of the attribution it was authorized under, so a caller admitted for another metric or resource over the same subjects cannot reverse it and is answered `OperationNotFound`. |
 | **Lease (two-phase)**                  | `acquire_lease(mutation: EvaluatedMutation, ttl)` → `TransitionOutcome<EvaluatedLease>` under the same evaluation convention (atomic: lease + per-Quota holds, persist the acquisition subject key, increment active-lease counter — I7, capture acquisition_period_id — I5; a denied acquisition holds nothing and carries no token); `commit_lease(token, actual_amount, idem_scope, events)` (reuses the persisted acquisition subject key and rejects `OverCommitNotAuthorized` if `actual > reserved`); `release_lease(token, idem_scope, events)` (also reuses the acquisition key). |
-| **Snapshot read**                      | `read_quota_snapshot(applicable, metric)` → `Vec<QuotaSnapshot>` (lazy period-row materialisation is the single I3 exception); `bulk_read_quota_snapshot(pairs, page)` → `PageResult<QuotaSnapshot>` (`cpt-cf-quota-enforcement-fr-bulk-quota-snapshot-read`), ordered by `quota_id` ascending; the opaque cursor carries only the last `quota_id` returned, so a walk to exhaustion yields each matching row once.                                                                                                                                                                                   |
+| **Snapshot read**                      | `read_quota_snapshot(applicable, metric)` → `Vec<QuotaSnapshot>` (read-only, I3); `bulk_read_quota_snapshot(pairs, page)` → `PageResult<QuotaSnapshot>` (`cpt-cf-quota-enforcement-fr-bulk-quota-snapshot-read`), ordered by `quota_id` ascending; the opaque cursor carries only the last `quota_id` returned, so a walk to exhaustion yields each matching row once.                                                                                                                                                                                                                                |
 | **Policy CRUD (immutable versioning)** | `create_policy / update_policy / rollback_policy / delete_policy` (all events-emitting); `read_policy(scope)` returns latest active version; `read_policy_version(policy_id, version)`; `list_policy_versions(scope, page)`.                                                                                                                    |
 | **Idempotency**                        | `lookup_idempotency(scope: &IdempotencyScope)` → `Option<IdempotencyRecord>` (typed full-scope key; gateway entry-point check; persist is implicit-in-`apply_*`).                                                                                                                                                                                                                                                                                                                      |
 | **Sweeper / reclamation**              | `reclaim_expired_leases(batch_size, before)` → `Vec<ExpiredLease>` (physical reclamation tier of `cpt-cf-quota-enforcement-fr-lease-timeout`); `reclaim_expired_idempotency`; `reclaim_operation_log`.                                                                                                                                                                                                                                           |
@@ -1190,8 +1199,9 @@ runtime, so it has no `DomainError` lift target. The full `DomainError` enum liv
   within a single backend transaction.
 - **I2. Idempotency** — replay returns the original outcome verbatim; mismatched payload under same `idem_key` returns
   `IdempotencyPayloadMismatch`.
-- **I3. Read-only** — `read_*`, `list_*`, `lookup_idempotency` MUST NOT write persistent state.
-  **Lazy period-row creation in `read_quota_snapshot`** is the single permitted exception.
+- **I3. Read-only** — `read_*`, `list_*`, `lookup_idempotency` MUST NOT write persistent state, and the snapshot reads
+  (`read_quota_snapshot`, `bulk_read_quota_snapshot`) MUST NOT take a row lock. A snapshot read reports a consumption
+  Quota with no row for its current window as zero over that window; the next mutating operation creates the row.
 - **I4. Lease lazy expiry** — read and write paths treat any lease with `expiry_at <= now()` as released regardless of
   physical row presence.
 - **I5. Period attribution** — lease `commit` / `release` (and TTL auto-release) attribute counter mutation to the
@@ -1218,8 +1228,8 @@ runtime, so it has no `DomainError` lift target. The full `DomainError` enum liv
 - **I12. Schema version coupling** — `bootstrap()` rejects with `SchemaVersionMismatch` if installed schema is
   incompatible with the trait's major version.
 - **I13. Threshold-marker reset on period rollover** — when lazy period detection materialises a new
-  `quota_consumption_counters` row (the I3 read-only exception in `read_quota_snapshot` / mutating-op paths, and the
-  explicit step in `cpt-cf-quota-enforcement-seq-period-rollover`), `highest_crossed_threshold_pct` on the new row MUST
+  `quota_consumption_counters` row (on a mutating operation's path, the explicit step in
+  `cpt-cf-quota-enforcement-seq-period-rollover`), `highest_crossed_threshold_pct` on the new row MUST
   be `NULL`. This is what allows `threshold-crossed` notifications to fire again in the new period per PRD §5.15 ("the
   marker resets at period rollover so thresholds can fire again in the new period") and the threshold-emission rule of
   `cpt-cf-quota-enforcement-fr-notification-plugin`. Carry-over of the closing-period marker into the new period would
@@ -1301,14 +1311,23 @@ The backend behind the election is the operator's choice in the cluster profile 
 
 **`QuotaResolutionEngineV1`** is a sync trait (no I/O on the hot path) with three methods:
 
-| Method                                                                                             | Purpose                                                                                                                          |
-| -------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `id() -> &str`                                                                                     | Stable engine identifier (matches Policy `engine_id`).                                                                           |
-| `validate_config(raw: &serde_json::Value) -> Result<Box<dyn ValidatedConfig>, EngineConfigError>`  | Validates `engine_config` at Policy create / update; output is a parsed / compiled form cached by `(policy_id, policy_version)`. |
-| `evaluate(ctx: &EvaluationContext, config: &dyn ValidatedConfig) -> Result<Decision, EngineError>` | Hot-path evaluation. MUST be deterministic and MUST NOT perform I/O. Cost-bounding is the implementation's responsibility, enforced against the typed `EvaluationBudget` carried on `EvaluationContext`; on exhaustion the Engine returns `EngineError::Timeout` or `CostExceeded`.       |
+| Method                                                                                                | Purpose                                                                                                                                                                         |
+| ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id() -> &'static str`                                                                                | Stable engine identifier (matches Policy `engine_id`).                                                                                                                          |
+| `validate_config(input: EngineValidationInput) -> Result<Arc<dyn ValidatedConfig>, EngineConfigError>` | Validates `engine_config` (`input.raw`) against the Policy's schema snapshot (`input.schemas`) at create / update; output is a parsed / compiled form cached by `(policy_id, policy_version)`. |
+| `evaluate(ctx: &EvaluationContext, config: &dyn ValidatedConfig) -> Result<Decision, EngineError>`    | Hot-path evaluation. MUST be deterministic and MUST NOT perform I/O. Cost-bounding is the implementation's responsibility, enforced against the typed `EvaluationBudget` carried on `EvaluationContext`; on exhaustion the Engine returns `EngineError::Timeout` or `CostExceeded`.       |
 
-`ValidatedConfig` is an opaque marker trait (`Any + Send + Sync`) — each Engine downcasts to its own concrete config
-type.
+`ValidatedConfig` (`Any + Send + Sync`) exposes `as_any()`, so each Engine downcasts to its own concrete config type,
+and `inputs()`, the environment inputs the config reads, which narrows the schema snapshot a Policy keeps.
+
+**Registration.** An Engine crate registers itself with `quota_enforcement_sdk::register_engine!`, passing a
+constructor that returns `Arc<dyn QuotaResolutionEngineV1>`; the SDK collects the registrations at link time and
+`linked_engines()` yields them in no particular order. At bootstrap the gear builds `EngineRegistry` from every linked
+Engine, keyed and ordered by `id()`, and a second Engine under an existing id fails bootstrap (`DuplicateEngine`) instead
+of replacing it. The gear lists no Engine by name: linking a crate into the server binary is the whole registration, so
+an Engine maintained outside this repository needs only `quota-enforcement-sdk` and a `use <engine_crate> as _;` in the
+binary that should carry it. A linked Engine evaluates and is measured exactly like a built-in: its telemetry label is
+its own `id()`, which is fixed when the binary is built, so the `engine_id` label set stays bounded.
 
 **`EngineError`** closed enum: `Timeout`, `CostExceeded`, `TypeError(String)`, `InvalidConfig(String)`,
 `Internal(String)`. All variants are caught by the orchestrator and lifted into `DomainError` for canonicalisation per
@@ -1367,7 +1386,7 @@ Discriminator fields per event kind (PRD §5.15 event catalogue):
 - `policy-changed`: `change_kind: "created" | "updated" | "deleted"`. `rollback_policy` emits `change_kind = "updated"`
   (rollback is a latest-pointer move and is reported to subscribers as a Policy update; the rolled-back-to version's
   content is reflected in the new active version row). The `rolled_back` value belongs to the `version_state` enum on
-  `quota_resolution_policy_version` rows (PRD §5.9 four-state lifecycle) and is **not** a notification discriminator.
+  `policy_versions` rows (PRD §5.9 four-state lifecycle) and is **not** a notification discriminator.
 
 `quota-counter-adjusted` and `quota-rollback-applied` are distinct event kinds in the closed enum and require no
 discriminator field — credits are always `quota-counter-adjusted`, rollbacks always `quota-rollback-applied` (PRD §5.15
@@ -1465,7 +1484,7 @@ renegotiating the corresponding invariant or NFR, and that renegotiation is out 
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Metrics emission    | The `QeMetrics` domain port, whose `OpenTelemetry` adapter records on a scoped `Meter` from the ToolKit meter provider (logs and spans use `tracing` macros); export pipeline (OTLP / Prometheus exporter) configured by the platform binary via `toolkit`'s `otel` feature.                                                     |
 | Cardinality         | Bounded label sets per `cpt-cf-quota-enforcement-constraint-bounded-cardinality`. IDs, projection types, caller attribution, and raw/unregistered metric input MUST NOT appear as metric labels. Canonical registered `metric` is permitted only on catalogue-declared instruments. |
-| Tracing             | OpenTelemetry; spans nested under `qe.gateway.handle_request` root.                                                                                                                                          |
+| Tracing             | OpenTelemetry; `quota_enforcement.*` spans nested under the platform's request span (`http_request` for REST).                                                                                               |
 | Operator dashboards | Out of DESIGN scope; maintained in the infrastructure repository.                                                                                                                                            |
 
 **Dependency Rules** (per project conventions):
@@ -1994,7 +2013,7 @@ sequenceDiagram
     else metric is registered (QuotaGated or Direct)
         QMS ->> QMS: validate registered concrete subject projection<br/>require configured-catalogue membership<br/>validate derivation + metric admission + quota.metadata<br/>snapshot accepted contract id/version
         QMS ->> SP: BEGIN tx + create_quota(ctx, quota)
-        Note over SP: 1. INSERT into `quotas` (server-assigned UUIDv7 quota_id, status='active')<br/>2. INSERT corresponding counter row(s) — `quota_allocation_counters` for allocation type, lazy `quota_consumption_counters` row created on first evaluate for consumption<br/>3. Enqueue quota-changed (change_kind='created') in outbox<br/>4. Append operation_log entry<br/>5. COMMIT
+        Note over SP: 1. INSERT into `quotas` (server-assigned UUIDv7 quota_id, status='active')<br/>2. INSERT corresponding counter row(s) — `quota_allocation_counters` for allocation type, lazy `quota_consumption_counters` row created by the first mutating operation for consumption<br/>3. Enqueue quota-changed (change_kind='created') in outbox<br/>4. Append operation_log entry<br/>5. COMMIT
         SP -->> QMS: QuotaId
         QMS -->> Op: 201 + Quota body
         opt metric mode is Direct
@@ -2015,7 +2034,7 @@ flips and is surfaced through the `quota_for_direct_metric_total` gauge. Admissi
 against `Direct`-metric Quotas (`MetricNotQuotaGated`) happens on the debit / credit / rollback / reserve / commit /
 release / batch-debit / evaluate-preview paths, not here. Validation runs **outside** the transaction so the database
 lock is held for the minimum window. The storage primitive inserts the Quota row, materialises the allocation counter
-(consumption counter rows are created lazily on first evaluate per `cpt-cf-quota-enforcement-fr-period-rollover`), and
+(consumption counter rows are created lazily by the first mutating operation per `cpt-cf-quota-enforcement-fr-period-rollover`), and
 enqueues the `quota-changed (created)` event same-tx (I11). Operator-side rejection of cap reduction below current
 consumed (`CAP_BELOW_CONSUMED`) is a separate update path and is covered by I6.
 
@@ -2066,19 +2085,22 @@ sequenceDiagram
     participant EO as EvaluationOrchestrator
     participant SP as StoragePlugin
 
-    EO ->> SP: read_quota_snapshot(applicable, metric)
-    Note over SP: For each consumption Quota:<br/>SELECT counter row FOR period_end > now() OR row missing
+    EO ->> SP: mutating primitive (debit / lease commit / lease release), in its transaction
+    Note over SP: For each consumption Quota it touches:<br/>lock the latest counter row, compare period_end with now()
     alt current period row exists
-        SP -->> EO: Vec<QuotaSnapshot>
-    else period boundary crossed (lazy detection, I3 exception)
-        SP ->> SP: BEGIN nested or piggyback tx<br/>1. Mark closing-period row is_settled=true after every active lease with<br/>   acquisition_period=closing has resolved (settlement window per `cpt-cf-quota-enforcement-adr-settlement-window-emit`)<br/>2. INSERT new period row (consumed=0, highest_crossed_threshold_pct=NULL)<br/>3. Enqueue period-rollover event (closing_consumed, closing_cap, new_period_boundary)
-        SP -->> EO: Vec<QuotaSnapshot> (with new period row)
+        SP ->> SP: apply the mutation to the current row
+    else period boundary crossed (lazy detection)
+        SP ->> SP: same tx<br/>1. Mark closing-period row is_settled=true after every active lease with<br/>   acquisition_period=closing has resolved (settlement window per `cpt-cf-quota-enforcement-adr-settlement-window-emit`)<br/>2. INSERT new period row (consumed=0, highest_crossed_threshold_pct=NULL)<br/>3. Enqueue period-rollover event (closing_consumed, closing_cap, new_period_boundary)<br/>4. apply the mutation to the new row
     end
+    SP -->> EO: MutationResult
+    Note over EO,SP: A snapshot read (read_quota_snapshot / bulk_read_quota_snapshot) that meets a crossed boundary<br/>writes nothing (I3): it reports the new window as zero;<br/>the next mutating operation opens it and closes the elapsed period
 ```
 
-**Description.** Lazy period detection (`cpt-cf-quota-enforcement-fr-period-rollover`). On any evaluate that observes
-`now() >= period_end` for a consumption Quota, the storage plugin atomically materialises the new period row, emits the
-`period-rollover` event for the closing period, and resets the threshold marker. The new `quota_consumption_counters`
+**Description.** Lazy period detection (`cpt-cf-quota-enforcement-fr-period-rollover`). On any mutating operation that
+observes `now() >= period_end` for a consumption Quota, the storage plugin atomically settles the closing period,
+materialises the new period row, emits the `period-rollover` event for the closing period, and resets the threshold
+marker. A snapshot read that observes the same boundary writes nothing (I3): it reports the new window as zero, and
+the new row, settlement and the event with the closing figures wait for the next mutating operation. The new `quota_consumption_counters`
 row MUST carry `highest_crossed_threshold_pct = NULL` per storage-plugin invariant **I13** (PRD §5.15: "the marker
 resets at period rollover so thresholds can fire again in the new period"; threshold-emission rule of
 `cpt-cf-quota-enforcement-fr-notification-plugin`). During the settlement window (between `period_end` and the moment
@@ -2171,18 +2193,18 @@ sequenceDiagram
     PS ->> ER: validate_config(config, schemas, pair compatibility)
     ER -->> PS: Box<dyn ValidatedConfig>
     PS ->> SP: BEGIN tx + update_policy(scope, if_match_version, draft, events)
-    alt if_match_version != current latest_version
+    alt if_match_version != current active_version
         SP -->> PS: StorageError::VersionConflict { current_latest }
         PS -->> Op: 409 version-conflict { current_latest }
-    else if_match_version == current latest_version
-        Note over SP: 1. Insert new row in quota_resolution_policy_version (state='active')<br/>2. UPDATE prior active version: state='superseded'<br/>3. UPDATE quota_resolution_policy.latest_version pointer atomically<br/>4. Enqueue policy-changed (change_kind=updated) event<br/>5. COMMIT
+    else if_match_version == current active_version
+        Note over SP: 1. Insert new row in policy_versions (state='active')<br/>2. UPDATE prior active version: state='superseded'<br/>3. UPDATE policies.active_version pointer atomically<br/>4. Enqueue policy-changed (change_kind=updated) event<br/>5. COMMIT
         SP -->> PS: PolicyVersion { policy_id, policy_version }
         PS -->> Op: 200 + version metadata
         Note over PS: invalidate in-process Policy cache<br/>compiled CEL AST cache rebuilt on miss
     end
 ```
 
-**Description.** Update creates a new immutable version row and atomically updates the explicit `latest_version` pointer
+**Description.** Update creates a new immutable version row and atomically moves the `active_version` pointer
 (`cpt-cf-quota-enforcement-fr-quota-resolution-policy-versioning`). Engine `validate_config` runs before the database
 transaction, so invalid configs fail fast without holding a lock. On a successful update, the compiled artifact is
 published to the Engine's `ValidatedConfig` cache after the transaction commits per the Engine Plugin Trait contract.
@@ -2225,8 +2247,9 @@ plugin chooses physical layout.
 | `leases`                          | Lease rows with state, expiry, acquisition_period_id                                                                                                                                                  | Active until terminal; retained as ledger entries within operation-log retention                                                                           |
 | `lease_holds`                     | Per-Quota lease hold rows                                                                                                                                                                             | Co-terminus with the lease row                                                                                                                             |
 | `lease_capacity_counters`         | Per-(tenant, metric) active-lease counter                                                                                                                                                             | Co-terminus with QE deployment                                                                                                                             |
-| `quota_resolution_policy`         | Policy entity + `latest_version` pointer                                                                                                                                                              | Indefinite (seeded `global` cannot be deleted)                                                                                                             |
-| `quota_resolution_policy_version` | Immutable version rows (`active` / `superseded` / `rolled_back` / `deleted` per PRD §5.9 four-state enum)                                                                                             | Operator-configured retention (default 90 days for `superseded` / `rolled_back` / `deleted` terminals); seeded `global` Policy versions kept indefinitely. |
+| `policies`                        | Policy entity + `active_version` pointer + `high_water` version counter                                                                                                                               | Indefinite (seeded `global` cannot be deleted)                                                                                                             |
+| `policy_versions`                 | Immutable version rows (`active` / `superseded` / `rolled_back` / `deleted` per PRD §5.9 four-state enum)                                                                                             | Operator-configured retention (default 90 days for `superseded` / `rolled_back` / `deleted` terminals); seeded `global` Policy versions kept indefinitely. |
+| `policy_operation_log`            | Policy audit trail: one row per create / update / rollback / delete, with actor and comment                                                                                                           | Indefinite (no sweeper reclaims it)                                                                                                                        |
 | `idempotency_records`             | Replay-safety records keyed by `(tenant_id, subject_key, operation_type, idem_key)` per `cpt-cf-quota-enforcement-fr-idempotency`; `subject_key` fingerprints the complete PDP-authorized, catalogue-mapped subject set. | Operator-configurable per-`(tenant, metric)` (default 24 h); reclaimed by `RetentionSweeper` |
 | `operation_log`                   | Operation ledger (P1; audit-grade attribution deferred to P2). P1 reference plugin: `qe_operation_log`, one row per accepted mutation with the actor and content-free detail                          | Operator-configurable (default 30 days); partitioned by date for `DROP PARTITION` retention                                                                |
 | `notification_outbox`             | Same-tx event queue (toolkit-db Outbox under the table prefix `qe_outbox`; queue `qe_notifications`, eight tenant-keyed partitions, the event kind as payload type). The plugin enqueues; the dispatcher of the notifications feature binds the handle and drains.  | Co-terminus with successful delivery; dead-letter rows retained per operator config                                                                        |
@@ -2241,7 +2264,7 @@ plugin chooses physical layout.
   hard-deleted while leases hold it).
 - Every `lease_holds.period_id` (consumption Quotas) references the lease's `acquisition_period_id` on a
   `quota_consumption_counters` row.
-- `quota_resolution_policy.latest_version` always references an existing version row.
+- `policies.active_version`, when set, always references an existing version row.
 - Outbox events for a mutation are inserted in the same transaction as the mutation; no partial enqueue is observable.
 - Idempotency record `payload_hash` is the canonical SHA-256 of the sorted-JSON payload; the plugin stores it as
   fixed-width binary for index efficiency.
@@ -2263,7 +2286,8 @@ plugin chooses physical layout.
    `ProjectionContractCatalog`.
 1. Checking derivation of every configured concrete owner projection from the QE base, concrete (non-abstract) status,
    and that every admitted metric reference resolves to a registered instance of the metric base (a narrowed
-   `x-gts-ref` is a prefix match only, so neither registration nor the instance-of relationship is covered by it),
+   `x-gts-instance-ref` is a kind and prefix match only, so neither registration nor the instance-of relationship is
+   covered by it),
    uniqueness of every admitted `(metric, scope)` pair across the configured projection set, exactly one concrete
    request contract per admitted metric, and a registered concrete constraint contract attached by that request
    contract. QE reads
@@ -2274,9 +2298,9 @@ plugin chooses physical layout.
    that reference them. The immutable catalogue is published to Gateway only after all checks pass. Resolution
    re-derives each selected contract with the `gts` library the registry validates with: the type, its parent chain,
    and every type reached through a `gts://` reference are loaded into a local store, and the resolved body keeps its
-   Draft-07 dialect and `x-gts-ref` constraints for the compiled contract to assert at ingress. Request contracts are
-   discovered from the registry listing under `gts.cf.core.qe.request.v1~` and filtered to the admitted metrics, so an
-   unrelated owner's contract cannot fail bootstrap. The active-Quota compatibility check reads the distinct
+   Draft-07 dialect and entity-reference constraints for the compiled contract to assert at ingress. Request contracts
+   are discovered from the registry listing under `gts.cf.core.qe.request.v1~` and filtered to the admitted metrics, so
+   an unrelated owner's contract cannot fail bootstrap. The active-Quota compatibility check reads the distinct
    `(metric, projection_type)` pairs through the caller-less, bootstrap-only storage primitive
    `read_active_projection_bindings()`, realised by the reference plugin as a distinct query over `qe_quotas`. After
    the compatibility check, every distinct bound metric is classified once: a metric the registry no longer knows is
@@ -2384,10 +2408,25 @@ declare them in the catalogue above and are populated only after registry/catalo
 Caller attribution is intentionally not a metric dimension: although typed, the registry does not bound the number of
 service projection types across deployments. It is available on sampled traces and structured diagnostics instead.
 
-**Tracing.** OpenTelemetry traces propagate from the `qe.gateway.handle_request` root. Stage spans:
-`subject_resolution`, `applicable_quotas_fetch`, `policy_lookup`, `engine_evaluate`, `invariant_check`,
-`storage.apply_debit_plan`, `notification.enqueue`. Attribute keys: `qe.tenant_id`, `qe.metric`, `qe.engine_id`,
-`qe.policy_id`, `qe.policy_version`, `qe.result`.
+**Tracing.** Spans follow the platform `tracing` conventions and nest under the request span the platform opens
+(`http_request` for REST); an in-process call has none above them. Each operation opens
+`quota_enforcement.<area>.<op>`, for example `quota_enforcement.operations.debit`, `quota_enforcement.quotas.list` or
+`quota_enforcement.policies.update`, with `tenant_id` and, where the request names them, `quota_id`, `metric`,
+`policy_id`, and `item_count` for batch and bulk envelopes. Under it, as siblings:
+
+- `quota_enforcement.admission`: the operation's whole admission phase, every PDP call it makes. A batch or bulk
+  envelope admits each item with its own PDP call, so this one span covers all of them and records `item_count`; its
+  duration is the aggregate admission time, not one call.
+- `quota_enforcement.engine.evaluate`, for an evaluating operation: the storage attempts and any preparation retries
+  (`preparations` records how many), with `quota_enforcement.engine.prepare` (`policy_id`, `version`) under it when a
+  policy version is compiled.
+
+Each storage plugin call that writes is `quota_enforcement.storage.<method>`, under the evaluation span when it
+evaluates. Plain reads open no span: a bulk update or deactivate reads each target under its own item's scope, and its
+replay checks are paged reads, so read spans would grow with the envelope. Their time stays inside the operation span.
+No span is opened per item or per engine invocation: the engine runs inside the storage transaction, once per batch
+item, and is measured by `engine_evaluation_seconds` instead. Identifiers are span attributes only, never metric labels; the
+`SecurityContext`, lease tokens and metadata are never recorded.
 
 **Structured logging.** Tracing crate. The system never logs metric values, metadata content, or subject identifiers
 verbatim at INFO level.

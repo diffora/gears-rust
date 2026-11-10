@@ -1,4 +1,3 @@
-// Created: 2026-09-25 by Virtuozzo International GmbH
 //! The `settings_audit_policy` table.
 
 use sea_orm::entity::prelude::*;
@@ -23,6 +22,7 @@ pub struct Model {
     pub updated_at: OffsetDateTime,
 }
 
+/// Relations of the `audit_policy` entity (none).
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {}
 

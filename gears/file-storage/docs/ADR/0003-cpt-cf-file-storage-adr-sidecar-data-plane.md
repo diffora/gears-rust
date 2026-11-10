@@ -79,10 +79,13 @@ planes:
 * **Data plane** — the **sidecar**. It has its own domain and URL and is the only component that
   moves user bytes. It is connected to N storage backends and validates the signed-URL signature
   (and a platform token only when the signed URL carries a token-claim predicate — see DESIGN §3.2).
-  **Shipped path (P2):** the sidecar reaches the control plane over a **plain, token-authenticated
-  HTTP callback** — `POST .../versions/{version_id}/finalize` after a successful `PUT`, and
+  **Shipped path (P2):** the sidecar reaches the control plane over a
+  **token-authenticated HTTP callback** — `POST .../versions/{version_id}/finalize` after a successful `PUT`, and
   `POST .../multipart/{upload_id}/parts/{n}/report` after a successful part write — both authorized
-  solely by the **same signed `fs-token`** that authorized the original operation. There is no FS SDK
+  solely by the **same signed `fs-token`** that authorized the original operation. These callbacks are
+  token-authenticated HTTP inside the deployment's trusted network boundary; when the callback path
+  crosses an untrusted or shared network it **MUST** use TLS (or equivalent authenticated encryption),
+  otherwise the internal token and the callback payload travel in cleartext. There is no FS SDK
   s2s call, no app-token, and no on-behalf-of delegation: the control plane treats a verified token as
   full authorization for that one `(file_id, version_id)` operation. The sidecar holds **no** direct
   database connection and is a thin, stateless byte-mover. It never binds a version as the file's
@@ -117,25 +120,25 @@ retained — they simply move into the sidecar, which is platform-controlled inf
 * a single client protocol independent of backend.
 
 A **read** is therefore two HTTP requests: a control request (obtain a signed GET URL) plus a data
-request against the sidecar. A **write** is more: **presign (control) → `PUT` (data) → finalize
-(data→control, a token-authenticated callback) → `bind` (control)** — three control-plane touches and
-one data-plane touch, not the two-request model this ADR originally described (see the Implementation
-note above).
+request against the sidecar. A **write** using the staged, manual-bind flow is **presign (control) →
+`PUT` (data) → finalize (data→control, a token-authenticated callback) → `bind` (control)** (see the
+Implementation note above). *Amendment:* the default `bind: "auto"` path (same Implementation note) folds
+the client-issued `bind` into the same finalize transaction the sidecar's callback already triggers, so for
+a brand-new file's first content the client itself only issues the create (presign) request and the `PUT`;
+the staged flow above still describes manual bind and a version bound after the fact.
 
-Signed URLs are **Ed25519, stateless** (S3-presigned-style): the control plane signs with a private
+Signed URLs are **ECDSA P-256/SHA-256, stateless** (S3-presigned-style): the control plane signs with a private
 key and is the **sole minter**; the sidecar verifies with the public key and can never forge a URL.
 Constraints are AND-combined into the signed payload — `exp` (required, capped at a configured
 `max_url_ttl`, recommended 7 days, enforced by the control plane at signing), optional
 `ip`/CIDR, optional predicates over token claims (`tok.typ`, `tok.sub`, `tok.tenant_id`, …), and — on
 upload URLs — an optional size bound (`max_size` or `exact_size`, mutually exclusive) and
-`expected_hash`. Bandwidth (`max_rate`) and connection (`max_conns`) caps are declared but enforced in
-P2. The control plane signs with one active keypair at a time (private in control config, public in
-sidecar config); the sidecar verifies against a small ordered **set** of public keys — the active one
-plus, during a rotation window, previously-active ones (`FS_SIDECAR_PREVIOUS_PUBLIC_KEYS`) — which is
-what lets `signing_key_seed` be rotated without an outage or invalidating already-issued signed URLs
-(see [ADR-0004](./0004-cpt-cf-file-storage-adr-signed-url-transport.md)'s Implementation note and
-`docs/operations.md`'s `signing_key_seed` → Rotation section); there is no per-URL revocation —
-emergency revocation is the platform auth module's token revocation, not the URL layer.
+`expected_hash`. `ip`/CIDR, token-claim predicates, and bandwidth (`max_rate`)/connection (`max_conns`)
+caps are declared here as part of the constraint model's design but are **not implemented**: the token
+carries none of these fields, and the sidecar enforces none of them — a documented extension point, not
+a shipped capability. Control and sidecar use one active P-256 keypair. Previous-key
+overlap is not implemented; rotate through the drain-and-replace procedure in
+operations.md. Outstanding URLs are rejected after key replacement.
 
 ### Consequences
 
@@ -166,60 +169,44 @@ emergency revocation is the platform auth module's token revocation, not the URL
   (version) write itself; that remains a client-issued, user-authorized control-plane request
   (`cpt-cf-file-storage-fr-authorization`).
 * **Trust model update (P2 remediation 0.1, remaining half).** The `fs-token` alone is
-  client-visible: it is handed back to the client in plaintext inside `upload_url` (minted by
-  `sign_url`), so a client could always call `finalize`/`report-part` itself at a time of its
-  choosing, replay reports, or otherwise occupy the trust position the callback was designed for the
-  sidecar alone. The data-integrity half of this was already closed independently (the control plane
-  re-derives `size`/`hash`/`mime_type` from a real streaming read-back — see
-  `domain/service/write.rs::read_back_and_hash_streaming` — so a forged claim cannot corrupt stored
-  metadata). What remained was *who* is allowed to call these two routes at all. The chosen
+  client-visible: it is handed back to the client in plaintext inside `upload_url`, so a client could
+  always call `finalize`/`report-part` itself at a time of its choosing, replay reports, or otherwise
+  occupy the trust position the callback was designed for the sidecar alone. These two routes are
+  therefore authorized by a second factor, and finalize **trusts** what the sidecar reports: the
+  control plane no longer re-reads the object to recompute size and hash. The sidecar measures the
+  size and SHA-256 while streaming the `PUT`; finalize checks the claimed size against the stored
+  object's length (backend metadata) and reads only a bounded prefix for MIME validation. The chosen
   mechanism is an **interim gear-local shared secret** (not the platform's
   `toolkit-security::internal_auth` profiles, which are not yet deployable in this gear — Profile 1
   is in-process-only trust, useless across the sidecar/control-plane process boundary; Profile 2
   (`BootstrapToken`) is struct-only with validation deferred; Profile 3 needs K8s `TokenReview`
-  wiring this gear doesn't have): `FileStorageConfig::finalize_internal_secret` (optional) plus
-  `require_finalize_internal_secret` (fail-fast startup guard, mirroring `require_signing_key_seed`).
-  When configured, `finalize`/`report-part` additionally require a `x-fs-internal-token` header
-  matching the configured secret (constant-time comparison via `ring::constant_time`,
-  `handlers::FinalizeAuth`), checked *after* `fs-token` verification; a missing/mismatched header is
-  a `403`. The sidecar sends this header (from `FS_SIDECAR_INTERNAL_TOKEN`) on both callbacks when
-  configured; an unset secret on the control plane preserves pre-0.1 behavior (token-only trust),
-  while a control plane that has the secret set answers `403` to any sidecar not yet sending the
-  header, so **the rollout order matters**: (1) redeploy every sidecar talking to the control plane with the matching
-  `FS_SIDECAR_INTERNAL_TOKEN` first; (2) only then set `finalize_internal_secret` on the control
-  plane together with `require_finalize_internal_secret: true` (a configured secret rejects any
-  caller lacking the header regardless of the flag, closing the client-driven-finalize gap).
-  Configuring the secret on the control plane before every sidecar carries the token bricks uploads
-  from any not-yet-redeployed sidecar. This is explicitly a stop-gap: once the platform's `internal_auth`
-  profiles are deployable here, `handlers::FinalizeAuth`'s comparator should be swapped for
-  `InternalAuthenticator` and this shared secret retired.
-* **Known gap: multipart part-hash trust.** The data-integrity claim above
-  ("a forged claim cannot corrupt stored metadata") only holds for the
-  **single-shot** `PUT`/finalize path, where `read_back_and_hash_streaming`
-  re-derives `size`/`hash`/`mime_type` from the real backend bytes. For
-  **multipart** uploads there is no equivalent re-read: `report_part`
-  persists the caller-supplied part hash after only a length/size check (not
-  a re-hash of the bytes actually written), and `complete_multipart_upload`
-  builds the composite `hash_value`/manifest exclusively from those stored
-  per-part hashes (ADR-0006) — the assembled object itself is never re-hashed
-  end to end. Since the `fs-token` authorizing a part write is client-visible
-  (the same exposure this bullet's trust-model update addresses) and the
-  `x-fs-internal-token` gate is off by default
-  (`finalize_internal_secret: None`), a caller holding a valid part
-  token could in principle report a hash that does not match the bytes it
-  streamed, corrupting the composite hash without being caught by any
-  read-back. Mitigations available today: enable `finalize_internal_secret` +
-  `require_finalize_internal_secret` so only the sidecar (not an arbitrary
-  token holder) can reach `report_part`/`finalize` at all — this gate already
-  covers `report_part`, not just `finalize` (`handlers::report_multipart_part`
-  calls the same `FinalizeAuth::verify`). A durable fix (deriving the part
-  hash from a sidecar-side value the control plane can independently trust,
-  or re-hashing the assembled object) is future work, out of scope for this
-  remediation. A related gap in the same release gate is now closed in code for every shipping
-  backend, though the closure differs by backend: `StorageBackend::publish_exclusive`'s **default**
-  implementation (`infra/backend/mod.rs`) is a non-atomic (TOCTOU) `exists`-then-`put`, but no
-  shipping backend relies on that default. `LocalFsBackend` (`std::fs::hard_link`, which atomically
-  fails `AlreadyExists` if the target already exists) and `InMemoryBackend` (a single mutex guarding
+  wiring this gear doesn't have): `FileStorageConfig::finalize_internal_secret`, which is
+  **mandatory** (gear init fails without it). `finalize`/`report-part` require a `x-fs-internal-token`
+  header matching the configured secret (constant-time comparison), checked *after* `fs-token`
+  verification; a missing/mismatched header is a `403`. Like the `fs-token` callback authorization
+  above, this header is token-authenticated HTTP within the deployment's trusted network boundary; it
+  too **MUST** travel over TLS (or equivalent authenticated encryption) when the callback path crosses
+  an untrusted or shared network, since the shared secret alone gives the header no confidentiality in
+  transit. The sidecar sends this header (from `FS_SIDECAR_INTERNAL_TOKEN`, which is also mandatory:
+  the sidecar refuses to start without it) on both callbacks. Both sides must be deployed with the
+  same value. This is explicitly a stop-gap: once the platform's `internal_auth` profiles are
+  deployable here, the comparator should be swapped for `InternalAuthenticator` and this shared
+  secret retired.
+* **Known gap: part-hash and size trust.** Because the callbacks are trusted rather than
+  re-verified, the stored hash of a single-shot upload and the per-part hashes of a multipart upload
+  are whatever the authenticated sidecar reported; `report_part` persists the reported part hash after
+  only a length/size check, and `complete_multipart_upload` builds the composite `hash_value`/manifest
+  exclusively from those stored per-part hashes (ADR-0006) — the object itself is never re-hashed end
+  to end. A caller holding a valid part token but **not** the internal secret cannot reach
+  `report_part`/`finalize` at all, so the exposure is limited to a compromised or buggy sidecar (or a
+  leaked internal secret). A durable fix (an independently trusted hash, or periodic re-hashing by a
+  separate verification job) is future work, out of scope for this remediation. A related gap in the same release gate is now closed in code for every shipping
+  backend: `StorageBackend::publish_exclusive` has **no default trait implementation** at all (a
+  backend-agnostic `exists`-then-write fallback would necessarily be the same non-atomic TOCTOU this
+  paragraph closes, so the trait does not offer one) — every backend implements its own atomic write.
+  `LocalFsBackend` (`std::fs::hard_link`, which atomically
+  fails `AlreadyExists` if the target already exists; its root must therefore be on a filesystem that supports
+  hard links, which the sidecar's readiness probe verifies) and `InMemoryBackend` (a single mutex guarding
   both the check and the insert) each override it with a fully atomic, provider-independent
   implementation; `S3Backend` **overrides** it with an atomic conditional write (`If-None-Match: *`
   on the terminal `PutObject`/`CompleteMultipartUpload`, mapping S3's `412 Precondition Failed` to a
@@ -243,7 +230,7 @@ Implementation verified via:
   body containing file content (only metadata + signed URLs).
 * Code review confirming the sidecar is the only component that opens backend clients for content
   I/O, and that no signed URL or SDK return value exposes a backend-addressable URL to a client.
-* Code review confirming the control plane is the sole signer (holds the Ed25519 private key) and
+* Code review confirming the control plane is the sole signer (holds the ECDSA P-256/SHA-256 private key) and
   the sidecar only verifies (holds the public key).
 * Integration tests covering presign → transfer for upload and download, the bind/rebind CAS path
   (including the failed-precondition retry that does not re-upload bytes), and signed-URL constraint enforcement
@@ -307,7 +294,7 @@ happens on the streaming path, now in the sidecar.
 This decision directly addresses the following requirements or design elements:
 
 * `cpt-cf-file-storage-fr-rest-api` — control REST carries metadata + signed URLs only; content lives on the sidecar
-* `cpt-cf-file-storage-fr-signed-urls` — new: the Ed25519 stateless signed-URL contract and constraint model
+* `cpt-cf-file-storage-fr-signed-urls` — new: the ECDSA P-256/SHA-256 stateless signed-URL contract and constraint model
 * `cpt-cf-file-storage-fr-upload-file` / `cpt-cf-file-storage-fr-download-file` — presign + transfer (download: two requests; upload: presign → `PUT` → finalize → `bind`); immutable-blob + pointer model
 * `cpt-cf-file-storage-fr-range-requests` — served by the sidecar; one signed URL, many ranges
 * `cpt-cf-file-storage-fr-usage-reporting`, `cpt-cf-file-storage-fr-content-type-validation`, `cpt-cf-file-storage-fr-read-audit` — reallocated to the sidecar, still 100% coverage

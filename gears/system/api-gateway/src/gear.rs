@@ -2,6 +2,9 @@
 //!
 //! Contains the `ApiGateway` gear struct and its trait implementations.
 
+#[path = "bootstrap.rs"]
+mod bootstrap;
+
 use async_trait::async_trait;
 use std::sync::{Arc, OnceLock};
 
@@ -17,7 +20,7 @@ use parking_lot::Mutex;
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
-use toolkit::api::{OpenApiRegistry, OpenApiRegistryImpl};
+use toolkit::api::{OpenApiRegistry, OpenApiRegistryImpl, RouteAuth};
 use toolkit::lifecycle::ReadySignal;
 use tower::{BoxError, ServiceBuilder};
 use tower_http::{
@@ -31,12 +34,15 @@ use crate::middleware::errors::ApiGatewayGatewayError;
 
 /// Map a `tower::timeout` `Elapsed` (or any other unexpected `BoxError`)
 /// into a canonical `application/problem+json` response.
-async fn timeout_to_canonical(err: BoxError) -> axum::response::Response {
+fn timeout_to_canonical(err: &BoxError, timeout: Duration) -> axum::response::Response {
     use axum::response::IntoResponse;
 
     if err.is::<tower::timeout::error::Elapsed>() {
-        let canonical =
-            ApiGatewayGatewayError::deadline_exceeded("Request exceeded 30s timeout").create();
+        let canonical = ApiGatewayGatewayError::deadline_exceeded(format!(
+            "Request exceeded {} timeout",
+            humantime_serde::re::humantime::format_duration(timeout)
+        ))
+        .create();
         return canonical.into_response();
     }
 
@@ -70,46 +76,49 @@ use crate::web;
 	lifecycle(entry = "serve", stop_timeout = "30s", await_ready)
 )]
 pub struct ApiGateway {
-    // Lock-free config using arc-swap for read-mostly access
+    /// Lock-free config using arc-swap for read-mostly access
     pub(crate) config: ArcSwap<ApiGatewayConfig>,
-    // OpenAPI registry for operations and schemas
+    /// `OpenAPI` registry for operations and schemas
     pub(crate) openapi_registry: Arc<OpenApiRegistryImpl>,
-    // Built router cache for zero-lock hot path access
+    /// Built router cache for zero-lock hot path access
     pub(crate) router_cache: RouterCache<axum::Router>,
-    // Store the finalized router from REST phase for serving
+    /// Store the finalized router from REST phase for serving
     pub(crate) final_router: Mutex<Option<axum::Router>>,
-    // AuthN Resolver client (resolved during init, None when auth_disabled)
+    /// `AuthN` Resolver client (resolved during init, `None` when `auth_disabled`)
     pub(crate) authn_client: Mutex<Option<Arc<dyn AuthNResolverClient>>>,
-    // Inbound platform-plane authenticator (built in init from
-    // `config.internal_auth`, None in Profile 1). When present, the stack layers
-    // `internal_auth_middleware` ahead of the tenant plane so co-hosted internal
-    // routes get a validated `PlatformSecurityContext` (`cpt-cf-adr-two-plane-auth`).
+    /// Inbound platform-plane authenticator (built in init from
+    /// `config.internal_auth`, None in Profile 1). When present, the stack layers
+    /// `internal_auth_middleware` ahead of the tenant plane so co-hosted internal
+    /// routes get a validated `PlatformSecurityContext` (`cpt-cf-adr-two-plane-auth`).
     pub(crate) internal_authenticator: Mutex<Option<DynInternalAuthenticator>>,
-    // Readiness registry, set once from `rest_prepare`; `OnceLock` = lock-free reads.
+    /// Readiness registry, set once from `rest_prepare`; `OnceLock` = lock-free reads.
     pub(crate) healthcheck_registry: OnceLock<Arc<toolkit::RestHealthcheckRegistry>>,
-    // Built-once standalone health router. Served on the separate health listener in
-    // `separate`/`both` mode and merged onto the main router in `main`/`both` mode. Cached
-    // so repeat `health_router()`/`build_health_router()` calls are cheap.
+    /// Built-once standalone health router. Served on the separate health listener in
+    /// `separate`/`both` mode and merged onto the main router in `main`/`both` mode. Cached
+    /// so repeat `health_router()`/`build_health_router()` calls are cheap.
     pub(crate) health_router: OnceLock<axum::Router>,
-    // Pending throttling keyed-store pruner from the last middleware build;
-    // consumed by `serve` to spawn a prune task bound to the lifecycle token.
+    /// Pending throttling keyed-store pruner from the last middleware build;
+    /// consumed by `serve` to spawn a prune task bound to the lifecycle token.
     pub(crate) throttle_key_pruner: Mutex<Option<middleware::throttling::ThrottleKeyPruner>>,
 
-    // Duplicate detection (per (method, path) and per handler id)
+    /// Duplicate detection by (method, path).
     pub(crate) registered_routes: DashMap<(Method, String), ()>,
+    /// Duplicate detection by handler id.
     pub(crate) registered_handlers: DashMap<String, ()>,
 
-    // Reverse-proxy route table (embedded edge). Populated by the directory-sync
-    // task and read by the Forwarder fallback; empty/unused when
-    // `gateway_proxy` is disabled.
+    /// Reverse-proxy route table (embedded edge). Populated by the directory-sync
+    /// task and read by the Forwarder fallback; empty/unused when
+    /// `gateway_proxy` is disabled.
     pub(crate) proxy_registry: Arc<toolkit_gateway::ProxyRegistry>,
 
-    // Base URL other pods use to reach this gateway, published once the main
-    // listener binds (from `serve`). Read by the runtime's directory-register
-    // phase (via `ApiGatewayCapability::bound_endpoint`) to advertise in-process
-    // REST providers. Write-once/read-many, so `OnceLock` (lock-free reads),
-    // matching `healthcheck_registry`/`health_router`; unset until the server binds.
+    /// Base URL other pods use to reach this gateway, published once the main
+    /// listener binds (from `serve`). Read by the runtime's directory-register
+    /// phase (via `ApiGatewayCapability::bound_endpoint`) to advertise in-process
+    /// REST providers. Write-once/read-many, so `OnceLock` (lock-free reads),
+    /// matching `healthcheck_registry`/`health_router`; unset until the server binds.
     pub(crate) bound_endpoint: OnceLock<String>,
+    /// Early HTTP listener, route publication and startup cleanup.
+    bootstrap: bootstrap::BootstrapServer,
 }
 
 impl Default for ApiGateway {
@@ -129,6 +138,7 @@ impl Default for ApiGateway {
             registered_handlers: DashMap::new(),
             proxy_registry: Arc::new(toolkit_gateway::ProxyRegistry::new()),
             bound_endpoint: OnceLock::new(),
+            bootstrap: bootstrap::BootstrapServer::default(),
         }
     }
 }
@@ -139,6 +149,39 @@ const HEALTHZ_PATH: &str = "/healthz";
 const READYZ_PATH: &str = "/readyz";
 
 impl ApiGateway {
+    async fn configure_transport(&self, ctx: &toolkit::GearCtx) -> anyhow::Result<()> {
+        let cfg = ctx.config_or_default::<crate::config::ApiGatewayConfig>()?;
+        // Fail init on invalid CORS combinations (wildcard+credentials):
+        // tower-http would otherwise assert-panic during eager router
+        // layering — a startup crash-loop with no pointer at the config.
+        crate::cors::validate_cors_config(&cfg).map_err(|e| anyhow::anyhow!(e))?;
+        // Fail fast when health.serve needs a separate listener but health.bind_addr is
+        // missing or unparseable, rather than crashing later in serve() after other gears
+        // have started.
+        Self::health_bind_addr(&cfg)?;
+        // Fail fast on an enabled reverse proxy with no directory_endpoint, rather than
+        // starting a proxy that silently serves 404 for every out-of-process route.
+        cfg.gateway_proxy
+            .validate()
+            .map_err(|e| anyhow::anyhow!(e))?;
+        // Fail fast on a zero request timeout, which would 504 every request.
+        cfg.defaults.validate().map_err(|e| anyhow::anyhow!(e))?;
+        self.config.store(Arc::new(cfg.clone()));
+
+        debug!(
+            "Effective api_gateway configuration:\n{:#?}",
+            self.config.load()
+        );
+
+        // Build the inbound platform-plane authenticator (None in Profile 1).
+        // Done here so a misconfigured `internal_auth` fails init rather than
+        // surfacing later as a per-request 500 on co-hosted internal routes.
+        *self.internal_authenticator.lock() =
+            build_internal_authenticator(cfg.internal_auth.as_ref()).await?;
+
+        Ok(())
+    }
+
     /// Nest `router` under `prefix`. Returns `router` unchanged when `prefix` is empty.
     ///
     /// Auth matching is keyed on unprefixed `OperationBuilder` paths, so the caller must
@@ -223,6 +266,7 @@ impl ApiGateway {
             registered_handlers: DashMap::new(),
             proxy_registry: Arc::new(toolkit_gateway::ProxyRegistry::new()),
             bound_endpoint: OnceLock::new(),
+            bootstrap: bootstrap::BootstrapServer::default(),
         }
     }
 
@@ -258,14 +302,19 @@ impl ApiGateway {
 
     /// Build route policy from operation specs.
     fn build_route_policy_from_specs(&self) -> Result<auth::GatewayRoutePolicy> {
-        let mut authenticated_routes = std::collections::HashSet::new();
-        // Anonymous (no-auth) routes. This is the *auth* axis: routes here skip
-        // bearer-token enforcement. It is NOT external visibility (`exposed`);
-        // an anonymous route may still be externally exposed or not.
-        let mut anonymous_routes = std::collections::HashSet::new();
-
-        anonymous_routes.insert((Method::GET, "/docs".to_owned()));
-        anonymous_routes.insert((Method::GET, "/openapi.json".to_owned()));
+        // Auth and gateway visibility are independent: `RouteAuth::Anonymous` is the *auth*
+        // axis (no bearer required), NOT external visibility (`exposed`). The builder
+        // typestate requires an explicit auth choice, so every operation spec declares
+        // its own policy. `require_auth_by_default` is only the fallback for paths with
+        // no declared route policy; platform auth takes precedence on every host.
+        let mut routes = vec![
+            (Method::GET, "/docs".to_owned(), RouteAuth::Anonymous),
+            (
+                Method::GET,
+                "/openapi.json".to_owned(),
+                RouteAuth::Anonymous,
+            ),
+        ];
 
         // In main/both mode the health probes are merged onto the main router *before* the
         // middleware stack (see `rest_finalize`), so the auth layer resolves them: mark them
@@ -277,30 +326,31 @@ impl ApiGateway {
             HealthServeMode::Main | HealthServeMode::Both
         ) {
             for path in [HEALTHZ_PATH, READYZ_PATH, HEALTH_DETAIL_PATH] {
-                anonymous_routes.insert((Method::GET, path.to_owned()));
+                routes.push((Method::GET, path.to_owned(), RouteAuth::Anonymous));
             }
         }
 
-        for spec in &self.openapi_registry.operation_specs {
+        routes.extend(self.openapi_registry.operation_specs.iter().map(|spec| {
             let spec = spec.value();
+            (spec.method.clone(), spec.path.clone(), spec.auth)
+        }));
 
-            let route_key = (spec.method.clone(), spec.path.clone());
+        let count = |auth: RouteAuth| routes.iter().filter(|route| route.2 == auth).count();
+        let requirements_count = count(RouteAuth::Authenticated);
+        let anonymous_routes_count = count(RouteAuth::Anonymous);
+        let platform_routes: Vec<String> = routes
+            .iter()
+            .filter(|route| route.2 == RouteAuth::Platform)
+            .map(|(method, path, _)| format!("{method} {path}"))
+            .collect();
 
-            // Auth axis: `authenticated` requires a JWT; `!authenticated` is
-            // anonymous (auth-skip). Visibility (`exposed`) is a *separate*
-            // axis (gateway registration) and does NOT affect the auth decision.
-            // The builder typestate forces an explicit choice, so every spec'd
-            // route lands in exactly one set; `require_auth_by_default` remains
-            // the fallback for paths with no matching spec.
-            if spec.authenticated {
-                authenticated_routes.insert(route_key);
-            } else {
-                anonymous_routes.insert(route_key);
-            }
+        if !platform_routes.is_empty() && self.internal_authenticator.lock().is_none() {
+            tracing::warn!(
+                routes = ?platform_routes,
+                "platform routes are declared but no `internal_auth` is configured; \
+                 every request to them will be refused with 401"
+            );
         }
-
-        let requirements_count = authenticated_routes.len();
-        let anonymous_routes_count = anonymous_routes.len();
 
         // When the embedded-edge reverse proxy is enabled, hand the auth policy the
         // shared proxy registry so dynamically-registered proxy routes are enforced
@@ -310,18 +360,14 @@ impl ApiGateway {
             .gateway_proxy
             .enabled
             .then(|| Arc::clone(&self.proxy_registry));
-        let route_policy = auth::build_route_policy(
-            &config,
-            authenticated_routes,
-            anonymous_routes,
-            proxy_registry,
-        )?;
+        let route_policy = auth::build_route_policy(&config, routes, proxy_registry)?;
 
         tracing::info!(
             auth_disabled = config.auth_disabled,
             require_auth_by_default = config.require_auth_by_default,
             requirements_count = requirements_count,
             anonymous_routes_count = anonymous_routes_count,
+            platform_routes_count = platform_routes.len(),
             "Route policy built from operation specs"
         );
 
@@ -377,20 +423,15 @@ impl ApiGateway {
         &self,
         mut router: Router,
         authn_client: Option<Arc<dyn AuthNResolverClient>>,
+        bootstrap: bool,
     ) -> Result<(Router, middleware::throttling::ThrottleKeyPruner)> {
         // Build route policy once
         let route_policy = self.build_route_policy_from_specs()?;
 
-        // IMPORTANT: `axum::Router::layer(...)` behaves like Tower layers: the **last** added layer
-        // becomes the **outermost** layer and therefore runs **first** on the request path.
-        //
-        // Desired request execution order (outermost -> innermost):
+        // Layers run in reverse registration order (outermost first):
         // SetRequestId -> PropagateRequestId -> Trace -> push_req_id_to_extensions
         // -> Timeout -> BodyLimit -> CORS -> MIME validation -> PreAuthThrottling -> ErrorMapping
-        // -> Auth -> ScopeEnforcement -> PostAuthThrottling -> License -> Router
-        //
-        // Therefore we must add layers in the reverse order (innermost -> outermost) below.
-        // Due future refactoring, this order must be maintained.
+        // -> Auth -> PlatformGate -> ScopeEnforcement -> PostAuthThrottling -> License -> Router
 
         // 14) Propagate MatchedPath to response extensions (route_layer — innermost).
         // This copies MatchedPath from the request (populated by Axum route matching)
@@ -460,8 +501,18 @@ impl ApiGateway {
             ));
         }
 
+        // 10b) Always enforce platform admission after auth and before tenant scope checks.
+        router = router.layer(from_fn_with_state(
+            route_policy.clone(),
+            auth::platform_gate_middleware,
+        ));
+
+        let plane_policy = route_policy.clone();
+
         // 10) Auth
-        if config.auth_disabled {
+        if bootstrap {
+            router = bootstrap::restrict_to_system_routes(router, route_policy);
+        } else if config.auth_disabled {
             // Build security contexts for compatibility during migration
             let default_security_context = SecurityContext::builder()
                 .subject_id(DEFAULT_SUBJECT_ID)
@@ -473,11 +524,18 @@ impl ApiGateway {
                  This mode bypasses authentication and is intended ONLY for single-user on-premises deployments without an IdP. \
                  Permission checks and secure ORM still apply. DO NOT use this mode in multi-tenant or production environments."
             );
+            // A synthetic tenant context could admit a forged bearer on a platform route.
+            let policy = route_policy;
             router = router.layer(from_fn(
                 move |mut req: axum::extract::Request, next: axum::middleware::Next| {
                     let sec_context = default_security_context.clone();
+                    let requirement = policy.requirement_of(&req);
+                    req.extensions_mut()
+                        .insert(auth::ResolvedRequirement(requirement));
                     async move {
-                        req.extensions_mut().insert(sec_context);
+                        if requirement != auth::AuthRequirement::Platform {
+                            req.extensions_mut().insert(sec_context);
+                        }
                         next.run(req).await
                     }
                 },
@@ -501,6 +559,12 @@ impl ApiGateway {
                 internal_auth_middleware::<DynInternalAuthenticator>,
             ));
         }
+
+        // 10a) One plane per request, settled before either authenticator runs.
+        router = router.layer(from_fn_with_state(
+            plane_policy,
+            auth::route_plane_middleware,
+        ));
 
         // 11) Error mapping (outer to auth so it can translate auth/handler errors)
         router = router.layer(from_fn(toolkit::api::error_layer::error_mapping_middleware));
@@ -533,14 +597,17 @@ impl ApiGateway {
         router = router.layer(RequestBodyLimitLayer::new(config.defaults.body_limit_bytes));
         router = router.layer(DefaultBodyLimit::max(config.defaults.body_limit_bytes));
 
-        // 6) Timeout — emits canonical `deadline_exceeded` Problem with
-        //    `application/problem+json` body when the inner service exceeds
-        //    the deadline. Layer position is unchanged (between BodyLimit
-        //    and CatchPanic).
+        // 6) Timeout (`defaults.request_timeout`) — emits canonical
+        //    `deadline_exceeded` Problem with `application/problem+json` body
+        //    when the inner service exceeds the deadline. Layer position is
+        //    unchanged (between BodyLimit and CatchPanic).
+        let request_timeout = config.defaults.request_timeout;
         router = router.layer(
             ServiceBuilder::new()
-                .layer(HandleErrorLayer::new(timeout_to_canonical))
-                .timeout(Duration::from_secs(30)),
+                .layer(HandleErrorLayer::new(move |err: BoxError| {
+                    std::future::ready(timeout_to_canonical(&err, request_timeout))
+                }))
+                .timeout(request_timeout),
         );
 
         // 5) CatchPanic (converts panics to 500 before metrics sees them)
@@ -566,7 +633,8 @@ impl ApiGateway {
         // 3.5) Structured access log (runs after push_req_id populates XRequestId extension)
         router = router.layer(from_fn(middleware::access_log::access_log_middleware));
 
-        // 3) Record request_id into span + extensions (requires span to exist first => must be inner to Trace)
+        // 3) Record request_id into span + extensions and scope it for outbound
+        // propagation (requires span to exist first => must be inner to Trace)
         router = router.layer(from_fn(middleware::request_id::push_req_id_to_extensions));
 
         // 2) Trace (outer to push_req_id_to_extensions)
@@ -683,7 +751,7 @@ impl ApiGateway {
             router = self.mount_proxy_fallback(router)?;
         }
 
-        let (router, pruner) = self.apply_middleware_stack(router, authn_client)?;
+        let (router, pruner) = self.apply_middleware_stack(router, authn_client, false)?;
 
         let prefix = Self::normalize_prefix_path(&config.prefix_path)?;
         let router = Self::apply_prefix(router, &prefix);
@@ -761,19 +829,7 @@ impl ApiGateway {
         }
     }
 
-    /// Background HTTP server: bind, notify ready, serve until cancelled.
-    ///
-    /// This method is the lifecycle entry-point generated by the macro
-    /// (`#[toolkit::gear(..., lifecycle(...))]`).
-    pub(crate) async fn serve(
-        self: Arc<Self>,
-        cancel: CancellationToken,
-        ready: ReadySignal,
-    ) -> anyhow::Result<()> {
-        let cfg = self.get_cached_config();
-        let addr = Self::parse_bind_address(&cfg.bind_addr)?;
-        let router = self.get_or_build_router()?;
-
+    fn start_key_pruner(&self, cancel: &CancellationToken) {
         // Bound the throttling keyed stores: spawn the periodic pruner produced
         // during middleware build, tied to the lifecycle token so it stops on
         // shutdown. Without this the keyed stores grow one entry per distinct
@@ -802,6 +858,27 @@ impl ApiGateway {
                     }
                 }
             });
+        }
+    }
+
+    /// Lifecycle entry: serve on the bootstrap or newly bound listener until cancelled.
+    pub(crate) async fn serve(
+        self: Arc<Self>,
+        cancel: CancellationToken,
+        ready: ReadySignal,
+    ) -> anyhow::Result<()> {
+        let cfg = self.get_cached_config();
+        let addr = Self::parse_bind_address(&cfg.bind_addr)?;
+        let router = self.get_or_build_router()?;
+
+        self.start_key_pruner(&cancel);
+
+        if self.bootstrap.cancellation_token().is_some() {
+            if cfg.gateway_proxy.enabled {
+                self.start_proxy_sync(&cfg, cancel.clone());
+            }
+            ready.notify();
+            return self.bootstrap.serve(cancel).await;
         }
 
         // Bind the main socket.
@@ -1196,81 +1273,25 @@ impl ApiGateway {
     }
 }
 
-// Manual implementation of Gear trait with config loading
-#[async_trait]
-impl toolkit::Gear for ApiGateway {
-    async fn init(&self, ctx: &toolkit::context::GearCtx) -> anyhow::Result<()> {
-        let cfg = ctx.config_or_default::<crate::config::ApiGatewayConfig>()?;
-        // Fail init on invalid CORS combinations (wildcard+credentials):
-        // tower-http would otherwise assert-panic during eager router
-        // layering — a startup crash-loop with no pointer at the config.
-        crate::cors::validate_cors_config(&cfg).map_err(|e| anyhow::anyhow!(e))?;
-        // Fail fast when health.serve needs a separate listener but health.bind_addr is
-        // missing or unparseable, rather than crashing later in serve() after other gears
-        // have started.
-        Self::health_bind_addr(&cfg)?;
-        // Fail fast on an enabled reverse proxy with no directory_endpoint, rather than
-        // starting a proxy that silently serves 404 for every out-of-process route.
-        cfg.gateway_proxy
-            .validate()
-            .map_err(|e| anyhow::anyhow!(e))?;
-        self.config.store(Arc::new(cfg.clone()));
-
-        debug!(
-            "Effective api_gateway configuration:\n{:#?}",
-            self.config.load()
-        );
-
-        if cfg.auth_disabled {
-            tracing::info!(
-                tenant_id = %DEFAULT_TENANT_ID,
-                "Auth-disabled mode enabled with default tenant"
-            );
-        } else {
-            // Resolve AuthN Resolver client from ClientHub
-            let authn_client = ctx.client_hub().get::<dyn AuthNResolverClient>()?;
-            *self.authn_client.lock() = Some(authn_client);
-            tracing::info!("AuthN Resolver client resolved from ClientHub");
+impl ApiGateway {
+    fn publish_serving_router(&self, router: &Router, bootstrap: bool) {
+        // Keep the finalized router to be used by `serve()`.
+        if !bootstrap {
+            *self.final_router.lock() = Some(router.clone());
         }
-
-        // Build the inbound platform-plane authenticator (None in Profile 1).
-        // Done here so a misconfigured `internal_auth` fails init rather than
-        // surfacing later as a per-request 500 on co-hosted internal routes.
-        *self.internal_authenticator.lock() =
-            build_internal_authenticator(cfg.internal_auth.as_ref()).await?;
-
-        Ok(())
-    }
-}
-
-// REST host role: prepare/finalize the router, but do not start the server here.
-impl toolkit::contracts::ApiGatewayCapability for ApiGateway {
-    fn bound_endpoint(&self) -> Option<String> {
-        self.bound_endpoint.get().cloned()
-    }
-
-    fn rest_prepare(
-        &self,
-        _ctx: &toolkit::context::GearCtx,
-        router: axum::Router,
-        hc_registry: Arc<toolkit::RestHealthcheckRegistry>,
-    ) -> anyhow::Result<axum::Router> {
-        // Store for use when health routes are added in rest_finalize. A second set
-        // means rest_prepare ran twice — a lifecycle bug; fail fast rather than mask it.
-        if self.healthcheck_registry.set(hc_registry).is_err() {
-            anyhow::bail!("healthcheck_registry already set; rest_prepare called more than once");
+        if let Some(cancel) = self.bootstrap.cancellation_token() {
+            self.start_key_pruner(cancel);
+            // Materialize routes once; direct Router dispatch would rebuild them per request.
+            self.bootstrap.publish(router.clone());
         }
-
-        tracing::debug!("REST host prepared base router");
-        Ok(router)
     }
 
-    fn rest_finalize(
+    fn finalize_rest_router(
         &self,
-        _ctx: &toolkit::context::GearCtx,
-        mut router: axum::Router,
+        mut router: Router,
         hc_registry: Arc<toolkit::RestHealthcheckRegistry>,
-    ) -> anyhow::Result<axum::Router> {
+        bootstrap: bool,
+    ) -> anyhow::Result<Router> {
         let config = self.get_cached_config();
 
         if config.enable_docs {
@@ -1299,7 +1320,7 @@ impl toolkit::contracts::ApiGatewayCapability for ApiGateway {
         // gear pod. The route table is kept current by the directory-sync task started in
         // `serve()`. Mounted BEFORE the middleware stack so proxied requests traverse the
         // same auth / tracing / error-mapping layers as native routes.
-        if config.gateway_proxy.enabled {
+        if config.gateway_proxy.enabled && !bootstrap {
             router = self.mount_proxy_fallback(router)?;
         }
 
@@ -1307,7 +1328,7 @@ impl toolkit::contracts::ApiGatewayCapability for ApiGateway {
         // unprefixed OperationBuilder paths; layers run before nest() strips the prefix).
         tracing::debug!("Applying middleware stack to finalized router");
         let authn_client = self.authn_client.lock().clone();
-        let (stacked, pruner) = self.apply_middleware_stack(router, authn_client)?;
+        let (stacked, pruner) = self.apply_middleware_stack(router, authn_client, bootstrap)?;
         router = stacked;
         // Hand the keyed-store pruner paired with this router to `serve`,
         // which owns the lifecycle CancellationToken needed to bound the
@@ -1316,12 +1337,116 @@ impl toolkit::contracts::ApiGatewayCapability for ApiGateway {
 
         let prefix = Self::normalize_prefix_path(&config.prefix_path)?;
         router = Self::apply_prefix(router, &prefix);
+        if bootstrap && !prefix.is_empty() {
+            // nest() inherits explicit system fallbacks, but not the inner default fallback.
+            router = router.fallback(|| async { bootstrap::starting_response() });
+        }
 
-        // Keep the finalized router to be used by `serve()`.
-        *self.final_router.lock() = Some(router.clone());
+        self.publish_serving_router(&router, bootstrap);
 
         tracing::info!("REST host finalized router with OpenAPI endpoints and auth middleware");
         Ok(router)
+    }
+}
+
+// Manual implementation of Gear trait with config loading
+#[async_trait]
+impl toolkit::Gear for ApiGateway {
+    async fn init(&self, ctx: &toolkit::context::GearCtx) -> anyhow::Result<()> {
+        if self.bootstrap.cancellation_token().is_none() {
+            self.configure_transport(ctx).await?;
+        }
+        let cfg = self.get_cached_config();
+        if cfg.auth_disabled {
+            tracing::info!(
+                tenant_id = %DEFAULT_TENANT_ID,
+                "Auth-disabled mode enabled with default tenant"
+            );
+        } else {
+            // Resolve AuthN Resolver client from ClientHub
+            let authn_client = ctx.client_hub().get::<dyn AuthNResolverClient>()?;
+            *self.authn_client.lock() = Some(authn_client);
+            tracing::info!("AuthN Resolver client resolved from ClientHub");
+        }
+
+        Ok(())
+    }
+}
+
+// REST hosting before and after application preparation.
+#[async_trait]
+impl toolkit::contracts::ApiGatewayCapability for ApiGateway {
+    async fn rest_bootstrap(
+        &self,
+        ctx: &toolkit::GearCtx,
+        hc_registry: Arc<toolkit::RestHealthcheckRegistry>,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<Option<Router>> {
+        self.configure_transport(ctx).await?;
+        let cfg = self.get_cached_config();
+        let base = self.rest_prepare(ctx, Router::new(), Arc::clone(&hc_registry))?;
+        let mut probes = Router::new().fallback(|| async { bootstrap::starting_response() });
+        if matches!(
+            cfg.health.serve,
+            HealthServeMode::Main | HealthServeMode::Both
+        ) {
+            probes = probes.merge(Self::health_routes(
+                hc_registry,
+                Duration::from_millis(cfg.healthcheck_timeout_ms),
+            ));
+        }
+        let prefix = Self::normalize_prefix_path(&cfg.prefix_path)?;
+        self.bootstrap.publish(Self::apply_prefix(probes, &prefix));
+        let addr = Self::parse_bind_address(&cfg.bind_addr)?;
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        let bound = listener.local_addr()?;
+        let health_bound = self.bind_health_listener(&cfg).await?;
+        self.bootstrap.start(listener, health_bound, &cancel)?;
+        self.publish_bound_endpoint(&cfg, bound);
+        Ok(Some(base))
+    }
+
+    fn rest_finalize_bootstrap(
+        &self,
+        _ctx: &toolkit::GearCtx,
+        router: Router,
+        hc_registry: Arc<toolkit::RestHealthcheckRegistry>,
+    ) -> anyhow::Result<()> {
+        self.finalize_rest_router(router, hc_registry, true)
+            .map(drop)
+    }
+
+    async fn rest_shutdown_bootstrap(&self) -> anyhow::Result<()> {
+        self.bootstrap.shutdown().await
+    }
+
+    fn bound_endpoint(&self) -> Option<String> {
+        self.bound_endpoint.get().cloned()
+    }
+
+    fn rest_prepare(
+        &self,
+        _ctx: &toolkit::context::GearCtx,
+        router: axum::Router,
+        hc_registry: Arc<toolkit::RestHealthcheckRegistry>,
+    ) -> anyhow::Result<axum::Router> {
+        // Store for use when health routes are added in rest_finalize. A second set
+        // means rest_prepare ran twice — a lifecycle bug; fail fast rather than mask it.
+        if self.healthcheck_registry.set(hc_registry).is_err() {
+            anyhow::bail!("healthcheck_registry already set; rest_prepare called more than once");
+        }
+
+        tracing::debug!("REST host prepared base router");
+        Ok(router)
+    }
+
+    fn rest_finalize(
+        &self,
+        _ctx: &toolkit::context::GearCtx,
+        router: axum::Router,
+        hc_registry: Arc<toolkit::RestHealthcheckRegistry>,
+    ) -> anyhow::Result<axum::Router> {
+        self.finalize_rest_router(router, hc_registry, false)
     }
 
     fn as_registry(&self) -> &dyn toolkit::contracts::OpenApiRegistry {
@@ -1674,7 +1799,7 @@ mod tests {
         };
         let api = ApiGateway::new(config);
         let _router = api
-            .apply_middleware_stack(Router::new(), None)
+            .apply_middleware_stack(Router::new(), None, false)
             .expect("stack builds without a platform-plane authenticator");
     }
 
@@ -1698,8 +1823,93 @@ mod tests {
         *api.internal_authenticator.lock() = Some(auth);
 
         let _router = api
-            .apply_middleware_stack(Router::new(), None)
+            .apply_middleware_stack(Router::new(), None, false)
             .expect("stack builds with the platform-plane layer");
+    }
+
+    /// Serve one request for `/slow` (a handler that sleeps `handler_delay`)
+    /// through the full middleware stack configured with `request_timeout`.
+    async fn call_slow_route(
+        request_timeout: Duration,
+        handler_delay: Duration,
+    ) -> axum::response::Response {
+        use tower::ServiceExt;
+
+        let mut config = ApiGatewayConfig {
+            auth_disabled: true,
+            ..Default::default()
+        };
+        config.defaults.request_timeout = request_timeout;
+        let api = ApiGateway::new(config);
+        let router = Router::new().route(
+            "/slow",
+            axum::routing::get(move || async move {
+                tokio::time::sleep(handler_delay).await;
+                "done"
+            }),
+        );
+        let (router, _pruner) = api
+            .apply_middleware_stack(router, None, false)
+            .expect("stack builds");
+        router
+            .oneshot(
+                axum::extract::Request::builder()
+                    .uri("/slow")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    /// The timeout layer uses `defaults.request_timeout`: a handler slower
+    /// than the configured deadline gets the canonical 504.
+    #[tokio::test]
+    async fn request_timeout_from_config_cuts_off_slow_handler() {
+        let resp = call_slow_route(Duration::from_millis(50), Duration::from_secs(5)).await;
+        assert_eq!(resp.status(), http::StatusCode::GATEWAY_TIMEOUT);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8_lossy(&body);
+        assert!(
+            body.contains("50ms"),
+            "detail should name the deadline: {body}"
+        );
+    }
+
+    /// A handler within the configured deadline completes normally.
+    #[tokio::test]
+    async fn request_timeout_from_config_lets_handler_finish() {
+        let resp = call_slow_route(Duration::from_secs(5), Duration::from_millis(50)).await;
+        assert_eq!(resp.status(), http::StatusCode::OK);
+    }
+
+    /// `init` refuses a zero `defaults.request_timeout`.
+    #[tokio::test]
+    async fn init_rejects_zero_request_timeout() {
+        struct Provider(serde_json::Value);
+        impl toolkit::config::ConfigProvider for Provider {
+            fn get_gear_config(&self, _gear: &str) -> Option<&serde_json::Value> {
+                Some(&self.0)
+            }
+        }
+        let ctx = toolkit::context::GearCtx::new(
+            "api-gateway",
+            uuid::Uuid::new_v4(),
+            Arc::new(Provider(serde_json::json!({
+                "config": {
+                    "bind_addr": "127.0.0.1:0",
+                    "defaults": { "request_timeout": "0s" }
+                }
+            }))),
+            Arc::new(toolkit::ClientHub::new()),
+            tokio_util::sync::CancellationToken::new(),
+        );
+        let err = toolkit::Gear::init(&ApiGateway::default(), &ctx)
+            .await
+            .expect_err("zero request_timeout must fail init");
+        assert!(err.to_string().contains("request_timeout"), "{err}");
     }
 
     /// `build_router` always builds fresh: an earlier revision short-circuited

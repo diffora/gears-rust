@@ -55,6 +55,7 @@ This design satisfies the requirements for centralized outbound traffic manageme
 | Configuration layering | `cpt-cf-oagw-fr-config-layering` | Upstream < Route < Tenant merge priority |
 | Alias resolution | `cpt-cf-oagw-fr-alias-resolution` | Path-based routing with alias shadowing |
 | Credential isolation | `cpt-cf-oagw-nfr-credential-isolation` | Auth via `cred_store` references, no direct secret storage |
+| Optional persistence | `cpt-cf-oagw-fr-config-persistence` | Database repositories when configured, in-memory otherwise; fail-fast on an unusable database |
 | ToolKit integration | Gears middleware | Single-executable deployment, trait-based DI, secure ORM |
 
 **Architecture Decision Records**:
@@ -65,8 +66,8 @@ This design satisfies the requirements for centralized outbound traffic manageme
 - `cpt-cf-oagw-adr-rate-limiting` — Token bucket algorithm with hierarchical merge
 - `cpt-cf-oagw-adr-circuit-breaker` — State machine with configurable thresholds and fallback
 - `cpt-cf-oagw-adr-cors` — Built-in CORS handler with per-upstream/route config
-- `cpt-cf-oagw-adr-data-plane-caching` — Control plane caching strategies
-- `cpt-cf-oagw-adr-state-management` — CP/DP state structures with cache invalidation
+- `cpt-cf-oagw-adr-data-plane-caching` — Control plane caching strategies (superseded by `cpt-cf-oagw-adr-proxy-config-cache`)
+- `cpt-cf-oagw-adr-state-management` — CP/DP state structures; its Data Plane L1 cache is replaced by `cpt-cf-oagw-adr-proxy-config-cache`, its rate-limiter ownership stays
 - `cpt-cf-oagw-adr-storage-schema` — Cross-database relational schema with JSON config blobs
 - `cpt-cf-oagw-adr-resource-identification` — Layered resource model with alias resolution
 - `cpt-cf-oagw-adr-concurrency-control` — Per-scope in-flight request limits
@@ -76,6 +77,9 @@ This design satisfies the requirements for centralized outbound traffic manageme
 - `cpt-cf-oagw-adr-rust-abi-client-library` — Rust ABI client for internal gear routing
 - `cpt-cf-oagw-adr-oauth2-client-credentials-auth-plugin` — OAuth2 Client Credentials auth plugin with internal token cache
 - `cpt-cf-oagw-adr-required-headers-guard-plugin` — Stateless builtin `GuardPlugin` enforcing required request/response headers, fail-open when unconfigured
+- `cpt-cf-oagw-adr-optional-persistence` — Opt-in database persistence with in-memory fallback, using the storage schema from the start
+- `cpt-cf-oagw-adr-upstream-proxy-engine` — Upstream forwarding through the in-house `toolkit-http-proxy` engine instead of the Pingora bridge
+- `cpt-cf-oagw-adr-proxy-config-cache` — Per-replica cache of the proxy lookup with a database; each write evicts only the entries it affects, on every replica through a cluster change log, with a TTL backstop (proposed until its benchmark)
 
 ### 1.3 Architecture Layers
 
@@ -85,7 +89,7 @@ This design satisfies the requirements for centralized outbound traffic manageme
 |---|---|---|
 | **Transport** (`api/rest/`) | HTTP handling, request parsing, response serialization | Axum handlers, DTOs, extractors, OperationBuilder route registration |
 | **Domain** (`domain/`) | Business logic, service traits, repository contracts | `ControlPlaneService`, `DataPlaneService`, `AuthPlugin` trait, domain models |
-| **Infrastructure** (`infra/`) | External integrations, persistence, proxy engine | SeaORM repositories, Pingora proxy bridge, plugin registry, type provisioning |
+| **Infrastructure** (`infra/`) | External integrations, persistence, proxy engine | SeaORM repositories, upstream proxy engine adapter, plugin registry, type provisioning |
 | **SDK** (`oagw-sdk/`) | Public API for inter-gear communication | `ServiceGatewayClientV1` trait, SDK models, error types |
 
 The gear follows DDD-Light layering: domain layer has no infrastructure dependencies; infrastructure implements domain traits; transport layer maps between HTTP and domain types.
@@ -96,11 +100,12 @@ The gear follows DDD-Light layering: domain layer has no infrastructure dependen
 |---|---|
 | Rust / Axum | HTTP transport, async runtime |
 | SeaORM + `toolkit-db` | Database persistence (PostgreSQL, MySQL, SQLite) |
-| Pingora | Reverse-proxy engine (connection pooling, HTTP/2, load balancing) |
+| `toolkit-http-proxy` | Upstream proxy engine (connection pooling, HTTP/1.1 + HTTP/2 with ALPN, FIPS-hardened TLS, load balancing, health checks) |
 | Starlark | Custom plugin sandboxed execution |
 | `toolkit-auth` | Bearer token authentication & authorization |
 | `cred_store` | Secret material retrieval by URI reference |
 | `types_registry` | GTS schema/instance registration |
+| `cluster-sdk` | With a database: the cluster change log that keeps each replica's proxy configuration cache fresh ([ADR: Proxy Configuration Cache](./ADR/0020-proxy-config-cache.md)) |
 
 ### 1.4 High-Level Architecture Diagram
 
@@ -127,7 +132,7 @@ graph TB
 
 **ID**: `cpt-cf-oagw-principle-no-retry`
 
-**No automatic retries**: OAGW never retries failed upstream requests. Retry logic is the client's responsibility.
+**No automatic retries**: OAGW never retries failed upstream requests; a failure is returned to the client, which owns retry logic. The only resend is the upstream proxy engine's, at most once per request and only at the connection level: a request that never left, a request the upstream refused over HTTP/2 (`REFUSED_STREAM`, `HTTP_1_1_REQUIRED`), and an idempotent request whose connection closed before the answer ([ADR-0019](./ADR/0019-upstream-proxy-engine.md)).
 
 **ID**: `cpt-cf-oagw-principle-no-cache`
 
@@ -139,7 +144,7 @@ graph TB
 
 **ID**: `cpt-cf-oagw-principle-tenant-scope`
 
-**Tenant scoping**: All database reads/writes use secure ORM with tenant scoping. No raw SQL in gear code.
+**Tenant scoping**: All database reads/writes use secure ORM with tenant scoping, except the registry reconcile's listing of registry rows, which reads across tenants, and the installation-wide `oagw_registry_state` row (ADR-0018). No raw SQL in gear code, except constant SQL fragments: the database-clock expressions of the registry lease and the seed insert of its migration.
 
 **ID**: `cpt-cf-oagw-principle-plugin-immutable`
 
@@ -165,7 +170,7 @@ No direct internet access from internal gears. Security policy: all outbound tra
 
 **ID**: `cpt-cf-oagw-constraint-multi-sql`
 
-Multi-SQL backend portability: PostgreSQL, MySQL, SQLite. `toolkit-db` requirement; avoid backend-specific features for correctness.
+Multi-SQL backend portability: PostgreSQL, MySQL, SQLite. The OAGW build compiles SQLite and PostgreSQL; MySQL is supported when built with the `mysql` feature. `toolkit-db` requirement; avoid backend-specific features for correctness. Persistence is opt-in: without a configured database, OAGW uses in-memory storage ([ADR: Optional Persistence](./ADR/0018-optional-persistence.md)).
 
 **ID**: `cpt-cf-oagw-constraint-body-limit`
 
@@ -296,7 +301,7 @@ Multiple per upstream/route, executed in order. Each plugin declares supported p
 All plugins are identified using **GTS identifiers** in the API layer.
 
 The database stores:
-- `plugin_ref` (TEXT): the canonical plugin identifier string (full GTS identifier).
+- `plugin_ref` (VARCHAR(256)): the canonical plugin identifier string (full GTS identifier).
 - `plugin_uuid` (UUID, nullable): extracted UUID when `plugin_ref` is UUID-backed.
 
 **Named plugins** (built-in or provided by deployed gears):
@@ -348,21 +353,25 @@ gears/system/oagw/
         │   ├── error.rs   # Error response mapping
         │   └── extractors.rs
         ├── domain/        # Business logic (no infra dependencies)
-        │   ├── services/  # ControlPlaneService + DataPlaneService traits & impls
+        │   ├── services/  # ControlPlaneService + DataPlaneService traits & impls;
+        │   │              # registry_reconcile.rs: types-registry reconcile (phases 1-5)
+        │   │              # registry_state.rs: gate (generation, content hash, lease)
+        │   │              # registry_job.rs: one run, and the background task
         │   ├── plugin/    # AuthPlugin trait definition
         │   ├── dto.rs     # Internal domain types (ProxyContext, ProxyResponse, etc.)
-        │   ├── repo.rs    # Repository traits (UpstreamRepository, RouteRepository)
+        │   ├── repo.rs    # Repository traits (UpstreamRepository, RouteRepository,
+        │   │              # RegistryRowRepository: the registry reconcile's rows only)
         │   └── error.rs   # DomainError
         └── infra/         # Infrastructure implementations
-            ├── proxy/     # DataPlaneServiceImpl (Pingora in-memory bridge)
-            ├── storage/   # Repository impls (SeaORM-based)
+            ├── proxy/     # DataPlaneServiceImpl, engine adapter, endpoint selector, WebSocket relay
+            ├── storage/   # Repository impls: in-memory (no database) and SeaORM (database configured)
             ├── plugin/    # AuthPluginRegistry + built-in plugins (ApiKey, NoOp)
             └── type_provisioning.rs  # GTS type registration
 ```
 
 #### Internal Services
 
-- **ControlPlaneService** (`domain/services/management.rs`): Manages configuration data. Handles CRUD operations for upstreams/routes, alias resolution, and repository access.
+- **ControlPlaneService** (`domain/services/management/mod.rs`): Manages configuration data. Handles CRUD operations for upstreams/routes, alias resolution, and repository access.
 - **DataPlaneService** (`infra/proxy/service.rs`): Orchestrates proxy requests. Resolves config via Control Plane, executes auth plugins, builds outbound HTTP requests, and forwards to upstream services.
 
 **Crate Naming**: Directory names hyphenated (`oagw-sdk`), package names `cf-` prefixed (`cf-gears-oagw-sdk`), library names underscored (`oagw_sdk`).
@@ -406,7 +415,7 @@ Multi-tenant hierarchy with sharing modes (`private`/`inherit`/`enforce`) per co
 
 | Field | Merge Strategy |
 |---|---|
-| Auth | Override if `inherit`; forced if `enforce` |
+| Auth | Override if `inherit`; forced if `enforce`; never sent to endpoints its owner did not configure |
 | Rate Limits | `min(ancestor, descendant)` — stricter always wins |
 | Plugins | Concatenate: `ancestor.plugins + descendant.plugins` |
 | CORS | Union origins if `inherit`; forced if `enforce` |
@@ -414,6 +423,10 @@ Multi-tenant hierarchy with sharing modes (`private`/`inherit`/`enforce`) per co
 Tags do not have a sharing mode — they always use add-only union semantics: `effective_tags = union(ancestor_tags, descendant_tags)`. Descendants cannot remove inherited tags.
 
 Alias resolution walks tenant hierarchy from descendant to root; closest match wins (shadowing). Enforced ancestor constraints are never bypassed by shadowing.
+
+An ancestor's auth and headers are sent only to endpoints their owner configured, the upstream that set them. A descendant that shadows the alias keeps them only if each of its endpoints is one of the owner's (same host, port and scheme; a subset is fine, an extra endpoint is not). Otherwise it uses its own auth and headers, or none. If the auth in effect is `enforce`, binding the alias to endpoints its owner does not list is rejected, and a proxy request through such a binding fails with `PermissionDenied` (reason `ENFORCED_AUTH_OTHER_SERVER`).
+
+Changes on the owner's side are checked at proxy time, not at write time, so they affect existing descendant bindings: removing an endpoint a descendant uses, changing its port, moving it from `http` to `https` (the key does not follow a binding left on plaintext), or switching the auth to `enforce` makes those descendants send without the owner's auth and headers, or get 403. Adding an endpoint affects no one. Every withheld credential on the proxy path is counted in `{prefix}_credentials_withheld_total` (`outcome`: `dropped_auth`, `dropped_headers`, `enforced_refused`) and logged as a warning with the owner's and the descendant's upstream ids, at most once a minute per binding.
 
 #### Alias Resolution
 
@@ -442,7 +455,7 @@ Alias behavior is determined entirely by endpoint type. The system enforces stri
 
 **Hostname Validation**: Endpoint hostnames are validated per RFC 1123: max 253 characters total, each label 1–63 characters, labels contain only ASCII alphanumeric and hyphen, labels cannot start or end with hyphen. A trailing dot (FQDN notation) is tolerated and stripped.
 
-**Alias Update Behavior**: The alias is **immutable once set** — it is the routing key in `/v1/proxy/{alias}/...`, so any endpoint change that would alter the derived alias is rejected (400 Validation); the operator must delete and re-create the upstream instead.
+**Alias Update Behavior**: The alias is **immutable once set** — it is the routing key in `/v1/proxy/{alias}/...`, so any endpoint change that would alter the derived alias is rejected (400 Validation); the operator must delete and re-create the upstream instead. An upstream provisioned from the types registry is the exception: it takes the alias its registry instance gives, by the create rules, at each reconcile ([ADR: Optional Persistence](./ADR/0018-optional-persistence.md#provisioning-from-the-types-registry)); two registry upstreams cannot swap aliases in one release.
 
 | Transition | Alias unchanged | Alias would change |
 |---|---|---|
@@ -640,7 +653,7 @@ IDs use anonymous GTS identifiers: `gts.cf.core.oagw.{type}.v1~{uuid}`. Plugins 
 
 - Server-generated UUID for all resources.
 - **Upstream**: Alias auto-derived from hostname endpoints; explicit alias required for IP-based. Unique per `(tenant_id, alias)` — returns 409 on conflict. If alias matches an ancestor upstream, the operation is a "bind" requiring `oagw:upstream:bind` permission and respecting sharing mode constraints (`enforce` blocks overrides, `private` blocks visibility).
-- **Route**: `upstream_id` must belong to the calling tenant — ancestor upstreams are not directly addressable. Validates match rule uniqueness within the upstream (same path + priority + method → 409).
+- **Route**: `upstream_id` must belong to the calling tenant — ancestor upstreams are not directly addressable. Validates match rule uniqueness within the upstream (same path + priority + method → 409); the route repository checks it atomically with the write, under a lock on the upstream row, so concurrent writes on any replica cannot both pass.
 
 **PUT (Replace)**:
 
@@ -649,6 +662,8 @@ IDs use anonymous GTS identifiers: `gts.cf.core.oagw.{type}.v1~{uuid}`. Plugins 
 - **Route**: `upstream_id` is immutable (not present in the update DTO). Re-validates match rule uniqueness.
 
 **Immutable fields**: `id`, `tenant_id` on all resources. Route `upstream_id` is also immutable.
+
+**Registry-managed resources**: upstreams and routes provisioned from the types registry (`managed_by = registry`) are read-only through the Management API and the SDK. PUT and DELETE return 400 `failed_precondition` with violation type `REGISTRY_MANAGED` and subject `managed_by` (SDK constants `oagw_sdk::precondition::REGISTRY_MANAGED` and `MANAGED_BY`); they change only with their registry instance, which the registry reconcile applies (at startup in memory; on a database in a background task that re-checks every few minutes) ([ADR: Optional Persistence](./ADR/0018-optional-persistence.md#provisioning-from-the-types-registry)). Routes created through the API may attach to a registry-managed upstream, and keep it alive: when the registry drops that upstream, its registry routes are removed but the upstream stays, registry-managed with its last configuration, until the API routes are deleted. A registry route the reconcile skipped (invalid content) keeps its dropped upstream alive the same way, until its content is fixed. A registry route must name a registry-managed upstream; only the reconcile can move a route to another upstream.
 
 #### Tenant Scoping
 
@@ -774,9 +789,9 @@ Header may be stripped by intermediaries. For critical error handling, clients s
 | `types_registry` | Internal | GTS schema/instance registration |
 | `cred_store` | Internal | Secret material retrieval by URI reference |
 | `api_ingress` | Internal | REST API hosting |
-| `toolkit-db` | Internal | Database persistence (SeaORM, multi-backend) |
+| `toolkit-db` | Internal | Optional database persistence (SeaORM, multi-backend); absent configuration selects in-memory storage |
 | `toolkit-auth` | Internal | Authentication & authorization |
-| `pingora` | External | Reverse-proxy engine (connection pooling, load balancing) |
+| `toolkit-http-proxy` | Internal | Upstream proxy engine (connection pooling, ALPN, FIPS-hardened TLS, load balancing, health checks) |
 
 ### 3.5 Interactions & Sequences
 
@@ -797,10 +812,8 @@ sequenceDiagram
     C->>API: POST /proxy/{alias}/{path}
     API->>API: Extract SecurityContext
     API->>DP: execute_proxy(alias, path, req)
-    DP->>CP: resolve_upstream(alias, tenant_id)
-    CP-->>DP: UpstreamConfig
-    DP->>CP: resolve_route(upstream_id, method, path)
-    CP-->>DP: RouteConfig
+    DP->>CP: resolve_proxy_target(alias, method, path)
+    CP-->>DP: effective UpstreamConfig + RouteConfig
     DP->>Auth: inject_credentials(request)
     Auth-->>DP: authenticated request
     DP->>Chain: execute_guards(request)
@@ -815,37 +828,62 @@ sequenceDiagram
     API-->>C: HTTP response + X-OAGW-Error-Source
 ```
 
+With a database, `resolve_proxy_target` reads the upstream candidates and routes through the per-replica proxy configuration cache; a hit runs no query (§4.1).
+
 #### Management Operation Flow
 
 ```text
 Client → API Handler (auth, validate DTO) → ControlPlaneService (validate, write DB) → Response
 ```
 
+With a database, each write also evicts the proxy configuration cache entries it affects and appends the change to the cluster change log, so every replica evicts them too (§4.1).
+
 ### 3.6 Database Schemas & Tables
 
 **ID**: `cpt-cf-oagw-db-schema`
 
-Schema follows portable relational baseline with JSON blobs for evolving configuration. See [ADR: Storage Schema](./ADR/0009-storage-schema.md) for full details.
+Schema follows portable relational baseline with JSON blobs for evolving configuration. See [ADR: Storage Schema](./ADR/0009-storage-schema.md) for the schema and [ADR: Optional Persistence](./ADR/0018-optional-persistence.md) for backend selection and implementation scope.
+
+#### Storage Backends
+
+Upstream and route storage sits behind the domain repository traits (`UpstreamRepository`, `RouteRepository`). The gear selects one implementation at startup:
+
+| Gear database configuration | Repositories | Durability |
+|---|---|---|
+| Absent | In-memory (`DashMap`) | Lost on restart; warning logged at startup |
+| Present and usable | SeaORM via `toolkit-db` secure ORM; migrations run by the ToolKit runtime | Persisted |
+| Present but unusable | None — gear startup fails | — |
+
+`database: null` counts as absent. OAGW compiles the SQLite and PostgreSQL backends; MySQL is supported when built with the `mysql` feature (see [ADR: Optional Persistence](./ADR/0018-optional-persistence.md)).
+
+With a database and the proxy configuration cache enabled (the default), OAGW also needs the cluster gear and an `oagw` cluster profile whose cache supports watches, through which the proxy configuration cache tells the other replicas about each write ([ADR: Proxy Configuration Cache](./ADR/0020-proxy-config-cache.md#cluster-setup)). With `proxy_cache.enabled: false` neither is needed and every request reads the database. Without a database neither is needed, and OAGW supports one replica only, since each replica's in-memory configuration is its own; the same holds for the cluster's standalone backend.
+
+Both implementations satisfy one repository contract and pass one conformance test suite, so Management API and proxy behavior do not depend on the backend.
 
 #### Core Tables
 
-| Table | Purpose | Key Constraints |
-|---|---|---|
-| `oagw_upstream` | Tenant-scoped root config | PK: `id`, UNIQUE: `(tenant_id, alias)` |
-| `oagw_route` | Route definitions | PK: `id`, FK: `upstream_id` (cascade) |
-| `oagw_route_http_match` | HTTP match keys | PK: `route_id`, FK: cascade |
-| `oagw_route_grpc_match` | gRPC match keys | PK: `route_id`, FK: cascade |
-| `oagw_route_method` | HTTP method allowlists | PK: `(route_id, method)`, FK: cascade |
-| `oagw_upstream_tag` / `oagw_route_tag` | Discovery tags | PK: `(parent_id, tag)`, FK: cascade |
-| `oagw_plugin` | Custom plugins (UUID-backed) | PK: `id`, UNIQUE: `(tenant_id, name)` |
-| `oagw_upstream_plugin` / `oagw_route_plugin` | Ordered plugin bindings | PK: `(parent_id, position)`, FK: cascade |
+The exact PostgreSQL DDL, with the queries each index serves, is in [`migration.sql`](./migration.sql). All tables carry `tenant_id`, including child tables. Child foreign keys are composite (`(tenant_id, parent_id)` → parent `(tenant_id, id)`, cascade), so a child row always belongs to its parent's tenant.
+
+| Table | Purpose | Key Constraints | Implemented |
+|---|---|---|---|
+| `oagw_upstream` | Tenant-scoped root config | PK: `id`, UNIQUE: `(tenant_id, alias)`, UNIQUE: `(tenant_id, id)` | Yes |
+| `oagw_route` | Route definitions | PK: `id`, UNIQUE: `(tenant_id, id)`, FK: `(tenant_id, upstream_id)` (cascade) | Yes |
+| `oagw_route_http_match` | HTTP match keys | PK: `route_id`, FK: cascade | Yes |
+| `oagw_route_grpc_match` | gRPC match keys | PK: `route_id`, FK: cascade | Yes |
+| `oagw_route_method` | HTTP method allowlists | PK: `(route_id, method)`, FK: cascade | Yes |
+| `oagw_upstream_tag` / `oagw_route_tag` | Discovery tags | PK: `(parent_id, tag)`, FK: cascade | Yes |
+| `oagw_upstream_plugin` / `oagw_route_plugin` | Ordered plugin bindings | PK: `(parent_id, position)`, FK: cascade | Yes |
+| `oagw_plugin` | Custom plugins (UUID-backed) | PK: `id`, UNIQUE: `(tenant_id, name)` | With custom plugin support; additive, since bindings have no FK to it |
+
+The database repositories load each upstream or route with its child rows, batch-loading each child table once per call. Proxy-time alias resolution and route matching each query the whole tenant chain at once and join the children they need into that query; route matching matches in application code, identically for both backends. Indexed SQL matching is a later query-only change.
 
 #### Key Invariants
 
-- All reads/writes tenant-scoped through secure ORM (no raw SQL)
-- Multi-table updates are atomic (single transaction)
+- All reads/writes tenant-scoped through secure ORM (no raw SQL beyond the registry lease's constant database-clock expressions), except the registry reconcile's listing of registry rows and the installation-wide `oagw_registry_state` row; every configuration table, including child tables, has a `tenant_id` tenant column, and a joined child is confined by the composite join key
+- Multi-table updates are atomic: each create and update runs in one transaction (an enabled HTTP route's also locks its upstream row and checks route overlaps inside it); each delete is one statement, and upstream delete is one `DELETE` whose foreign-key cascade removes the upstream's tags and plugin bindings, its routes, and the routes' child rows
+- Management get and list read one snapshot (read-only REPEATABLE READ transaction); proxy reads use no transaction and may combine rows from before and after a concurrent write (ADR-0018 *Transactions*)
 - Route match determinism: no two enabled routes under same upstream may share `(path_prefix, priority)` for same method
-- Plugin binding positions contiguous from 0, validated on write
+- Plugin binding positions contiguous from 0, assigned from list order on write
 - Named plugins referenced via `plugin_ref` with `plugin_uuid = NULL`; custom plugins have both
 
 #### Resource Identification Pattern
@@ -861,9 +899,9 @@ See [ADR: Resource Identification](./ADR/0010-resource-identification.md) for th
 
 | Query | Description |
 |---|---|
-| Find Upstream by Alias | Lookup by `(tenant_id, alias)` with tenant hierarchy walk and `enabled` inheritance |
-| List Upstreams for Tenant | List with shadowing (closest tenant wins) and `enabled` inheritance |
-| Find Matching Route for Request | Match by `(upstream_id, method, longest path prefix, priority)` for HTTP; `(upstream_id, service, method)` for gRPC (planned/Phase 3 — no gRPC proxy code path is currently implemented or reachable) |
+| Find Upstream by Alias | One query for the alias across the tenant chain (`alias = ? AND tenant_id IN (chain)`); the closest enabled, visible upstream wins in application code |
+| List Upstreams for Tenant | The tenant's own upstreams, ordered by id, offset-paginated |
+| Find Matching Route for Request | Match by `(upstream_ids, method, longest path prefix, priority, lowest route ID)` for HTTP, where `upstream_ids` is the selected upstream followed by its ancestor upstreams closest-first (see ADR-0018); `(upstream_id, service, method)` for gRPC (planned/Phase 3 — no gRPC proxy code path is currently implemented or reachable) |
 | Resolve Effective Configuration | Walk hierarchy, collect bindings, merge from root to child per sharing modes |
 | List Routes by Upstream | Filter by `upstream_id` with tenant scoping |
 | Track Plugin Usage | Scan `oagw_upstream_plugin`, `oagw_route_plugin`, and `auth_plugin_uuid` columns for references |
@@ -875,14 +913,20 @@ See [ADR: Resource Identification](./ADR/0010-resource-identification.md) for th
 
 OAGW does not cache upstream responses. Caching is client/upstream responsibility.
 
-Config caching (in-memory caching of effective upstream/route configuration to avoid DB reads on every proxy request) is a future consideration. See [ADR: Control Plane Caching](./ADR/0007-data-plane-caching.md) for design direction.
+With a database, OAGW caches the configuration the proxy reads ([ADR: Proxy Configuration Cache](./ADR/0020-proxy-config-cache.md), proposed until its benchmark). Each replica keeps two in-memory sections: the upstreams with an alias across a tenant chain (key: alias and chain; disabled ones included; empty for "not found"), and the enabled HTTP routes of each upstream, in full (key: the upstream's tenant and ID). Both hold raw repository answers, so upstream selection, the SSRF check, `select_route` and the merge still run on every request. A hit runs no query; a miss runs one query per section that missed. Errors are not cached; concurrent misses on one key share one load. Entries are fresh for `proxy_cache.ttl` (default 60 s); each section holds at most `proxy_cache.max_entries` (default 10,000) and evicts the least recently used entry when full. An entry past its TTL is kept for `proxy_cache.max_stale` more (default 15 min) and reloaded on use; when the reload fails, or has not answered 2 s after it started, the stale entry is answered; after a failed reload, that key is not reloaded again for 5 s. So proxying keeps working through a database outage for what a replica has cached ([Serving Stale](./ADR/0020-proxy-config-cache.md#serving-stale)).
+
+Every write evicts only the entries it can affect (those holding the written upstream or route, those for an upstream's alias whose chain holds its tenant, and the route entry of a route's upstream), and detaches the loads in flight in the sections it touches, so a load that read pre-write rows is not stored. The cache wraps the repositories, so every write path evicts: the Management API, the SDK and the registry reconcile. The writer then appends the change to a short change log in the cluster gear (key `oagw/proxy-config-changes`, the last 128 changes and 32 KiB) and waits at most 2 s for the append (a registry reconcile run waits once, at its end); every other replica watches the log and evicts the same entries. A write whose future is dropped mid-call publishes its change once more 30 s later, in case its statement commits late. A replica that cannot know what it missed (a gap, a new or unreadable log, a watch that fell behind or reconnected) empties its whole cache: it marks every entry stale, so each is reloaded on its next use and answered only if that reload fails or is slow (with `max_stale: 0s` it removes them); the TTL corrects a lost change. Cache loads (30 s), change log appends (1 s per attempt, 5 attempts) and log reads (5 s) are bounded, so a hung database or cluster call cannot stall the cache. During a rolling upgrade an older build skips its appends to a newer-format log. A cluster outage leaves OAGW `Degraded`, not unready; proxying continues and the TTL bounds staleness.
+
+With the cache off (`proxy_cache.enabled: false`), and for the SDK's `resolve_proxy_target`, each lookup issues three queries regardless of tenant hierarchy depth: the upstreams with the alias across the tenant chain joined with their plugin rows; the enabled HTTP routes of the selected and ancestor upstreams that allow the request method, with only the columns matching reads; and the winning route in full with its path, method and plugin rows (re-checked against the request; a request that raced a configuration write selects once more, two more queries). The proxy never loads tags; `resolve_proxy_target` does, with two more queries. With the cache off there is no change log: writes append nothing, and no cluster is needed.
+
+The endpoint selector (`PoolEndpointSelector`) caches each upstream's endpoint pool and rebuilds it whenever the upstream's configured endpoints differ from the cached list. This keeps every replica current when several replicas share one database, without cross-instance invalidation.
 
 ### 4.2 Metrics and Observability
 
 Prometheus metrics at `/metrics` (admin-only):
 
 - `oagw_requests_total{host, http.request.method, http.route, http.response.status_code}` — counter (label keys follow OTel HTTP semantic conventions; numeric status; method normalized to a standard verb or `_OTHER`; aligned with the inbound API Gateway)
-- `oagw_request_duration_seconds{host, http.route, phase}` — histogram
+- `oagw_request_duration_seconds{host, http.route, phase}` — histogram (`phase`: `total` for the whole request, `resolve` for the upstream and route lookup, `auth` for the auth plugin; a request that does not resolve records `resolve` with `host` and `http.route` set to `unknown`)
 - `oagw_requests_in_flight{host}` — gauge
 - `oagw_errors_total{host, http.route, error_type}` — counter
 - `oagw_circuit_breaker_state{host}` — gauge
@@ -893,14 +937,33 @@ Prometheus metrics at `/metrics` (admin-only):
 
 **Rate Limit Metrics**:
 - `oagw_rate_limit_usage_ratio{host, path}` — gauge (0.0 to 1.0)
+- `oagw_rate_limit_buckets_evicted_total` — counter (idle buckets evicted by the periodic sweep)
+- `oagw_rate_limit_buckets` — gauge (buckets held in memory after the last sweep)
 
 **Routing Metrics**:
 - `oagw_routing_target_host_used{upstream_id, endpoint_host}` — counter (tracks X-OAGW-Target-Host usage)
 - `oagw_routing_endpoint_selected{upstream_id, endpoint_host, selection_method}` — counter (selection_method: `explicit_header`, `round_robin`, `default`)
 
+**Registry Provisioning Metrics** ([ADR: Optional Persistence](./ADR/0018-optional-persistence.md#provisioning-from-the-types-registry)):
+- `oagw_registry_provisioning_failures_total{kind, reason}` — counter (a registry instance the reconcile skipped, or a dropped upstream it kept; `kind`: `upstream`, `route`; `reason`: `invalid_instance`, `invalid_request`, `duplicate_alias`, `unknown_upstream`, `overlapping_registry_routes`, `id_held_by_api`, `conflict`, `validation`, `not_found`, `forbidden`, `secret_not_accessible`, `registry_managed`, `plugin`, `unexpected`, `alias_cycle`, `path_cycle`, `kept_in_use`)
+- `oagw_registry_provisioning_runs_total{outcome}` — counter (`up_to_date`, `stale`, `clean`, `not_clean`, `failed`; a run stopped by shutdown, or cancelled while waiting for the lease, counts as `not_clean`)
+- `oagw_credentials_withheld_total{host, outcome}` — counter (`dropped_auth`, `dropped_headers`, `enforced_refused`): an ancestor's auth or headers not sent because the resolved upstream serves the alias on endpoints their owner did not configure (proxy path only)
+
 **Upstream Health Metrics**:
 - `oagw_upstream_available{host, endpoint}` — gauge (0=down, 1=up)
 - `oagw_upstream_connections{host, state}` — gauge (state: `idle`, `active`, `max`)
+
+**Proxy Configuration Cache Metrics** ([ADR: Proxy Configuration Cache](./ADR/0020-proxy-config-cache.md#health-and-metrics); with a database):
+- `oagw_proxy_cache_lookups_total{map, result}` — counter (`map`: `alias`, `route`; `result`: `hit`, `miss`, `joined`, `stale`)
+- `oagw_proxy_cache_entries{map}` — gauge
+- `oagw_proxy_cache_evictions_total{map, reason}` — counter (`reason`: `change`, `ttl` (older than the TTL and `max_stale`), `capacity`)
+- `oagw_proxy_cache_changes_total{source}` — counter (`source`: `local`, `remote`)
+- `oagw_proxy_cache_flushes_total{cause}` — counter (the whole cache emptied; `cause`: `watch_reset`, `log_gap`, `log_reset`, `log_unreadable`, `watch_closed`)
+- `oagw_proxy_cache_loads_discarded_total{map}` — counter (loads not stored because a change detached them)
+- `oagw_proxy_cache_stale_served_total{map, cause}` — counter (keys answered with a stale entry; `cause`: `error`, `slow`, `retry_window`)
+- `oagw_proxy_cache_publish_failures_total{reason}` — counter (each change not appended to the cluster change log, once; `reason`: `append_failed`, `newer_log`, `publisher_stopped`; a write's 2 s wait timing out is not counted)
+
+The gear's health check reports `Degraded` with `proxy_cache_serving_stale` for 30 s after the cache answered a stale entry, with `proxy_cache_watch_connecting` while the change log watch connects or reconnects, `proxy_cache_watch_down` once it is closed for good or stopped, and `proxy_cache_newer_log` while appends skip a newer-format log. It includes the cluster SDK's readiness: `cluster-starting` and `cluster-profile-degraded` report `Degraded`, `cluster-misconfigured` `Unhealthy`; a check that does not answer within 250 ms leaves the last result for up to 10 s, then `Degraded` with `cluster_readiness_slow`. On a tie the cache's code shows before registry provisioning's.
 
 Cardinality management: no tenant labels; `http.route` is the normalized route match pattern, not the raw request path; `http.request.method` is normalized to a standard verb or `_OTHER`; `http.response.status_code` is the numeric upstream status (OTel HTTP semconv). Status-class queries (`5xx` rate, etc.) are expressed at query time via regex on the numeric code. Label-key vocabulary matches the inbound API Gateway so both gateways share dashboards. `host` remains as an OAGW-specific label carrying the upstream alias.
 
@@ -954,7 +1017,7 @@ Structured JSON logs to stdout, ingested by centralized logging system (e.g., EL
 5. [Security] TLS certificate pinning — Pin specific certificates/public keys for critical upstreams to prevent MITM attacks
 6. [Security] mTLS support — Mutual TLS for client certificate authentication with upstream services
 7. [Protocol] gRPC support — HTTP/2 multiplexing with content-type detection — [ADR: gRPC Support](./ADR/0014-grpc-support.md) — **Requires prototype**
-8. [Deployment] Registry-only mode — All upstreams, routes, and plugin configs sourced exclusively from type registry (no management API CRUD). The `post_init()` provisioning path already materializes registry entities through the full domain validation pipeline. A registry-only mode would require: (a) config flag to disable or make CRUD endpoints read-only, (b) soft-fail on invalid entities (skip with warning instead of blocking startup), (c) a validation feedback mechanism so config authors can discover rejected entities — e.g., status writeback on GTS entities or a dedicated provisioning status endpoint. This is a platform-level concern: any gear consuming GTS entities for configuration faces the same write-time validation gap.
+8. [Deployment] Registry-only mode — All upstreams, routes, and plugin configs sourced exclusively from type registry (no management API CRUD). The registry reconcile already materializes registry entities through the full domain validation pipeline, reconciles them with the registry (at startup in memory, in a background task on a database), keeps them read-only through the Management API, and soft-fails invalid or conflicting entities: each is skipped with an error log and counted in `oagw_registry_provisioning_failures_total{kind,reason}` instead of blocking startup ([ADR: Optional Persistence](./ADR/0018-optional-persistence.md#provisioning-from-the-types-registry)). A registry-only mode would still require: (a) config flag to disable CRUD for API-managed upstreams and routes, (b) a validation feedback mechanism so config authors can discover rejected entities — e.g., status writeback on GTS entities or a dedicated provisioning status endpoint. This is a platform-level concern: any gear consuming GTS entities for configuration faces the same write-time validation gap.
 
 ## 5. Traceability
 
@@ -972,6 +1035,7 @@ Structured JSON logs to stdout, ingested by centralized logging system (e.g., EL
 | `cpt-cf-oagw-fr-streaming` | `cpt-cf-oagw-interface-api` — SSE, WebSocket, gRPC streaming |
 | `cpt-cf-oagw-nfr-low-latency` | `cpt-cf-oagw-tech-dependencies` — In-memory rate limiters |
 | `cpt-cf-oagw-nfr-multi-tenancy` | `cpt-cf-oagw-db-schema` — All tables tenant-scoped via secure ORM |
+| `cpt-cf-oagw-fr-config-persistence` | `cpt-cf-oagw-db-schema` — Opt-in database repositories with in-memory fallback |
 | `cpt-cf-oagw-nfr-observability` | `cpt-cf-oagw-interface-api` — Prometheus metrics, structured logging |
 | `cpt-cf-oagw-nfr-credential-isolation` | `cpt-cf-oagw-principle-cred-isolation` — `cred_store` secret references |
 
@@ -985,7 +1049,7 @@ Structured JSON logs to stdout, ingested by centralized logging system (e.g., EL
 | [0004 Rate Limiting](./ADR/0004-rate-limiting.md) | `cpt-cf-oagw-component-model` |
 | [0005 Circuit Breaker](./ADR/0005-circuit-breaker.md) | `cpt-cf-oagw-interface-api` |
 | [0006 CORS](./ADR/0006-cors.md) | `cpt-cf-oagw-component-model` |
-| [0007 Control Plane Caching](./ADR/0007-data-plane-caching.md) | `cpt-cf-oagw-tech-dependencies` |
+| [0007 Control Plane Caching](./ADR/0007-data-plane-caching.md) (superseded by 0019) | `cpt-cf-oagw-tech-dependencies` |
 | [0008 State Management](./ADR/0008-state-management.md) | `cpt-cf-oagw-component-model` |
 | [0009 Storage Schema](./ADR/0009-storage-schema.md) | `cpt-cf-oagw-db-schema` |
 | [0010 Resource Identification](./ADR/0010-resource-identification.md) | `cpt-cf-oagw-design-domain-model` |
@@ -994,3 +1058,6 @@ Structured JSON logs to stdout, ingested by centralized logging system (e.g., EL
 | [0013 Error Source Distinction](./ADR/0013-error-source-distinction.md) | `cpt-cf-oagw-interface-api` |
 | [0014 gRPC Support](./ADR/0014-grpc-support.md) | `cpt-cf-oagw-interface-api` |
 | [0015 Rust ABI Client Library](./ADR/0015-rust-abi-client-library.md) | `cpt-cf-oagw-tech-dependencies` |
+| [0018 Optional Persistence](./ADR/0018-optional-persistence.md) | `cpt-cf-oagw-db-schema` |
+| [0019 Upstream Proxy Engine](./ADR/0019-upstream-proxy-engine.md) | `cpt-cf-oagw-tech-dependencies`, `cpt-cf-oagw-seq-proxy-flow` |
+| [0020 Proxy Configuration Cache](./ADR/0020-proxy-config-cache.md) | `cpt-cf-oagw-tech-dependencies`, `cpt-cf-oagw-seq-proxy-flow` |

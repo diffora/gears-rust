@@ -1,4 +1,3 @@
-// Created: 2026-08-13 by Virtuozzo International GmbH
 // @cpt-dod:cpt-cf-settings-service-dod-category-management-no-orphan:p1
 //! SeaORM-backed category persistence.
 
@@ -8,19 +7,21 @@ use toolkit_db::secure::{DBRunner, SecureDeleteExt, SecureEntityExt, SecureUpdat
 use toolkit_security::AccessScope;
 use uuid::Uuid;
 
-use toolkit_db::odata::{LimitCfg, paginate_odata};
-use toolkit_odata::{ODataQuery, Page, SortDir};
+use toolkit_db::odata::LimitCfg;
+use toolkit_odata::{ODataOrderBy, ODataQuery, OrderKey, SortDir};
 
 use crate::domain::category::visibility::DomainVisibility;
 use crate::domain::category::{
     Category, CategoryDraft, CategoryKey, CategoryPatch, CategoryRepository, Patch,
 };
 use crate::domain::error::DomainError;
+use crate::domain::odata::Listing;
 use crate::domain::precondition;
 use crate::domain::precondition::ETag;
 use crate::infra::storage::clock::{now, stamp_after};
 use crate::infra::storage::entity::category::{self, Entity as CategoryEntity};
 use crate::infra::storage::entity::declaration::{self, Entity as DeclarationEntity};
+use crate::infra::storage::listing::list_counted;
 use crate::infra::storage::odata_mapper::CategoryODataMapper;
 use settings_service_sdk::odata::CategoryFilterField;
 
@@ -47,6 +48,7 @@ fn etag_of(model: &category::Model) -> ETag {
 }
 // @cpt-end:cpt-cf-settings-service-algo-gear-foundation-precondition:p1:inst-gf-precond-2
 
+/// Converts a stored category row to the domain type, failing if its key no longer parses.
 pub(crate) fn to_domain(model: category::Model) -> Result<Category, DomainError> {
     let etag = etag_of(&model);
     Ok(Category {
@@ -86,6 +88,41 @@ fn map_write_error(err: &toolkit_db::secure::ScopeError) -> DomainError {
     }
 }
 
+/// `ON DELETE RESTRICT` as `PostgreSQL` reports it: SQLSTATE `restrict_violation`.
+const PG_RESTRICT_VIOLATION: &str = "23001";
+/// A plain foreign-key rejection on `PostgreSQL`: SQLSTATE `foreign_key_violation`.
+const PG_FOREIGN_KEY_VIOLATION: &str = "23503";
+/// `ON DELETE RESTRICT` as `SQLite` reports it: extended code `SQLITE_CONSTRAINT_TRIGGER`.
+const SQLITE_CONSTRAINT_TRIGGER: &str = "1811";
+/// A plain foreign-key rejection on `SQLite`: extended code `SQLITE_CONSTRAINT_FOREIGNKEY`.
+const SQLITE_CONSTRAINT_FOREIGNKEY: &str = "787";
+
+/// Whether the driver itself reported a foreign-key refusal, by code.
+///
+/// `SeaORM`'s `sql_err()` files only the plain foreign-key pair, and the
+/// toolkit's classifier then falls back to English message text, which a
+/// `PostgreSQL` running with another `lc_messages` does not produce. The code is
+/// read off the driver error here, so the race path does not depend on wording.
+fn driver_reports_fk_refusal(err: &toolkit_db::secure::ScopeError) -> bool {
+    use sea_orm::{DbErr, RuntimeErr, sqlx};
+
+    let toolkit_db::secure::ScopeError::Db(DbErr::Exec(RuntimeErr::SqlxError(driver))) = err else {
+        return false;
+    };
+    let sqlx::Error::Database(db) = driver.as_ref() else {
+        return false;
+    };
+    db.code().is_some_and(|code| {
+        matches!(
+            code.as_ref(),
+            PG_RESTRICT_VIOLATION
+                | PG_FOREIGN_KEY_VIOLATION
+                | SQLITE_CONSTRAINT_TRIGGER
+                | SQLITE_CONSTRAINT_FOREIGNKEY
+        )
+    })
+}
+
 /// Project a delete failure.
 ///
 /// A foreign-key rejection means a declaration still references the category.
@@ -95,13 +132,9 @@ fn map_write_error(err: &toolkit_db::secure::ScopeError) -> DomainError {
 /// error would turn a correct refusal into a 500.
 // @cpt-begin:cpt-cf-settings-service-flow-category-management-delete:p1:inst-cat-delete-11
 fn map_delete_error(err: &toolkit_db::secure::ScopeError) -> DomainError {
-    let is_fk_violation = matches!(
-        err,
-        toolkit_db::secure::ScopeError::Db(db) if matches!(
-            db.sql_err(),
-            Some(sea_orm::SqlErr::ForeignKeyConstraintViolation(_))
-        )
-    );
+    // The driver's code first, the toolkit's classifier as the second chance
+    // for an error that was re-wrapped and lost its typed shape.
+    let is_fk_violation = driver_reports_fk_refusal(err) || err.is_foreign_key_violation();
     if is_fk_violation {
         DomainError::Conflict {
             detail: "the category still has declarations referencing it".to_owned(),
@@ -296,7 +329,7 @@ impl CategoryRepository for CategoryRepo {
         scope: &AccessScope,
         visibility: &DomainVisibility,
         query: &ODataQuery,
-    ) -> Result<Page<Category>, DomainError> {
+    ) -> Result<Listing<Category>, DomainError> {
         let mut select = CategoryEntity::find();
 
         // @cpt-begin:cpt-cf-settings-service-algo-category-management-visibility-filter:p1:inst-cat-visfilter-4
@@ -316,19 +349,29 @@ impl CategoryRepository for CategoryRepo {
         }
         // @cpt-end:cpt-cf-settings-service-algo-category-management-visibility-filter:p1:inst-cat-visfilter-4
 
-        let base = select.secure().scope_with(scope);
-
-        // Tiebreaker is `name`, which is unique, so a page boundary can neither
-        // repeat nor skip a row.
+        // @cpt-begin:cpt-cf-settings-service-flow-category-management-list:p1:inst-cat-list-7
+        // A request with neither `$orderby` nor a cursor gets `sort_order asc`
+        // injected as its order. A continuation carries its order inside the
+        // cursor and must not be touched, or the page boundary would move.
         //
-        // Note this is the *whole* default order, not a tiebreaker after
-        // `sort_order`: `ensure_tiebreaker` appends, and every order key must
-        // resolve through `CategoryFilterField`, which deliberately omits
-        // `sort_order`. The FEATURE asks for `sort_order` then `name`
-        // (`inst-cat-list-7`); delivering that means declaring `sort_order` on
-        // the OData surface, which is a decision the narrow-surface rule in
-        // `settings-service-sdk/src/odata.rs` owns. Left unimplemented and
-        // unticked rather than quietly redefined.
+        // The paginator appends the `name asc` tiebreaker when `name` is not
+        // already an order key. `name` is unique, so a page boundary can
+        // neither repeat nor skip a row; the default order is therefore
+        // `sort_order asc, name asc`, and a caller's `$orderby` is passed
+        // through unchanged with the same tiebreaker behind it.
+        let default_ordered;
+        let query = if query.order.is_empty() && query.cursor.is_none() {
+            let mut q = query.clone();
+            q.order = ODataOrderBy(vec![OrderKey {
+                field: "sort_order".to_owned(),
+                dir: SortDir::Asc,
+            }]);
+            default_ordered = q;
+            &default_ordered
+        } else {
+            query
+        };
+        // @cpt-end:cpt-cf-settings-service-flow-category-management-list:p1:inst-cat-list-7
         // @cpt-begin:cpt-cf-settings-service-flow-category-management-list:p1:inst-cat-list-4
         // @cpt-begin:cpt-cf-settings-service-flow-category-management-list:p1:inst-cat-list-5
         // @cpt-begin:cpt-cf-settings-service-flow-category-management-list:p1:inst-cat-list-8
@@ -337,11 +380,16 @@ impl CategoryRepository for CategoryRepo {
         // surface here as a validation failure rather than as an empty page.
         // Reporting any of them as "no results" would let an administrator
         // read a broken query as an empty catalogue.
-        let page = paginate_odata::<CategoryFilterField, CategoryODataMapper, _, _, _, _>(
-            base,
+        // The page and, beside it, how many categories the walk holds under
+        // the same predicate — the rail's scrollbar and its heading count.
+        let page = list_counted::<CategoryFilterField, CategoryODataMapper, _, _, _, _>(
+            select,
+            scope,
             conn,
             query,
+            // @cpt-begin:cpt-cf-settings-service-flow-category-management-list:p1:inst-cat-list-7
             ("name", SortDir::Asc),
+            // @cpt-end:cpt-cf-settings-service-flow-category-management-list:p1:inst-cat-list-7
             CATEGORY_LIMIT_CFG,
             |m: category::Model| m,
         )
@@ -360,9 +408,10 @@ impl CategoryRepository for CategoryRepo {
             .into_iter()
             .map(to_domain)
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(Page {
+        Ok(Listing {
             items,
             page_info: page.page_info,
+            total_count: page.total_count,
         })
     }
 
@@ -400,3 +449,7 @@ impl CategoryRepository for CategoryRepo {
         // @cpt-end:cpt-cf-settings-service-algo-category-management-no-orphan-guard:p1:inst-cat-orphan-1
     }
 }
+
+#[cfg(test)]
+#[path = "category_repo_tests.rs"]
+mod category_repo_tests;

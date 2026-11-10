@@ -12,15 +12,16 @@
 //! pattern" structural rather than a convention a reviewer has to enforce.
 
 use sea_orm::entity::prelude::*;
+use toolkit_db::secure::ScopeError;
 use toolkit_db::secure::SecureEntityExt;
 use toolkit_db::secure::pgq::{GraphDeclaration, PropertyGraph, VertexOf};
-use toolkit_db::secure::ScopeError;
 
 mod test_entity {
     use super::*;
 
-    #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel, toolkit_db::secure::Scopable)]
     #[sea_orm(table_name = "graph_unscoped_table")]
+    #[secure(tenant_col = "tenant_id", resource_col = "id", no_owner, no_type)]
     pub struct Model {
         #[sea_orm(primary_key, auto_increment = false)]
         pub id: i32,
@@ -31,19 +32,6 @@ mod test_entity {
     pub enum Relation {}
 
     impl ActiveModelBehavior for ActiveModel {}
-
-    impl toolkit_db::secure::ScopableEntity for Entity {
-        const SCOPE_PROPERTIES: &'static [(&'static str, Self::Column)] = &[
-            ("owner_tenant_id", Column::TenantId),
-            ("id", Column::Id),
-        ];
-
-        const UNSCOPED_DIMENSIONS: &'static [&'static str] = &["owner_id"];
-
-        fn type_col() -> Option<Column> {
-            None
-        }
-    }
 }
 
 use test_entity::Entity;

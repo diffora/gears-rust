@@ -21,6 +21,7 @@
 
 use std::sync::Arc;
 use std::time::Duration;
+use toolkit::domain_model;
 
 use async_trait::async_trait;
 use toolkit_canonical_errors::CanonicalError;
@@ -31,7 +32,7 @@ use event_broker_sdk as sdk;
 use sdk::EventBrokerError;
 use sdk::api::{
     AssignedPartition, ControlCode, EventBrokerApi, FrameStream, IngestOutcome, JoinRequest,
-    PartitionCursor, PartitionPosition, ProducerCursors, ProducerMode, SeekPosition, SeekResult,
+    PartitionPosition, ProducerCursors, ProducerMode, SeekPosition, SeekResult,
     SubscriptionAssignment, SubscriptionInterest, TopicCursors, WireEvent, WireFrame,
 };
 use sdk::ids::{ConsumerGroupId, ProducerId, SubscriptionId};
@@ -49,9 +50,9 @@ use crate::domain::delivery::{
 use crate::domain::error::DomainError;
 use crate::domain::id_parse::{parse_consumer_group_id, parse_topic_id, parse_type_id};
 use crate::domain::ingest::{
-    IngestService, ProducerCursors as DomainProducerCursors, ProducerMode as DomainProducerMode,
-    ProducerPartitionCursor, ProducerRegistrationInput, ProducerResetScope, ProducerTopicCursors,
-    PublishAck, PublishRequest,
+    BatchAck, IngestService, ProducerCursors as DomainProducerCursors,
+    ProducerMode as DomainProducerMode, ProducerRegistrationInput, ProducerTopicCursors,
+    PublishAck, PublishRequest, SyncPublishAck,
 };
 use crate::domain::model::{
     BarrierMode as DomainBarrierMode, ConsumerGroup as DomainConsumerGroup,
@@ -59,6 +60,7 @@ use crate::domain::model::{
     FilterSpec, Interest, Meta, Subscription as DomainSubscription,
     TenantTraversalDepth as DomainDepth, Topic as DomainTopic, TopicSegmentManifest,
 };
+use crate::domain::producer_reset::ProducerResetScope;
 use crate::domain::streaming::frames::{
     ControlCode as DomainControlCode, Frame, Position as DomainPosition,
 };
@@ -69,6 +71,7 @@ use crate::domain::streaming::frames::{
 const DEFAULT_SESSION_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// In-process [`EventBrokerApi`] over the real ingest and delivery services.
+#[domain_model]
 pub struct LocalBroker {
     ingest: Arc<dyn IngestService>,
     delivery: Arc<dyn DeliveryService>,
@@ -230,18 +233,12 @@ impl From<CreateConsumerGroupRequest> for ConsumerGroupCreateInput {
     }
 }
 
-/// SDK reset scope -> domain reset scope. The domain scope is either "all" or
-/// one `(topic, partition)`, so a topic-only reset collapses to "all" - the
-/// same collapse the server makes (`ingest::dto`'s `From<ResetProducerRequest>`:
-/// only `(Some topic, Some partition)` is `TopicPartition`, every other shape is
-/// `All`). Neither path can reset a single whole topic.
 impl From<ResetScope<'_>> for ProducerResetScope {
     fn from(scope: ResetScope<'_>) -> Self {
         match scope {
-            ResetScope::AllTopics | ResetScope::Topic(_) => ProducerResetScope::All,
-            ResetScope::Partition { topic, partition } => ProducerResetScope::TopicPartition {
+            ResetScope::AllTopics => ProducerResetScope::All,
+            ResetScope::Topic(topic) => ProducerResetScope::Topic {
                 topic: topic.to_owned(),
-                partition: i32::try_from(partition).unwrap_or_default(),
             },
         }
     }
@@ -260,11 +257,13 @@ impl From<PublishAck> for IngestOutcome {
     }
 }
 
-impl From<ProducerPartitionCursor> for PartitionCursor {
-    fn from(cursor: ProducerPartitionCursor) -> Self {
-        PartitionCursor {
-            partition: u32::try_from(cursor.partition).unwrap_or_default(),
-            last_sequence: cursor.last_sequence,
+/// An all-duplicate batch stored nothing new, so it answers `Duplicate` the
+/// way REST answers `200`.
+impl From<BatchAck> for IngestOutcome {
+    fn from(ack: BatchAck) -> Self {
+        match ack {
+            BatchAck::Accepted => IngestOutcome::Accepted,
+            BatchAck::Duplicate => IngestOutcome::Duplicate,
         }
     }
 }
@@ -273,7 +272,7 @@ impl From<ProducerTopicCursors> for TopicCursors {
     fn from(cursors: ProducerTopicCursors) -> Self {
         TopicCursors {
             topic: cursors.topic,
-            partitions: cursors.partitions.into_iter().map(Into::into).collect(),
+            last_sequence: cursors.last_sequence,
         }
     }
 }
@@ -519,12 +518,28 @@ impl EventBrokerApi for LocalBroker {
         Ok(ack.into())
     }
 
-    // `publish_sync` is deliberately NOT overridden: ingest enqueues to the
-    // async outbox and exposes no persist-confirmation hook (the REST layer
-    // answers `501` for `Prefer: wait`), so the honest outcome is the default's
-    // `Accepted`/`Duplicate` - reporting `Persisted` would assert a durable
-    // write that has not necessarily completed. It inherits the trait default,
-    // which delegates to `publish`.
+    /// Holds until the backend stores the event or the broker's configured
+    /// `Prefer: wait=N` ceiling elapses, mirroring the REST `Prefer: wait`
+    /// path: `Persisted` once stored, `Accepted` on timeout (the event stays
+    /// enqueued), `Duplicate` for an idempotent resend. An in-process caller
+    /// sets no bound, so it asks to wait as long as the broker allows
+    /// (`Duration::MAX`, which the ingest service clamps to its cap).
+    async fn publish_sync(
+        &self,
+        ctx: &SecurityContext,
+        event: &Event,
+    ) -> Result<IngestOutcome, EventBrokerError> {
+        let ack = self
+            .ingest
+            .publish_event_sync(ctx, PublishRequest::try_from(event)?, Duration::MAX)
+            .await
+            .map_err(to_sdk_err)?;
+        Ok(match ack {
+            SyncPublishAck::Stored => IngestOutcome::Persisted,
+            SyncPublishAck::TimedOut => IngestOutcome::Accepted,
+            SyncPublishAck::Duplicate => IngestOutcome::Duplicate,
+        })
+    }
 
     async fn publish_batch(
         &self,
@@ -535,14 +550,12 @@ impl EventBrokerApi for LocalBroker {
             .iter()
             .map(PublishRequest::try_from)
             .collect::<Result<Vec<_>, _>>()?;
-        // All-or-nothing: any rejection is a `DomainError` for the whole batch;
-        // the per-event `BatchResult` is not surfaced on success (matching the
-        // REST contract), so an `Ok` is one `Accepted`.
-        self.ingest
+        let ack = self
+            .ingest
             .publish_batch(ctx, requests)
             .await
             .map_err(to_sdk_err)?;
-        Ok(IngestOutcome::Accepted)
+        Ok(ack.into())
     }
 
     async fn get_producer_cursors(
@@ -738,7 +751,9 @@ impl EventBrokerApi for LocalBroker {
         // is a REST-side window this in-process path does not apply.
         let topic = parse_topic_id(topic).map_err(to_sdk_err)?;
         self.ingest
-            .list_topic_segments(ctx, &topic, i32::try_from(partition).unwrap_or_default())
+            // Past `i32::MAX` is past every topic's partition count, so it is
+            // rejected as such rather than wrapped onto a real partition.
+            .list_topic_segments(ctx, &topic, i32::try_from(partition).unwrap_or(i32::MAX))
             .await
             .map(TopicSegment::from)
             .map_err(to_sdk_err)

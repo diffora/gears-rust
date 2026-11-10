@@ -11,21 +11,26 @@ use crate::{
         UsageRatingPolicyInput,
     },
 };
-use aws_lc_rs::digest::{SHA256, digest as sha256};
 use rust_decimal::Decimal;
 use std::collections::{BTreeMap, BTreeSet};
 use toolkit_canonical_errors::CanonicalError;
+use toolkit_security::crypto::hash::Sha256;
 
-#[toolkit_canonical_errors::resource_error("gts.cf.bss.pricing.plan.v1~")]
+#[toolkit_canonical_errors::resource_error(gts_id!("cf.bss.pricing.plan.v1~"))]
 struct BindingResource;
 
 /// Restricted JSON: numeric meaning is always exact text before serialization.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CanonicalValue {
+    /// JSON `null`.
     Null,
+    /// JSON boolean.
     Bool(bool),
+    /// JSON string; also carries exact decimal and identifier text.
     String(String),
+    /// JSON array, encoded in element order.
     Array(Vec<Self>),
+    /// JSON object, encoded with keys sorted by UTF-16 code units.
     Object(BTreeMap<String, Self>),
 }
 use CanonicalValue as V;
@@ -111,14 +116,16 @@ fn encode(value: &V, out: &mut String) {
         }
     }
 }
+/// Encodes a value as canonical JSON bytes.
 pub(crate) fn canonical_json_bytes(value: &V) -> Vec<u8> {
     let mut out = String::new();
     encode(value, &mut out);
     out.into_bytes()
 }
+/// SHA-256 over the canonical `{domain, payload}` envelope, domain-separating digests.
 pub(crate) fn hash_document(domain: &str, payload: V) -> Digest {
     let bytes = canonical_json_bytes(&object([("domain", text(domain)), ("payload", payload)]));
-    let hashed = sha256(&SHA256, &bytes);
+    let hashed = Sha256::digest(&bytes);
     let mut out = [0u8; 32];
     out.copy_from_slice(hashed.as_ref());
     out
@@ -159,13 +166,15 @@ fn model(value: &PriceModel) -> V {
         ]),
     }
 }
-/// Financial content only: no identity, dates, closing observations or self digest.
+/// Financial content only: no identity, dates, closing observations or self digest. The currency
+/// scale is money: the minimum fee and the invoice line post at it.
 #[must_use]
 pub fn money_digest(price: &ImmutablePrice) -> Digest {
     hash_document(
         "pricing.money.v1",
         object([
-            ("currency", text(&price.currency)),
+            ("currency", text(price.currency.code())),
+            ("currency_scale", text(price.currency.scale())),
             ("model", model(&price.model)),
             ("minimum_fee", optional(price.minimum_fee, decimal)),
         ]),
@@ -231,7 +240,8 @@ fn price(p: &ImmutablePrice) -> V {
         ("price_id", text(p.price_id)),
         ("price_book_entry_id", text(p.price_book_entry_id)),
         ("money_digest", hex(&p.money_digest)),
-        ("currency", text(&p.currency)),
+        ("currency", text(p.currency.code())),
+        ("currency_scale", text(p.currency.scale())),
         ("model", model(&p.model)),
         ("minimum_fee", optional(p.minimum_fee, decimal)),
         ("effective_from", text(p.effective_from)),
@@ -259,7 +269,6 @@ fn invoice(i: &InvoiceInputs) -> V {
                 BillingTiming::Arrears => "arrears",
             }),
         ),
-        ("currency_scale", text(i.currency_scale)),
         (
             "rounding",
             text(match i.rounding {

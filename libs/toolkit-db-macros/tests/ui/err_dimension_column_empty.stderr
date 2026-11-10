@@ -1,4 +1,4 @@
-error: tenant_col: column name '' does not form a valid column variant (''); use a snake_case identifier
+error: secure: column name '' is not a valid column identifier
  --> tests/ui/err_dimension_column_empty.rs:7:10
   |
 7 | #[secure(tenant_col = "", resource_col = "id", no_owner, no_type)]

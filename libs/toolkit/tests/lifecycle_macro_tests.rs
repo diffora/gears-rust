@@ -55,6 +55,41 @@ async fn stays_starting_until_ready_signal() {
     assert_eq!(m.status(), Status::Stopped);
 }
 
+struct SlowReady;
+
+#[lifecycle_attr(method = "run_slow", await_ready = true, ready_warn_after = "30ms")]
+impl SlowReady {
+    pub async fn run_slow(&self, cancel: CancellationToken, ready: ReadySignal) -> Result<()> {
+        let _held = ready; // hold without notifying so the deadline is what trips
+        cancel.cancelled().await;
+        Ok(())
+    }
+}
+
+#[tokio::test(start_paused = true)]
+#[tracing_test::traced_test]
+async fn macro_ready_warn_after_bounds_the_ready_signal() {
+    let m = SlowReady.into_gear();
+    let parent = CancellationToken::new();
+    m.start(parent.clone()).await.unwrap();
+    assert_eq!(m.status(), Status::Starting);
+
+    // The configured 30ms deadline (under the 60s default) must fire, proving
+    // the macro threaded `ready_warn_after` through.
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !logs_contain("did not signal readiness within the deadline") {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("configured ready_warn_after should have logged within the bound");
+    assert_eq!(m.status(), Status::Starting); // non-fatal: stays Starting
+
+    parent.cancel();
+    m.stop(CancellationToken::new()).await.unwrap();
+    assert_eq!(m.status(), Status::Stopped);
+}
+
 #[tokio::test]
 async fn auto_notify_when_no_ready_param() {
     let m = AutoNotify.into_gear();
@@ -90,4 +125,210 @@ async fn drop_cleans_up_background_task() {
     let m = handle.await.unwrap();
     drop(m);
     // Nothing to assert directly; this test exercises Drop paths without hanging.
+}
+
+#[derive(Default)]
+struct ConfiguredStop {
+    seconds: std::sync::atomic::AtomicU64,
+    finished: std::sync::atomic::AtomicBool,
+    started: tokio::sync::Notify,
+}
+
+#[lifecycle_attr(method = "serve", stop_timeout_fn = "shutdown_timeout")]
+impl ConfiguredStop {
+    fn shutdown_timeout(&self) -> Duration {
+        Duration::from_secs(self.seconds.load(std::sync::atomic::Ordering::SeqCst))
+    }
+
+    async fn serve(&self, cancel: CancellationToken) -> Result<()> {
+        self.started.notify_one();
+        cancel.cancelled().await;
+        tokio::time::sleep(Duration::from_secs(40)).await;
+        self.finished
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn timeout_provider_reads_initialized_configuration_at_stop() {
+    let wrapper = ConfiguredStop::default().into_gear();
+    wrapper
+        .inner()
+        .seconds
+        .store(60, std::sync::atomic::Ordering::SeqCst);
+    wrapper.start(CancellationToken::new()).await.unwrap();
+    wrapper.inner().started.notified().await;
+    let began = tokio::time::Instant::now();
+    wrapper.stop(CancellationToken::new()).await.unwrap();
+    assert_eq!(began.elapsed(), Duration::from_secs(40));
+    assert!(
+        wrapper
+            .inner()
+            .finished
+            .load(std::sync::atomic::Ordering::SeqCst)
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn host_deadline_overrides_computed_timeout() {
+    let wrapper = ConfiguredStop::default().into_gear();
+    wrapper
+        .inner()
+        .seconds
+        .store(60, std::sync::atomic::Ordering::SeqCst);
+    wrapper.start(CancellationToken::new()).await.unwrap();
+    wrapper.inner().started.notified().await;
+    let deadline = CancellationToken::new();
+    let token = deadline.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        token.cancel();
+    });
+    let began = tokio::time::Instant::now();
+    wrapper.stop(deadline).await.unwrap();
+    assert_eq!(began.elapsed(), Duration::from_secs(5));
+    assert!(
+        !wrapper
+            .inner()
+            .finished
+            .load(std::sync::atomic::Ordering::SeqCst)
+    );
+    assert_eq!(wrapper.status(), Status::Stopped);
+}
+
+static GEAR_CLEANED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static GEAR_STARTED: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+#[toolkit::gear(name = "configured-stop-test", capabilities = [stateful], lifecycle(entry = "serve", stop_timeout_fn = "shutdown_timeout", await_ready))]
+struct ConfiguredStopGear {
+    timeout: Duration,
+}
+
+impl Default for ConfiguredStopGear {
+    fn default() -> Self {
+        Self {
+            timeout: Duration::from_secs(60),
+        }
+    }
+}
+
+impl ConfiguredStopGear {
+    fn shutdown_timeout(&self) -> Duration {
+        self.timeout
+    }
+    async fn serve(&self, cancel: CancellationToken, ready: ReadySignal) -> Result<()> {
+        ready.notify();
+        GEAR_STARTED.notify_one();
+        cancel.cancelled().await;
+        tokio::time::sleep(Duration::from_secs(40)).await;
+        GEAR_CLEANED.store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+}
+#[async_trait::async_trait]
+impl toolkit::Gear for ConfiguredStopGear {
+    async fn init(&self, _: &toolkit::GearCtx) -> Result<()> {
+        Ok(())
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn gear_macro_uses_computed_timeout_in_wrapper_and_registered_capability() {
+    let mut builder = toolkit::registry::RegistryBuilder::default();
+    __configured_stop_gear_registrator(&mut builder);
+    let registry = builder.build_topo_sorted().unwrap();
+    let registered = registry
+        .gears()
+        .iter()
+        .find(|entry| entry.name() == "configured-stop-test")
+        .unwrap()
+        .caps()
+        .query::<toolkit::registry::RunnableCap>()
+        .unwrap();
+    let wrapped: std::sync::Arc<dyn RunnableCapability> =
+        std::sync::Arc::new(ConfiguredStopGear::default().into_gear());
+    for lifecycle in [wrapped, registered] {
+        GEAR_CLEANED.store(false, std::sync::atomic::Ordering::SeqCst);
+        lifecycle.start(CancellationToken::new()).await.unwrap();
+        GEAR_STARTED.notified().await;
+        let began = tokio::time::Instant::now();
+        lifecycle.stop(CancellationToken::new()).await.unwrap();
+        assert_eq!(began.elapsed(), Duration::from_secs(40));
+        assert!(GEAR_CLEANED.load(std::sync::atomic::Ordering::SeqCst));
+    }
+}
+
+/// A gear that never signals readiness, so the configured warning period trips.
+#[toolkit::gear(
+    name = "ready-warn-gear",
+    capabilities = [stateful],
+    lifecycle(entry = "serve", await_ready = true, ready_warn_after = "30ms")
+)]
+#[derive(Default)]
+struct ReadyWarnGear;
+
+impl ReadyWarnGear {
+    async fn serve(&self, cancel: CancellationToken, ready: ReadySignal) -> Result<()> {
+        let _held = ready; // hold without notifying so the deadline is what trips
+        cancel.cancelled().await;
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl toolkit::Gear for ReadyWarnGear {
+    async fn init(&self, _: &toolkit::GearCtx) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// The `into_gear()` wrapper must thread `ready_warn_after` into the lifecycle.
+#[tokio::test(start_paused = true)]
+#[tracing_test::traced_test]
+async fn gear_macro_into_gear_threads_ready_warn_after() {
+    let wrapped: std::sync::Arc<dyn RunnableCapability> =
+        std::sync::Arc::new(ReadyWarnGear.into_gear());
+
+    let parent = CancellationToken::new();
+    wrapped.start(parent.clone()).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !logs_contain("did not signal readiness within the deadline") {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("configured ready_warn_after should have logged within the bound");
+    parent.cancel();
+    wrapped.stop(CancellationToken::new()).await.unwrap();
+}
+
+/// The registered capability (what the runtime starts) must also thread it
+/// through — the `register_stateful_with_meta` path, not just `into_gear()`.
+#[tokio::test(start_paused = true)]
+#[tracing_test::traced_test]
+async fn gear_macro_registered_capability_threads_ready_warn_after() {
+    let mut builder = toolkit::registry::RegistryBuilder::default();
+    __ready_warn_gear_registrator(&mut builder);
+    let registry = builder.build_topo_sorted().unwrap();
+    let registered = registry
+        .gears()
+        .iter()
+        .find(|entry| entry.name() == "ready-warn-gear")
+        .unwrap()
+        .caps()
+        .query::<toolkit::registry::RunnableCap>()
+        .unwrap();
+
+    let parent = CancellationToken::new();
+    registered.start(parent.clone()).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !logs_contain("did not signal readiness within the deadline") {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("configured ready_warn_after should have logged within the bound");
+    parent.cancel();
+    registered.stop(CancellationToken::new()).await.unwrap();
 }

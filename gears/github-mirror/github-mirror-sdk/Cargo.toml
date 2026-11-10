@@ -1,6 +1,6 @@
 [package]
 name = "cf-gears-github-mirror-sdk"
-version = "0.1.0"
+version = "0.2.3"
 publish = true
 edition.workspace = true
 license.workspace = true
@@ -11,6 +11,7 @@ repository.workspace = true
 readme = "README.md"
 keywords = ["constructorfabric", "cf-gears"]
 categories = ["web-programming"]
+metadata.docs.rs.all-features = true
 
 [lib]
 name = "github_mirror_sdk"

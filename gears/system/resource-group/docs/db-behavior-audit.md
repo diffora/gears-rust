@@ -1,5 +1,8 @@
 # DB behavior audit — resource-group
 
+The general rules and audit method are in
+[`docs/toolkit_unified_system/14_db_behavior_testing.md`](../../../../docs/toolkit_unified_system/14_db_behavior_testing.md);
+this document is the report of the audit run against resource-group.
 
 <!-- toc -->
 
@@ -274,7 +277,7 @@ where a pytest test would only ever see the resulting 500 — is now part of
 the guide itself; see "Check which venue you actually have" in
 `13_e2e_testing.md`.
 
-`pg_concurrency_test.rs` and the `test-rg-pg` Makefile target that runs it
+`pg_concurrency_test.rs` and the `rg-pg` lane (`make test-integration LANE=rg-pg`) that runs it
 are on this branch. The other three suites — `pg_membership_filter_test.rs`,
 `pg_group_filter_test.rs`, `secure_group_scope_postgres.rs` — live on the
 branch that carries the tenant-scope fixes they exercise. This branch also

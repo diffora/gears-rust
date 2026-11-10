@@ -1,6 +1,7 @@
 # Minimal working config for `cf-gears-event-broker-server` in standalone
-# mode (eb-single-process-implementation design.md D7) - one process, one
-# SQLite file, no cluster/network dependencies.
+# mode (eb-single-process-implementation design.md D7) - one process, two
+# SQLite files (the gear's own database and the event log), no
+# cluster/network dependencies.
 #
 # Run it from the repo root:
 #   cargo run -p cf-gears-event-broker --bin cf-gears-event-broker-server \
@@ -12,14 +13,15 @@
 #   curl http://127.0.0.1:8080/docs        # Swagger UI (enable_docs: true)
 #
 # Topics and event types are `types-registry` entities, seeded here via its
-# `entities:` startup config (the same mechanism operators use via its
-# `POST /types-registry/v1/entities` REST API at runtime). They are entities of
-# different *kinds*: a topic is an instance, an event type is a derived type
-# schema. `event-broker` reads them during its start phase - after
-# `types-registry` has committed them, which is why the load is not in `init()`
-# - and re-reads them on the cadence
-# `workers.specification_refresh_interval_secs` sets, so a topic registered
-# while the process runs becomes resolvable without a restart.
+# `entities:` startup config. They are entities of different *kinds*: a topic
+# is an instance, an event type is a derived type schema. `event-broker` reads
+# them during its start phase - after `types-registry` has committed them -
+# and re-reads them on the cadence
+# `workers.specification_refresh_interval_secs` sets. The platform route
+# `POST /types-registry/v2/platform/entities`, which requires the internal
+# token, admits asynchronously (202, with an operation to poll); an entity it
+# admits while the process runs becomes resolvable at the first refresh after
+# its admission, without a restart.
 
 server:
   home_dir: "~/.cf-gears-event-broker"
@@ -32,6 +34,17 @@ database:
 
 gears:
   types-registry:
+    # The platform API the event broker reads topics and event types through is
+    # published only with a registry database. It persists under `home_dir`, in
+    # `types-registry/types_registry.db`: a restart applies edits to the seeds
+    # below but never deletes an entry removed from them, and refuses to boot
+    # when a changed event type cannot be shown to be backward compatible with
+    # the stored one.
+    database:
+      engine: sqlite
+      file: "types_registry.db"
+      params:
+        busy_timeout: "5000"
     config:
       entities:
         # A topic is an *instance* of the topic base type, carrying the stream's
@@ -127,7 +140,7 @@ gears:
       # The gear's own database: ingest and delivery metadata only - cursors,
       # consumer groups, producers, the specification cache and the ingest
       # outbox. The event log is not among them; it lives in the storage
-      # backend's own database, configured under `topics` below.
+      # backend's own database, configured under `backends` below.
       #
       # `engine` must be explicit here - there's no global `servers:`
       # template to infer it from (see `config/quickstart.yaml`'s
@@ -144,33 +157,56 @@ gears:
         journal_mode: "WAL"
         busy_timeout: "5000"
         synchronous: "NORMAL"
+      #
+      # PostgreSQL or MySQL/MariaDB instead: replace `engine`, `file` and
+      # `params` above. A DSN or the separate fields both work; `params` on
+      # PostgreSQL are session settings, so `search_path` puts the gear's
+      # tables in a schema of its own (the schema must exist).
+      #
+      #   engine: postgres
+      #   dsn: "postgres://event_broker:${EB_DB_PASSWORD}@localhost:5432/cf_gears"
+      #   params:
+      #     search_path: "event_broker"
+      #
+      #   engine: mysql
+      #   host: "localhost"
+      #   port: 3306
+      #   user: "event_broker"
+      #   password: "${EB_DB_PASSWORD}"
+      #   dbname: "event_broker"
     config:
       mode: standalone
-      # The backend a topic's events are stored by when its own settings name
-      # none, as a GTS backend type rather than a short alias. Checked at
-      # startup against the backend this build links, so a name nothing
-      # implements fails to boot instead of being served by whichever backend
-      # happened to be compiled in.
-      default_storage_backend: "gts.cf.core.events.backend.v1~cf.core.backend.sqlite.v1~"
+      # Every storage backend instance this deployment runs, keyed by registry
+      # name. An entry is a GTS backend type and then that backend's own
+      # settings beside it: everything beside `type` belongs to the named
+      # backend, which validates it, so a second backend's entry looks nothing
+      # like this one and the gear needs no change. Checked at startup against
+      # the backends this build links, so a type nothing implements fails to
+      # boot. Credentials are written as `${VAR}` references; the backend
+      # expands them when it is built.
+      backends:
+        # The SQLite backend: the event log is a file, the deployment's second
+        # SQLite file beside the gear's own database, and it survives a
+        # restart. Plugin settings have no home-dir-relative form, so `path`
+        # spells out `home_dir` above through `${HOME}`; move both together.
+        # The gear's directory exists before the backend opens the file.
+        # `${HOME}` must be set; on Windows set `HOME` or write an absolute path.
+        main:
+          type: "gts.cf.core.events.backend.v1~cf.core.backend.sqlite.v1~"
+          path: "${HOME}/.cf-gears-event-broker/event-broker/events.db"
+
+      # Which registry entry holds each topic's log. The instance-less key is
+      # required, so every topic resolves to an entry; a key naming one topic
+      # moves that topic elsewhere.
+      backend_routing:
+        "gts.cf.core.events.topic.v1~": main
 
       # Per-topic settings, keyed by topic GTS identifier. A key with an empty
       # instance part supplies the settings every topic of that type shares.
       # `partitions` is omitted here on purpose: configuration always carries an
       # entry for the topic type, and its built-in count is 8.
       topics:
-        "gts.cf.core.events.topic.v1~":
-          backend:
-            # Which backend, and then that backend's own settings beside it.
-            # Everything under `type` belongs to the named backend, which
-            # publishes the schema that validates it - so a second backend's
-            # block looks nothing like this one and the gear needs no change.
-            type: "gts.cf.core.events.backend.v1~cf.core.backend.sqlite.v1~"
-            # Where this deployment keeps its event log. A file, so events
-            # outlive the process; `:memory:` would be a broker that starts
-            # empty on every boot. Naming no path at all means `:memory:` -
-            # nothing tells the backend where a deployment keeps its data, so
-            # it invents no location on disk.
-            path: "~/.cf-gears-event-broker/event-broker/event_log.db"
+        "gts.cf.core.events.topic.v1~": {}
 
   api-gateway:
     config:

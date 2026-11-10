@@ -31,9 +31,14 @@ All interaction between gears and between gears and their plugins happens strict
 
 ## Gears Categories
 
+**Core gears** are all gears under `gears/system/`, including their plugins. The directory
+may be renamed to `gears/core/` in the future. This repository category is separate from
+the runtime startup groups: the **system gear group** contains gears with the `system` capability; all others
+belong to the application gear group. See [the system capability](toolkit_unified_system/08_lifecycle_stateful_tasks.md#the-system-capability).
+
 All gears can be divided into several categories:
 - **API Ingress** - the public ingress layer for external traffic; currently represented by API gateway
-- **Business Logic Gears** - gears implementing the main SaaS service logic built on top of CF/Gears Toolkit and system gears
+- **Business Logic Gears** - gears implementing the main SaaS service logic built on top of CF/Gears Toolkit and core gears
 - **Gen AI Gears** - foundational generative AI capabilities such as chat, model management, agents, memory, search, crawling, scheduling, and MCP integration
 - **Serverless** - functions/workflows, runtimes, durable state, settings, and cluster coordination gears
 - **BSS (Business Support System)** - monetization and commercial gears: product catalog, pricing, rating, billing, subscriptions, payments, invoicing, contracts, and marketplace
@@ -42,6 +47,16 @@ All gears can be divided into several categories:
 - **Core Platform Services** - external services that implement Core Platform functionality, such as tenancy management, access policies, licensing, credentials, and outbound egress control
 - **OSS (Operations Support System)** - operational gears for infrastructure management, DNS, certificates, monitoring, service catalog, and multi-region operations
 - **Studio** - developer experience and governance gears for the Constructor Studio product
+
+These categories reach Gearbox through the `category` field of a gear's `gear.gdl`, which takes
+the kebab-case slug: `api-ingress`, `bss`, `core-functionality`, `core-platform-integration`,
+`gen-ai`, `oss`, `serverless`, plus `example` for the sample gears. **Business Logic Gears, Core
+Platform Services and Studio have no slug yet**, so a descriptor using one raises `GBX0108`.
+That is a warning rather than an error: the gear still loads and composes, and the taxonomy is
+the team's to extend.
+
+A gear without a `gear.gdl` is invisible to composition. See [GEARBOX.md](GEARBOX.md) for what
+the file holds and [gdl.md](gdl.md) for the language.
 
 The **Core Platform Integration Gears** layer abstracts integration with core platform services, such as IdP, policy management, licensing, and credentials management that that can be out of scope of Gears. This keeps Gears reusable: it can run as a standalone platform, or it can integrate into an existing enterprise platform by wiring adapters to the platform’s services.
 
@@ -127,8 +142,8 @@ Maintain a catalog of available models with tenant-level availability and approv
 - [ ] p3 - auto-approval configuration per tenant/provider
 - [ ] p4 - model lifecycle tracking (deprecated, archived)
 #### More details
-- [PRD](../gears/model-registry/docs/PRD.md)
-- [Design](../gears/model-registry/docs/DESIGN.md)
+- TODO: PRD
+- TODO: Design
 - [API](../gears/model-registry/README.md)
 - TODO: SDK link
 
@@ -217,8 +232,6 @@ Provide unified access to multiple LLM providers with multimodal support, tool c
 - [ ] p3 - embeddings batching
 - [ ] p4 - audit events (audit plugin)
 #### More details
-- [PRD](../gears/llm-gateway/docs/PRD.md)
-- [Design](../gears/llm-gateway/docs/DESIGN.md)
 - [API](../gears/llm-gateway/README.md)
 - [SDK](../gears/llm-gateway/llm-gateway-sdk/)
 
@@ -747,7 +760,7 @@ Authoritative multi-tenant catalog registry: System of Record for products, SKUs
 
 ### Plan & Price Modeling
 #### Responsibility
-Define subscription plans, price structures, add-ons, bundles, and billing descriptors so that Subscriptions can sell, Tariffs can resolve inputs, and Rating can charge deterministically from frozen snapshots.
+Define subscription plans, price structures, add-ons, bundles, and billing descriptors so that Subscriptions can sell and Rating can resolve inputs and charge deterministically from frozen snapshots.
 #### High Level Scenarios
 - [ ] p1 - plan definition with billing cycles and plan types
 - [ ] p1 - price structure and model kinds (flat, per_unit, tiered, volume, package, hybrid)
@@ -764,32 +777,18 @@ Define subscription plans, price structures, add-ons, bundles, and billing descr
 - TODO: API link
 - TODO: SDK link
 
-### Tariffs
-#### Responsibility
-Tariff definitions consumed by Rating and Product Catalog with configurable conditional clauses and tariff shapes.
-#### High Level Scenarios
-- [ ] p1 - define and manage tariff structures
-- [ ] p1 - conditional clause evaluation and tariff shape resolution
-- [ ] p2 - tariff versioning and effective dating
-- [ ] p3 - integration with Rating and Plan & Price Modeling
-#### More details
-- TODO: PRD link
-- TODO: Design link
-- TODO: API link
-- TODO: SDK link
-
 ### Rating
 #### Responsibility
-Convert metered usage and subscription state into deterministic, auditable charges via a pure evaluation core and an operational pipeline.
+Convert metered usage and subscription state into deterministic, auditable charges via a pure evaluation core and an operational pipeline. One consolidated gear (Rating ADR-0002): the former Tariffs evaluation is its pure `rating-core` crate, not a separate gear.
 #### High Level Scenarios
 - [ ] p1 - deterministic charge evaluation with byte-for-byte reproducible outputs
-- [ ] p1 - pricing model coverage: flat, per_unit, tiered, volume, package, hybrid, committed-usage
+- [ ] p1 - pricing model coverage over the bindings Pricing resolves (PriceBook): flat, per_unit, graduated, volume, package; Products derived usage meters
 - [ ] p1 - multi-tenant hierarchy evaluation (platform owner, channel partner, end customer)
 - [ ] p2 - multi-currency correctness with separated price/invoice/settlement currencies
 - [ ] p2 - rule-version audit trail with UTC effective dating
 - [ ] p2 - usage ingestion, windowed aggregation, dedup, and evaluation-unit synthesis
 - [ ] p3 - retroactivity, corrections, and period-level obligations
-- [ ] p4 - commitments, reservations, and coupons overlay
+- [ ] p4 - commitments, reservations, and coupons (no upstream source yet; Promotions deferred by Pricing)
 #### More details
 - [PRD](../gears/bss/rating/docs/PRD.md)
 - [Design](../gears/bss/rating/docs/DESIGN.md)

@@ -1,36 +1,29 @@
-//! Signed content URLs (`cpt-cf-file-storage-fr-signed-urls`,
-//! `cpt-cf-file-storage-component-signed-url-issuer`).
+//! Signed content URLs.
 //!
-//! The control plane is the sole minter; it holds an Ed25519 private key and
-//! signs short-lived, opaque tokens that authorize exactly one content
-//! operation against the sidecar. The sidecar holds only the public key and
-//! verifies statelessly (no DB lookup).
+//! The control plane is the sole minter; it holds an ECDSA P-256/SHA-256 private key and signs short-lived,
+//! opaque tokens that authorize exactly one content operation (`op`, file/version, backend
+//! path, expiry) against the sidecar. The sidecar holds only the public key and verifies
+//! statelessly (no DB lookup).
 //!
-//! ADR-0004 specifies PASETO `v4.public`; the token here is an equivalent
-//! Ed25519-signed compact token (`base64url(payload).base64url(signature)`).
-//! Per the FR the token is **opaque** and "the claim-set and crypto may change",
-//! so the concrete codec is an internal detail of control + sidecar.
-//!
-//! Per ADR-0004's FIPS posture the sign/verify primitive sits behind the
-//! [`SignatureProvider`] / [`SignatureVerifier`] abstraction (see [`provider`]);
-//! this codec calls that abstraction and never a crypto crate directly, so the
-//! algorithm and its backing module are replaceable without codec changes.
+//! The token is an ECDSA P-256/SHA-256-signed compact token (`base64url(payload).base64url(signature)`),
+//! with a DER-encoded signature; it is a private codec, not JWT or PASETO.
+//! Signing and verification go through `SignatureProvider` / `SignatureVerifier` (see
+//! `provider`), never a crypto crate directly, so the algorithm is replaceable (ADR-0004).
 
 use std::sync::Arc;
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::{Deserialize, Serialize};
-use time::OffsetDateTime;
+use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
 use crate::domain::error::DomainError;
 
 mod provider;
-pub use provider::{Ed25519Provider, SignatureProvider, SignatureVerifier};
+pub use provider::{EcdsaP256Provider, SignatureProvider, SignatureVerifier};
 
-/// The content operation a token authorizes (bound into the token and checked
-/// against the HTTP method by the sidecar).
+/// The content operation a token authorizes (checked against the HTTP method by the sidecar).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Op {
@@ -38,13 +31,8 @@ pub enum Op {
     Get,
     /// Single-part upload (`PUT`).
     Put,
-    /// One part of a server-authoritative multipart upload (`PUT` to the sidecar).
-    ///
-    /// Carries additional multipart-specific claims (`upload_id`, `part_number`,
-    /// `offset`, exact `size`) that the sidecar enforces before writing any bytes.
-    /// The control plane is the sole minter; the sidecar only verifies (ADR-0004).
-    ///
-    /// @cpt-cf-file-storage-fr-multipart-upload (FEATURE §4)
+    /// One part of a multipart upload (`PUT`); carries `MultipartClaims`, which the sidecar
+    /// enforces before writing any bytes.
     MultipartPart,
 }
 
@@ -62,11 +50,8 @@ pub struct UploadConstraints {
     pub expected_hash: Option<String>,
 }
 
-/// Multipart-part-specific claims carried in `op = multipart_part` tokens.
-///
-/// The sidecar reads these to enforce the plan (part boundaries, exact size)
-/// before writing a single byte — this is the mechanism that closes the
-/// per-part abuse vector (FEATURE §4, DESIGN §4.6).
+/// Claims carried in `op = multipart_part` tokens; the sidecar enforces the plan (part
+/// boundaries, exact size) from them before writing a byte.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MultipartClaims {
     /// The multipart session that owns this part.
@@ -75,19 +60,11 @@ pub struct MultipartClaims {
     pub part_number: u32,
     /// Byte offset of this part within the final assembled object.
     pub offset: u64,
-    /// **Exact** byte length the sidecar will accept for this part.
-    /// The sidecar rejects with `413` if `body.len() ≠ size` (FEATURE §4, point 2).
+    /// Exact byte length the sidecar accepts for this part (`413` otherwise).
     pub size: u64,
-    /// The backend's own multipart handle (e.g. an S3 `UploadId`), as
-    /// returned by `StorageBackend::initiate_multipart` at plan-mint time.
-    ///
-    /// Empty for backends that don't support native multipart at all (never
-    /// reached in practice: `initiate_multipart_upload` rejects such a
-    /// backend before minting any per-part token) — the sidecar uses an
-    /// empty value as the signal to fall back to the local-fs-style
-    /// offset-object model instead of calling `StorageBackend::upload_part`.
-    /// `#[serde(default)]` keeps verification tolerant of a token minted
-    /// before this field existed.
+    /// The backend's own multipart handle (e.g. an S3 `UploadId`) from
+    /// `StorageBackend::initiate_multipart`. Empty means the sidecar uses the offset-object
+    /// model instead of `StorageBackend::upload_part`.
     #[serde(default)]
     pub backend_handle: String,
 }
@@ -109,35 +86,24 @@ pub struct Claims {
     /// Non-empty only when `op = multipart_part`.
     #[serde(default, skip_serializing_if = "is_default_multipart")]
     pub multipart: MultipartClaims,
-    /// Opaque correlation id minted at issuance time (P2 1.8 remediation).
-    ///
-    /// Carried end-to-end through the signed token so the sidecar can echo it
-    /// back as the `x-request-id` header on its finalize/report-part callback
-    /// to the control plane, letting both planes' logs be correlated by the
-    /// same id even though the callback arrives on a disconnected HTTP
-    /// request from the one that issued the token. `#[serde(default)]` keeps
-    /// verification tolerant of a token minted before this field existed.
+    /// Correlation id minted at issuance; the sidecar echoes it as `x-request-id` on its
+    /// finalize/report-part callback so both planes' logs can be correlated.
     #[serde(default)]
     pub request_id: String,
-    /// Stored MIME of the version (`op = get` tokens only; P2 1.11).
-    ///
-    /// The sidecar has no DB access, so this is the only way it can emit a
-    /// real `Content-Type` on a download response instead of a generic
-    /// `application/octet-stream` fallback. `#[serde(default)]` keeps
-    /// verification tolerant of tokens minted before this field existed
-    /// (old sidecars ignore the new field; new sidecars tolerate old tokens
-    /// by falling back).
+    /// Stored MIME of the version (`op = get` only). The sidecar has no DB access, so this
+    /// is how it emits a real `Content-Type` instead of `application/octet-stream`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub content_type: String,
-    /// Opaque content `ETag` of the (file, version) pair (`op = get` tokens
-    /// only; P2 1.11), the same value returned in `DownloadTicket::etag` —
-    /// one source of truth (`domain::etag::content_etag`).
-    ///
-    /// Lets the sidecar emit a real `ETag` header without a DB lookup.
-    /// `#[serde(default)]` keeps verification tolerant of tokens minted
-    /// before this field existed.
+    /// Content `ETag` of the (file, version) pair (`op = get` only), the same value as
+    /// `DownloadTicket::etag` (`domain::etag::content_etag`); lets the sidecar emit `ETag`
+    /// without a DB lookup.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub etag: String,
+    /// Tells finalize to also bind the version under a `content_id IS NULL` CAS (`op = put` only).
+    /// Minted only by `POST /files` with `bind: "auto"` for a new file; replacing content goes through
+    /// the authorized `bind`. The sidecar never reads it; `#[serde(default)]` tolerates older tokens.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bind_on_finalize: bool,
 }
 
 fn is_default_constraints(c: &UploadConstraints) -> bool {
@@ -148,39 +114,31 @@ fn is_default_multipart(c: &MultipartClaims) -> bool {
     *c == MultipartClaims::default()
 }
 
-/// The control-plane signing key (sole minter). Delegates the signing primitive
-/// to a [`SignatureProvider`]; the public half is shared with the sidecar
-/// verifier.
+/// The control-plane signing key (sole minter); the public half goes to the sidecar verifier.
 pub struct Issuer {
     provider: Arc<dyn SignatureProvider>,
-    /// Maximum lifetime (seconds) any issued token may carry (`max_url_ttl`).
+    /// Maximum lifetime (seconds) of any issued token (`max_url_ttl`).
     max_ttl_secs: i64,
 }
 
 impl Issuer {
-    /// Generate a new static signing key with the default P1 provider
-    /// ([`Ed25519Provider`]). P1 uses a single keypair with no rotation (a `kid`
-    /// is reserved for P2).
+    /// Generate a new static `EcdsaP256Provider` signing key (single keypair, no rotation).
     pub fn generate(max_ttl_secs: i64) -> Result<Self, DomainError> {
         Ok(Self::with_provider(
-            Arc::new(Ed25519Provider::generate()?),
+            Arc::new(EcdsaP256Provider::generate()?),
             max_ttl_secs,
         ))
     }
 
-    /// Build an issuer from a configured 32-byte Ed25519 seed, so the signing
-    /// keypair is stable across restarts (the sidecar's configured public key
-    /// keeps verifying issued URLs after a control-plane reboot).
-    pub fn from_seed(seed: &[u8], max_ttl_secs: i64) -> Result<Self, DomainError> {
+    /// Build an issuer from a PKCS#8 DER P-256 private key, so the keypair is stable across restarts.
+    pub fn from_pkcs8(key: &[u8], max_ttl_secs: i64) -> Result<Self, DomainError> {
         Ok(Self::with_provider(
-            Arc::new(Ed25519Provider::from_seed(seed)?),
+            Arc::new(EcdsaP256Provider::from_pkcs8(key)?),
             max_ttl_secs,
         ))
     }
 
-    /// Build an issuer over an explicit signature provider. The codec is
-    /// algorithm-agnostic, so a FIPS-validated provider can be substituted here
-    /// without any other change (ADR-0004).
+    /// Build an issuer over an explicit provider (e.g. a FIPS-validated one, ADR-0004).
     #[must_use]
     pub fn with_provider(provider: Arc<dyn SignatureProvider>, max_ttl_secs: i64) -> Self {
         Self {
@@ -189,8 +147,7 @@ impl Issuer {
         }
     }
 
-    /// The public key (raw bytes) the sidecar must be configured with to verify
-    /// URLs this issuer mints.
+    /// The raw public key the sidecar needs to verify URLs this issuer mints.
     #[must_use]
     pub fn public_key(&self) -> Vec<u8> {
         self.provider.public_key()
@@ -212,7 +169,7 @@ impl Issuer {
         }
         let payload = serde_json::to_vec(&claims)
             .map_err(|e| DomainError::token_invalid(format!("serialize claims: {e}")))?;
-        let sig = self.provider.sign(&payload);
+        let sig = self.provider.sign(&payload)?;
         Ok(format!(
             "{}.{}",
             URL_SAFE_NO_PAD.encode(&payload),
@@ -228,21 +185,12 @@ pub struct Verifier {
 }
 
 impl Verifier {
-    /// Construct from raw Ed25519 public-key bytes (e.g. shared config). Uses the
-    /// default P1 provider's verifier; FIPS deployments construct the matching
-    /// provider's verifier instead. Validates the key length up front so a
-    /// malformed `FS_SIDECAR_PUBLIC_KEY` fails at startup rather than as a
-    /// request-time token error.
-    pub fn from_public_key(public_key: Vec<u8>) -> Result<Self, DomainError> {
-        const ED25519_PUBLIC_KEY_LEN: usize = 32;
-        if public_key.len() != ED25519_PUBLIC_KEY_LEN {
-            return Err(DomainError::token_invalid(format!(
-                "invalid Ed25519 public key length: expected {ED25519_PUBLIC_KEY_LEN} bytes, got {}",
-                public_key.len()
-            )));
-        }
+    /// Construct from an uncompressed SEC1 P-256 public key (65 bytes).
+    /// Checks length, uncompressed encoding and backend availability at startup.
+    /// The backend validates the curve point when verifying a signature.
+    pub fn from_public_key(public_key: &[u8]) -> Result<Self, DomainError> {
         Ok(Self {
-            verifier: Arc::new(provider::Ed25519Verifier::new(public_key)),
+            verifier: Arc::new(provider::EcdsaP256Verifier::from_sec1_bytes(public_key)?),
         })
     }
 
@@ -252,9 +200,23 @@ impl Verifier {
         Self { verifier }
     }
 
-    /// Verify a token's signature and expiry, returning its claims. The caller
-    /// still checks `op` against the HTTP method and enforces upload constraints.
+    /// Verify a token's signature and expiry, returning its claims. The caller still checks
+    /// `op` against the HTTP method and enforces upload constraints.
     pub fn verify(&self, token: &str, now: OffsetDateTime) -> Result<Claims, DomainError> {
+        self.verify_with_grace(token, now, Duration::ZERO)
+    }
+
+    /// Like [`Self::verify`], but an expired token is accepted while `now < exp + grace`.
+    ///
+    /// For the s2s finalize/report-part callbacks only: the sidecar checked the token strictly at
+    /// upload start, so a slow upload can outlive the TTL. Only `exp` gets slack; signature, `op`
+    /// and the `(file_id, version_id)` binding are checked as usual.
+    pub fn verify_with_grace(
+        &self,
+        token: &str,
+        now: OffsetDateTime,
+        grace: Duration,
+    ) -> Result<Claims, DomainError> {
         let (payload_b64, sig_b64) = token
             .split_once('.')
             .ok_or_else(|| DomainError::token_invalid("malformed token"))?;
@@ -270,9 +232,9 @@ impl Verifier {
         let claims: Claims = serde_json::from_slice(&payload)
             .map_err(|_| DomainError::token_invalid("bad claims"))?;
 
-        // Expiry is exclusive: a token stops being usable at `exp`, not one
-        // second later.
-        if now.unix_timestamp() >= claims.exp {
+        // Exclusive; `grace` is clamped to whole seconds and saturates rather than overflowing `i64`.
+        let expires_at = claims.exp.saturating_add(grace.whole_seconds());
+        if now.unix_timestamp() >= expires_at {
             return Err(DomainError::token_invalid("token expired"));
         }
         Ok(claims)

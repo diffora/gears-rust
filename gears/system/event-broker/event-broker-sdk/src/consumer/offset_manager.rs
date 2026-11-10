@@ -40,15 +40,8 @@ mod offset_row {
     impl ActiveModelBehavior for ActiveModel {}
 
     impl toolkit_db::secure::ScopableEntity for Entity {
-        const IS_UNRESTRICTED: bool = true;
-
-        const SCOPE_PROPERTIES: &'static [(&'static str, Self::Column)] = &[];
-
-        const UNSCOPED_DIMENSIONS: &'static [&'static str] = &[];
-
-        fn type_col() -> Option<Self::Column> {
-            None
-        }
+        const SCOPE: toolkit_db::secure::EntityScope<Self::Column> =
+            toolkit_db::secure::EntityScope::Unrestricted;
     }
 }
 

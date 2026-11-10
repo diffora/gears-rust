@@ -297,8 +297,11 @@ pub(crate) enum TunnelEnd {
 pub(crate) enum RelayOutcome {
     /// Either side ended the tunnel; carries the byte tallies.
     Closed {
+        /// Bytes relayed from the client to the upstream.
         to_upstream: u64,
+        /// Bytes relayed from the upstream to the client.
         to_client: u64,
+        /// Which side ended the tunnel.
         ended_by: TunnelEnd,
     },
     /// No bytes moved in either direction within the idle timeout.
@@ -465,14 +468,20 @@ async fn announce_close(
 // Bridge plumbing
 // ---------------------------------------------------------------------------
 
-/// Carries the `DuplexStream` and leftover bytes from a successful 101 response
+/// Carries the upgraded upstream connection from a successful 101 response
 /// through the response extensions, so the Axum handler can bridge the
-/// client's upgraded connection to the Pingora-managed upstream tunnel.
+/// client's upgraded connection to the upstream tunnel.
 pub(crate) struct WebSocketBridgeIo {
-    pub io: tokio::io::DuplexStream,
+    /// The upstream connection after `101 Switching Protocols`.
+    pub io: hyper_util::rt::TokioIo<hyper::upgrade::Upgraded>,
+    /// Upstream bytes to deliver to the client before anything read from
+    /// `io`. Empty when `io` already buffers them (hyper's `Upgraded` does).
     pub leftover: Bytes,
+    /// Close the tunnel when no bytes flow for this long.
     pub idle_timeout: Duration,
+    /// Time allowed for the close handshake before forcing shutdown.
     pub close_timeout: Duration,
+    /// Signals graceful server shutdown to the relay.
     pub shutdown_rx: watch::Receiver<bool>,
     /// Metrics port used to track session lifetime. May be `None` in tests
     /// that don't exercise metrics — the bridge still runs, just without
@@ -517,10 +526,15 @@ impl Drop for WsSessionGuard {
 
 /// Wrapper that satisfies `Clone + Send + Sync + 'static` required by
 /// `http::Extensions::insert`. The inner value is taken once by the handler.
+/// Shared handle holding the bridge IO until the handler takes it.
 #[derive(Clone)]
-pub(crate) struct WebSocketBridgeHandle(pub Arc<Mutex<Option<WebSocketBridgeIo>>>);
+pub(crate) struct WebSocketBridgeHandle(
+    /// Bridge IO slot; `None` once the handler has taken it.
+    pub Arc<Mutex<Option<WebSocketBridgeIo>>>,
+);
 
 impl WebSocketBridgeHandle {
+    /// Wrap the bridge IO in a shareable handle.
     pub fn new(bridge: WebSocketBridgeIo) -> Self {
         Self(Arc::new(Mutex::new(Some(bridge))))
     }
@@ -531,16 +545,15 @@ impl WebSocketBridgeHandle {
     }
 }
 
-/// Bridge a client's upgraded connection to the Pingora-managed upstream
-/// tunnel.
+/// Bridge a client's upgraded connection to the upstream tunnel.
 ///
-/// Any bytes read past the header boundary while parsing the 101 response
-/// already belong to the caller. They go in as the relay's leftover prefix
-/// rather than being written here: that keeps their ordering ahead of
-/// everything the upstream sends next, and leaves the relay owning every
-/// bounded write, the shutdown arm and the Close 1001 teardown — so a caller
-/// that never reads them cannot wedge this task, and with it the session guard,
-/// for the process's lifetime.
+/// Any upstream bytes already received past the 101 head belong to the
+/// caller. They go in as the relay's leftover prefix rather than being
+/// written here: that keeps their ordering ahead of everything the upstream
+/// sends next, and leaves the relay owning every bounded write, the shutdown
+/// arm and the Close 1001 teardown — so a caller that never reads them cannot
+/// wedge this task, and with it the session guard, for the process's
+/// lifetime.
 pub(crate) async fn websocket_bridge(
     upgraded: hyper::upgrade::Upgraded,
     bridge: WebSocketBridgeIo,

@@ -32,6 +32,7 @@
 //! async fn main() -> anyhow::Result<()> {
 //!     let opts = OopRunOptions {
 //!         gear_name: "my_gear".to_string(),
+//!         config_gear_name: None,
 //!         instance_id: None,
 //!         directory_endpoint: "http://127.0.0.1:50051".to_string(),
 //!         config_path: None,
@@ -70,7 +71,31 @@ use cf_system_sdks::directory::{DirectoryClient, DirectoryGrpcClient};
 #[derive(Debug, Clone)]
 pub struct OopRunOptions {
     /// Logical gear name (e.g., "`file-parser`")
+    ///
+    /// **This is the directory registration name, and since roles it is not
+    /// always the gear's own id.** A role-split gear registers under its role's
+    /// directory name -- `event-broker-ingest` for the `cluster_ingest` mode --
+    /// while its configuration still lives under the gear id the
+    /// `#[toolkit::gear(name = ...)]` attribute declares, because that is the
+    /// key `GearCtx::config()` looks up. See [`Self::config_gear_name`].
     pub gear_name: String,
+
+    /// The `gears.<key>` section this process's configuration lives under.
+    ///
+    /// `None` means the same as [`Self::gear_name`], which is the answer for
+    /// every gear that runs in one undifferentiated shape -- so no existing
+    /// caller changes behaviour.
+    ///
+    /// **It exists because `gear_name` was doing two jobs that used to be one
+    /// string.** The registry names a gear by its attribute, and
+    /// `GearCtx::config()` reads `gears.<that name>.config`; a role changes the
+    /// name the instance *registers* under and not the name it *reads* under.
+    /// With the two conflated, a worker started as a role filed the master's
+    /// rendered blob under `gears["event-broker-ingest"]` while the gear read
+    /// `gears["event-broker"]`, so `TOOLKIT_MODULE_CONFIG` was inert under any
+    /// role and only the local `--config` file had any effect. Nothing failed;
+    /// the override simply did not arrive.
+    pub config_gear_name: Option<String>,
 
     /// Instance ID (defaults to a random UUID if None)
     pub instance_id: Option<Uuid>,
@@ -95,6 +120,18 @@ pub struct OopRunOptions {
     pub version: Option<String>,
 }
 
+impl OopRunOptions {
+    /// The `gears.<key>` section to read configuration from.
+    ///
+    /// [`Self::config_gear_name`] when set, and [`Self::gear_name`] otherwise --
+    /// so a caller that does not know about roles keeps exactly the behaviour it
+    /// had.
+    #[must_use]
+    pub fn config_gear_name(&self) -> &str {
+        self.config_gear_name.as_deref().unwrap_or(&self.gear_name)
+    }
+}
+
 impl Default for OopRunOptions {
     fn default() -> Self {
         // Check for config path in environment variable as fallback
@@ -107,6 +144,7 @@ impl Default for OopRunOptions {
 
         Self {
             gear_name: String::new(),
+            config_gear_name: None,
             instance_id: None,
             directory_endpoint,
             config_path,
@@ -145,9 +183,34 @@ fn build_oop_config_and_db(
     rendered_config: Option<&RenderedGearConfig>,
 ) -> Result<(AppConfig, LoggingConfig, DbOptions)> {
     let home_dir = PathBuf::from(&local_config.server.home_dir);
+    let final_config = effective_oop_config(local_config, gear_name, rendered_config);
 
-    // Build final_config for gear's "config" section
-    let final_config = if let Some(rendered) = rendered_config {
+    // Merge logging: master logging (base) + local logging (override by key)
+    let final_logging = merge_logging_configs(
+        rendered_config.as_ref().and_then(|r| r.logging.as_ref()),
+        &local_config.logging,
+    );
+
+    // Build DbOptions using Figment merge + DbManager
+    // This allows field-by-field merge: master db config (base) -> local db config (override)
+    let db_options = build_merged_db_options(
+        &home_dir,
+        gear_name,
+        rendered_config.as_ref().and_then(|r| r.database.as_ref()),
+        local_config,
+    )?;
+
+    Ok((final_config, final_logging, db_options))
+}
+
+/// Merge the master's rendered gear config with local overrides, without I/O.
+/// Shared by runtime and deployment publication to produce identical manifests.
+fn effective_oop_config(
+    local_config: &AppConfig,
+    gear_name: &str,
+    rendered_config: Option<&RenderedGearConfig>,
+) -> AppConfig {
+    if let Some(rendered) = rendered_config {
         // TOOLKIT_MODULE_CONFIG exists: use rendered config as BASE, local config as OVERRIDE
         let mut config = local_config.clone();
 
@@ -182,24 +245,47 @@ fn build_oop_config_and_db(
             "No rendered config from master, using local config entirely (standalone mode)"
         );
         local_config.clone()
-    };
+    }
+}
 
-    // Merge logging: master logging (base) + local logging (override by key)
-    let final_logging = merge_logging_configs(
-        rendered_config.as_ref().and_then(|r| r.logging.as_ref()),
-        &local_config.logging,
-    );
+/// Load the `OoP` unit's effective config: local file and CLI overrides merged
+/// with `TOOLKIT_MODULE_CONFIG`, as for runtime startup, without starting gears.
+/// Used by [`run_publish_gts`](super::run_publish_gts).
+///
+/// # Errors
+/// The file cannot be loaded or the rendered configuration is invalid.
+pub fn oop_publication_config(opts: &OopRunOptions) -> Result<AppConfig> {
+    oop_publication_config_from(opts, rendered_config_from_env()?.as_ref())
+}
 
-    // Build DbOptions using Figment merge + DbManager
-    // This allows field-by-field merge: master db config (base) -> local db config (override)
-    let db_options = build_merged_db_options(
-        &home_dir,
-        gear_name,
-        rendered_config.as_ref().and_then(|r| r.database.as_ref()),
-        local_config,
-    )?;
+/// The master's rendered configuration from `TOOLKIT_MODULE_CONFIG`: `None`
+/// when the variable is absent. The `OoP` runtime and the deployment job share
+/// it, so both fail on the same invalid value.
+///
+/// # Errors
+/// The variable is present but not a valid rendered configuration.
+fn rendered_config_from_env() -> Result<Option<RenderedGearConfig>> {
+    parse_rendered_config(std::env::var(TOOLKIT_MODULE_CONFIG_ENV).ok().as_deref())
+}
 
-    Ok((final_config, final_logging, db_options))
+fn parse_rendered_config(value: Option<&str>) -> Result<Option<RenderedGearConfig>> {
+    value
+        .map(RenderedGearConfig::from_json)
+        .transpose()
+        .with_context(|| format!("{TOOLKIT_MODULE_CONFIG_ENV} is set but invalid"))
+}
+
+fn oop_publication_config_from(
+    opts: &OopRunOptions,
+    rendered: Option<&RenderedGearConfig>,
+) -> Result<AppConfig> {
+    let mut config = AppConfig::load_or_default(opts.config_path.as_ref())?;
+    config.apply_cli_overrides(opts.verbose);
+    Ok(effective_oop_config(
+        &config,
+        opts.config_gear_name(),
+        rendered,
+    ))
 }
 
 /// Merges logging configurations: master as base, local as override (by key).
@@ -230,9 +316,8 @@ fn build_merged_db_options(
     let has_local_db = local_config.database.is_some()
         || local_config
             .gears
-            .get(gear_name)
-            .and_then(|m| m.get("database"))
-            .is_some();
+            .values()
+            .any(|m| m.get("database").is_some());
 
     if !has_rendered_db && !has_local_db {
         debug!(
@@ -284,17 +369,19 @@ fn build_merged_db_options(
         }
     }
 
-    // Local gear database config
-    if let Some(local_gear) = local_config.gears.get(gear_name)
-        && let Some(local_gear_db) = local_gear.get("database")
-    {
+    // Local gear database config: the unit's own gear, and every gear it co-hosts
+    // that names a database in the local config (the master renders only its own).
+    for (local_gear_name, local_gear) in &local_config.gears {
+        let Some(local_gear_db) = local_gear.get("database") else {
+            continue;
+        };
         let gears = merged_config
             .entry("gears".to_owned())
             .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
 
         if let Some(gears_obj) = gears.as_object_mut() {
             let gear_entry = gears_obj
-                .entry(gear_name.to_owned())
+                .entry(local_gear_name.clone())
                 .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
 
             if let Some(gear_obj) = gear_entry.as_object_mut() {
@@ -385,6 +472,7 @@ fn merge_json_objects(target: &mut serde_json::Value, source: &serde_json::Value
 /// async fn main() -> anyhow::Result<()> {
 ///     let opts = OopRunOptions {
 ///         gear_name: "file-parser".to_string(),
+///         config_gear_name: None,
 ///         instance_id: None,
 ///         directory_endpoint: "http://127.0.0.1:50051".to_string(),
 ///         config_path: None,
@@ -410,6 +498,11 @@ fn merge_json_objects(target: &mut serde_json::Value, source: &serde_json::Value
     )
 )]
 pub async fn run_oop_with_options(opts: OopRunOptions) -> Result<()> {
+    // Install the rustls crypto provider FIRST — before any TLS/network setup,
+    // mirroring `init_procedure` so OoP gears run the same crypto startup
+    // checks. Process-wide and idempotent.
+    super::init_crypto_provider()?;
+
     // Generate instance ID if not provided
     let instance_id = opts.instance_id.unwrap_or_else(Uuid::new_v4);
 
@@ -452,19 +545,20 @@ pub async fn run_oop_with_options(opts: OopRunOptions) -> Result<()> {
     let mut config = AppConfig::load_or_default(opts.config_path.as_ref())?;
     config.apply_cli_overrides(args.verbose);
 
-    // Try to read rendered gear config from master host via env var BEFORE logging init
-    // so we can use the tracing config from master for OTEL
-    let rendered_config = match std::env::var(TOOLKIT_MODULE_CONFIG_ENV) {
-        Ok(json) => RenderedGearConfig::from_json(&json).ok(),
-        Err(_) => None,
-    };
+    // Read rendered gear config from master host via env var BEFORE logging init
+    // so we can use the tracing config from master for OTEL. Present but invalid
+    // fails startup, as it fails the deployment publication job.
+    let rendered_config = rendered_config_from_env()?;
 
     // Build final config by merging:
     // 1. Rendered config from master host (base)
     // 2. Local config file (override)
     // This also merges logging configuration for proper initialization
     let (final_config, merged_logging, db_options) =
-        build_oop_config_and_db(&config, &opts.gear_name, rendered_config.as_ref())?;
+        // The *config* key, not the registration name: a role changes what this
+        // process registers as and not what section it reads. Conflating them
+        // filed the master's rendered blob under a key the gear never looks up.
+        build_oop_config_and_db(&config, opts.config_gear_name(), rendered_config.as_ref())?;
 
     // Use OpenTelemetry config from rendered (master) config only.
     // OoP gears do not fall back to local config for telemetry — if the master
@@ -530,11 +624,6 @@ pub async fn run_oop_with_options(opts: OopRunOptions) -> Result<()> {
             has_opentelemetry = rc.opentelemetry.is_some(),
             "Received rendered config from master host"
         );
-    } else if std::env::var(TOOLKIT_MODULE_CONFIG_ENV).is_ok() {
-        warn!(
-            env_var = TOOLKIT_MODULE_CONFIG_ENV,
-            "Failed to parse rendered config from master host, using local config only"
-        );
     } else {
         debug!(
             env_var = TOOLKIT_MODULE_CONFIG_ENV,
@@ -588,6 +677,10 @@ pub async fn run_oop_with_options(opts: OopRunOptions) -> Result<()> {
     // Capture OoP HTTP config (if any) before moving the config into the provider.
     let oop_http = final_config.oop_http.clone();
 
+    // Apply configured lifecycle deadlines (absent fields keep framework defaults).
+    let init_deadline = final_config.server.init_deadline();
+    let shutdown_deadline = final_config.server.shutdown_deadline();
+
     // Build config provider for gears
     let config_provider = Arc::new(final_config);
 
@@ -602,7 +695,9 @@ pub async fn run_oop_with_options(opts: OopRunOptions) -> Result<()> {
     .with_clients(vec![ClientRegistration::new::<dyn DirectoryClient>(
         Arc::clone(&directory_api),
     )])
-    .with_internal_token_provider(internal_token_provider);
+    .with_internal_token_provider(internal_token_provider)
+    .with_init_deadline(init_deadline)
+    .with_shutdown_deadline(shutdown_deadline);
 
     // When `oop_http` is configured, run the HTTP-serving lifecycle:
     // Axum server + probes + directory presence (registration + heartbeat +
@@ -662,7 +757,7 @@ pub async fn run_oop_with_options(opts: OopRunOptions) -> Result<()> {
     // OS process owning its own global providers, so the in-process host's
     // flush in `bootstrap::run` does not cover it.
     #[cfg(feature = "otel")]
-    crate::bootstrap::run::tracing_shutdown().await;
+    super::telemetry::tracing_shutdown().await;
 
     result
 }
@@ -704,6 +799,7 @@ async fn build_oop_serve_options(
     // when the directory rejects the registration — the same late-failure the
     // label validation below avoids.
     validate_advertise_uri(&advertise_uri, cfg.allow_loopback_advertise)?;
+    log_auth_disabled_when_routable(cfg.auth_disabled, &advertise_uri);
 
     // Fail fast on a mis-configured label (bad charset, over-long, too many)
     // at start-up, using the same shared rules the directory enforces. Without
@@ -731,6 +827,7 @@ async fn build_oop_serve_options(
         directory,
         bearer_authenticator: None,
         internal_authenticator,
+        auth_disabled: cfg.auth_disabled,
         labels: cfg.labels.clone(),
     })
 }
@@ -851,7 +948,7 @@ async fn build_directory_client(
 ///
 /// The `match` is exhaustive so a future variant fails to compile here rather
 /// than silently downgrading to no outbound credential.
-async fn build_platform_credentials(
+pub(super) async fn build_platform_credentials(
     cfg: &toolkit_security::InternalAuthConfig,
     cancel: &CancellationToken,
 ) -> Result<(
@@ -948,13 +1045,7 @@ fn validate_advertise_uri(uri: &str, allow_loopback: bool) -> Result<()> {
     if !parsed.username().is_empty() || parsed.password().is_some() {
         anyhow::bail!("invalid oop_http.advertise_uri: must not contain userinfo: {uri}");
     }
-    let is_loopback = match parsed.host() {
-        Some(url::Host::Ipv4(ip)) => ip.is_loopback() || ip.is_unspecified(),
-        Some(url::Host::Ipv6(ip)) => ip.is_loopback() || ip.is_unspecified(),
-        Some(url::Host::Domain(d)) => d.trim_end_matches('.').eq_ignore_ascii_case("localhost"),
-        None => false,
-    };
-    if !allow_loopback && is_loopback {
+    if !allow_loopback && is_loopback_host(&parsed) {
         anyhow::bail!(
             "invalid oop_http.advertise_uri: '{uri}' is a loopback/unspecified address, which is \
              unreachable by other gears in multi-host Profile 2 / Profile 3 (a registered-but-\
@@ -963,6 +1054,34 @@ fn validate_advertise_uri(uri: &str, allow_loopback: bool) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Whether `uri`'s host is loopback / unspecified, i.e. unreachable from other hosts.
+fn is_loopback_host(uri: &url::Url) -> bool {
+    match uri.host() {
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback() || ip.is_unspecified(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback() || ip.is_unspecified(),
+        Some(url::Host::Domain(d)) => d.trim_end_matches('.').eq_ignore_ascii_case("localhost"),
+        None => false,
+    }
+}
+
+/// Log an `error!` when the development-only `auth_disabled` is set on a worker advertised
+/// at a routable address: other hosts reach it through the directory, and every tenant's
+/// request then runs as the default tenant.
+fn log_auth_disabled_when_routable(auth_disabled: bool, advertise_uri: &str) {
+    if !auth_disabled {
+        return;
+    }
+    let routable = url::Url::parse(advertise_uri).is_ok_and(|uri| !is_loopback_host(&uri));
+    if routable {
+        tracing::error!(
+            advertise_uri,
+            "oop_http.auth_disabled is set on a worker advertised at a routable address: every \
+             tenant request reaching it runs as the default tenant. Development only; unset it \
+             or advertise a loopback address."
+        );
+    }
 }
 
 #[allow(unknown_lints, de1301_no_print_macros)] // direct stdout config print before exit

@@ -469,8 +469,28 @@ fn authenticated() {
         .handler(test_handler)
         .json_response(http::StatusCode::OK, "Success");
 
-    assert!(builder.spec.authenticated);
+    assert_eq!(builder.spec.auth, RouteAuth::Authenticated);
     assert!(!builder.spec.exposed);
+}
+
+#[test]
+fn every_auth_declaration_classifies_as_its_operation_auth() {
+    let authed = OperationBuilder::<Missing, Missing, ()>::get("/tests/v1/a")
+        .authenticated()
+        .handler(test_handler)
+        .json_response(http::StatusCode::OK, "OK");
+    assert_eq!(authed.spec.auth, RouteAuth::Authenticated);
+    let anon = OperationBuilder::<Missing, Missing, ()>::get("/tests/v1/a")
+        .anonymous()
+        .handler(test_handler)
+        .json_response(http::StatusCode::OK, "OK");
+    assert_eq!(anon.spec.auth, RouteAuth::Anonymous);
+    let platform = OperationBuilder::<Missing, Missing, ()>::post("/tests/v1/a")
+        .platform_authenticated()
+        .no_license_required()
+        .handler(test_handler)
+        .json_response(http::StatusCode::OK, "OK");
+    assert_eq!(platform.spec.auth, RouteAuth::Platform);
 }
 
 #[test]
@@ -480,20 +500,20 @@ fn anonymous_is_internal_by_default() {
         .handler(test_handler)
         .json_response(http::StatusCode::OK, "Success");
 
-    assert!(!builder.spec.authenticated);
+    assert_eq!(builder.spec.auth, RouteAuth::Anonymous);
     assert!(!builder.spec.exposed);
 }
 
 #[test]
 fn exposed_is_independent_of_auth() {
-    // Visibility (`exposed`) and auth (`authenticated`) are orthogonal:
+    // Visibility (`exposed`) and auth (`auth`) are orthogonal:
     // an exposed route may be authenticated or anonymous.
     let authed = OperationBuilder::<Missing, Missing, ()>::get("/tests/v1/a")
         .exposed()
         .authenticated()
         .handler(test_handler)
         .json_response(http::StatusCode::OK, "OK");
-    assert!(authed.spec.authenticated);
+    assert_eq!(authed.spec.auth, RouteAuth::Authenticated);
     assert!(authed.spec.exposed);
 
     let anon = OperationBuilder::<Missing, Missing, ()>::get("/tests/v1/b")
@@ -501,7 +521,7 @@ fn exposed_is_independent_of_auth() {
         .anonymous()
         .handler(test_handler)
         .json_response(http::StatusCode::OK, "OK");
-    assert!(!anon.spec.authenticated);
+    assert_eq!(anon.spec.auth, RouteAuth::Anonymous);
     assert!(anon.spec.exposed);
 }
 
@@ -514,7 +534,11 @@ fn deprecated_public_maps_to_anonymous_and_exposed() {
         .public()
         .handler(test_handler)
         .json_response(http::StatusCode::OK, "OK");
-    assert!(!op.spec.authenticated, "public route is anonymous");
+    assert_eq!(
+        op.spec.auth,
+        RouteAuth::Anonymous,
+        "public route is anonymous"
+    );
     assert!(op.spec.exposed, "public route is edge-exposed");
 }
 
@@ -859,4 +883,157 @@ fn an_enum_query_param_carries_its_values_and_leaves_the_others_alone() {
     let cursor = by_name("cursor");
     assert_eq!(cursor.param_type, "string");
     assert!(cursor.enum_values.is_empty());
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum ServedOpsField {
+    Label,
+    Code,
+    Amount,
+}
+
+impl toolkit_odata::filter::FilterField for ServedOpsField {
+    const FIELDS: &'static [Self] = &[Self::Label, Self::Code, Self::Amount];
+
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Label => "label",
+            Self::Code => "code",
+            Self::Amount => "amount",
+        }
+    }
+
+    fn kind(&self) -> toolkit_odata::filter::FieldKind {
+        match self {
+            Self::Label | Self::Code => toolkit_odata::filter::FieldKind::String,
+            Self::Amount => toolkit_odata::filter::FieldKind::I64,
+        }
+    }
+
+    fn published_ops(&self) -> Option<&'static [toolkit_odata::filter::FilterOp]> {
+        use toolkit_odata::filter::FilterOp;
+
+        match self {
+            Self::Code => Some(&[FilterOp::In, FilterOp::Eq]),
+            Self::Label | Self::Amount => None,
+        }
+    }
+}
+
+fn split_ops(joined: &str) -> Vec<String> {
+    joined.split('|').map(ToOwned::to_owned).collect()
+}
+
+#[test]
+fn a_field_names_the_operators_its_endpoint_serves() {
+    let registry = MockRegistry::new();
+    let _router = OperationBuilder::<Missing, Missing, ()>::get("/tests/v1/items")
+        .with_odata_filter::<ServedOpsField>()
+        .anonymous()
+        .handler(test_handler)
+        .json_response(http::StatusCode::OK, "Success")
+        .register(Router::new(), &registry);
+
+    let ops = registry.operations.lock().unwrap();
+    let spec = &ops[0];
+    let description = spec
+        .params
+        .iter()
+        .find(|param| param.name == "$filter")
+        .unwrap()
+        .description
+        .as_deref()
+        .unwrap();
+
+    // A string with no override publishes the parser table. `code` names
+    // in and eq, in that order: the reverse of the parser table, so a
+    // contract filtered from the table would read `eq|in` and fail here.
+    let plain = "eq|ne|contains|startswith|endswith|in";
+    let narrowed = "in|eq";
+    let description_expected = format!(
+        "OData v4 filter expression\n- label: {plain}\n- code: {narrowed}\n- amount: eq|ne|gt|ge|lt|le|in"
+    );
+    assert_eq!(description, description_expected);
+
+    let allowed = &spec
+        .vendor_extensions
+        .x_odata_filter
+        .as_ref()
+        .unwrap()
+        .allowed_fields;
+    assert_eq!(allowed.get("label").unwrap(), &split_ops(plain));
+    assert_eq!(allowed.get("code").unwrap(), &split_ops(narrowed));
+    // An integer with no override keeps the parser table for that kind.
+    assert_eq!(
+        allowed.get("amount").unwrap(),
+        &split_ops("eq|ne|gt|ge|lt|le|in")
+    );
+}
+
+/// One field whose `published_ops` breaks its contract one way per `CASE`.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct BadOpsField<const CASE: u8>;
+
+const EMPTY_OPS: u8 = 0;
+const WIDENED_OPS: u8 = 1;
+const REPEATED_OPS: u8 = 2;
+
+impl<const CASE: u8> toolkit_odata::filter::FilterField for BadOpsField<CASE> {
+    const FIELDS: &'static [Self] = &[Self];
+
+    fn name(&self) -> &'static str {
+        "code"
+    }
+
+    fn kind(&self) -> toolkit_odata::filter::FieldKind {
+        toolkit_odata::filter::FieldKind::String
+    }
+
+    fn published_ops(&self) -> Option<&'static [toolkit_odata::filter::FilterOp]> {
+        use toolkit_odata::filter::FilterOp;
+
+        match CASE {
+            EMPTY_OPS => Some(&[]),
+            WIDENED_OPS => Some(&[FilterOp::Eq, FilterOp::Gt]),
+            REPEATED_OPS => Some(&[FilterOp::Eq, FilterOp::Eq]),
+            _ => None,
+        }
+    }
+}
+
+fn register_filter<F: toolkit_odata::filter::FilterField>() {
+    let registry = MockRegistry::new();
+    let _router = OperationBuilder::<Missing, Missing, ()>::get("/tests/v1/items")
+        .with_odata_filter::<F>()
+        .anonymous()
+        .handler(test_handler)
+        .json_response(http::StatusCode::OK, "Success")
+        .register(Router::new(), &registry);
+}
+
+#[test]
+#[should_panic(
+    expected = "/tests/v1/items declares an invalid published_ops: field `code` publishes no \
+                operators"
+)]
+fn an_empty_published_ops_is_refused_at_registration() {
+    register_filter::<BadOpsField<EMPTY_OPS>>();
+}
+
+#[test]
+#[should_panic(
+    expected = "/tests/v1/items declares an invalid published_ops: field `code` publishes `gt`, \
+                which its kind String does not allow"
+)]
+fn a_published_op_the_kind_refuses_is_refused_at_registration() {
+    register_filter::<BadOpsField<WIDENED_OPS>>();
+}
+
+#[test]
+#[should_panic(
+    expected = "/tests/v1/items declares an invalid published_ops: field `code` publishes `eq` \
+                twice"
+)]
+fn a_repeated_published_op_is_refused_at_registration() {
+    register_filter::<BadOpsField<REPEATED_OPS>>();
 }

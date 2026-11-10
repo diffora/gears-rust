@@ -1,14 +1,14 @@
 use std::sync::Arc;
 
-use sea_orm::{ConnectionTrait, Statement, TransactionTrait};
+use sea_orm::{ConnectionTrait, Statement};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use super::super::statements::OutboxStatements;
 use super::super::store::OutboxStore;
-use super::super::taskward::{Directive, WorkerAction};
 use super::super::types::OutboxError;
 use crate::Db;
+use toolkit_taskward::{Directive, WorkerAction};
 
 /// Page size for the dirty-partition cursor.
 const DIRTY_PAGE_SIZE: usize = 64;
@@ -319,8 +319,7 @@ impl VacuumTask {
         processed_seq: i64,
         batch_limit: i64,
     ) -> Result<usize, OutboxError> {
-        let conn = db.sea_internal();
-        let txn = conn.begin().await?;
+        let txn = db.begin_tx().await?;
 
         let limit = batch_limit;
 

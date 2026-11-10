@@ -1,4 +1,3 @@
-// Created: 2026-09-07 by Virtuozzo International GmbH
 //! Secret values: the opaque handle a consumer holds and the machine-only
 //! resolution behind it.
 //!
@@ -16,6 +15,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::{Deserialize, Serialize};
 use settings_service_sdk::SecretHandle;
+use toolkit_macros::domain_model;
 
 use crate::domain::error::DomainError;
 use crate::field;
@@ -27,6 +27,7 @@ pub use service::SecretResolver;
 const HANDLE_PREFIX: &str = "sh1.";
 
 /// What a handle was issued for.
+#[domain_model]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HandleClaims {
     /// The setting key.

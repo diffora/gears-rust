@@ -11,9 +11,9 @@ use sea_orm::sea_query::Expr;
 use sea_orm::{ExprTrait, FromQueryResult, JoinType, QueryFilter, QuerySelect, RelationTrait, Set};
 use sea_orm_migration::prelude as mig;
 use toolkit_db::migration_runner::run_migrations_for_testing;
-use toolkit_db::secure::{Db, DbConn, ScopableEntity, SecureEntityExt, secure_insert};
+use toolkit_db::secure::{Db, DbConn, SecureEntityExt, secure_insert};
 use toolkit_db::{ConnectOpts, connect_db};
-use toolkit_security::{AccessScope, pep_properties};
+use toolkit_security::AccessScope;
 use uuid::Uuid;
 
 // ════════════════════════════════════════════════════════════════════
@@ -23,8 +23,9 @@ use uuid::Uuid;
 mod order_ent {
     use super::*;
 
-    #[derive(Debug, Clone, PartialEq, Eq, DeriveEntityModel)]
+    #[derive(Debug, Clone, PartialEq, Eq, DeriveEntityModel, toolkit_db::secure::Scopable)]
     #[sea_orm(table_name = "project_all_orders")]
+    #[secure(tenant_col = "tenant_id", resource_col = "id", no_owner, no_type)]
     pub struct Model {
         #[sea_orm(primary_key, auto_increment = false)]
         pub id: Uuid,
@@ -48,24 +49,12 @@ mod order_ent {
     impl ActiveModelBehavior for ActiveModel {}
 }
 
-impl ScopableEntity for order_ent::Entity {
-    const SCOPE_PROPERTIES: &'static [(&'static str, Self::Column)] = &[
-        (pep_properties::OWNER_TENANT_ID, order_ent::Column::TenantId),
-        (pep_properties::RESOURCE_ID, order_ent::Column::Id),
-    ];
-
-    const UNSCOPED_DIMENSIONS: &'static [&'static str] = &[pep_properties::OWNER_ID];
-
-    fn type_col() -> Option<<Self as EntityTrait>::Column> {
-        None
-    }
-}
-
 mod item_ent {
     use super::*;
 
-    #[derive(Debug, Clone, PartialEq, Eq, DeriveEntityModel)]
+    #[derive(Debug, Clone, PartialEq, Eq, DeriveEntityModel, toolkit_db::secure::Scopable)]
     #[sea_orm(table_name = "project_all_items")]
+    #[secure(tenant_col = "tenant_id", resource_col = "id", no_owner, no_type)]
     pub struct Model {
         #[sea_orm(primary_key, auto_increment = false)]
         pub id: Uuid,
@@ -91,19 +80,6 @@ mod item_ent {
     }
 
     impl ActiveModelBehavior for ActiveModel {}
-}
-
-impl ScopableEntity for item_ent::Entity {
-    const SCOPE_PROPERTIES: &'static [(&'static str, Self::Column)] = &[
-        (pep_properties::OWNER_TENANT_ID, item_ent::Column::TenantId),
-        (pep_properties::RESOURCE_ID, item_ent::Column::Id),
-    ];
-
-    const UNSCOPED_DIMENSIONS: &'static [&'static str] = &[pep_properties::OWNER_ID];
-
-    fn type_col() -> Option<<Self as EntityTrait>::Column> {
-        None
-    }
 }
 
 // ════════════════════════════════════════════════════════════════════

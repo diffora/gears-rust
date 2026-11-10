@@ -16,10 +16,10 @@ const BACKENDS: [DbBackend; 3] = [DbBackend::Postgres, DbBackend::MySql, DbBacke
 /// fixture serves both the flat and the recursive tests.
 mod node {
     use sea_orm::entity::prelude::*;
-    use toolkit_security::access_scope::pep_properties;
 
-    #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
+    #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, toolkit_db::secure::Scopable)]
     #[sea_orm(table_name = "cte_node")]
+    #[secure(tenant_col = "tenant_id", resource_col = "id", no_owner, no_type)]
     pub struct Model {
         #[sea_orm(primary_key)]
         pub id: Uuid,
@@ -32,29 +32,16 @@ mod node {
     pub enum Relation {}
 
     impl ActiveModelBehavior for ActiveModel {}
-
-    impl crate::secure::ScopableEntity for Entity {
-        const SCOPE_PROPERTIES: &'static [(&'static str, Self::Column)] = &[
-            (pep_properties::OWNER_TENANT_ID, Column::TenantId),
-            (pep_properties::RESOURCE_ID, Column::Id),
-        ];
-
-        const UNSCOPED_DIMENSIONS: &'static [&'static str] = &[pep_properties::OWNER_ID];
-
-        fn type_col() -> Option<Column> {
-            None
-        }
-    }
 }
 
 /// A second scoped entity, for asserting that *every* CTE body is scoped rather
 /// than just the first.
 mod item {
     use sea_orm::entity::prelude::*;
-    use toolkit_security::access_scope::pep_properties;
 
-    #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
+    #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, toolkit_db::secure::Scopable)]
     #[sea_orm(table_name = "cte_item")]
+    #[secure(tenant_col = "tenant_id", resource_col = "id", no_owner, no_type)]
     pub struct Model {
         #[sea_orm(primary_key)]
         pub id: Uuid,
@@ -66,19 +53,6 @@ mod item {
     pub enum Relation {}
 
     impl ActiveModelBehavior for ActiveModel {}
-
-    impl crate::secure::ScopableEntity for Entity {
-        const SCOPE_PROPERTIES: &'static [(&'static str, Self::Column)] = &[
-            (pep_properties::OWNER_TENANT_ID, Column::TenantId),
-            (pep_properties::RESOURCE_ID, Column::Id),
-        ];
-
-        const UNSCOPED_DIMENSIONS: &'static [&'static str] = &[pep_properties::OWNER_ID];
-
-        fn type_col() -> Option<Column> {
-            None
-        }
-    }
 }
 
 fn tenant_scope(tenant: uuid::Uuid) -> AccessScope {
@@ -936,5 +910,25 @@ fn cte_body_supports_aggregation_with_scope_intact() {
             1,
             "{backend:?} select_only() in the body dropped its scope: {sql}"
         );
+    }
+}
+
+#[test]
+fn scoped_row_locks_preserve_tenant_predicate_and_request_correct_postgres_lock() {
+    use crate::secure::SecureEntityExt;
+    use sea_orm::{EntityTrait, QueryTrait};
+    let tenant = uuid::Uuid::new_v4();
+    let scope = AccessScope::for_tenants(vec![tenant]);
+    for (shared, keyword) in [(true, "FOR SHARE"), (false, "FOR UPDATE")] {
+        let query = node::Entity::find().secure().scope_with(&scope);
+        let query = if shared {
+            query.lock_shared()
+        } else {
+            query.lock_exclusive()
+        };
+        let sql = query.inner.build(DbBackend::Postgres).to_string();
+        assert!(sql.contains(keyword), "{sql}");
+        assert!(sql.contains("tenant_id"), "{sql}");
+        assert!(sql.contains(&tenant.to_string()), "{sql}");
     }
 }

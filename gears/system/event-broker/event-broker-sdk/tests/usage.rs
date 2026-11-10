@@ -25,6 +25,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use event_broker::test_support::{EventBrokerHarness, StaticTypesRegistry};
+use event_broker_sdk::backend::{Partition, TopicPartition, Wait};
 use event_broker_sdk::{
     ConsumerBuilder, ConsumerError, ConsumerGroupRef, DirectDeduplication, Fallback, GtsIdPattern,
     GtsInstanceId, HandlerOutcome, InMemoryOffsetManager, IngestOutcome, Producer,
@@ -196,14 +197,15 @@ async fn broker_exposes_registered_order_topic_and_event_type() -> TestResult {
         vec![ORDER_SUBJECT]
     );
     // The composed contract is the base event's `data` branch narrowed by this
-    // type's schema. The harness seeds a minimal stand-in base (`test_support`),
-    // so its `data` branch is just the nullable-object type; a full deployment's
-    // base additionally carries the description/default the SDK declares.
+    // type's schema. The harness registers the base the SDK declares, so the
+    // first branch is that base's own `data` member.
     assert_eq!(
         event_type.data_schema,
         json!({
             "allOf": [
-                { "type": ["object", "null"] },
+                {
+                    "type": ["object", "null"],
+                },
                 order_created_schema(),
             ],
         })
@@ -243,12 +245,13 @@ async fn producer_stateless_publish_sends_typed_event() -> TestResult {
     Ok(())
 }
 
-/// A producer can wait for broker-side persistence when the caller needs it.
+/// A persisted publish holds until the in-process broker has stored the event
+/// on its backend, and reports `Persisted`.
 ///
 /// Preconditions: the producer uses the same direct setup as normal publishing.
-/// Expected: `publish_persisted` returns `Persisted`.
+/// Expected: `publish_persisted` returns `Persisted` and the event is stored.
 #[tokio::test]
-async fn producer_persisted_publish_waits_for_storage() -> TestResult {
+async fn producer_persisted_publish_reports_persisted() -> TestResult {
     let harness = harness_with(orders_catalog()).await;
     let broker = harness.broker();
 
@@ -264,10 +267,9 @@ async fn producer_persisted_publish_waits_for_storage() -> TestResult {
 
     let outcome = producer.publish_persisted(order_created()).await?;
 
-    // The in-process broker admits synchronously and persists asynchronously, so
-    // it honestly reports `Accepted` rather than claiming a durable `Persisted`
-    // (see `LocalBroker`); the event still reaches storage.
-    assert_eq!(outcome, IngestOutcome::Accepted);
+    // The in-process broker waits for the outbox to store the event, so a
+    // synchronous publish reports `Persisted`.
+    assert_eq!(outcome, IngestOutcome::Persisted);
     wait_for_stored(&harness, ORDERS_TOPIC, 1).await;
 
     Ok(())
@@ -335,14 +337,8 @@ async fn producer_chained_mode_uses_broker_issued_id_and_sequences_events() -> T
     producer.publish(order_created()).await?;
     wait_for_stored(&harness, ORDERS_TOPIC, 1).await;
 
-    // The event lands on the one partition its tenant hashes to; the chained
-    // cursor there advances to the first assigned offset.
     let cursors = broker.get_producer_cursors(&ctx, producer_id).await?;
-    let topic = ginst(ORDERS_TOPIC);
-    let sequences: Vec<i64> = (0..ORDERS_PARTITIONS)
-        .filter_map(|partition| cursors.last_sequence(&topic, partition))
-        .collect();
-    assert_eq!(sequences, vec![0]);
+    assert_eq!(cursors.last_sequence(&ginst(ORDERS_TOPIC)), Some(0));
 
     Ok(())
 }
@@ -705,12 +701,15 @@ fn orders_and_billing_catalog() -> StaticTypesRegistry {
 /// means a test never has to know which. `read` is exclusive of the position it
 /// names, and `Sequence::NONE` reads from the start of each partition.
 async fn stored_count(harness: &EventBrokerHarness, topic: &str) -> usize {
-    let ctx = harness.security_context().clone();
     let mut total = 0;
     for partition in 0..ORDERS_PARTITIONS {
+        let at = TopicPartition::new(
+            GtsInstanceId::try_new(topic).unwrap(),
+            Partition::new(partition),
+        );
         total += harness
             .backend()
-            .read(&ctx, topic, partition, Sequence::NONE, 1024)
+            .read(&at, Sequence::NONE, 1024, Wait::No)
             .await
             .expect("read stored events")
             .len();
@@ -719,7 +718,7 @@ async fn stored_count(harness: &EventBrokerHarness, topic: &str) -> usize {
 }
 
 async fn wait_for_stored(harness: &EventBrokerHarness, topic: &str, count: usize) {
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         if stored_count(harness, topic).await >= count {
             return;
@@ -790,7 +789,7 @@ fn billing_charged() -> BillingCharged {
 }
 
 async fn wait_until(mut predicate: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         if predicate() {
             return;

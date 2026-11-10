@@ -6,11 +6,10 @@ use sea_orm::{
 use std::marker::PhantomData;
 
 use crate::secure::cond::build_scope_condition;
-use crate::secure::entity_traits::checked_table;
 use crate::secure::error::ScopeError;
 use crate::secure::{
-    AccessScope, DBRunner, DBRunnerInternal, ScopableEntity, ScopeProperties, Scoped, SeaOrmRunner,
-    SecureEntityExt, Unscoped,
+    AccessScope, DBRunner, DBRunnerInternal, ScopableEntity, Scoped, SeaOrmRunner, SecureEntityExt,
+    Unscoped,
 };
 
 /// Convert a `sea_orm::Value` to a [`ScopeValue`] for comparison with scope filter values.
@@ -66,7 +65,7 @@ where
     A::Entity: ScopableEntity + EntityTrait,
     <A::Entity as EntityTrait>::Column: ColumnTrait + Copy,
 {
-    if scope.is_unconstrained() || A::Entity::IS_UNRESTRICTED {
+    if scope.is_unconstrained() || A::Entity::SCOPE.is_unrestricted() {
         return Ok(());
     }
     if scope.is_deny_all() {
@@ -79,7 +78,8 @@ where
     'next_constraint: for constraint in scope.constraints() {
         // AND over filters within this constraint.
         for filter in constraint.filters() {
-            let Some(col) = <A::Entity as ScopeProperties>::resolve_property(filter.property())
+            let Some(col) =
+                <A::Entity as ScopableEntity>::SCOPE.resolve_property(filter.property())
             else {
                 // Unknown property → this constraint fails (fail-closed).
                 continue 'next_constraint;
@@ -122,7 +122,7 @@ where
 ///
 /// Validates **all** scope constraints against the `ActiveModel`'s column values,
 /// not just `tenant_id`. For each constraint in the scope, every filter's property
-/// is resolved to a column via `ScopeProperties::resolve_property`, and the
+/// is resolved to a column via `ScopableEntity::resolve_property`, and the
 /// `ActiveModel`'s value for that column is checked against the filter's values.
 /// At least one constraint must match entirely (OR semantics) for the insert to
 /// proceed.
@@ -189,7 +189,7 @@ where
     E::Model: sea_orm::IntoActiveModel<E::ActiveModel>,
 {
     // Tenant-scoped entities must have tenant_id set in the ActiveModel.
-    if let Some(tenant_col) = E::tenant_col()
+    if let Some(tenant_col) = E::SCOPE.tenant()
         && let sea_orm::ActiveValue::NotSet = am.get(tenant_col)
     {
         return Err(ScopeError::Invalid("tenant_id is required"));
@@ -269,7 +269,7 @@ where
     // in the batch inserts nothing at all -- including when the batch is about
     // to be split into several statements below.
     for am in &models {
-        if let Some(tenant_col) = E::tenant_col()
+        if let Some(tenant_col) = E::SCOPE.tenant()
             && let sea_orm::ActiveValue::NotSet = am.get(tenant_col)
         {
             return Err(ScopeError::Invalid("tenant_id is required"));
@@ -303,19 +303,7 @@ where
 /// be checked without a database.
 ///
 /// Only an entity that declares no scope column at all may be written this
-/// way.
-///
-/// Asked of the table, not of the three dimension accessors. They answer for
-/// the well-known properties only, so an entity declared `no_tenant,
-/// no_resource, no_owner, no_type, pep_prop(department_id = "department_id")`
-/// gives `None` four times while declaring a scope column all the same -- and
-/// this path exists precisely because rows produced inside the database cannot
-/// be validated against a scope per row. The Policy 2 gates in
-/// [`crate::secure::pgq`] ask the same question of the same table, for the
-/// same reason.
-///
-/// `type_col` is still asked separately: it has no property name, so it is the
-/// one dimension the table cannot carry.
+/// way: no dimension, the type column included, and no custom PEP property.
 ///
 /// # Errors
 ///
@@ -324,7 +312,7 @@ fn insert_from_select_allowed<E>() -> Result<(), ScopeError>
 where
     E: ScopableEntity + EntityTrait,
 {
-    if !checked_table::<E>().is_empty() || E::type_col().is_some() {
+    if !E::SCOPE.has_no_columns() {
         return Err(ScopeError::Invalid(
             "insert-from-select is limited to entities without scope columns: \
              rows produced inside the database cannot be validated per row",
@@ -483,20 +471,6 @@ fn rows_per_insert<E: EntityTrait>(backend: sea_orm::DbBackend) -> usize {
 /// - Verifies the target row exists **within the scope** before updating.
 /// - For tenant-scoped entities, forbids changing `tenant_id` (immutable).
 ///
-/// The tenant column, and not every scope column. The difference is the kind of
-/// refusal each one would be: a row moved into another tenant has crossed the
-/// boundary inside which policy applies at all, so no policy can permit it and
-/// the refusal belongs here, below policy. Changing an owner is a domain action
-/// a PDP is meant to allow or deny -- `file-storage`'s `update_owner`
-/// (`@cpt-cf-file-storage-fr-ownership-transfer`) is one the platform ships --
-/// and forbidding it here would take that decision away from the component it
-/// belongs to. The resource column is the primary key, which no caller updates.
-///
-/// The rule that would cover all of them is not "a scope column is immutable"
-/// but "an update must leave the row inside the scope that authorised it",
-/// which is `validate_insert_scope` applied to updates. That changes what a
-/// scoped update means for every gear and is not decided here.
-///
 /// # Errors
 /// - `ScopeError::Denied` if the row is not accessible in the scope.
 /// - `ScopeError::Denied("tenant_id is immutable")` if caller attempts to change `tenant_id`.
@@ -525,7 +499,7 @@ where
         ));
     };
 
-    if let Some(tcol) = E::tenant_col() {
+    if let Some(tcol) = E::SCOPE.tenant() {
         let sea_orm::Value::Uuid(Some(stored)) = existing.get(tcol) else {
             return Err(ScopeError::Invalid("tenant_id has unexpected type"));
         };
@@ -618,7 +592,9 @@ pub struct SecureInsertOne<A, S>
 where
     A: ActiveModelTrait,
 {
+    /// The wrapped `SeaORM` insert statement.
     pub(crate) inner: sea_orm::Insert<A>,
+    /// Typestate marker tracking whether the scope has been applied.
     pub(crate) _state: PhantomData<S>,
 }
 
@@ -814,7 +790,9 @@ pub struct SecureInsertMany<A, S>
 where
     A: ActiveModelTrait,
 {
+    /// The wrapped `SeaORM` insert-many statement.
     pub(crate) inner: sea_orm::InsertMany<A>,
+    /// Typestate marker tracking whether the scope has been applied.
     pub(crate) _state: PhantomData<S>,
 }
 
@@ -956,7 +934,7 @@ where
 
 /// A secure builder for `ON CONFLICT DO UPDATE` clauses that enforces tenant immutability.
 ///
-/// For tenant-scoped entities (`ScopeProperties::tenant_col() != None`), this builder
+/// For tenant-scoped entities (`ScopableEntity::SCOPE.tenant()` is `Some`), this builder
 /// ensures that `tenant_id` is never included in the update columns. Attempting to
 /// update `tenant_id` via `update_columns()` or `value()` returns an error.
 ///
@@ -1041,7 +1019,7 @@ where
         let cols: Vec<C> = cols.into_iter().collect();
 
         // Check if tenant column is in the update list
-        if let Some(tenant_col) = E::tenant_col() {
+        if let Some(tenant_col) = E::SCOPE.tenant() {
             let tenant_iden = tenant_col.into_iden();
             for col in &cols {
                 let col_iden = col.into_iden();
@@ -1066,7 +1044,7 @@ where
         C: IntoIden + Copy + 'static,
     {
         // Check if this is the tenant column
-        if let Some(tenant_col) = E::tenant_col() {
+        if let Some(tenant_col) = E::SCOPE.tenant() {
             let tenant_iden = tenant_col.into_iden();
             let col_iden = col.into_iden();
             if col_iden.to_string() == tenant_iden.to_string() {
@@ -1118,8 +1096,11 @@ where
 /// ```
 #[derive(Clone, Debug)]
 pub struct SecureUpdateMany<E: EntityTrait, S> {
+    /// The wrapped `SeaORM` update-many statement.
     pub(crate) inner: sea_orm::UpdateMany<E>,
+    /// Typestate marker tracking whether the scope has been applied.
     pub(crate) _state: PhantomData<S>,
+    /// Whether the caller attempted to update the tenant column, which is rejected on execution.
     pub(crate) tenant_update_attempted: bool,
 }
 
@@ -1132,7 +1113,7 @@ where
     /// Set a column expression (mirrors `SeaORM`'s `UpdateMany::col_expr`).
     #[must_use]
     pub fn col_expr(mut self, col: E::Column, expr: sea_orm::sea_query::SimpleExpr) -> Self {
-        if let Some(tcol) = E::tenant_col()
+        if let Some(tcol) = E::SCOPE.tenant()
             && std::mem::discriminant(&col) == std::mem::discriminant(&tcol)
         {
             self.tenant_update_attempted = true;
@@ -1265,7 +1246,9 @@ where
 /// ```
 #[derive(Clone, Debug)]
 pub struct SecureDeleteMany<E: EntityTrait, S> {
+    /// The wrapped `SeaORM` delete-many statement.
     pub(crate) inner: sea_orm::DeleteMany<E>,
+    /// Typestate marker tracking whether the scope has been applied.
     pub(crate) _state: PhantomData<S>,
 }
 
@@ -1357,10 +1340,10 @@ mod tests {
     // Test entity with tenant_col for SecureOnConflict tests
     mod test_entity {
         use super::*;
-        use toolkit_security::pep_properties;
 
-        #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
+        #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, toolkit_db::secure::Scopable)]
         #[sea_orm(table_name = "test_table")]
+        #[secure(tenant_col = "tenant_id", resource_col = "id", no_owner, no_type)]
         pub struct Model {
             #[sea_orm(primary_key)]
             pub id: Uuid,
@@ -1373,19 +1356,6 @@ mod tests {
         pub enum Relation {}
 
         impl ActiveModelBehavior for ActiveModel {}
-
-        impl ScopableEntity for Entity {
-            const SCOPE_PROPERTIES: &'static [(&'static str, Self::Column)] = &[
-                (pep_properties::OWNER_TENANT_ID, Column::TenantId),
-                (pep_properties::RESOURCE_ID, Column::Id),
-            ];
-
-            const UNSCOPED_DIMENSIONS: &'static [&'static str] = &[pep_properties::OWNER_ID];
-
-            fn type_col() -> Option<Column> {
-                None
-            }
-        }
     }
 
     #[test]
@@ -1411,32 +1381,35 @@ mod tests {
             .expect("an entity with no scope columns must be allowed");
     }
 
-    /// The gate answers for a scope column the three dimension accessors cannot
-    /// see. `no_tenant, no_resource, no_owner, no_type` plus one `pep_prop` is
-    /// the shape: four `None`s, and a column a scope can still constrain.
-    #[test]
-    fn insert_from_select_refuses_an_entity_scoped_only_by_a_pep_prop() {
-        use pep_prop_entity::Entity;
+    /// A link table: two foreign keys and a value, no identity the scope
+    /// system could filter on. `resource_group_closure` is the real one.
+    mod unscoped_entity {
+        use super::*;
 
-        assert!(
-            <Entity as ScopeProperties>::tenant_col().is_none()
-                && <Entity as ScopeProperties>::resource_col().is_none()
-                && <Entity as ScopeProperties>::owner_col().is_none()
-                && Entity::type_col().is_none(),
-            "premise: no dimension accessor answers for this entity"
-        );
+        #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, toolkit_db::secure::Scopable)]
+        #[sea_orm(table_name = "unscoped_table")]
+        #[secure(no_tenant, no_resource, no_owner, no_type)]
+        pub struct Model {
+            #[sea_orm(primary_key, auto_increment = false)]
+            pub left_id: Uuid,
+            #[sea_orm(primary_key, auto_increment = false)]
+            pub right_id: Uuid,
+            pub depth: i32,
+        }
 
-        let err = insert_from_select_allowed::<Entity>()
-            .expect_err("a pep_prop is a scope column like any other");
-        assert!(matches!(err, ScopeError::Invalid(_)), "got: {err:?}");
+        #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+        pub enum Relation {}
+
+        impl ActiveModelBehavior for ActiveModel {}
     }
 
-    /// An entity whose only scope column is a custom PEP property.
+    /// No named dimension, one custom PEP property: a column a scope can
+    /// still constrain.
     mod pep_prop_entity {
         use super::*;
 
-        #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, toolkit_db_macros::Scopable)]
-        #[sea_orm(table_name = "pep_prop_table")]
+        #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, toolkit_db::secure::Scopable)]
+        #[sea_orm(table_name = "pep_prop_only_table")]
         #[secure(
             no_tenant,
             no_resource,
@@ -1456,47 +1429,31 @@ mod tests {
         impl ActiveModelBehavior for ActiveModel {}
     }
 
-    /// A link table: two foreign keys and a value, no identity the scope
-    /// system could filter on. `resource_group_closure` is the real one.
-    mod unscoped_entity {
-        use super::*;
+    #[test]
+    fn insert_from_select_refuses_an_entity_scoped_only_by_a_pep_prop() {
+        use pep_prop_entity::Entity;
 
-        #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
-        #[sea_orm(table_name = "unscoped_table")]
-        pub struct Model {
-            #[sea_orm(primary_key, auto_increment = false)]
-            pub left_id: Uuid,
-            #[sea_orm(primary_key, auto_increment = false)]
-            pub right_id: Uuid,
-            pub depth: i32,
-        }
+        let scope = <Entity as ScopableEntity>::SCOPE;
+        assert!(
+            scope.tenant().is_none()
+                && scope.resource().is_none()
+                && scope.owner().is_none()
+                && scope.type_col().is_none(),
+            "premise: every named dimension is None"
+        );
 
-        #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-        pub enum Relation {}
-
-        impl ActiveModelBehavior for ActiveModel {}
-
-        impl ScopableEntity for Entity {
-            const SCOPE_PROPERTIES: &'static [(&'static str, Self::Column)] = &[];
-
-            const UNSCOPED_DIMENSIONS: &'static [&'static str] = &[
-                toolkit_security::pep_properties::OWNER_TENANT_ID,
-                toolkit_security::pep_properties::RESOURCE_ID,
-                toolkit_security::pep_properties::OWNER_ID,
-            ];
-
-            fn type_col() -> Option<Column> {
-                None
-            }
-        }
+        let err = insert_from_select_allowed::<Entity>()
+            .expect_err("a pep_prop is a scope column like any other");
+        assert!(matches!(err, ScopeError::Invalid(_)), "got: {err:?}");
     }
 
     // Test entity without tenant_col (global entity)
     mod global_entity {
         use super::*;
 
-        #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
+        #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, toolkit_db::secure::Scopable)]
         #[sea_orm(table_name = "global_table")]
+        #[secure(no_tenant, resource_col = "id", no_owner, no_type)]
         pub struct Model {
             #[sea_orm(primary_key)]
             pub id: Uuid,
@@ -1508,19 +1465,6 @@ mod tests {
         pub enum Relation {}
 
         impl ActiveModelBehavior for ActiveModel {}
-
-        impl ScopableEntity for Entity {
-            const SCOPE_PROPERTIES: &'static [(&'static str, Self::Column)] = &[("id", Column::Id)];
-
-            const UNSCOPED_DIMENSIONS: &'static [&'static str] = &[
-                toolkit_security::pep_properties::OWNER_TENANT_ID,
-                toolkit_security::pep_properties::OWNER_ID,
-            ];
-
-            fn type_col() -> Option<Column> {
-                None
-            }
-        }
     }
 
     #[test]
@@ -1695,10 +1639,16 @@ mod tests {
     // mimicking the Address entity from the users-info example.
     mod owner_entity {
         use super::*;
-        use toolkit_security::pep_properties;
 
-        #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
+        #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, toolkit_db::secure::Scopable)]
         #[sea_orm(table_name = "addresses")]
+        #[secure(
+            tenant_col = "tenant_id",
+            resource_col = "id",
+            owner_col = "user_id",
+            no_type,
+            pep_prop(city_id = "city_id")
+        )]
         pub struct Model {
             #[sea_orm(primary_key)]
             pub id: Uuid,
@@ -1711,21 +1661,6 @@ mod tests {
         pub enum Relation {}
 
         impl ActiveModelBehavior for ActiveModel {}
-
-        impl ScopableEntity for Entity {
-            const SCOPE_PROPERTIES: &'static [(&'static str, Self::Column)] = &[
-                (pep_properties::OWNER_TENANT_ID, Column::TenantId),
-                (pep_properties::RESOURCE_ID, Column::Id),
-                (pep_properties::OWNER_ID, Column::UserId),
-                ("city_id", Column::CityId),
-            ];
-
-            const UNSCOPED_DIMENSIONS: &'static [&'static str] = &[];
-
-            fn type_col() -> Option<Column> {
-                None
-            }
-        }
     }
 
     #[test]
@@ -1967,10 +1902,16 @@ mod tests {
     /// unsupported-type path fails closed rather than allowing the insert.
     mod unsupported_value_entity {
         use super::*;
-        use toolkit_security::pep_properties;
 
-        #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
+        #[derive(Clone, Debug, PartialEq, DeriveEntityModel, toolkit_db::secure::Scopable)]
         #[sea_orm(table_name = "unsupported_value_table")]
+        #[secure(
+            tenant_col = "tenant_id",
+            no_resource,
+            no_owner,
+            no_type,
+            pep_prop(score = "score")
+        )]
         pub struct Model {
             #[sea_orm(primary_key)]
             pub id: Uuid,
@@ -1984,20 +1925,6 @@ mod tests {
         pub enum Relation {}
 
         impl ActiveModelBehavior for ActiveModel {}
-
-        impl ScopableEntity for Entity {
-            const SCOPE_PROPERTIES: &'static [(&'static str, Self::Column)] = &[
-                (pep_properties::OWNER_TENANT_ID, Column::TenantId),
-                ("score", Column::Score),
-            ];
-
-            const UNSCOPED_DIMENSIONS: &'static [&'static str] =
-                &[pep_properties::RESOURCE_ID, pep_properties::OWNER_ID];
-
-            fn type_col() -> Option<Column> {
-                None
-            }
-        }
     }
 
     // -----------------------------------------------------------------------
@@ -2278,46 +2205,6 @@ mod tests {
         assert!(
             matches!(result, Err(ScopeError::Denied(_))),
             "tenant_id must stay immutable through an upsert"
-        );
-    }
-
-    /// The three write-side guards that skip themselves when the entity
-    /// declares no tenant column, asserted on an entity that declares one.
-    ///
-    /// The counterpart -- an entity whose table forgets the row -- cannot be
-    /// written any more: `ScopeProperties::DIMENSIONS_ARE_DECLARED` fails the
-    /// build for it. `dimensions_are_declared` in `entity_traits` is where that
-    /// rule is tested; this is what the rule protects.
-    #[test]
-    fn the_write_guards_fire_when_the_entity_declares_its_tenant() {
-        use sea_orm::sea_query::Expr;
-        use test_entity::{Column, Entity};
-
-        assert!(
-            <Entity as ScopeProperties>::tenant_col().is_some(),
-            "premise: this entity declares its tenant column"
-        );
-
-        assert!(
-            SecureOnConflict::<Entity>::columns([Column::Id])
-                .update_columns([Column::TenantId])
-                .is_err(),
-            "the upsert guard fires when the entity declares a tenant"
-        );
-        assert!(
-            SecureOnConflict::<Entity>::columns([Column::Id])
-                .value(Column::TenantId, Expr::value(Uuid::new_v4()))
-                .is_err(),
-            "and so does the by-expression form"
-        );
-
-        let update = Entity::update_many()
-            .secure()
-            .col_expr(Column::TenantId, Expr::value(Uuid::new_v4()))
-            .scope_with(&crate::secure::AccessScope::for_tenant(Uuid::new_v4()));
-        assert!(
-            update.tenant_update_attempted,
-            "the bulk-update guard raises its flag"
         );
     }
 

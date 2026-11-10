@@ -35,70 +35,26 @@
 //! ### 2. `ScopableEntity`
 //!
 //! Entities must implement [`ScopableEntity`](crate::secure::ScopableEntity) to declare
-//! which columns are used for scoping. The declaration is one table: every
-//! authorization property the entity understands, paired with the column it
-//! means. [`ScopeProperties`](crate::secure::ScopeProperties) reads the lookup,
-//! the column list and the tenant/resource/owner accessors back out of it, so
-//! none of them can disagree with it.
+//! which columns are used for scoping. The whole contract is one constant, an
+//! [`EntityScope`](crate::secure::EntityScope): either `Unrestricted`, or `Scoped`
+//! with every dimension written out. Usually `#[derive(Scopable)]` writes it:
 //!
 //! ```rust,ignore
-//! use toolkit_db::secure::ScopableEntity;
-//! use toolkit_security::access_scope::pep_properties;
+//! use toolkit_db::secure::{Dimensions, EntityScope, ScopableEntity};
 //!
 //! impl ScopableEntity for user::Entity {
-//!     const SCOPE_PROPERTIES: &'static [(&'static str, Self::Column)] = &[
-//!         (pep_properties::OWNER_TENANT_ID, user::Column::TenantId),
-//!         (pep_properties::RESOURCE_ID, user::Column::Id),
-//!     ];
-//!
-//!     // The dimensions the table does not name, stated rather than left to be
-//!     // inferred from the silence. Every one of the three must appear in one
-//!     // list or the other.
-//!     const UNSCOPED_DIMENSIONS: &'static [&'static str] = &[pep_properties::OWNER_ID];
-//!
-//!     // Tenant- and resource-scoped, not owner-scoped: the columns follow
-//!     // from the table. Only `type_col` is written out, because no property
-//!     // name addresses it.
-//!     fn type_col() -> Option<Self::Column> {
-//!         None
-//!     }
+//!     const SCOPE: EntityScope<user::Column> = EntityScope::Scoped(Dimensions {
+//!         tenant: Some(user::Column::TenantId), // Multi-tenant entity
+//!         resource: Some(user::Column::Id),
+//!         owner: None,
+//!         type_col: None,
+//!         custom: &[],
+//!     });
 //! }
 //!
-//! // A global entity. `IS_UNRESTRICTED` is the part that makes it one.
-//! //
-//! // An empty table on its own is the opposite: no property resolves, so
-//! // every constrained scope compiles to `WHERE false` and
-//! // `validate_insert_scope` denies every write. That is a deny-all entity,
-//! // and it is a legitimate shape -- a link table with no identity of its own
-//! // -- but it is not this one.
+//! // Global entity (no scoping at all)
 //! impl ScopableEntity for system_config::Entity {
-//!     const IS_UNRESTRICTED: bool = true;
-//!
-//!     const SCOPE_PROPERTIES: &'static [(&'static str, Self::Column)] = &[];
-//!
-//!     // Exempt from the dimension check: an entity that scopes on nothing by
-//!     // construction has no dimension left to decide about.
-//!     const UNSCOPED_DIMENSIONS: &'static [&'static str] = &[];
-//!
-//!     fn type_col() -> Option<Self::Column> {
-//!         None
-//!     }
-//! }
-//!
-//! // The deny-all shape, for contrast: the flag stays at its `false` default,
-//! // and the three dimensions are declared rather than left unanswered.
-//! impl ScopableEntity for resource_group_closure::Entity {
-//!     const SCOPE_PROPERTIES: &'static [(&'static str, Self::Column)] = &[];
-//!
-//!     const UNSCOPED_DIMENSIONS: &'static [&'static str] = &[
-//!         pep_properties::OWNER_TENANT_ID,
-//!         pep_properties::RESOURCE_ID,
-//!         pep_properties::OWNER_ID,
-//!     ];
-//!
-//!     fn type_col() -> Option<Self::Column> {
-//!         None
-//!     }
+//!     const SCOPE: EntityScope<system_config::Column> = EntityScope::Unrestricted;
 //! }
 //! ```
 //!

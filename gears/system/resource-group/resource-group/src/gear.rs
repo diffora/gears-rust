@@ -4,7 +4,7 @@
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
-use authz_resolver_sdk::{AuthZResolverApi, PolicyEnforcer};
+use authz_resolver_sdk::PolicyEnforcer;
 use resource_group_sdk::{
     ResourceGroupClient, ResourceGroupReadHierarchy, ResourceGroupTypeBootstrap,
 };
@@ -16,7 +16,8 @@ use toolkit_db::DbError;
 use tracing::info;
 
 use crate::api::rest::routes;
-use crate::domain::group_service::{GroupService, QueryProfile};
+use crate::config::ResourceGroupConfig;
+use crate::domain::group_service::{GroupService, QueryProfile, TenantTypes};
 use crate::domain::membership_service::MembershipService;
 use crate::domain::read_service::RgReadService;
 use crate::domain::rg_service::RgService;
@@ -35,9 +36,10 @@ pub type ConcreteTypeBootstrapService = RgTypeBootstrapService<TypeRepository>;
 
 // @cpt-dod:cpt-cf-resource-group-dod-sdk-foundation-gear-scaffold:p1
 /// Main gear struct for the resource-group gear.
+#[toolkit::consumes(contract = authz_resolver_sdk::AuthZResolverApi, from = "authz-resolver")]
 #[toolkit::gear(
     name = "resource-group",
-    deps = [authz_resolver, types_registry],
+    deps = [types_registry],
     capabilities = [db, rest]
 )]
 #[allow(clippy::struct_field_names)]
@@ -66,21 +68,25 @@ impl Default for ResourceGroup {
 #[async_trait]
 impl Gear for ResourceGroup {
     async fn init(&self, ctx: &GearCtx) -> anyhow::Result<()> {
+        let cfg: ResourceGroupConfig = ctx.config_or_default()?;
+        cfg.validate()?;
+        info!(
+            tenant_type_paths = ?cfg.tenant_type_paths,
+            "Loaded resource-group configuration"
+        );
+
         // Acquire DB capability (secure wrapper)
         let db: Arc<DBProvider<DbError>> = Arc::new(ctx.db_required()?);
 
-        // Resolve AuthZ client from ClientHub and create PolicyEnforcer
-        let authz = ctx
-            .client_hub()
-            .get::<dyn AuthZResolverApi>()
-            .map_err(|e| anyhow::anyhow!("failed to get AuthZ resolver: {e}"))?;
+        // The AuthZ resolver is consumed, wired after `init` (locally or
+        // remotely); the enforcer fetches it from the hub per call.
         // RG owns the canonical membership and closure tables, but its group
         // resources are nested through `parent_id`/`resource_group_closure`,
         // not represented by membership rows. Their descriptors do not opt in
         // to native group predicates, and RG does not advertise the service-
         // level capabilities either; the PDP must expand group scopes to
         // explicit `in` predicates, or deny.
-        let enforcer = PolicyEnforcer::new(authz);
+        let enforcer = PolicyEnforcer::from_hub(ctx.client_hub());
 
         // Create repo instances
         let group_repo = Arc::new(GroupRepository);
@@ -121,7 +127,8 @@ impl Gear for ResourceGroup {
             )
             .with_metrics(Arc::new(
                 crate::infra::metrics::RgMetricsMeter::from_global(),
-            )),
+            ))
+            .with_tenant_types(TenantTypes::new(cfg.tenant_type_paths)),
         );
 
         self.group_service
@@ -249,3 +256,7 @@ impl RestApiCapability for ResourceGroup {
         Ok(router)
     }
 }
+
+#[cfg(test)]
+#[path = "gear_tests.rs"]
+mod gear_tests;

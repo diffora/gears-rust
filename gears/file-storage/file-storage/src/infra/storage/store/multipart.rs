@@ -1,20 +1,17 @@
-//! Multipart upload session intent methods (P2-M3).
+//! Multipart upload session intent methods.
 
 use time::OffsetDateTime;
+use toolkit_db::secure::TxConfig;
 use uuid::Uuid;
 
 use crate::domain::audit::AuditEntry;
 use crate::domain::error::DomainError;
+use crate::domain::error_convert::db_err;
 use crate::domain::multipart::{MultipartPart, MultipartUploadSession};
-use crate::infra::storage::db::db_err;
 use crate::infra::storage::store::Store;
 
 impl Store {
-    // ── multipart uploads (P2-M3) ─────────────────────────────────────────────
-
     /// Create a multipart upload session row.
-    ///
-    /// @cpt-cf-file-storage-fr-multipart-upload
     #[allow(clippy::too_many_arguments)]
     pub async fn create_multipart_upload(
         &self,
@@ -22,13 +19,16 @@ impl Store {
         file_id: Uuid,
         version_id: Uuid,
         backend_upload_handle: &str,
+        backend_id: &str,
+        backend_path: &str,
         declared_mime: &str,
         declared_size: u64,
         part_size: u64,
+        auto_bind: bool,
         expires_at: OffsetDateTime,
         now: OffsetDateTime,
     ) -> Result<(), DomainError> {
-        let conn = self.db.conn().map_err(db_err)?;
+        let conn = self.db.conn().map_err(DomainError::from)?;
         self.repos
             .multipart
             .create(
@@ -37,9 +37,12 @@ impl Store {
                 file_id,
                 version_id,
                 backend_upload_handle,
+                backend_id,
+                backend_path,
                 declared_mime,
                 declared_size,
                 part_size,
+                auto_bind,
                 expires_at,
                 now,
             )
@@ -47,19 +50,15 @@ impl Store {
     }
 
     /// Fetch a multipart upload session by `upload_id`.
-    ///
-    /// @cpt-cf-file-storage-fr-multipart-upload
     pub async fn get_multipart_upload(
         &self,
         upload_id: Uuid,
     ) -> Result<Option<MultipartUploadSession>, DomainError> {
-        let conn = self.db.conn().map_err(db_err)?;
+        let conn = self.db.conn().map_err(DomainError::from)?;
         self.repos.multipart.get(&conn, upload_id).await
     }
 
     /// Insert or replace a multipart upload part.
-    ///
-    /// @cpt-cf-file-storage-fr-multipart-upload
     #[allow(clippy::too_many_arguments)]
     pub async fn upsert_multipart_part(
         &self,
@@ -70,7 +69,7 @@ impl Store {
         size: i64,
         now: OffsetDateTime,
     ) -> Result<(), DomainError> {
-        let conn = self.db.conn().map_err(db_err)?;
+        let conn = self.db.conn().map_err(DomainError::from)?;
         self.repos
             .multipart
             .upsert_part(
@@ -85,36 +84,24 @@ impl Store {
             .await
     }
 
-    /// Whether `file_id` currently has at least one `in_progress` multipart
-    /// upload session (regardless of `expires_at`).
-    ///
-    /// P2 2.8 orphan-file-reconciliation guard -- see
-    /// `MultipartRepo::has_in_progress_for_file`.
-    ///
-    /// @cpt-cf-file-storage-fr-orphan-reconciliation
-    pub async fn has_in_progress_multipart_for_file(
-        &self,
-        file_id: Uuid,
-    ) -> Result<bool, DomainError> {
-        let conn = self.db.conn().map_err(db_err)?;
+    /// Whether `file_id` has an active (`in_progress` or `completing`) session (orphan-reconciliation guard).
+    pub async fn has_active_multipart_for_file(&self, file_id: Uuid) -> Result<bool, DomainError> {
+        let conn = self.db.conn().map_err(DomainError::from)?;
         self.repos
             .multipart
-            .has_in_progress_for_file(&conn, file_id)
+            .has_active_for_file(&conn, file_id)
             .await
     }
 
-    /// Force-set a session's `expires_at`. **Test-support only; do not call
-    /// in production** -- see `MultipartRepo::set_expires_at` for why this
-    /// exists and why it is `#[doc(hidden)]` rather than gated behind a
-    /// Cargo feature (it is called from the external integration-test crate
-    /// `tests/cleanup_test.rs`).
+    /// Force-set a session's `expires_at`. **Test-support only; do not call in
+    /// production** (see `MultipartRepo::set_expires_at`).
     #[doc(hidden)]
     pub async fn set_multipart_expires_at_for_test(
         &self,
         upload_id: Uuid,
         expires_at: OffsetDateTime,
     ) -> Result<(), DomainError> {
-        let conn = self.db.conn().map_err(db_err)?;
+        let conn = self.db.conn().map_err(DomainError::from)?;
         self.repos
             .multipart
             .set_expires_at(&conn, upload_id, expires_at)
@@ -122,45 +109,45 @@ impl Store {
     }
 
     /// List all parts for a multipart upload.
-    ///
-    /// @cpt-cf-file-storage-fr-multipart-upload
     pub async fn list_multipart_parts(
         &self,
         upload_id: Uuid,
     ) -> Result<Vec<MultipartPart>, DomainError> {
-        let conn = self.db.conn().map_err(db_err)?;
+        let conn = self.db.conn().map_err(DomainError::from)?;
         self.repos.multipart.list_parts(&conn, upload_id).await
     }
 
-    /// Mark a multipart upload session as `completed` and record the audit row
-    /// in the same transaction.
+    /// Mark a session `completed` (also setting `mime_validated`: the caller has already
+    /// sniffed and validated the assembled object), persist the response snapshot and record
+    /// the audit row in the same transaction.
     ///
-    /// Also flips `mime_validated` to `true` in the same UPDATE (P2
-    /// remediation item 1.10): by the time `MultipartService::complete_multipart_upload`
-    /// calls this, it has already sniffed the assembled object's leading
-    /// bytes and validated them against `session.declared_mime` (bailing out
-    /// with `DomainError::mime_mismatch` before ever reaching this call on a
-    /// mismatch) — so reaching this point means the content is validated.
-    ///
-    /// @cpt-cf-file-storage-fr-multipart-upload
-    /// @cpt-cf-file-storage-fr-audit-trail
-    /// @cpt-cf-file-storage-nfr-audit-completeness
+    /// `lease_owner` must still match (see `MultipartRepo::finish_complete`). Only reached via
+    /// `MultipartService::finish_session` (takeover / converge after a lost finalize CAS).
     pub async fn complete_multipart_upload(
         &self,
         upload_id: Uuid,
+        lease_owner: &str,
+        result_json: &str,
         audit: AuditEntry,
     ) -> Result<bool, DomainError> {
         let multipart = self.repos.multipart.clone();
         let audit_repo = self.repos.audit.clone();
+        let lease_owner = lease_owner.to_owned();
+        let result_json = result_json.to_owned();
         self.db
             .db()
-            .transaction_ref_mapped(move |tx| {
+            .transaction_with_retry(TxConfig::default(), db_err, move |tx| {
+                let multipart = multipart.clone();
+                let audit_repo = audit_repo.clone();
+                let audit = audit.clone();
+                let lease_owner = lease_owner.clone();
+                let result_json = result_json.clone();
                 Box::pin(async move {
+                    // Terminal transition from `completing`; persists the snapshot for idempotent re-completes.
                     let updated = multipart
-                        .update_state(tx, upload_id, "in_progress", "completed", Some(true))
+                        .finish_complete(tx, upload_id, Some(&lease_owner), &result_json)
                         .await?;
                     if updated {
-                        // @cpt-cf-file-storage-nfr-audit-completeness
                         audit_repo.insert(tx, &audit).await?;
                     }
                     Ok::<bool, DomainError>(updated)
@@ -169,12 +156,35 @@ impl Store {
             .await
     }
 
-    /// Mark a multipart upload session as `aborted` and record the audit row
-    /// in the same transaction.
-    ///
-    /// @cpt-cf-file-storage-fr-multipart-upload
-    /// @cpt-cf-file-storage-fr-audit-trail
-    /// @cpt-cf-file-storage-nfr-audit-completeness
+    /// Acquire (or take over an expired) lease; see `MultipartRepo::acquire_complete_lease`.
+    pub async fn acquire_multipart_complete_lease(
+        &self,
+        upload_id: Uuid,
+        owner: &str,
+        lease_until: OffsetDateTime,
+        now: OffsetDateTime,
+    ) -> Result<bool, DomainError> {
+        let conn = self.db.conn().map_err(DomainError::from)?;
+        self.repos
+            .multipart
+            .acquire_complete_lease(&conn, upload_id, owner, lease_until, now)
+            .await
+    }
+
+    /// Release a held lease after a failed assembly; see `MultipartRepo::release_complete_lease`.
+    pub async fn release_multipart_complete_lease(
+        &self,
+        upload_id: Uuid,
+        owner: &str,
+    ) -> Result<bool, DomainError> {
+        let conn = self.db.conn().map_err(DomainError::from)?;
+        self.repos
+            .multipart
+            .release_complete_lease(&conn, upload_id, owner)
+            .await
+    }
+
+    /// Mark a session `aborted` and record the audit row in one transaction (user abort and cleanup sweep).
     pub async fn abort_multipart_upload(
         &self,
         upload_id: Uuid,
@@ -184,13 +194,21 @@ impl Store {
         let audit_repo = self.repos.audit.clone();
         self.db
             .db()
-            .transaction_ref_mapped(move |tx| {
+            .transaction_with_retry(TxConfig::default(), db_err, move |tx| {
+                let multipart = multipart.clone();
+                let audit_repo = audit_repo.clone();
+                let audit = audit.clone();
                 Box::pin(async move {
-                    let updated = multipart
+                    let mut updated = multipart
                         .update_state(tx, upload_id, "in_progress", "aborted", None)
                         .await?;
+                    if !updated {
+                        // An expired `completing` lease is abortable too; a live one never is (`lease_until < now`).
+                        updated = multipart
+                            .abort_expired_completing(tx, upload_id, OffsetDateTime::now_utc())
+                            .await?;
+                    }
                     if updated {
-                        // @cpt-cf-file-storage-nfr-audit-completeness
                         audit_repo.insert(tx, &audit).await?;
                     }
                     Ok::<bool, DomainError>(updated)

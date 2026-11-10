@@ -75,12 +75,12 @@ As an alternative, you can fork the repository to your own GitHub account.
 
 Constructor Fabric Gears follows a spec-driven development (SDD) approach for large features. Gear development starts with specifications that live alongside the code. When you add features, make design decisions, or introduce upstream requirements, you must use the following templates and keep them aligned with the implementation:
 
-- **[Overview & Guide](./docs/spec-templates/README.md)** — Template system overview, governance, FDD ID conventions, and document placement rules
-- **[PRD.md](./docs/spec-templates/gears-sdlc/PRD/template.md)** — Product Requirements Document: vision, actors, capabilities, use cases, FR/NFR
-- **[DESIGN.md](./docs/spec-templates/gears-sdlc/DESIGN/template.md)** — Technical Design: architecture, principles, constraints, domain model, API contracts
-- **[ADR.md](./docs/spec-templates/gears-sdlc/ADR/template.md)** — Architecture Decision Record: decisions, options, trade-offs, consequences
-- **[FEATURE.md](./docs/spec-templates/gears-sdlc/FEATURE/template.md)** — Feature Specification: flows, algorithms, states, requirements
-- **[UPSTREAM_REQS.md](./docs/spec-templates/gears-sdlc/UPSTREAM_REQS/template.md)** — Upstream Requirements: technical requirements from other gears to this gear
+- **[Overview & Guide](./studio-kit-gears/artifacts/README.md)** — Template system overview, governance, FDD ID conventions, and document placement rules
+- **[PRD.md](./studio-kit-gears/artifacts/PRD/template.md)** — Product Requirements Document: vision, actors, capabilities, use cases, FR/NFR
+- **[DESIGN.md](./studio-kit-gears/artifacts/DESIGN/template.md)** — Technical Design: architecture, principles, constraints, domain model, API contracts
+- **[ADR.md](./studio-kit-gears/artifacts/ADR/template.md)** — Architecture Decision Record: decisions, options, trade-offs, consequences
+- **[FEATURE.md](./studio-kit-gears/artifacts/FEATURE/template.md)** — Feature Specification: flows, algorithms, states, requirements
+- **[UPSTREAM_REQS.md](./studio-kit-gears/artifacts/UPSTREAM_REQS/template.md)** — Upstream Requirements: technical requirements from other gears to this gear
 
 ### 2.3. Make Your Changes
 
@@ -143,12 +143,16 @@ workflow → select your branch.
 
 To check offline instead, run `make shear`. It needs `cargo-shear` on your `PATH`
 (`make setup` installs it, pinned to the version CI uses) plus the nightly toolchain
-named by `RUST_NIGHTLY` in the Makefile, which rustup downloads on first use. Budget
+named by `RUST_NIGHTLY` in `gears.mk`, which rustup downloads on first use. Budget
 about an hour for the scan.
 
 Always include unit tests when introducing new code.
 
 ### 2.4. Run Code Quality Checks
+
+The `Makefile` is a driver: it includes `gears-rust.mk` (the targets of this
+repository) and `.gears-dna/gears.mk` (shared rules that other gear projects reuse). See
+[the gears.mk guide](.gears-dna/docs/GEARS_MK.md) when adding or changing make targets.
 
 Build and run all the quality checks:
 
@@ -168,6 +172,14 @@ make e2e-local SUITE=file-parser
 ```
 
 Note: CI workflows may not run for PRs that only touch `*.md` files or `docs/**` due to path filters.
+
+PRs run the unit tests on Ubuntu only. macOS and Windows run nightly
+(`.github/workflows/macos-windows-tests.yml`), and a failure opens a tracking issue.
+
+If your change touches platform-specific code (`cfg(windows)`, `cfg(target_os = "macos")`,
+file paths, line endings, file locking), run those tests on your branch before merging:
+Actions > macOS and Windows tests > Run workflow > pick your branch. If you can't run
+workflows in this repo, run it in your fork.
 
 Aim for high test coverage:
 - **Unit tests**: Test individual functions and methods
@@ -270,6 +282,19 @@ export RUST_LOG=debug
 export RUST_BACKTRACE=full
 ```
 
+
+### 2.6.1. Git Hooks
+
+The first `make` run installs git hooks from `.githooks/` as symlinks into your git hooks directory (it respects `core.hooksPath` and never overwrites an existing hook). They run the checks that most often fail in CI, scoped to what changed:
+
+- `pre-commit` (staged files): rustfmt, `cfs validate`, offline lychee link check, CRLF.
+- `pre-push` (changes vs a base ref): clippy on the changed workspace packages and the workspace packages that depend on them, architecture lints (`cargo gears lint --dylint`), forbidden words (needs bash >= 4 and jq: `brew install bash jq` on macOS).
+
+The `pre-push` base is the first ref found of `$GEARS_HOOKS_BASE`, `git config gears.hooksBase`, `upstream/main`, `origin/main`, `main` (an explicit override that does not exist skips the checks). It is never fetched, so in a fork keep `upstream/main` up to date (it is preferred over the fork's `origin/main`) or set the override. Changed packages that are not workspace members (such as `tools/fuzz`) are skipped; without `jq` or when `cargo metadata` fails, clippy runs on the whole workspace instead (slower, but correct). dylint runs workspace-wide on any push touching Rust/Cargo files, plus the OAGW `-F cluster` run of `make dylint` when OAGW is affected. Measured on an Apple M2 Pro with 32 GB: with a cold cache (after a toolchain update or `cargo clean`) clippy on the whole workspace takes about 6 minutes, dylint about 4.5 and the OAGW pass about 1. With a warm cache, a push touching one gear or an SDK takes 20 seconds to 1.5 minutes of clippy (the upper end right after a build with a different package set, because features unify differently), a change to a crate most of the workspace depends on (such as the toolkit macros) about 3 minutes, and dylint a few seconds.
+
+A check whose tool is not installed is skipped with a notice. Bypass with `git commit --no-verify` / `git push --no-verify`. Opt out with `GEARS_NO_HOOKS=1` and remove with `make uninstall-hooks`. The hooks run only in clones where `make` (or `make install-hooks`) ran once, which records `gears.hooks=true` in that clone's local git config; `make uninstall-hooks` disables them for that clone persistently (the auto-install respects it) and `make install-hooks` turns them back on. In other repos sharing the same hooks directory (global `core.hooksPath`) the hooks do nothing.
+
+When editing `.githooks`, run `make shellcheck` (installed by `make setup`, pinned to the CI version) and `sh .githooks/tests/run.sh`; CI runs both (the tests on Linux, macOS and Windows Git Bash).
 
 ### 2.7. Sign Your Commits (DCO)
 

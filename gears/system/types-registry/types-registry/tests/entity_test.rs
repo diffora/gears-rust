@@ -550,26 +550,16 @@ async fn type_schema_revision_and_current_pointer_round_trip() {
 
 #[test]
 fn every_core_entity_is_declared_unrestricted_while_ceiling_c6_stands() {
-    use toolkit_db::secure::{ScopableEntity, ScopeProperties};
+    use toolkit_db::secure::ScopableEntity;
 
     fn assert_unrestricted<E: ScopableEntity>(table: &str) {
         assert!(
-            E::IS_UNRESTRICTED,
+            E::SCOPE.is_unrestricted(),
             "{table} is no longer `#[secure(unrestricted)]`; ceiling C6 (no PDP) says the \
              switch to `tenant_col` comes with the PolicyEnforcer work, not before it"
         );
-        // `IS_UNRESTRICTED` makes every dimension column `None`; asserting it
-        // here catches a half-migration that sets a column but leaves the flag.
-        assert!(
-            E::tenant_col().is_none(),
-            "{table} declares a tenant column"
-        );
-        assert!(
-            E::resource_col().is_none(),
-            "{table} declares a resource column"
-        );
-        assert!(E::owner_col().is_none(), "{table} declares an owner column");
-        assert!(E::type_col().is_none(), "{table} declares a type column");
+        // `EntityScope::Unrestricted` carries no column, so a half-migration
+        // that sets a column without dropping `unrestricted` cannot be written.
     }
 
     assert_unrestricted::<version_family::Entity>("version_family");

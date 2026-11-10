@@ -107,6 +107,12 @@ use timescaledb_usage_collector_plugin as _;
 
 #[cfg(feature = "clickhouse-usage-collector")]
 use clickhouse_usage_collector_plugin as _;
+#[cfg(any(feature = "quota-enforcement", feature = "oagw-embedded"))]
+use cluster as _;
+#[cfg(feature = "quota-enforcement")]
+use quota_enforcement as _;
+#[cfg(feature = "quota-enforcement")]
+use quota_enforcement_storage_plugin as _;
 
 #[cfg(feature = "bss-products")]
 use bss_products as _;
@@ -114,5 +120,25 @@ use bss_products as _;
 #[cfg(feature = "bss-pricing")]
 use bss_pricing as _;
 
+#[cfg(feature = "admission-control")]
+use admission_control as _;
+
+#[cfg(feature = "policy-engine")]
+use policy_engine as _;
+
 #[cfg(feature = "bss-approvals")]
 use bss_approvals as _;
+
+#[cfg(feature = "bss-orders")]
+use bss_orders as _;
+
+#[cfg(feature = "bss-orders-test-authz")]
+use bss_orders_test_authz_plugin as _;
+// Orders' required Event Broker gear (and, through it, the cluster gear) plus the plugins its
+// standalone deployment selects.
+#[cfg(feature = "bss-orders")]
+use event_broker as _;
+#[cfg(feature = "bss-orders")]
+use sqlite_event_broker_plugin as _;
+#[cfg(feature = "bss-orders")]
+use standalone_cluster_plugin as _;

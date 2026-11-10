@@ -21,10 +21,10 @@ use crate::models::{
     ComponentReadiness, DeleteOutcome, DeleteRequest, Direction, EdgeKey, EdgeRef, EdgeView,
     EmbeddingSpaceId, EngineCapabilities, GraphRevision, GtsTypeId, HopBudget, IngestOutcome,
     IngestRequest, ItemError, LabelAssignment, LabelFilter, LabelId, LabelRecord, LabelSpec,
-    NodeId, NodeKey, NodeRow, NodeView, Page, ProjectionRequest, ReadSnapshot, RegisteredType,
-    RemainingBudget, RevisionOutcome, SearchRequest, SearchResponse, SourceNamespaceOwner,
-    StoreCapabilities, Subject, TenantId, TopologyPage, TopologyRequest, TruncationReason,
-    TypeIdSet, TypeQuery, TypeRecord, TypeRegistration, TypeRegistrationOptions,
+    NodeCount, NodeId, NodeKey, NodeRow, NodeView, Page, ProjectionRequest, ReadSnapshot,
+    RegisteredType, RemainingBudget, RevisionOutcome, SearchRequest, SearchResponse,
+    SourceNamespaceOwner, StoreCapabilities, Subject, TenantId, TopologyPage, TopologyRequest,
+    TruncationReason, TypeIdSet, TypeQuery, TypeRecord, TypeRegistration, TypeRegistrationOptions,
 };
 
 /// Per-call context. The compiled scope is mandatory, not optional:
@@ -333,6 +333,16 @@ pub trait GraphStoreV1: Send + Sync + 'static {
         ctx: &StoreCtx<'_>,
         req: ProjectionRequest,
     ) -> Result<toolkit_odata::Page<NodeRow>, GraphStoreError>;
+    /// How many rows `project_table` would list for `req`, across all its
+    /// pages: the same type set, the same `$filter`, the same scope. Counts
+    /// at most `max`; past it the answer is `max` with `capped` set. The
+    /// request's ordering, page size and cursor do not apply.
+    async fn count_table(
+        &self,
+        ctx: &StoreCtx<'_>,
+        req: ProjectionRequest,
+        max: u64,
+    ) -> Result<NodeCount, GraphStoreError>;
     /// Node keys with their type and typed edge pairs, tombstoned rows
     /// excluded, paged. A store that cannot expose it declares the capability
     /// absent, and analytics is unavailable in that deployment (ADR-0007).
@@ -413,6 +423,10 @@ pub struct ExpandRequest {
     pub direction: Direction,
     /// Per-hop restriction, already resolved to registered types.
     pub edge_types: Option<TypeIdSet>,
+    /// Per-hop restriction on the edge's discriminator: an edge is followed
+    /// only when its discriminator is one of these. `None` follows every
+    /// edge; an edge without a discriminator never matches `Some`.
+    pub discriminators: Option<Vec<String>>,
     /// Per-hop restriction (labels are deferred; engines may answer
     /// `Unsupported`).
     pub labels: Option<LabelFilter>,
@@ -450,22 +464,15 @@ pub struct ExpandResponse {
     /// Never silent.
     pub truncated: Option<TruncationReason>,
     /// Which backend produced this answer.
-    ///
-    /// **Found while building the prototype.** The pattern backend declines by
-    /// falling back, and the decline was recorded only in a log line. A log
-    /// line is not something a test can assert on, so the suite could not tell
-    /// a pattern hop that ran from one that failed and was silently served by
-    /// the two-query hop instead -- which is exactly what happened, for every
-    /// traversal, when the pattern lost its anchor. Reporting the backend on
-    /// the response is what makes "the pattern actually served this" an
-    /// assertion rather than an assumption.
     pub served_by: HopBackend,
 }
 
 /// The hop backends of ADR-0005, as the answer reports them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HopBackend {
-    /// One scoped `GRAPH_TABLE` statement.
+    /// The retired SQL/PGQ hop; no engine reports it. Removed in the next
+    /// breaking release of this SDK.
+    #[deprecated(note = "the SQL/PGQ hop is retired (gears-rust #5267); no engine reports it")]
     Pattern,
     /// Two scoped queries per hop; always available.
     TwoQuery,

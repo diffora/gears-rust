@@ -61,9 +61,7 @@ use toolkit_security::AccessScope;
 
 use crate::secure::tx_config::TxConfig;
 
-use crate::secure::{
-    ScopableEntity, ScopeError, ScopeProperties, Scoped, SecureEntityExt, SecureSelect,
-};
+use crate::secure::{ScopableEntity, ScopeError, Scoped, SecureEntityExt, SecureSelect};
 
 use crate::secure::db_ops::{SecureDeleteExt, SecureDeleteMany, SecureUpdateExt, SecureUpdateMany};
 
@@ -71,10 +69,12 @@ use crate::secure::db_ops::{SecureDeleteExt, SecureDeleteMany, SecureUpdateExt, 
 ///
 /// This type intentionally does not expose any raw transaction or executor API.
 pub struct SecureTx<'a> {
+    /// Underlying transaction borrowed for the lifetime of this handle.
     pub(crate) tx: &'a DatabaseTransaction,
 }
 
 impl<'a> SecureTx<'a> {
+    /// Wraps a raw transaction; only constructible inside the crate.
     #[must_use]
     pub(crate) fn new(tx: &'a DatabaseTransaction) -> Self {
         Self { tx }
@@ -112,6 +112,7 @@ impl<'a> SecureTx<'a> {
 /// - Type system prevents unscoped queries from compiling
 /// - Gears cannot access raw database connections
 pub struct SecureConn {
+    /// Underlying database connection; never exposed outside the crate.
     pub(crate) conn: DatabaseConnection,
 }
 
@@ -408,7 +409,7 @@ impl SecureConn {
         E: ScopableEntity + EntityTrait,
         E::Column: ColumnTrait + Copy,
     {
-        let resource_col = E::resource_col().ok_or_else(|| {
+        let resource_col = E::SCOPE.resource().ok_or_else(|| {
             ScopeError::Invalid("Entity must have a resource_col to use delete_by_id()")
         })?;
 

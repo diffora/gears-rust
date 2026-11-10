@@ -1,4 +1,3 @@
-// Created: 2026-08-13 by Virtuozzo International GmbH
 // @cpt-dod:cpt-cf-settings-service-dod-category-management-key-format:p1
 //! The category key value object.
 //!
@@ -15,6 +14,7 @@
 //! be stored, and then refuse every setting declared under it.
 
 use crate::field;
+use toolkit_macros::domain_model;
 
 /// Inclusive bounds on a category key's length, in characters.
 const MIN_LENGTH: usize = 1;
@@ -29,6 +29,7 @@ const RESERVED_SEPARATOR: char = '/';
 /// key and a supplied key compare identically. Accepting `" network"` as
 /// `network` would give one category two spellings, and the setting keys
 /// declared under each would not match.
+#[domain_model]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CategoryKey(String);
 

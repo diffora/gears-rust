@@ -16,6 +16,10 @@ fn default_body_limit_bytes() -> usize {
     16 * 1024 * 1024
 }
 
+/// Default per-request deadline: the value the gateway hard-coded before
+/// `defaults.request_timeout` became configurable.
+pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
 fn default_healthcheck_timeout_ms() -> u64 {
     500
 }
@@ -265,18 +269,54 @@ impl Default for ApiGatewayConfig {
     }
 }
 
+/// Gateway-wide default limits and timeouts applied to routes that do not override them.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Defaults {
     /// Global request body size limit in bytes
     pub body_limit_bytes: usize,
+
+    /// Deadline for producing a response, as a humantime duration (`"30s"`,
+    /// `"2m"`, `"1500ms"`). A request whose handler has not returned a
+    /// response by then is answered with a canonical `deadline_exceeded`
+    /// problem (HTTP 504). Default `"30s"`.
+    ///
+    /// The deadline covers the handler future only, up to the response
+    /// headers. A streamed body (SSE, chunked downloads, a proxied stream) and
+    /// an upgraded WebSocket connection are not cut off once their response
+    /// has been returned.
+    #[serde(with = "humantime_serde")]
+    pub request_timeout: Duration,
 }
 
 impl Default for Defaults {
     fn default() -> Self {
         Self {
             body_limit_bytes: default_body_limit_bytes(),
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
         }
+    }
+}
+
+impl Defaults {
+    /// Validate the gateway-wide defaults at config-load time.
+    ///
+    /// A zero `request_timeout` would fail every request with 504 before its
+    /// handler could run, so it is refused at startup. There is deliberately no
+    /// upper bound: how long a request may legitimately take is a property of
+    /// the deployment's slowest route, which the gateway cannot know, and a cap
+    /// would only reintroduce a hard-coded limit one level up.
+    ///
+    /// # Errors
+    /// Returns a human-readable description when `request_timeout` is zero.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.request_timeout.is_zero() {
+            return Err(
+                "invalid api_gateway configuration: `defaults.request_timeout` must be greater                  than zero (e.g. \"30s\")"
+                    .to_owned(),
+            );
+        }
+        Ok(())
     }
 }
 
@@ -519,9 +559,22 @@ impl Serialize for RetryAfter {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum KeyType {
-    /// Key by the authenticated subject (`SecurityContext::subject_id()`).
+    /// Key by the identity the operation's auth plane validated:
+    ///
+    /// - tenant (`.authenticated()`): the subject UUID
+    ///   (`SecurityContext::subject_id()`), e.g.
+    ///   `150853ab-322c-455d-9793-8d71bf6973d9`;
+    /// - platform (`.platform_authenticated()`): the calling workload, never its
+    ///   instance — `platform:k8s:<namespace>/<service_account>`,
+    ///   `platform:spiffe:<trust_domain>/<name>` or `platform:shared:<name>`,
+    ///   with `%` and `/` in a component percent-encoded.
+    ///
     /// Identity keying requires authentication, so identity-keyed zones may only
-    /// be referenced by operations marked `require_security_context = true`.
+    /// be referenced by operations marked `require_security_context = true`, and
+    /// never by anonymous operations. With `auth_disabled = true` they are
+    /// allowed only on platform operations, whose callers are still validated.
+    /// A zone may serve both planes: their keys never collide, and they share
+    /// its budget, including `max_keys`; use separate zones to isolate them.
     Identity,
     /// Key by client IP address. Usable before authentication.
     Ip,
@@ -580,7 +633,9 @@ pub struct InFlightLimitZone {
     /// admission (a held gate is never evicted, so a cap filled by live
     /// requests stays closed until they finish).
     pub max_keys: u64,
-    /// Keys that bypass this zone entirely (e.g. privileged identities).
+    /// Keys that bypass this zone entirely (e.g. privileged identities), in the
+    /// zone's key format (see [`KeyType`]): a client IP, a tenant subject UUID,
+    /// or a `platform:` workload key.
     #[serde(default)]
     pub excluded_keys: Vec<String>,
 }
@@ -674,6 +729,89 @@ mod tests {
             ..GatewayProxyConfig::default()
         };
         assert!(cfg.validate().is_ok());
+    }
+}
+
+#[cfg(test)]
+mod defaults_tests {
+    use super::*;
+
+    fn parse(yaml: &str) -> ApiGatewayConfig {
+        serde_saphyr::from_str(yaml).expect("config should deserialize")
+    }
+
+    #[test]
+    fn request_timeout_defaults_to_30s_when_absent() {
+        let cfg = parse(
+            "bind_addr: \"0.0.0.0:8086\"
+",
+        );
+        assert_eq!(cfg.defaults.request_timeout, Duration::from_secs(30));
+
+        let cfg = parse(
+            "bind_addr: \"0.0.0.0:8086\"
+defaults:
+  body_limit_bytes: 1024
+",
+        );
+        assert_eq!(cfg.defaults.request_timeout, Duration::from_secs(30));
+        assert_eq!(cfg.defaults.body_limit_bytes, 1024);
+
+        assert_eq!(
+            ApiGatewayConfig::default().defaults.request_timeout,
+            DEFAULT_REQUEST_TIMEOUT
+        );
+    }
+
+    #[test]
+    fn request_timeout_parses_humantime() {
+        let cfg = parse(
+            "bind_addr: \"0.0.0.0:8086\"
+defaults:
+  request_timeout: 2m
+",
+        );
+        assert_eq!(cfg.defaults.request_timeout, Duration::from_secs(120));
+        assert_eq!(cfg.defaults.body_limit_bytes, default_body_limit_bytes());
+
+        let cfg = parse(
+            "bind_addr: \"0.0.0.0:8086\"
+defaults:
+  request_timeout: 1500ms
+",
+        );
+        assert_eq!(cfg.defaults.request_timeout, Duration::from_millis(1500));
+        assert!(cfg.defaults.validate().is_ok());
+    }
+
+    #[test]
+    fn request_timeout_rejects_a_bare_number() {
+        let res = serde_saphyr::from_str::<ApiGatewayConfig>(
+            "bind_addr: \"0.0.0.0:8086\"
+defaults:
+  request_timeout: 30
+",
+        );
+        assert!(res.is_err(), "a unitless number must not parse");
+    }
+
+    #[test]
+    fn zero_request_timeout_is_rejected() {
+        let cfg = parse(
+            "bind_addr: \"0.0.0.0:8086\"
+defaults:
+  request_timeout: 0s
+",
+        );
+        let err = cfg.defaults.validate().unwrap_err();
+        assert!(err.contains("request_timeout"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn request_timeout_round_trips_through_serialize() {
+        let defaults = Defaults::default();
+        let json = serde_json::to_value(&defaults).expect("serialize");
+        assert_eq!(json["request_timeout"], "30s");
     }
 }
 

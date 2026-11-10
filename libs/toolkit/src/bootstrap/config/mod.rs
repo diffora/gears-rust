@@ -172,6 +172,13 @@ pub struct OopHttpConfig {
     /// Set `true` only for single-host / local-dev.
     #[serde(default)]
     pub allow_loopback_advertise: bool,
+    /// Development only: serve without a tenant authenticator. Non-platform routes
+    /// run with the default tenant `SecurityContext`, as `api-gateway`'s
+    /// `auth_disabled` does; platform routes still need a validated internal token.
+    /// An installed tenant authenticator still wins. Off by default: a worker serving
+    /// tenant operations without an authenticator refuses to start.
+    #[serde(default)]
+    pub auth_disabled: bool,
     /// Platform-plane (`InternalAuthenticator`) configuration. When present it
     /// drives both the *inbound* HTTP validator on the gear's own routes and
     /// the *outbound* credential attached to the gear's `DirectoryService`
@@ -260,6 +267,29 @@ pub struct ServerConfig {
     pub name: String,
     #[serde(default = "default_home_dir")]
     pub home_dir: PathBuf, // will be normalized to absolute path
+    /// Per-gear deadline for context construction + `init()` (seconds); absent
+    /// keeps [`DEFAULT_INIT_DEADLINE`](crate::runtime::DEFAULT_INIT_DEADLINE).
+    #[serde(default)]
+    pub init_deadline_secs: Option<u64>,
+    /// Per-gear graceful-shutdown deadline before hard-stop (seconds); absent
+    /// keeps [`DEFAULT_SHUTDOWN_DEADLINE`](crate::runtime::DEFAULT_SHUTDOWN_DEADLINE).
+    #[serde(default)]
+    pub shutdown_deadline_secs: Option<u64>,
+}
+
+impl ServerConfig {
+    /// Configured per-gear init deadline, if set.
+    #[must_use]
+    pub fn init_deadline(&self) -> Option<std::time::Duration> {
+        self.init_deadline_secs.map(std::time::Duration::from_secs)
+    }
+
+    /// Configured per-gear graceful-shutdown deadline, if set.
+    #[must_use]
+    pub fn shutdown_deadline(&self) -> Option<std::time::Duration> {
+        self.shutdown_deadline_secs
+            .map(std::time::Duration::from_secs)
+    }
 }
 
 fn default_server_name() -> String {
@@ -275,6 +305,8 @@ impl Default for ServerConfig {
         Self {
             name: default_server_name(),
             home_dir: default_home_dir(),
+            init_deadline_secs: None,
+            shutdown_deadline_secs: None,
         }
     }
 }
@@ -470,8 +502,8 @@ fn reject_legacy_tracing_key(figment: &figment::Figment) -> Result<()> {
          \x20 tracing.metrics       -> opentelemetry.metrics\n\
          \x20 tracing.exporter      -> opentelemetry.exporter (shared) or \
          opentelemetry.tracing.exporter\n\
-         \x20 tracing.sampler, .propagation, .http, .logs_correlation \
-         -> opentelemetry.tracing.*\n\
+         \x20 tracing.sampler, .logs_correlation -> opentelemetry.tracing.*\n\
+         \x20 tracing.propagation, .http        -> (removed; never read by code)\n\
          \n\
          Environment overrides use the same path, so APP__TRACING__* becomes \
          APP__OPENTELEMETRY__*. See docs/TRACING_SETUP.md."

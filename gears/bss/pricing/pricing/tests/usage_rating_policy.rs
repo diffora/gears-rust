@@ -495,9 +495,12 @@ async fn legacy_published_usage_upgrades_without_inventing_policy_and_keeps_reso
     use toolkit::contracts::DatabaseCapability;
     use toolkit_db::migration_runner::run_migrations_for_testing;
     let dsn = TestDsn::new("pricing-legacy-policy-");
-    let db = toolkit_db::connect_db(&dsn, toolkit_db::ConnectOpts::default())
-        .await
-        .unwrap();
+    let db = toolkit_db::connect_db(
+        &plan_support::entry_support::toolkit_dsn(&dsn),
+        toolkit_db::ConnectOpts::default(),
+    )
+    .await
+    .unwrap();
     let prior = BssPricingGear::default()
         .migrations()
         .into_iter()
@@ -514,42 +517,40 @@ async fn legacy_published_usage_upgrades_without_inventing_policy_and_keeps_reso
     run_migrations_for_testing(&db, prior).await.unwrap();
     let catalog = Arc::new(Catalog::default());
     let sku = catalog.sku(SkuType::Usage);
-    let f = Fixture::on(
-        toolkit_db::DBProvider::new(db),
-        Uuid::new_v4(),
-        dsn,
-        catalog,
-    )
-    .await;
-    let tenant = f.ctx.subject_tenant_id();
+    // Seed the legacy rows and finish the chain before the fixture starts its outbox
+    // pipeline: a lease write racing a migration's read-to-write upgrade fails at once
+    // with `database is locked`, whatever the busy timeout.
+    let tenant = Uuid::new_v4();
+    let author = Uuid::new_v4();
     let book_id = Uuid::new_v4();
     let plan_id = Uuid::new_v4();
     let revision = Uuid::new_v4();
     let entry = Uuid::new_v4();
     let price = Uuid::new_v4();
     let now = time::OffsetDateTime::now_utc();
-    let raw = Database::connect(&f.dsn).await.unwrap();
+    let raw = Database::connect(&dsn).await.unwrap();
     raw.execute_raw(Statement::from_sql_and_values(DbBackend::Sqlite,
         "INSERT INTO pricing_price_book (id,tenant_id,code,name,currency,version,created_at,updated_at) VALUES (?,?,?,?,?,1,?,?)",
         vec![book_id.into(),tenant.into(),"LEGACY".into(),"Legacy".into(),"EUR".into(),now.into(),now.into()])).await.unwrap();
     raw.execute_raw(Statement::from_sql_and_values(DbBackend::Sqlite,
         "INSERT INTO pricing_plan (id,tenant_id,code,name,published_rev,version,created_by,created_at,updated_at) VALUES (?,?,?,?,1,1,?,?,?)",
-        vec![plan_id.into(),tenant.into(),"LEGACY".into(),"Legacy".into(),f.ctx.subject_id().into(),now.into(),now.into()])).await.unwrap();
+        vec![plan_id.into(),tenant.into(),"LEGACY".into(),"Legacy".into(),author.into(),now.into(),now.into()])).await.unwrap();
     raw.execute_raw(Statement::from_sql_and_values(DbBackend::Sqlite,
         "INSERT INTO pricing_plan_revision (id,tenant_id,plan_id,rev_no,book_id,state,version,created_by,created_at,updated_at) VALUES (?,?,?,1,?,'published',1,?,?,?)",
-        vec![revision.into(),tenant.into(),plan_id.into(),book_id.into(),f.ctx.subject_id().into(),now.into(),now.into()])).await.unwrap();
+        vec![revision.into(),tenant.into(),plan_id.into(),book_id.into(),author.into(),now.into(),now.into()])).await.unwrap();
     raw.execute_raw(Statement::from_sql_and_values(DbBackend::Sqlite,
         "INSERT INTO pricing_price_book_entry (id,tenant_id,book_id,sku_id,charge_kind,model,reservation_id,reference_state,version,created_at,updated_at) VALUES (?,?,?,?,'usage','per_unit',?,'confirmed',1,?,?)",
         vec![entry.into(),tenant.into(),book_id.into(),sku.into(),Uuid::new_v4().into(),now.into(),now.into()])).await.unwrap();
     raw.execute_raw(Statement::from_sql_and_values(DbBackend::Sqlite,
         "INSERT INTO pricing_plan_item (id,tenant_id,revision_id,sku_id,price_book_entry_id,treatment,reservation_id,reference_state,version,created_by,created_at,updated_at) VALUES (?,?,?,?,?,'paid',?,'confirmed',1,?,?,?)",
-        vec![Uuid::new_v4().into(),tenant.into(),revision.into(),sku.into(),entry.into(),Uuid::new_v4().into(),f.ctx.subject_id().into(),now.into(),now.into()])).await.unwrap();
+        vec![Uuid::new_v4().into(),tenant.into(),revision.into(),sku.into(),entry.into(),Uuid::new_v4().into(),author.into(),now.into(),now.into()])).await.unwrap();
     raw.execute_raw(Statement::from_sql_and_values(DbBackend::Sqlite,
-        "INSERT INTO pricing_price (id,tenant_id,price_book_entry_id,version_no,price_json,eligibility,effective_from,state,created_by,version,created_at,updated_at) VALUES (?,?,?,1,?,'all','2026-09-01','approved',?,1,?,?)",
-        vec![price.into(),tenant.into(),entry.into(),json!({"rate":"1"}).to_string().into(),f.ctx.subject_id().into(),now.into(),now.into()])).await.unwrap();
-    run_migrations_for_testing(&f.db.db(), BssPricingGear::default().migrations())
+        "INSERT INTO pricing_price (id,tenant_id,price_book_entry_id,version_no,price_json,currency,currency_scale,eligibility,effective_from,state,created_by,version,created_at,updated_at) VALUES (?,?,?,1,?,'EUR',2,'all','2026-09-01','approved',?,1,?,?)",
+        vec![price.into(),tenant.into(),entry.into(),json!({"rate":"1"}).to_string().into(),author.into(),now.into(),now.into()])).await.unwrap();
+    run_migrations_for_testing(&db, BssPricingGear::default().migrations())
         .await
         .unwrap();
+    let f = Fixture::on(toolkit_db::DBProvider::new(db), tenant, dsn, catalog).await;
     let stored = price_book_entry_repo::find(&f.db.conn().unwrap(), &scope(&f), tenant, entry)
         .await
         .unwrap()
@@ -1440,80 +1441,83 @@ async fn submit_price(f: &Fixture, id: Uuid) -> (u16, Value, String) {
     .await
 }
 
+/// D-525: a usage price on an hourly or per-resource policy carries its floor through create,
+/// submit and apply, and reads it back approved.
 #[tokio::test]
-async fn hourly_minimum_fee_is_rejected_at_create_submit_and_apply() {
-    use sea_orm::{ConnectionTrait, Database, DbBackend, Statement};
-    let f = Fixture::new(Arc::new(Script::default())).await;
-    let (book, _) = f.book().await;
-    let entry = create_entry(
-        &f,
-        plan_support::id_of(&book["id"]),
-        Uuid::new_v4(),
-        policy(),
-    )
-    .await;
-    let today = time::OffsetDateTime::now_utc().date().to_string();
-    let rejected = draft_price(&f, entry, &today, Some("1")).await;
-    assert_eq!(rejected.0, 400, "{rejected:?}");
-    assert!(rejected.1.to_string().contains("UNSUPPORTED_TERMS"));
-    let draft = draft_price(&f, entry, &today, None).await;
-    assert_eq!(draft.0, 201, "{draft:?}");
-    let id = plan_support::id_of(&draft.1["items"][0]["id"]);
-    let raw = Database::connect(&f.dsn).await.unwrap();
-    raw.execute_raw(Statement::from_sql_and_values(
-        DbBackend::Sqlite,
-        "UPDATE pricing_price SET min_fee = '1' WHERE id = ?",
-        [id.into()],
-    ))
-    .await
-    .unwrap();
-    let rejected = submit_price(&f, id).await;
-    assert_eq!(rejected.0, 400, "{rejected:?}");
-    assert!(rejected.1.to_string().contains("UNSUPPORTED_TERMS"));
-    raw.execute_raw(Statement::from_sql_and_values(
-        DbBackend::Sqlite,
-        "UPDATE pricing_price SET min_fee = NULL WHERE id = ?",
-        [id.into()],
-    ))
-    .await
-    .unwrap();
-    let pending = submit_price(&f, id).await;
-    assert_eq!(pending.0, 201, "{pending:?}");
-    raw.execute_raw(Statement::from_sql_and_values(
-        DbBackend::Sqlite,
-        "UPDATE pricing_price SET min_fee = '1' WHERE id = ?",
-        [id.into()],
-    ))
-    .await
-    .unwrap();
-    let reviewer = plan_support::entry_support::user_of(f.ctx.subject_tenant_id());
-    let path = format!(
-        "/approval-units/{}/approve",
-        pending.1["unit"]["id"].as_str().unwrap()
-    );
-    let stale = f
-        .call_as(
-            &reviewer,
-            "POST",
-            &path,
-            json!({"generation":1}),
-            None,
-            Some("stale-fee"),
-        )
-        .await;
-    assert_eq!(stale.0, 400, "{stale:?}");
-    let refused = f
-        .call_as(
-            &reviewer,
-            "POST",
-            &path,
-            json!({"generation":2}),
-            None,
-            Some("apply-fee"),
-        )
-        .await;
-    assert_eq!(refused.0, 409, "{refused:?}");
-    assert!(refused.1.to_string().contains("UNSUPPORTED_TERMS"));
+async fn hourly_and_resource_minimum_fees_are_accepted_at_create_submit_and_apply() {
+    for resource in [false, true] {
+        let f = Fixture::new(Arc::new(Script::default())).await;
+        let (book, _) = f.book().await;
+        let mut rules = policy();
+        if resource {
+            rules["aggregation_scope"] = json!("resource");
+        }
+        let book = plan_support::id_of(&book["id"]);
+        let sku = Uuid::new_v4();
+        let entry = create_entry(&f, book, sku, rules).await;
+        let today = time::OffsetDateTime::now_utc().date().to_string();
+        let draft = draft_price(&f, entry, &today, Some("1")).await;
+        assert_eq!(draft.0, 201, "resource={resource}: {draft:?}");
+        assert_eq!(draft.1["items"][0]["min_fee"], json!("1"), "{draft:?}");
+        let negative = draft_price(&f, entry, &today, Some("-1")).await;
+        assert_eq!(negative.0, 400, "resource={resource}: {negative:?}");
+        assert!(
+            negative.1.to_string().contains("MIN_FEE_INVALID"),
+            "a negative floor is still refused: {negative:?}"
+        );
+        let id = plan_support::id_of(&draft.1["items"][0]["id"]);
+        let pending = submit_price(&f, id).await;
+        assert_eq!(pending.0, 201, "resource={resource}: {pending:?}");
+        let reviewer = plan_support::entry_support::user_of(f.ctx.subject_tenant_id());
+        let path = format!(
+            "/approval-units/{}/approve",
+            pending.1["unit"]["id"].as_str().unwrap()
+        );
+        let applied = f
+            .call_as(
+                &reviewer,
+                "POST",
+                &path,
+                json!({"generation":1}),
+                None,
+                Some("apply-fee"),
+            )
+            .await;
+        assert_eq!(applied.0, 200, "resource={resource}: {applied:?}");
+        let prices = f
+            .call(
+                "GET",
+                &format!("/price-book-entries/{entry}/prices"),
+                json!({}),
+                None,
+                None,
+            )
+            .await;
+        assert_eq!(prices.0, 200, "{prices:?}");
+        let row = &prices.1["items"][0];
+        assert_eq!(
+            (row["state"].as_str(), row["min_fee"].as_str()),
+            (Some("approved"), Some("1")),
+            "{row}"
+        );
+        // The plan-revision gate no longer refuses the floor (D-525).
+        let (_, revision) = plan_support::plan(&f, "FLOOR", book).await;
+        plan_support::item(&f, revision, sku, Some(entry), "paid").await;
+        let submitted = f
+            .call(
+                "POST",
+                &format!("/plan-revisions/{revision}/submit"),
+                json!({}),
+                None,
+                Some("plan-floor"),
+            )
+            .await;
+        assert_eq!(submitted.0, 201, "resource={resource}: {submitted:?}");
+        assert!(
+            !submitted.1.to_string().contains("UNSUPPORTED_TERMS"),
+            "{submitted:?}"
+        );
+    }
 }
 
 #[tokio::test]

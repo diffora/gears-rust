@@ -11,7 +11,6 @@ use sea_orm_migration::prelude as mig;
 use sea_orm_migration::prelude::Iden;
 use sea_orm_migration::sea_query;
 use toolkit_db::secure::SecureEntityExt;
-use toolkit_security::pep_properties;
 
 // Create a simple table via migrations (runtime-privileged path).
 #[derive(Iden)]
@@ -63,8 +62,9 @@ mod ent {
     use sea_orm::entity::prelude::*;
     use uuid::Uuid;
 
-    #[derive(Debug, Clone, PartialEq, Eq, DeriveEntityModel)]
+    #[derive(Debug, Clone, PartialEq, Eq, DeriveEntityModel, toolkit_db::secure::Scopable)]
     #[sea_orm(table_name = "test_generic")]
+    #[secure(tenant_col = "tenant_id", resource_col = "id", no_owner, no_type)]
     pub struct Model {
         #[sea_orm(primary_key, auto_increment = false)]
         pub id: Uuid,
@@ -76,19 +76,6 @@ mod ent {
     pub enum Relation {}
 
     impl ActiveModelBehavior for ActiveModel {}
-}
-
-impl toolkit_db::secure::ScopableEntity for ent::Entity {
-    const SCOPE_PROPERTIES: &'static [(&'static str, Self::Column)] = &[
-        (pep_properties::OWNER_TENANT_ID, ent::Column::TenantId),
-        (pep_properties::RESOURCE_ID, ent::Column::Id),
-    ];
-
-    const UNSCOPED_DIMENSIONS: &'static [&'static str] = &[pep_properties::OWNER_ID];
-
-    fn type_col() -> Option<<Self as sea_orm::EntityTrait>::Column> {
-        None
-    }
 }
 
 #[cfg(feature = "sqlite")]
@@ -325,8 +312,9 @@ impl mig::MigrationTrait for CreateCteNode {
 mod cte_ent {
     use sea_orm::entity::prelude::*;
 
-    #[derive(Debug, Clone, PartialEq, Eq, DeriveEntityModel)]
+    #[derive(Debug, Clone, PartialEq, Eq, DeriveEntityModel, toolkit_db::secure::Scopable)]
     #[sea_orm(table_name = "test_cte_node")]
+    #[secure(tenant_col = "tenant_id", resource_col = "id", no_owner, no_type)]
     pub struct Model {
         #[sea_orm(primary_key, auto_increment = false)]
         pub id: Uuid,
@@ -341,19 +329,6 @@ mod cte_ent {
     pub enum Relation {}
 
     impl ActiveModelBehavior for ActiveModel {}
-}
-
-impl toolkit_db::secure::ScopableEntity for cte_ent::Entity {
-    const SCOPE_PROPERTIES: &'static [(&'static str, Self::Column)] = &[
-        (pep_properties::OWNER_TENANT_ID, cte_ent::Column::TenantId),
-        (pep_properties::RESOURCE_ID, cte_ent::Column::Id),
-    ];
-
-    const UNSCOPED_DIMENSIONS: &'static [&'static str] = &[pep_properties::OWNER_ID];
-
-    fn type_col() -> Option<<Self as EntityTrait>::Column> {
-        None
-    }
 }
 
 /// Narrow projection: the point of `all_as` is to avoid materialising the full

@@ -11,16 +11,16 @@ use super::core::Outbox;
 use super::prioritizer::SharedPrioritizer;
 use super::stats::{StatsListener, StatsRegistry, StatsReporter};
 use super::tables::OutboxTables;
-use super::taskward::{
-    BackoffConfig, Bulkhead, BulkheadConfig, ConcurrencyLimit, PanicPolicy, TaskSet,
-    TracingListener, WorkerBuilder, poker,
-};
 use super::types::{
     OutboxConfig, OutboxError, OutboxProfile, Partitions, SequencerConfig, WorkerTuning,
 };
 use super::workers::sequencer::{Sequencer, SequencerReport};
 use super::workers::vacuum::{CollectableTraces, VacuumReport, VacuumTask};
 use crate::Db;
+use toolkit_taskward::{
+    BackoffConfig, Bulkhead, BulkheadConfig, ConcurrencyLimit, PanicPolicy, TaskSet,
+    TracingListener, WorkerBuilder, poker,
+};
 
 /// Deferred queue declaration — factory, resolved at `start()`.
 pub struct QueueDeclaration {
@@ -47,7 +47,7 @@ struct ResolvedTuning {
 struct StartContext<'a> {
     db: &'a Db,
     cancel: &'a CancellationToken,
-    task_set: &'a mut super::taskward::TaskSet,
+    task_set: &'a mut toolkit_taskward::TaskSet,
     start_notify: &'a Arc<Notify>,
     stats_registry: &'a Option<Arc<std::sync::Mutex<super::stats::StatsRegistry>>>,
 }
@@ -122,10 +122,12 @@ pub struct OutboxBuilder {
     vacuum_tuning: Option<WorkerTuning>,
     reconciler_tuning: Option<WorkerTuning>,
     tables: OutboxTables,
+    /// Queues declared on this builder, registered when the outbox starts.
     pub(crate) queue_declarations: Vec<QueueDeclaration>,
 }
 
 impl OutboxBuilder {
+    /// Creates an outbox builder bound to the given database handle.
     pub(crate) fn new(db: Db) -> Self {
         Self {
             db,
@@ -734,7 +736,7 @@ impl OutboxBuilder {
 /// [`stop()`](Self::stop) method for graceful shutdown.
 ///
 /// Drop safety: if `stop()` is never called, `TaskSet::Drop` cancels the
-/// cancellation token, signaling all workers to exit, and this handle's own
+/// cancellation token and aborts owned tasks, and this handle's own
 /// `Drop` closes the subscription registry.
 ///
 /// `tasks` is an `Option` only so `stop()` can take the `TaskSet` out and
@@ -766,7 +768,7 @@ impl OutboxHandle {
 impl Drop for OutboxHandle {
     fn drop(&mut self) {
         // Dropping the handle is a supported shutdown path - `TaskSet`'s own
-        // drop cancels every worker token - so it must give the same guarantee
+        // drop cancels every worker token and aborts tasks - so it must give the same guarantee
         // `stop` does. Closing the registry drops its senders, which makes an
         // awaiting subscription yield `None`: the documented signal that this
         // process can no longer answer. Without it the caller waits for ever,

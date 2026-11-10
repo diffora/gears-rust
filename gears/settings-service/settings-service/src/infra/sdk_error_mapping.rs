@@ -1,4 +1,3 @@
-// Created: 2026-08-12 by Virtuozzo International GmbH
 // @cpt-dod:cpt-cf-settings-service-dod-gear-foundation-problem-mapping:p1
 //! The single conversion from [`DomainError`] to the platform error type.
 //!
@@ -15,15 +14,15 @@ use crate::domain::error::DomainError;
 use crate::precondition;
 
 /// The resource this gear attributes its errors to.
-#[resource_error("gts.cf.core.settings.declaration.v1~")]
+#[resource_error(toolkit_gts::gts_id!("cf.core.settings.declaration.v1~"))]
 struct SettingsResource;
 
 /// Errors attributed to a category.
-#[resource_error("gts.cf.core.settings.category.v1~")]
+#[resource_error(toolkit_gts::gts_id!("cf.core.settings.category.v1~"))]
 struct CategoryResource;
 
 /// Errors attributed to a stored setting value.
-#[resource_error("gts.cf.core.settings.value.v1~")]
+#[resource_error(toolkit_gts::gts_id!("cf.core.settings.value.v1~"))]
 struct ValueResource;
 
 /// Build a denial attributed to the resource actually enforced.
@@ -128,6 +127,17 @@ impl From<DomainError> for CanonicalError {
                 if resource == settings_service_sdk::gts::VALUE_SCHEMA =>
             {
                 ValueResource::not_found("no credential is configured at any scope")
+                    .with_resource(resource)
+                    .create()
+            }
+            // The revival report's own 404, told from a missing category's by
+            // its stable code in the resource name; it says nothing more of
+            // why, so a retired declaration the caller may not read answers
+            // as one that is not there.
+            DomainError::NotFound { resource }
+                if resource == crate::domain::declaration::NOTHING_TO_REVIVE =>
+            {
+                SettingsResource::not_found("nothing_to_revive: no retired declaration to revive")
                     .with_resource(resource)
                     .create()
             }

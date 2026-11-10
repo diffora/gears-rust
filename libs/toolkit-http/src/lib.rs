@@ -45,19 +45,29 @@
 //!     .await?;
 //! ```
 
+/// Builder for configuring and constructing the HTTP client.
 mod builder;
+/// The HTTP client implementation.
 mod client;
+/// Client configuration types.
 mod config;
+/// Error types returned by the HTTP client.
 mod error;
 mod layers;
 pub mod otel;
+/// Request builder types.
 mod request;
+/// Response types with body-size-limited readers.
 mod response;
 pub mod security;
 mod tls;
 
 pub use builder::HttpClientBuilder;
 pub use client::HttpClient;
+/// TLS building blocks shared with other transport crates (e.g. the upstream
+/// proxy engine) so every outbound `ClientConfig` goes through the same
+/// provider selection and FIPS hardening.
+pub use config::{ClientAuthConfig, TlsConfig, TlsVersion};
 pub use config::{
     DEFAULT_USER_AGENT, ExponentialBackoff, HttpClientConfig, IDEMPOTENCY_KEY_HEADER,
     RateLimitConfig, RedirectConfig, RetryConfig, RetryTrigger, TlsRootConfig, TransportSecurity,
@@ -74,3 +84,4 @@ pub use request::{RequestBuilder, RequestType};
 pub use response::{HttpResponse, LimitedBody, ResponseBody};
 pub use security::{attach_bearer_http, attach_internal_token_http};
 pub use tls::TlsConfigError;
+pub use tls::{custom_roots_client_config, native_roots_client_config, webpki_roots_client_config};

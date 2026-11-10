@@ -1,5 +1,6 @@
-use std::collections::HashSet;
-use std::num::NonZeroUsize;
+use std::collections::{HashMap, HashSet};
+use std::num::{NonZeroU64, NonZeroUsize};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, OnceLock};
 
@@ -21,30 +22,38 @@ use toolkit_security::{AccessScope, SecurityContext, pep_properties};
 use uuid::Uuid;
 
 use super::error::DomainError;
-use super::ports::github::{FetchOptions, GithubPort};
+use super::ports::github::{
+    FetchOptions, ForceMode, GithubPort, RateLimitQuota, SHARED_CACHE_PARTITION,
+};
+use super::ports::telemetry_sink::TelemetrySink;
 use super::repo::{
     ActiveSyncRecord, ActiveSyncRepository, BranchRecord, BranchRepository, CheckRunRecord,
     CheckRunRepository, CommentRecord, CommentRepository, CommitCommentRecord,
     CommitCommentRepository, CommitFileRecord, CommitFileRepository, CommitRecord,
     CommitRepository, CommitStatusRecord, CommitStatusRepository, ContributorRecord,
-    ContributorRepository, DeploymentRecord, DeploymentRepository, EntityFingerprintRepository,
-    IssueEventRecord, IssueEventRepository, IssueReactionRecord, IssueReactionRepository,
-    IssueRecord, IssueRepository, IssueTimelineEventRecord, IssueTimelineRepository, LabelRecord,
-    LabelRepository, ListingFilter, MilestoneRecord, MilestoneRepository, PageWindow,
-    PullRequestCommitRecord, PullRequestCommitRepository, PullRequestFileRecord,
-    PullRequestFileRepository, PullRequestRecord, PullRequestRepository, ReleaseRecord,
-    ReleaseRepository, RepoRecord, RepoRepository, RepoRunStatus, RepoSyncStatusRecord,
-    RepoSyncStatusRepository, ReviewCommentRecord, ReviewCommentRepository, ReviewRecord,
-    ReviewRepository, ReviewThreadRecord, ReviewThreadRepository, SessionStatus, SyncSessionRecord,
+    ContributorRepository, ConversationComments, ConversationRepository, DeploymentRecord,
+    DeploymentRepository, EntityFingerprintRepository, IssueEventRecord, IssueEventRepository,
+    IssueReactionRecord, IssueReactionRepository, IssueRecord, IssueRepository,
+    IssueTimelineEventRecord, IssueTimelineRepository, LabelRecord, LabelRepository, ListingFilter,
+    LogicalConversation, MilestoneRecord, MilestoneRepository, PageWindow, PullRequestCommitRecord,
+    PullRequestCommitRepository, PullRequestFileRecord, PullRequestFileRepository,
+    PullRequestRecord, PullRequestRepository, ReleaseRecord, ReleaseRepository, RepoRecord,
+    RepoRepository, RepoRunStatus, RepoSyncStatusRecord, RepoSyncStatusRepository,
+    ReviewCommentRecord, ReviewCommentRepository, ReviewRecord, ReviewRepository,
+    ReviewThreadRecord, ReviewThreadRepository, SessionStatus, SyncSessionRecord,
     SyncSessionRepository, SyncWatermarkRepository, SyncWriter, TagRecord, TagRepository,
     WorkflowJobRecord, WorkflowJobRepository, WorkflowRunRecord, WorkflowRunRepository,
 };
 use super::scope::ScopeConfig;
+use super::sync::conversations::{self, group_conversations};
 use super::sync::{
-    ChangeGate, Family, MirrorWorker, RepoPhaseRunner, RunState, SweepWatermark, TaskFailure,
-    TaskKind, Worker,
+    ChangeGate, Family, MirrorWorker, RepoPhaseRunner, RunState, SessionTelemetry, SweepWatermark,
+    TaskFailure, TaskKind, Worker,
 };
-use super::validate::{repo_full_name, validate_commit_sha, validate_owner, validate_repo_path};
+use super::validate::{
+    repo_full_name, validate_commit_sha, validate_owner, validate_repo_path,
+    validate_telemetry_file,
+};
 
 /// The gear's name, taken from the `#[toolkit::gear]` attribute so the
 /// literal exists in exactly one place.
@@ -166,6 +175,21 @@ fn past_deadline(
     ))
 }
 
+fn telemetry_file_path(dir: &Path, tenant_id: Uuid, job: &SyncJob) -> PathBuf {
+    dir.join(tenant_id.to_string()).join(&job.owner).join(
+        job.telemetry_file
+            .clone()
+            .unwrap_or_else(|| format!("{}.jsonl", job.name)),
+    )
+}
+
+fn cache_cutoff(max_age_days: NonZeroU64) -> Option<DateTime<Utc>> {
+    i64::try_from(max_age_days.get())
+        .ok()
+        .and_then(chrono::Duration::try_days)
+        .and_then(|age| Utc::now().checked_sub_signed(age))
+}
+
 /// Whether the process that was running `session` is gone.
 ///
 /// The session's own heartbeat is the evidence: a live run re-stamps
@@ -198,6 +222,7 @@ async fn heartbeat(
     scope: AccessScope,
     session_id: Uuid,
     percent: Arc<AtomicU8>,
+    telemetry: Arc<SessionTelemetry>,
     stop: CancellationToken,
 ) {
     loop {
@@ -207,7 +232,13 @@ async fn heartbeat(
         }
         let progress_percent = i32::from(percent.load(Ordering::Relaxed));
         if let Err(e) = sessions
-            .record_heartbeat(&scope, session_id, progress_percent, &now_rfc3339())
+            .record_heartbeat(
+                &scope,
+                session_id,
+                progress_percent,
+                &telemetry_json(&telemetry),
+                &now_rfc3339(),
+            )
             .await
         {
             tracing::warn!(
@@ -233,6 +264,10 @@ fn stored_summary_json(session_id: Uuid, summary: &SyncSummary) -> Option<String
     }
 }
 
+fn telemetry_json(telemetry: &SessionTelemetry) -> String {
+    serde_json::to_string(&telemetry.snapshot()).unwrap_or_default()
+}
+
 fn now_rfc3339() -> String {
     Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
@@ -246,133 +281,160 @@ async fn release_sync_lock(lock: toolkit_db::DbLockGuard, owner: &str, name: &st
     }
 }
 
+/// Database provider handle the service uses for transactions and queries.
 pub(crate) type DbProvider = toolkit_db::DBProvider<toolkit_db::DbError>;
 
+/// Authorization resource type `github_mirror.repo` (the mirrored repo).
 pub(crate) const REPO_RESOURCE: ResourceType = ResourceType::from_static(
     "github_mirror.repo",
     &[pep_properties::OWNER_TENANT_ID, pep_properties::RESOURCE_ID],
 );
 
+/// Authorization resource type `github_mirror.issue` (the mirrored issue).
 pub(crate) const ISSUE_RESOURCE: ResourceType = ResourceType::from_static(
     "github_mirror.issue",
     &[pep_properties::OWNER_TENANT_ID, pep_properties::RESOURCE_ID],
 );
 
+/// Authorization resource type `github_mirror.pull_request` (the mirrored pull request).
 pub(crate) const PULL_REQUEST_RESOURCE: ResourceType = ResourceType::from_static(
     "github_mirror.pull_request",
     &[pep_properties::OWNER_TENANT_ID, pep_properties::RESOURCE_ID],
 );
 
+/// Authorization resource type `github_mirror.commit` (the mirrored commit).
 pub(crate) const COMMIT_RESOURCE: ResourceType = ResourceType::from_static(
     "github_mirror.commit",
     &[pep_properties::OWNER_TENANT_ID, pep_properties::RESOURCE_ID],
 );
 
+/// Authorization resource type `github_mirror.comment` (the mirrored comment).
 pub(crate) const COMMENT_RESOURCE: ResourceType = ResourceType::from_static(
     "github_mirror.comment",
     &[pep_properties::OWNER_TENANT_ID, pep_properties::RESOURCE_ID],
 );
 
+/// Authorization resource type `github_mirror.review_comment` (the mirrored review comment).
 pub(crate) const REVIEW_COMMENT_RESOURCE: ResourceType = ResourceType::from_static(
     "github_mirror.review_comment",
     &[pep_properties::OWNER_TENANT_ID, pep_properties::RESOURCE_ID],
 );
 
+/// Authorization resource type `github_mirror.review` (the mirrored review).
 pub(crate) const REVIEW_RESOURCE: ResourceType = ResourceType::from_static(
     "github_mirror.review",
     &[pep_properties::OWNER_TENANT_ID, pep_properties::RESOURCE_ID],
 );
 
+/// Authorization resource type `github_mirror.label` (the mirrored label).
 pub(crate) const LABEL_RESOURCE: ResourceType = ResourceType::from_static(
     "github_mirror.label",
     &[pep_properties::OWNER_TENANT_ID, pep_properties::RESOURCE_ID],
 );
 
+/// Authorization resource type `github_mirror.milestone` (the mirrored milestone).
 pub(crate) const MILESTONE_RESOURCE: ResourceType = ResourceType::from_static(
     "github_mirror.milestone",
     &[pep_properties::OWNER_TENANT_ID, pep_properties::RESOURCE_ID],
 );
 
+/// Authorization resource type `github_mirror.release` (the mirrored release).
 pub(crate) const RELEASE_RESOURCE: ResourceType = ResourceType::from_static(
     "github_mirror.release",
     &[pep_properties::OWNER_TENANT_ID, pep_properties::RESOURCE_ID],
 );
 
+/// Authorization resource type `github_mirror.branch` (the mirrored branch).
 pub(crate) const BRANCH_RESOURCE: ResourceType = ResourceType::from_static(
     "github_mirror.branch",
     &[pep_properties::OWNER_TENANT_ID, pep_properties::RESOURCE_ID],
 );
 
+/// Authorization resource type `github_mirror.contributor` (the mirrored contributor).
 pub(crate) const CONTRIBUTOR_RESOURCE: ResourceType = ResourceType::from_static(
     "github_mirror.contributor",
     &[pep_properties::OWNER_TENANT_ID, pep_properties::RESOURCE_ID],
 );
 
+/// Authorization resource type `github_mirror.workflow_run` (the mirrored workflow run).
 pub(crate) const WORKFLOW_RUN_RESOURCE: ResourceType = ResourceType::from_static(
     "github_mirror.workflow_run",
     &[pep_properties::OWNER_TENANT_ID, pep_properties::RESOURCE_ID],
 );
 
+/// Authorization resource type `github_mirror.pull_request_file` (the mirrored pull request file).
 pub(crate) const PULL_REQUEST_FILE_RESOURCE: ResourceType = ResourceType::from_static(
     "github_mirror.pull_request_file",
     &[pep_properties::OWNER_TENANT_ID, pep_properties::RESOURCE_ID],
 );
 
+/// Authorization resource type `github_mirror.tag` (the mirrored tag).
 pub(crate) const TAG_RESOURCE: ResourceType = ResourceType::from_static(
     "github_mirror.tag",
     &[pep_properties::OWNER_TENANT_ID, pep_properties::RESOURCE_ID],
 );
 
+/// Authorization resource type `github_mirror.commit_file` (the mirrored commit file).
 pub(crate) const COMMIT_FILE_RESOURCE: ResourceType = ResourceType::from_static(
     "github_mirror.commit_file",
     &[pep_properties::OWNER_TENANT_ID, pep_properties::RESOURCE_ID],
 );
 
+/// Authorization resource type `github_mirror.review_thread` (the mirrored review thread).
 pub(crate) const REVIEW_THREAD_RESOURCE: ResourceType = ResourceType::from_static(
     "github_mirror.review_thread",
     &[pep_properties::OWNER_TENANT_ID, pep_properties::RESOURCE_ID],
 );
 
+/// Authorization resource type `github_mirror.commit_comment` (the mirrored commit comment).
 pub(crate) const COMMIT_COMMENT_RESOURCE: ResourceType = ResourceType::from_static(
     "github_mirror.commit_comment",
     &[pep_properties::OWNER_TENANT_ID, pep_properties::RESOURCE_ID],
 );
 
+/// Authorization resource type `github_mirror.issue_event` (the mirrored issue event).
 pub(crate) const ISSUE_EVENT_RESOURCE: ResourceType = ResourceType::from_static(
     "github_mirror.issue_event",
     &[pep_properties::OWNER_TENANT_ID, pep_properties::RESOURCE_ID],
 );
 
+/// Authorization resource type `github_mirror.deployment` (the mirrored deployment).
 pub(crate) const DEPLOYMENT_RESOURCE: ResourceType = ResourceType::from_static(
     "github_mirror.deployment",
     &[pep_properties::OWNER_TENANT_ID, pep_properties::RESOURCE_ID],
 );
 
+/// Authorization resource type `github_mirror.pull_request_commit` (the mirrored pull request commit).
 pub(crate) const PULL_REQUEST_COMMIT_RESOURCE: ResourceType = ResourceType::from_static(
     "github_mirror.pull_request_commit",
     &[pep_properties::OWNER_TENANT_ID, pep_properties::RESOURCE_ID],
 );
 
+/// Authorization resource type `github_mirror.commit_status` (the mirrored commit status).
 pub(crate) const COMMIT_STATUS_RESOURCE: ResourceType = ResourceType::from_static(
     "github_mirror.commit_status",
     &[pep_properties::OWNER_TENANT_ID, pep_properties::RESOURCE_ID],
 );
 
+/// Authorization resource type `github_mirror.workflow_job` (the mirrored workflow job).
 pub(crate) const WORKFLOW_JOB_RESOURCE: ResourceType = ResourceType::from_static(
     "github_mirror.workflow_job",
     &[pep_properties::OWNER_TENANT_ID, pep_properties::RESOURCE_ID],
 );
 
+/// Authorization resource type `github_mirror.issue_reaction` (the mirrored issue reaction).
 pub(crate) const ISSUE_REACTION_RESOURCE: ResourceType = ResourceType::from_static(
     "github_mirror.issue_reaction",
     &[pep_properties::OWNER_TENANT_ID, pep_properties::RESOURCE_ID],
 );
 
+/// Authorization resource type `github_mirror.check_run` (the mirrored check run).
 pub(crate) const CHECK_RUN_RESOURCE: ResourceType = ResourceType::from_static(
     "github_mirror.check_run",
     &[pep_properties::OWNER_TENANT_ID, pep_properties::RESOURCE_ID],
 );
 
+/// Authorization resource type `github_mirror.issue_timeline` (the mirrored issue timeline).
 pub(crate) const ISSUE_TIMELINE_RESOURCE: ResourceType = ResourceType::from_static(
     "github_mirror.issue_timeline",
     &[pep_properties::OWNER_TENANT_ID, pep_properties::RESOURCE_ID],
@@ -392,6 +454,8 @@ const HEARTBEAT_SECS: u64 = 2;
 /// keep its lock.
 const ABANDONED_AFTER_SECS: i64 = 300;
 
+/// How often this process refreshes its `gm_active_syncs` rows, so another
+/// process's start-up sweep sees them as alive.
 pub(crate) const ACTIVE_SYNC_TOUCH_EVERY: std::time::Duration = std::time::Duration::from_mins(1);
 
 const TAKE_ACTIVE_SYNC_ATTEMPTS: usize = 3;
@@ -406,6 +470,8 @@ const SESSION_WRITE_ATTEMPTS: u32 = 3;
 
 const SESSION_WRITE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// How long after start-up the interrupted-session sweep runs a second time,
+/// once a process that died just before this one has gone stale.
 pub(crate) const SWEEP_AGAIN_AFTER: std::time::Duration =
     std::time::Duration::from_secs(ABANDONED_AFTER_SECS.unsigned_abs() + HEARTBEAT_SECS);
 
@@ -421,6 +487,7 @@ const RESUME_LIMIT: usize = SYNC_QUEUE_DEPTH;
 /// While the phases run, `RepoPhaseRunner` publishes the phase-weighted
 /// estimate into this atomic after every task it finishes; the milestones
 /// below only cover what happens after the runner returns.
+#[domain_model]
 #[derive(Debug)]
 pub struct SyncProgress {
     percent: Arc<AtomicU8>,
@@ -482,18 +549,21 @@ pub(crate) const SYNC_QUEUE_DEPTH: usize = 64;
 /// The status is read rather than assumed, because a request that collapsed
 /// into a run already going is handed that run's session, which may have left
 /// `queued` some time ago.
+#[domain_model]
 #[derive(Debug, Default)]
 pub struct ResumeOutcome {
     pub session_ids: Vec<Uuid>,
     pub refused: Vec<RefusedResume>,
 }
 
+#[domain_model]
 #[derive(Debug)]
 pub struct RefusedResume {
     pub repository: String,
     pub error: DomainError,
 }
 
+#[domain_model]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QueuedSync {
     pub session_id: Uuid,
@@ -506,6 +576,7 @@ pub struct QueuedSync {
 /// The caller's [`SecurityContext`] travels with the job because the work
 /// outlives the request that asked for it, and every write it makes is still
 /// tenant-scoped through the same policy enforcer.
+#[domain_model]
 #[derive(Debug)]
 pub struct SyncJob {
     pub session_id: Uuid,
@@ -515,37 +586,50 @@ pub struct SyncJob {
     /// What this run collects. Resolved at enqueue time from the request, or
     /// from the gear config when the request says nothing.
     pub scope: ScopeConfig,
-    /// PRD §5.2 force mode: the GitHub client skips its stored `ETag`s, the
-    /// sweep ignores its watermark and the change gate re-fetches every
-    /// entity, so the whole repository is read again from GitHub.
-    pub force: bool,
+    /// PRD §5.2 force mode: `Full` makes the sweep ignore its watermark and the
+    /// change gate refine every entity; `All` also makes the GitHub client skip
+    /// its stored `ETag`s, so every page is downloaded again.
+    pub force: ForceMode,
     /// Oldest closed entity worth collecting, from the request.
     pub since: Option<DateTime<Utc>>,
+    pub telemetry_file: Option<String>,
+    /// Tasks in flight inside this run, when the caller narrows the gear's
+    /// `max_concurrent_tasks` for it.
+    pub max_concurrent_tasks: Option<NonZeroUsize>,
     pub access_scope: AccessScope,
     #[expect(
         dead_code,
         reason = "held for its drop: a job that goes away, run or not, gives its claim back"
     )]
+    /// The repository's active-sync claim, released when the job is dropped.
     pub(crate) claim: Option<ClaimRelease>,
 }
 
+/// Authorization resource type `github_mirror.repo_sync_status` (the mirrored repo sync status).
 pub(crate) const REPO_SYNC_STATUS_RESOURCE: ResourceType = ResourceType::from_static(
     "github_mirror.repo_sync_status",
     &[pep_properties::OWNER_TENANT_ID, pep_properties::RESOURCE_ID],
 );
 
+/// Authorization resource type `github_mirror.sync_session` (the mirrored sync session).
 pub(crate) const SYNC_SESSION_RESOURCE: ResourceType = ResourceType::from_static(
     "github_mirror.sync_session",
     &[pep_properties::OWNER_TENANT_ID, pep_properties::RESOURCE_ID],
 );
 
+/// Authorization resource type `github_mirror.sync` (the mirrored sync).
 pub(crate) const SYNC_RESOURCE: ResourceType =
     ResourceType::from_static("github_mirror.sync", &[pep_properties::OWNER_TENANT_ID]);
 
+/// Action names used when authorizing operations against the mirror's resource types.
 pub(crate) mod actions {
+    /// Action for listing mirrored resources.
     pub const LIST: &str = "list";
+    /// Action for upserting mirrored resources (used by the sync path).
     pub const UPSERT: &str = "upsert";
+    /// Action for triggering a repository sync.
     pub const SYNC: &str = "sync";
+    /// Action for reading a single mirrored resource.
     pub const GET: &str = "get";
 }
 
@@ -561,6 +645,9 @@ pub struct ServiceConfig {
     pub max_concurrent_tasks: NonZeroUsize,
     /// How long one repository's sync may run before it is stopped.
     pub sync_deadline: std::time::Duration,
+    pub telemetry_dir: Option<PathBuf>,
+    pub cache_max_age_days: Option<NonZeroU64>,
+    pub tenant_cache_max_age_days: HashMap<Uuid, NonZeroU64>,
 }
 
 #[domain_model]
@@ -583,6 +670,7 @@ pub struct Service {
     tags: Arc<dyn TagRepository>,
     commit_files: Arc<dyn CommitFileRepository>,
     review_threads: Arc<dyn ReviewThreadRepository>,
+    conversations: Arc<dyn ConversationRepository>,
     commit_comments: Arc<dyn CommitCommentRepository>,
     issue_events: Arc<dyn IssueEventRepository>,
     deployments: Arc<dyn DeploymentRepository>,
@@ -600,6 +688,7 @@ pub struct Service {
     github: Arc<dyn GithubPort>,
     policy_enforcer: PolicyEnforcer,
     config: ServiceConfig,
+    telemetry_sink: Arc<dyn TelemetrySink>,
     sync_tx: mpsc::Sender<SyncJob>,
     sync_rx: Arc<Mutex<Option<mpsc::Receiver<SyncJob>>>>,
     active_syncs: Arc<dyn ActiveSyncRepository>,
@@ -620,6 +709,17 @@ pub struct Service {
     shutdown: Arc<OnceLock<CancellationToken>>,
 }
 
+/// What an in-process caller asks a sync to do beyond naming the repository.
+#[domain_model]
+#[derive(Debug, Clone, Default)]
+pub struct SyncRequest {
+    /// `None` collects the gear's configured default.
+    pub scope: Option<ScopeConfig>,
+    pub force: ForceMode,
+    pub since: Option<DateTime<Utc>>,
+    pub max_concurrent_tasks: Option<NonZeroUsize>,
+}
+
 /// One repository of one tenant: what a queued or running sync occupies.
 type InFlightKey = (Uuid, String);
 
@@ -631,6 +731,9 @@ enum PreparedSync {
     },
 }
 
+/// A repository's `gm_active_syncs` claim, deleted in the background when
+/// this guard is dropped.
+#[domain_model]
 pub(crate) struct ClaimRelease {
     active_syncs: Arc<dyn ActiveSyncRepository>,
     scope: AccessScope,
@@ -677,11 +780,13 @@ mod gate {
     use std::sync::Arc;
 
     use tokio::sync::{Mutex, MutexGuard};
+    use toolkit_macros::domain_model;
 
     use super::InFlightKey;
 
     type Gates = Arc<std::sync::Mutex<HashMap<InFlightKey, Arc<Mutex<()>>>>>;
 
+    #[domain_model]
     #[derive(Clone, Default)]
     pub(super) struct ClaimGates(Gates);
 
@@ -707,6 +812,7 @@ mod gate {
 
     /// What a request holds while it decides whether one repository already has a
     /// sync in flight.
+    #[domain_model]
     pub(super) struct GateLease {
         gates: Gates,
         key: InFlightKey,
@@ -774,6 +880,7 @@ impl Clone for Service {
             tags: Arc::clone(&self.tags),
             commit_files: Arc::clone(&self.commit_files),
             review_threads: Arc::clone(&self.review_threads),
+            conversations: Arc::clone(&self.conversations),
             commit_comments: Arc::clone(&self.commit_comments),
             issue_events: Arc::clone(&self.issue_events),
             deployments: Arc::clone(&self.deployments),
@@ -791,6 +898,7 @@ impl Clone for Service {
             github: Arc::clone(&self.github),
             policy_enforcer: self.policy_enforcer.clone(),
             config: self.config.clone(),
+            telemetry_sink: Arc::clone(&self.telemetry_sink),
             sync_tx: self.sync_tx.clone(),
             sync_rx: Arc::clone(&self.sync_rx),
             active_syncs: Arc::clone(&self.active_syncs),
@@ -829,6 +937,7 @@ impl Service {
         tags: Arc<dyn TagRepository>,
         commit_files: Arc<dyn CommitFileRepository>,
         review_threads: Arc<dyn ReviewThreadRepository>,
+        conversations: Arc<dyn ConversationRepository>,
         commit_comments: Arc<dyn CommitCommentRepository>,
         issue_events: Arc<dyn IssueEventRepository>,
         deployments: Arc<dyn DeploymentRepository>,
@@ -847,6 +956,7 @@ impl Service {
         github: Arc<dyn GithubPort>,
         policy_enforcer: PolicyEnforcer,
         config: ServiceConfig,
+        telemetry_sink: Arc<dyn TelemetrySink>,
     ) -> Self {
         let (sync_tx, sync_rx) = mpsc::channel(SYNC_QUEUE_DEPTH);
         let in_process_slots = Arc::new(tokio::sync::Semaphore::new(
@@ -871,6 +981,7 @@ impl Service {
             tags,
             commit_files,
             review_threads,
+            conversations,
             commit_comments,
             issue_events,
             deployments,
@@ -888,6 +999,7 @@ impl Service {
             github,
             policy_enforcer,
             config,
+            telemetry_sink,
             sync_tx,
             sync_rx: Arc::new(Mutex::new(Some(sync_rx))),
             active_syncs,
@@ -2465,6 +2577,7 @@ impl Service {
         name: &str,
         pull_number: i64,
         query: &ODataQuery,
+        extracted_since: Option<DateTime<Utc>>,
     ) -> Result<Page<ReviewThread>, DomainError> {
         let scope = self
             .policy_enforcer
@@ -2486,7 +2599,7 @@ impl Service {
             .ok_or(DomainError::NotFound)?;
 
         self.review_threads
-            .list_by_pull(&scope, repository.id, pull_number, query)
+            .list_by_pull(&scope, repository.id, pull_number, query, extracted_since)
             .await
     }
 
@@ -3360,7 +3473,7 @@ impl Service {
 
         let removed = self
             .github
-            .clear_cache(&scope, owner, name, &repo_ids)
+            .clear_cache(&scope, tenant_id, owner, name, &repo_ids)
             .await?;
         tracing::info!(
             owner,
@@ -3369,6 +3482,155 @@ impl Service {
             "cleared cached responses"
         );
         Ok(removed)
+    }
+
+    /// Remove one repository from the caller's tenant mirror: its rows in
+    /// every entity table, its watermarks and fingerprints, its sessions and
+    /// run status, its cached responses, and the repository row itself. The
+    /// next sync starts from nothing. Returns how many database rows went.
+    ///
+    /// # Errors
+    /// `Validation` when `owner/name` is not a usable path, `NotFound` when
+    /// the repository is not mirrored for this tenant, `Conflict` while a
+    /// sync of it is in flight, `Forbidden`/`Database` as usual.
+    pub async fn delete_repository(
+        &self,
+        ctx: &SecurityContext,
+        owner: &str,
+        name: &str,
+    ) -> Result<u64, DomainError> {
+        validate_repo_path(owner, name)?;
+        let full_name = repo_full_name(owner, name)?;
+        let tenant_id = ctx.subject_tenant_id();
+        let scope = self.sync_access_scope(ctx).await?;
+
+        let repository = self
+            .repo
+            .find_by_full_name(&scope, &full_name)
+            .await?
+            .ok_or(DomainError::NotFound)?;
+        if self.active_syncs.find(&scope, &full_name).await?.is_some() {
+            return Err(DomainError::Conflict(format!(
+                "a sync of {full_name} is in flight; stop it or wait for it before deleting"
+            )));
+        }
+
+        let cached = self
+            .github
+            .clear_cache(&scope, tenant_id, owner, Some(name), &[repository.id])
+            .await?;
+        let rows = self
+            .sync_writer
+            .delete_repository(&scope, repository.id, &full_name)
+            .await?;
+        tracing::info!(
+            owner,
+            repository = name,
+            rows,
+            cached,
+            "deleted a mirrored repository"
+        );
+        Ok(rows + cached)
+    }
+
+    /// The conversations the grouping pass derived for one repository: every
+    /// one, or those under one issue or pull-request number.
+    ///
+    /// # Errors
+    /// `Validation`, `Forbidden`, `Database` as usual; `NotFound` when the
+    /// repository is not mirrored.
+    pub async fn list_conversations(
+        &self,
+        ctx: &SecurityContext,
+        owner: &str,
+        name: &str,
+        parent_number: Option<i64>,
+    ) -> Result<Vec<LogicalConversation>, DomainError> {
+        let repository = self.get_repo(ctx, owner, name).await?;
+        let scope = self.comment_access_scope(ctx).await?;
+        self.conversations
+            .list(&scope, repository.id, parent_number)
+            .await
+    }
+
+    /// The comments of one conversation, oldest first: review comments for an
+    /// `inline` conversation, issue or pull-request comments for a `toplevel`
+    /// one.
+    ///
+    /// # Errors
+    /// `Forbidden`/`Database` as usual.
+    pub async fn conversation_comments(
+        &self,
+        ctx: &SecurityContext,
+        conversation: &LogicalConversation,
+    ) -> Result<ConversationComments, DomainError> {
+        let scope = self.comment_access_scope(ctx).await?;
+        let mut members = ConversationComments::default();
+        if conversation.conv_type == conversations::INLINE {
+            members.review_comments = self
+                .conversations
+                .review_comments_in(&scope, conversation.repo_id, conversation.root_comment_id)
+                .await?;
+        } else {
+            members.comments = self
+                .conversations
+                .comments_in(&scope, conversation.repo_id, conversation.root_comment_id)
+                .await?;
+        }
+        Ok(members)
+    }
+
+    async fn comment_access_scope(
+        &self,
+        ctx: &SecurityContext,
+    ) -> Result<AccessScope, DomainError> {
+        Ok(self
+            .policy_enforcer
+            .access_scope_with(
+                ctx,
+                &COMMENT_RESOURCE,
+                actions::LIST,
+                None,
+                &AccessRequest::new()
+                    .resource_property(pep_properties::OWNER_TENANT_ID, ctx.subject_tenant_id()),
+            )
+            .await?)
+    }
+
+    /// Bytes the HTTP cache holds for one repository, for `status`. Guarded
+    /// like `clear_cache`, since it reads exactly what a clear would drop.
+    ///
+    /// # Errors
+    /// `Validation` when `owner/name` is not a usable path; `Forbidden`/
+    /// `Database` as usual.
+    pub async fn cache_size(
+        &self,
+        ctx: &SecurityContext,
+        owner: &str,
+        name: &str,
+    ) -> Result<u64, DomainError> {
+        validate_repo_path(owner, name)?;
+        let tenant_id = ctx.subject_tenant_id();
+        let scope = self.sync_access_scope(ctx).await?;
+        let repo_ids = self.cached_repo_ids(ctx, owner, Some(name)).await;
+        self.github
+            .cache_size(&scope, tenant_id, owner, name, &repo_ids)
+            .await
+    }
+
+    /// The GitHub token's remaining quotas, for an operator deciding whether
+    /// a sync fits in the hour. Guarded like a sync, since it is the sync's
+    /// budget being read.
+    ///
+    /// # Errors
+    /// `Forbidden` when the caller may not sync; `Internal` when GitHub cannot
+    /// be asked.
+    pub async fn rate_limit(
+        &self,
+        ctx: &SecurityContext,
+    ) -> Result<Vec<RateLimitQuota>, DomainError> {
+        self.sync_access_scope(ctx).await?;
+        self.github.rate_limit().await
     }
 
     /// Hand the service the token the gear cancels on shutdown. Called once,
@@ -3389,6 +3651,11 @@ impl Service {
     #[must_use]
     pub fn shutdown_token(&self) -> CancellationToken {
         self.shutdown.get().cloned().unwrap_or_default()
+    }
+
+    #[must_use]
+    pub fn started(&self) -> bool {
+        self.shutdown.get().is_some()
     }
 
     /// What a sync collects when the request does not narrow it.
@@ -3689,7 +3956,7 @@ impl Service {
         &self,
         ctx: &SecurityContext,
         only: Option<&str>,
-        force: bool,
+        force: ForceMode,
     ) -> Result<ResumeOutcome, DomainError> {
         let pending = self.repos_awaiting_resume(ctx, only).await?;
         let scopes = self.enqueue_scopes(ctx).await?;
@@ -3755,7 +4022,7 @@ impl Service {
         owner: &str,
         name: &str,
         sync_scope: Option<ScopeConfig>,
-        force: bool,
+        force: ForceMode,
         since: Option<DateTime<Utc>>,
     ) -> Result<QueuedSync, DomainError> {
         let scopes = self.enqueue_scopes(ctx).await?;
@@ -3788,7 +4055,7 @@ impl Service {
         owner: &str,
         name: &str,
         sync_scope: Option<ScopeConfig>,
-        force: bool,
+        force: ForceMode,
         since: Option<DateTime<Utc>>,
     ) -> Result<QueuedSync, DomainError> {
         let (job, session) = match self
@@ -3842,7 +4109,9 @@ impl Service {
                 })?,
                 () = shutdown.cancelled() => return Err(DomainError::Cancelled),
             };
-            service.sync_now(&ctx, &owner, &name).await
+            service
+                .sync_now(&ctx, &owner, &name, None, SyncRequest::default())
+                .await
         })
     }
 
@@ -3866,11 +4135,25 @@ impl Service {
         ctx: &SecurityContext,
         owner: &str,
         name: &str,
+        telemetry_file: Option<String>,
+        request: SyncRequest,
     ) -> Result<SyncSummary, DomainError> {
         validate_repo_path(owner, name)?;
+        telemetry_file
+            .as_deref()
+            .map(validate_telemetry_file)
+            .transpose()?;
         let scopes = self.enqueue_scopes(ctx).await?;
-        let job = match self
-            .prepare_sync(ctx, &scopes, owner, name, None, false, None)
+        let mut job = match self
+            .prepare_sync(
+                ctx,
+                &scopes,
+                owner,
+                name,
+                request.scope,
+                request.force,
+                request.since,
+            )
             .await?
         {
             PreparedSync::Joined(running) => {
@@ -3882,6 +4165,8 @@ impl Service {
             }
             PreparedSync::Claimed { job, .. } => job,
         };
+        job.telemetry_file = telemetry_file;
+        job.max_concurrent_tasks = request.max_concurrent_tasks;
         self.run_and_record(&job, &self.shutdown_token()).await?
     }
 
@@ -3896,7 +4181,7 @@ impl Service {
         owner: &str,
         name: &str,
         sync_scope: Option<ScopeConfig>,
-        force: bool,
+        force: ForceMode,
         since: Option<DateTime<Utc>>,
     ) -> Result<PreparedSync, DomainError> {
         let sync_scope = sync_scope.unwrap_or(self.config.scope);
@@ -3914,6 +4199,7 @@ impl Service {
             progress_percent: 0,
             error: None,
             summary_json: None,
+            telemetry_json: None,
             created_at: now.clone(),
             started_at: None,
             ended_at: None,
@@ -3975,6 +4261,8 @@ impl Service {
             scope: sync_scope,
             force,
             since,
+            telemetry_file: None,
+            max_concurrent_tasks: None,
             access_scope: scopes.sync.clone(),
             claim: Some(claim),
         };
@@ -4266,6 +4554,10 @@ impl Service {
         }))
     }
 
+    /// Refresh every `gm_active_syncs` row this process holds.
+    ///
+    /// # Errors
+    /// `Database` when the rows cannot be updated.
     pub(crate) async fn touch_active_syncs(&self) -> Result<(), DomainError> {
         self.active_syncs
             .touch(&AccessScope::allow_all(), self.instance_id, &now_rfc3339())
@@ -4308,9 +4600,24 @@ impl Service {
         };
 
         let progress = SyncProgress::new();
+        let telemetry_file = self
+            .config
+            .telemetry_dir
+            .as_deref()
+            .map(|dir| telemetry_file_path(dir, job.ctx.subject_tenant_id(), job));
+        let telemetry = Arc::new(match telemetry_file {
+            Some(file) => SessionTelemetry::logging_to(
+                Arc::clone(&self.telemetry_sink),
+                file,
+                job.session_id,
+                format!("{}/{}", job.owner, job.name),
+            ),
+            None => SessionTelemetry::default(),
+        });
         let outcome = self
-            .sync_within_deadline(job, &scope, &progress, cancel)
+            .sync_within_deadline(job, &scope, &progress, &telemetry, cancel)
             .await;
+        self.telemetry_sink.flush().await;
 
         let completed = outcome.is_ok();
         match &outcome {
@@ -4338,6 +4645,7 @@ impl Service {
         // stopped. What happened is in `status` and `error`.
         progress.finished();
         session.progress_percent = i32::from(progress.percent());
+        session.telemetry_json = Some(telemetry_json(&telemetry));
         session.ended_at = Some(now_rfc3339());
         session.updated_at.clone_from(&session.ended_at);
         let repo_full_name = session.repo_full_name.clone();
@@ -4371,11 +4679,12 @@ impl Service {
         job: &SyncJob,
         session_scope: &AccessScope,
         progress: &SyncProgress,
+        telemetry: &Arc<SessionTelemetry>,
         cancel: &CancellationToken,
     ) -> Result<SyncSummary, DomainError> {
         let job_cancel = cancel.child_token();
         let deadline = self.config.sync_deadline;
-        let sync = self.sync_with_heartbeat(job, session_scope, progress, &job_cancel);
+        let sync = self.sync_with_heartbeat(job, session_scope, progress, telemetry, &job_cancel);
         let mut sync = std::pin::pin!(sync);
 
         tokio::select! {
@@ -4402,6 +4711,7 @@ impl Service {
         job: &SyncJob,
         session_scope: &AccessScope,
         progress: &SyncProgress,
+        telemetry: &Arc<SessionTelemetry>,
         cancel: &CancellationToken,
     ) -> Result<SyncSummary, DomainError> {
         let options = FetchOptions {
@@ -4411,6 +4721,9 @@ impl Service {
             force: job.force,
             since: job.since,
             cancel: cancel.clone(),
+            telemetry: Arc::clone(telemetry),
+            public_repo: Arc::default(),
+            max_concurrent_tasks: job.max_concurrent_tasks,
         };
         let stop_beating = CancellationToken::new();
         let _stop_on_drop = stop_beating.clone().drop_guard();
@@ -4419,6 +4732,7 @@ impl Service {
             session_scope.clone(),
             job.session_id,
             progress.handle(),
+            Arc::clone(telemetry),
             stop_beating.clone(),
         ));
 
@@ -4729,6 +5043,8 @@ impl Service {
             Err(e) => return Err(DomainError::Database(e)),
         };
 
+        self.expire_cache(&options.access_scope, tenant_id).await;
+
         let run = Arc::new(RunState::new(
             Uuid::new_v4(),
             options.access_scope.clone(),
@@ -4737,6 +5053,7 @@ impl Service {
             name,
             FetchOptions {
                 cancel: cancel.clone(),
+                public_repo: Arc::default(),
                 ..options.clone()
             },
         ));
@@ -4747,6 +5064,81 @@ impl Service {
         // and the sync itself succeeded or failed on its own merits.
         release_sync_lock(sync_lock, owner, name).await;
         outcome
+    }
+
+    async fn expire_cache(&self, scope: &AccessScope, tenant_id: Uuid) {
+        let shared = self.config.cache_max_age_days;
+        let own = self
+            .config
+            .tenant_cache_max_age_days
+            .get(&tenant_id)
+            .copied()
+            .or(shared);
+        self.expire_partition(scope, tenant_id, own).await;
+        self.expire_partition(
+            &AccessScope::for_tenant(SHARED_CACHE_PARTITION),
+            SHARED_CACHE_PARTITION,
+            shared,
+        )
+        .await;
+    }
+
+    async fn expire_partition(
+        &self,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        max_age_days: Option<NonZeroU64>,
+    ) {
+        let Some(fetched_before) = max_age_days.and_then(cache_cutoff) else {
+            return;
+        };
+        match self
+            .github
+            .expire_cache(scope, tenant_id, fetched_before)
+            .await
+        {
+            Ok(removed) => tracing::debug!(removed, "expired old cached responses"),
+            Err(e) => {
+                tracing::warn!(error = %e, "expiring old cached responses failed; the next sync tries again");
+            }
+        }
+    }
+
+    /// Derive the conversations of this run's repository once its rows are
+    /// written: a normal run only for the issues and pull requests whose
+    /// comments it wrote, a forced run for all of them. A failure is logged
+    /// and does not fail the sync.
+    async fn group_conversations(
+        &self,
+        run: &RunState,
+        watermark: DateTime<Utc>,
+    ) -> Result<(), DomainError> {
+        if !(run.options.scope.objects.issues || run.options.scope.objects.pull_requests) {
+            return Ok(());
+        }
+        let changed_since = (!run.options.force.refetches_all()).then_some(watermark);
+        match group_conversations(
+            self.conversations.as_ref(),
+            &run.scope,
+            run.tenant_id,
+            run.repo_id()?,
+            changed_since,
+        )
+        .await
+        {
+            Ok(stats) => tracing::info!(
+                repository = %format!("{}/{}", run.owner, run.name),
+                inline = stats.inline,
+                toplevel = stats.toplevel,
+                "grouped conversations"
+            ),
+            Err(e) => tracing::warn!(
+                repository = %format!("{}/{}", run.owner, run.name),
+                error = %e,
+                "conversation grouping skipped"
+            ),
+        }
+        Ok(())
     }
 
     /// The part of a sync that runs under the lock: phases, then reconciliation.
@@ -4773,10 +5165,13 @@ impl Service {
         let runner = RepoPhaseRunner::new(
             vec![worker],
             run.identity(),
-            self.config.max_concurrent_tasks,
+            run.options
+                .max_concurrent_tasks
+                .unwrap_or(self.config.max_concurrent_tasks),
             cancel.child_token(),
             progress.handle(),
-        );
+        )
+        .with_telemetry(Arc::clone(&run.options.telemetry));
         let mut report = runner.run().await;
         let contributors = run.take_contributors();
         let contributors_synced = if contributors.is_empty() {
@@ -4835,14 +5230,7 @@ impl Service {
         for family in Family::SWEPT {
             if let Some(end) = run.swept_end(family) {
                 self.sweep_watermark
-                    .promote(
-                        &run.scope,
-                        run.tenant_id,
-                        run.repo_id()?,
-                        family,
-                        end.page1_etag,
-                        end.head_sha,
-                    )
+                    .promote(&run.scope, run.tenant_id, run.repo_id()?, family, end)
                     .await?;
             }
         }
@@ -4858,6 +5246,7 @@ impl Service {
                 "reconciled upstream deletions"
             );
         }
+        self.group_conversations(run, watermark).await?;
         progress.stored();
 
         let mut summary = run.summary();

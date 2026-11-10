@@ -29,10 +29,25 @@ use crate::server;
 /// - Exposes `DirectoryService` gRPC service via `grpc-hub`
 /// - Tracks gear instances and provides service resolution
 /// - Exposes REST API to list all registered gears
+// `one_per_installation`: the directory is this process's own instance map --
+// a `DashMap` in `GearManager`, with no store, no replication and no quorum --
+// and every worker is handed one endpoint with no way to find another.
+//
+// Two of these in one installation are two disjoint maps that never meet, and
+// every consequence is silent: the edge prunes the other half's public routes
+// to 404 because its safety valve only covers an *empty* snapshot, readiness
+// stays at 503 forever because re-registration never gives up, and instance
+// targeting answers with a complete-looking ownership map over half the shards.
+//
+// The registry cannot refuse this the way it refuses a second `rest_host`: that
+// check works because a process can see its own gears, and no process can see
+// another. Composition tooling refuses it instead, which is why the fact is
+// stated here rather than merely known.
 #[toolkit::gear(
     name = "service-discovery",
     capabilities = [grpc, system, rest],
-    client = cf_system_sdks::directory::DirectoryClient
+    client = cf_system_sdks::directory::DirectoryClient,
+    one_per_installation = true
 )]
 pub struct ServiceDiscoveryGear {
     directory_api: OnceLock<Arc<dyn DirectoryClient>>,
@@ -54,10 +69,10 @@ impl Default for ServiceDiscoveryGear {
 
 #[async_trait]
 impl SystemCapability for ServiceDiscoveryGear {
-    fn pre_init(&self, sys: &toolkit::runtime::SystemContext) -> anyhow::Result<()> {
+    fn wire_runtime(&self, sys: &toolkit::runtime::SystemContext) -> anyhow::Result<()> {
         self.gear_manager
             .set(Arc::clone(&sys.gear_manager))
-            .map_err(|_| anyhow::anyhow!("GearManager already set (pre_init called twice?)"))?;
+            .map_err(|_| anyhow::anyhow!("GearManager already set (wire_runtime called twice?)"))?;
         Ok(())
     }
 }
@@ -348,9 +363,7 @@ mod tests {
 
     #[tokio::test]
     async fn init_fails_without_a_wired_gear_manager() {
-        // `init` builds the gear catalog and then needs the `GearManager` that
-        // `pre_init` injects. If that wiring is skipped, `init` must surface a
-        // clear error rather than panic on the empty `OnceLock`.
+        // Missing runtime wiring must fail `init` instead of panicking on the `OnceLock`.
         let mut wrapped = serde_json::Map::new();
         wrapped.insert("config".to_owned(), serde_json::json!({}));
         let ctx = GearCtx::new(
@@ -387,7 +400,7 @@ mod tests {
     }
 
     #[test]
-    fn pre_init_wires_the_gear_manager() {
+    fn wire_runtime_wires_the_gear_manager() {
         use toolkit::runtime::{GrpcInstallerStore, SystemContext};
 
         let gear = ServiceDiscoveryGear::default();
@@ -397,17 +410,17 @@ mod tests {
             Arc::new(GrpcInstallerStore::new()),
         );
 
-        gear.pre_init(&sys)
-            .expect("pre_init must wire the injected GearManager");
+        gear.wire_runtime(&sys)
+            .expect("wire_runtime must wire the injected GearManager");
         assert!(
             gear.gear_manager.get().is_some(),
-            "pre_init must store the GearManager for init to use"
+            "wire_runtime must store the GearManager for init to use"
         );
 
         // A second wiring must fail loudly rather than silently swallow the
         // duplicate; the OnceLock is set-once by contract.
-        gear.pre_init(&sys)
-            .expect_err("pre_init must reject a second call");
+        gear.wire_runtime(&sys)
+            .expect_err("wire_runtime must reject a second call");
     }
 
     #[tokio::test]

@@ -1,8 +1,8 @@
 # cf-gears-graph-storage
 
 The Graph Storage gear: a typed, multi-tenant knowledge graph with bounded
-traversal and hybrid (lexical + vector) retrieval, over PostgreSQL 19 with
-SQL/PGQ and pgvector.
+traversal and hybrid (lexical + vector) retrieval, over PostgreSQL with
+pgvector.
 
 The gear is a stateless gateway over a pluggable store. Its public API is the
 `cf-gears-graph-storage-sdk` crate: the `GraphStorageClientV1` trait for
@@ -10,25 +10,25 @@ in-process consumers, the REST surface under `/graph-storage/v1`, and the
 plugin contracts (`GraphStoreV1`, `GraphEngineV1`, `EmbeddingProviderV1`).
 
 - [PRD](../docs/PRD.md), [DESIGN](../docs/DESIGN.md), [ADRs](../docs/ADR/)
-- Base ontology schemas the gear registers at boot: [`schemas/`](./schemas/)
+- Base ontology schemas the gear registers at boot and the SDK publishes to types-registry: [`graph-storage-sdk/schemas/`](../graph-storage-sdk/schemas/)
 - Known gaps between these documents and the code: [below](#known-limitations)
 
 ## Requirements
 
-PostgreSQL 19 with the `vector` extension. `CREATE PROPERTY GRAPH` is probed at
-boot: on a server without it the property-graph migration is skipped and every
-traversal hop is served by the portable two-query backend, with a logged reason.
+PostgreSQL 16 or later with the `vector` extension; 18 is what CI runs. No
+other extension and no SQL/PGQ: every traversal hop is two scoped statements.
+A database created on a 19 beta by an earlier release loses its property graph
+`kb` to migration `m0010` (#5267).
 
 ## Configuration
 
 ```yaml
 graph-storage:
   database:
-    server: "pg_graph"          # the PostgreSQL 19 server alias
+    server: "pg_graph"          # a PostgreSQL 16+ server with pgvector
     dbname: "graph_storage"
   config:
-    traversal_hop: auto         # auto (default) | pgq | two_query -- `pgq` is a
-                                # demand: without SQL/PGQ the gear is not ready
+    traversal_hop: auto         # auto (default) | two_query; `pgq` is refused
     embedding_dimension: 384    # fixed at migration time
     embedding_provider: onnx    # fake | onnx | remote
     # onnx (feature `onnx`)
@@ -61,13 +61,11 @@ Both are off by default: a deployment links the provider it selected.
 # the in-memory store, the domain service, the REST surface.
 make test-graph-storage
 
-# The same conformance suite against a real PostgreSQL 19, plus the cases only
-# a server can answer (the SQL/PGQ hop, its parity with the fallback, the
-# cross-tenant trap). It needs a server with SQL/PGQ *and* pgvector, which no
-# published image carries yet, so build the one this gear pins:
-docker build -f gears/graph-storage/deploy/docker/pg19-pgvector.Dockerfile \
-  -t pg19-pgvector:latest gears/graph-storage/deploy/docker
-GEARS_TEST_PG_GRAPH_IMAGE=pg19-pgvector:latest make test-graph-storage-pg
+# The same conformance suite against a real PostgreSQL, plus the cases only a
+# server can answer (the plans the read paths can use, the cross-tenant trap,
+# the migrations). It needs pgvector, which the platform's graph pin does not
+# carry; CI uses the published image at a pinned version:
+GEARS_TEST_PG_GRAPH_IMAGE=pgvector/pgvector:0.8.7-pg18 make test-graph-storage-pg
 ```
 
 Without `GEARS_TEST_PG_GRAPH_IMAGE` the PostgreSQL lane skips with a named
@@ -81,9 +79,17 @@ on server-wide state — so it runs at a bounded concurrency
 in-process runner). More than that on an ordinary machine and the connection
 pools start timing out, which reads as a flaky gear and is a busy host.
 
+The latency benchmark is a third, opt-in lane (`GEARS_GRAPH_PERF=1`, `tests/perf.rs`):
+it seeds the PRD's reference graph (100k nodes / 500k edges) and times search,
+projection and traversal, optionally behind an added round-trip time.
+[docs/PERF.md](../docs/PERF.md) has the method, the command and where results
+are posted. A deployment whose database is not on the same host should set
+`test_before_acquire: false` in its pool configuration: the default pings
+before every acquire, which doubles the round trips of every read.
+
 A case that panics can leave its container behind — the removal is
 asynchronous, and nothing awaits it — so after a failed run
-`docker ps --filter ancestor=pg19-pgvector:latest` is worth a glance; a
+`docker ps --filter ancestor=pgvector/pgvector:0.8.7-pg18` is worth a glance; a
 handful of forgotten servers is enough to make the next run look flaky too.
 
 ## Using it from a producer
@@ -113,9 +119,16 @@ Each is the shipped behaviour, with the contract that fixes it.
   conflict otherwise, including when no node is stored under the key.
   `Some(0)` means "there must be none": two writers claiming one key with it
   get exactly one success, which is how a version number is claimed across
-  replicas without a lock. No read returns the version yet (README § Known
-  limitations), so a read-then-update is last-writer-wins until it does. Edges
-  carry no version: their identity is derived from their endpoints.
+  replicas without a lock. Every node read returns it as `envelope.version`
+  (the node read, the projection row, traversal and neighbourhood
+  hydration), so read → change → write with `expected_version` set to what
+  was read is a compare-and-set that refuses a write someone made in
+  between. Edges carry no version (`envelope.version` is absent): their
+  identity is derived from their type, their endpoints and an optional
+  `discriminator`, which is what tells apart two edges of one type between
+  the same two nodes. Reads return it on `EdgeRef` and `AdjacencyEntry`, and
+  a traversal can follow only the discriminators it names
+  (`edge_discriminators`).
 - **Scope replacement removes what carries the scope.** `replace_scope:
   {attribute, value, generation}` removes, after the batch's own writes, the
   nodes of `scope_managed` types whose payload field `attribute` equals
@@ -149,8 +162,14 @@ Each is the shipped behaviour, with the contract that fixes it.
   unindexed, which is a scan of the type's rows; `contains` is a `LIKE` and
   scans too. A page carries no total and there is no offset: the platform
   pages by cursor and refuses `$count` and `$skip` by design
-  (`toolkit::api::odata`), so a listing that needs either walks the pages
-  (#5108 records what a consumer asked for beyond this).
+  (`toolkit::api::odata`). The total is a call of its own: `GET
+  /nodes:count` (`count_nodes` in process) takes the listing's
+  `type_pattern` and `$filter` and answers how many rows all its pages hold,
+  exactly up to `projection_count_max` (10 000 by default) and as that
+  ceiling with `capped: true` past it -- the database counts at most one row
+  past the ceiling and answers one number, so its cost is bounded by the
+  ceiling, not by the tenant. It refuses `$orderby`,
+  `$top`, `cursor` and `$select`. There is no offset in any form (#5108).
   A type that declares no `index` paths can be filtered by `node_key`, `name`,
   `created_at` and `updated_at` only, which is a scan of the tenant. The audit
   envelope's `updated_at` is when the gear last wrote the row, not when the
@@ -183,10 +202,11 @@ Each is the shipped behaviour, with the contract that fixes it.
 - **Nodes and edges in one batch** commit or fail together
   (`fr-bulk-ingest`); an importer that writes nodes in one call and edges in
   another has, between the two, a graph with nodes and no edges.
-- **Migrations are additive** from `v0.1.0`: no shipped migration's DDL has
-  changed since it shipped (later tags add migrations), so a database created
-  by any tag upgrades in place. Only a database from the vendored prototype
-  needs to start empty.
+- **Migrations are additive** from `v0.1.0`, so a database created by any tag
+  upgrades in place. One shipped migration changed, on purpose: `m0002`, which
+  created the SQL/PGQ property graph and could not run on PostgreSQL 19 GA,
+  is a no-op, and `m0010` drops a graph an earlier tag created (#5267). Only a
+  database from the vendored prototype needs to start empty.
 
 ## Known limitations
 
@@ -222,9 +242,9 @@ independently developed implementation can reach the service yet; #4873).
 - *Traversal takes explicit seed keys only*, not search hits. Retention under
   a neighborhood budget *is* degree-ordered, and a traversal *does* echo the
   seeds it admitted.
-- *Traversal has two hop backends*, the SQL/PGQ pattern and the two-query hop
-  (`traversal_hop: auto | pgq | two_query`); the iterative-CTE hop of ADR-0001 was
-  built on the development stand and is not shipped.
+- *Traversal has one hop backend*, the two-query hop. A single-statement CTE
+  hop paid off on the development stand only at a database round trip of 2 ms
+  or more, and is not shipped.
 - *Four specified tables are not created*: `chunk`, `label`, `label_assignment`
   and `ingest_audit` (chunking, labels and the audit record are deferred).
 - *Hybrid search fails, rather than degrading to its lexical arm,* when the
@@ -252,9 +272,11 @@ independently developed implementation can reach the service yet; #4873).
 - *Reason codes for `not_found`, `unimplemented`, `deadline_exceeded`,
   `cancelled`, `unavailable`, `data_loss` and `unknown` are not on the wire*:
   the platform's builders for those categories carry no reason slot.
-- *The in-process `GraphStorageClientV1` is narrower than REST*: no edge read,
-  no compatibility dry run, no registration options or migrations, no
-  source-namespace operations. Widening it is a `ClientV2` question.
+- *The in-process `GraphStorageClientV1` is narrower than REST*: no edge read
+  and no source-namespace operations. Registration takes the REST options
+  through `register_types_with` (`on_existing`, `revalidate`, `dry_run`,
+  migrations), so a compatibility dry run is that call with `dry_run` set.
+  The rest comes with the contract migration (#5021).
 - *Readiness does not state the active provider identity and dimension*, and
   five matrix rows report `not_implemented`.
 - *The `source_epoch` is minted once and never rotates*; the snapshot-identity
@@ -271,10 +293,9 @@ independently developed implementation can reach the service yet; #4873).
 - *Base-ontology schemas are published once per tenant and have no update
   path*: an edit to a base schema does not reach a database that already
   published it.
-- *No published image carries both PostgreSQL 19 and pgvector*, so the lane
-  builds its own from [`deploy/docker/pg19-pgvector.Dockerfile`](../deploy/docker/pg19-pgvector.Dockerfile);
-  `test-containers` should publish one. PostgreSQL 16, the documented
-  baseline, has no lane at all.
+- *The PostgreSQL lane runs on 18 only*: `pgvector/pgvector:0.8.7-pg18`.
+  PostgreSQL 16, the documented baseline, has no lane, and the platform's
+  `postgres_graph()` pin carries no pgvector (#4666).
 - *Vector search needs two session parameters the gear cannot set for itself.*
   HNSW is an approximate index and pgvector applies filters **after** the
   approximate scan, while every query this gear issues carries a tenant scope,

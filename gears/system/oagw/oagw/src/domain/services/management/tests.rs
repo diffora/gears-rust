@@ -1,13 +1,18 @@
 use std::sync::Arc;
 
 use crate::domain::model::{
-    Endpoint, HttpMatch, HttpMethod, MatchRules, PathSuffixMode, Scheme, Server,
+    Endpoint, GrpcMatch, HttpMatch, HttpMethod, MatchRules, PathSuffixMode, Scheme, Server,
 };
-use crate::domain::ssrf::SsrfGuard;
+use crate::domain::repo::{RowKey, Tags};
+use crate::domain::services::registry_reconcile::tests::{
+    Backend, CachedPlanes, Failed, Resolved, Stores, in_memory_planes, is_disabled, is_not_found,
+};
+use crate::domain::services::{RegistryProvisioner, UpstreamCheck};
+use crate::domain::ssrf::{SsrfGuard, SsrfPolicy};
 
 use super::*;
 use crate::domain::test_support::{
-    MockCredStoreClient, MockTenantResolverClient, allow_all_enforcer,
+    MockCredStoreClient, MockTenantResolverClient, UnavailableStorage, allow_all_enforcer,
 };
 use crate::infra::storage::{InMemoryRouteRepo, InMemoryUpstreamRepo};
 use oagw_sdk::HTTP_PROTOCOL_ID;
@@ -21,6 +26,7 @@ fn make_service() -> ControlPlaneServiceImpl {
         allow_all_enforcer(),
         Arc::new(MockCredStoreClient::empty()),
         Arc::new(SsrfGuard::disabled()),
+        None,
     )
 }
 
@@ -32,6 +38,7 @@ fn make_service_with_resolver(resolver: MockTenantResolverClient) -> ControlPlan
         allow_all_enforcer(),
         Arc::new(MockCredStoreClient::empty()),
         Arc::new(SsrfGuard::disabled()),
+        None,
     )
 }
 
@@ -46,6 +53,7 @@ fn make_service_with_resolver_and_creds(
         allow_all_enforcer(),
         Arc::new(MockCredStoreClient::with_secrets(creds)),
         Arc::new(SsrfGuard::disabled()),
+        None,
     )
 }
 
@@ -326,7 +334,7 @@ async fn alias_resolution_enabled() {
 
     let chain = svc.build_tenant_chain(&ctx).await.unwrap();
     let (resolved, _) = svc
-        .resolve_alias(&ctx, &chain, "openai", None)
+        .resolve_alias(&ctx, &chain, "openai", None, Tags::Load)
         .await
         .unwrap();
     assert_eq!(resolved.id, u.id);
@@ -350,7 +358,7 @@ async fn alias_resolution_disabled_returns_503() {
 
     let chain = svc.build_tenant_chain(&ctx).await.unwrap();
     let err = svc
-        .resolve_alias(&ctx, &chain, "openai", None)
+        .resolve_alias(&ctx, &chain, "openai", None, Tags::Load)
         .await
         .unwrap_err();
     assert!(matches!(err, DomainError::UpstreamDisabled { .. }));
@@ -364,62 +372,42 @@ async fn alias_resolution_nonexistent_returns_404() {
 
     let chain = svc.build_tenant_chain(&ctx).await.unwrap();
     let err = svc
-        .resolve_alias(&ctx, &chain, "nonexistent", None)
+        .resolve_alias(&ctx, &chain, "nonexistent", None, Tags::Load)
         .await
         .unwrap_err();
     assert!(matches!(err, DomainError::NotFound { .. }));
 }
 
+/// A known alias whose routes match neither the method nor the path is a
+/// route not-found, through the whole resolution.
 #[tokio::test]
-async fn route_matching_through_cp() {
+async fn resolve_proxy_target_without_a_matching_route_is_route_not_found() {
     let svc = make_service();
-    let tenant = Uuid::new_v4();
-    let ctx = test_ctx(tenant);
-
+    let ctx = test_ctx(Uuid::new_v4());
     let u = svc
         .create_upstream(&ctx, make_create_upstream_ip("openai"))
         .await
         .unwrap();
-    let r = svc
-        .create_route(&ctx, make_create_route(u.id))
+    svc.create_route(&ctx, make_create_route(u.id))
         .await
         .unwrap();
 
-    let chain = svc.build_tenant_chain(&ctx).await.unwrap();
-    let matched = ControlPlaneServiceImpl::find_route_in_chain(
-        &*svc.routes,
-        &chain,
-        u.id,
-        "POST",
-        "/v1/chat/completions",
-    )
-    .await
-    .unwrap();
-    assert_eq!(matched.id, r.id);
-}
-
-#[tokio::test]
-async fn route_matching_no_match_returns_404() {
-    let svc = make_service();
-    let tenant = Uuid::new_v4();
-    let ctx = test_ctx(tenant);
-
-    let u = svc
-        .create_upstream(&ctx, make_create_upstream_ip("openai"))
-        .await
-        .unwrap();
-
-    let chain = svc.build_tenant_chain(&ctx).await.unwrap();
-    let err = ControlPlaneServiceImpl::find_route_in_chain(
-        &*svc.routes,
-        &chain,
-        u.id,
-        "GET",
-        "/v1/unknown",
-    )
-    .await
-    .unwrap_err();
-    assert!(matches!(err, DomainError::NotFound { .. }));
+    for (method, path) in [("GET", "/v1/chat/completions"), ("POST", "/v2/other")] {
+        let err = svc
+            .resolve_proxy_target(&ctx, "openai", method, path, Tags::Load)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                DomainError::NotFound {
+                    entity: "route",
+                    ..
+                }
+            ),
+            "{method} {path}: {err:?}"
+        );
+    }
 }
 
 // -- validate_endpoints tests --
@@ -729,7 +717,7 @@ fn validate_endpoints_rejects_empty_hostname() {
 }
 
 #[tokio::test]
-async fn delete_upstream_cascades_routes_and_returns_ids() {
+async fn delete_upstream_deletes_its_routes() {
     let svc = make_service();
     let tenant = Uuid::new_v4();
     let ctx = test_ctx(tenant);
@@ -748,31 +736,59 @@ async fn delete_upstream_cascades_routes_and_returns_ids() {
     req2.match_rules.http.as_mut().unwrap().methods = vec![HttpMethod::Get];
     let r2 = svc.create_route(&ctx, req2).await.unwrap();
 
-    let deleted_route_ids = svc.delete_upstream(&ctx, u.id).await.unwrap();
+    svc.delete_upstream(&ctx, u.id).await.unwrap();
 
-    // Both route IDs should be returned.
-    assert_eq!(deleted_route_ids.len(), 2);
-    assert!(deleted_route_ids.contains(&r1.id));
-    assert!(deleted_route_ids.contains(&r2.id));
-
-    // Routes should be gone.
-    assert!(svc.get_route(&ctx, r1.id).await.is_err());
-    assert!(svc.get_route(&ctx, r2.id).await.is_err());
+    for id in [r1.id, r2.id] {
+        assert!(matches!(
+            svc.get_route(&ctx, id).await,
+            Err(DomainError::NotFound { .. })
+        ));
+    }
+    assert!(matches!(
+        svc.get_upstream(&ctx, u.id).await,
+        Err(DomainError::NotFound { .. })
+    ));
 }
 
 #[tokio::test]
-async fn delete_upstream_no_routes_returns_empty_vec() {
+async fn delete_upstream_without_routes() {
     let svc = make_service();
-    let tenant = Uuid::new_v4();
-    let ctx = test_ctx(tenant);
+    let ctx = test_ctx(Uuid::new_v4());
 
     let u = svc
         .create_upstream(&ctx, make_create_upstream_ip("openai"))
         .await
         .unwrap();
 
-    let deleted_route_ids = svc.delete_upstream(&ctx, u.id).await.unwrap();
-    assert!(deleted_route_ids.is_empty());
+    svc.delete_upstream(&ctx, u.id).await.unwrap();
+    assert!(matches!(
+        svc.get_upstream(&ctx, u.id).await,
+        Err(DomainError::NotFound { .. })
+    ));
+}
+
+/// The upstream goes first: when another tenant's delete finds no upstream,
+/// the owner's routes are untouched.
+#[tokio::test]
+async fn delete_upstream_of_another_tenant_keeps_its_routes() {
+    let svc = make_service();
+    let owner = test_ctx(Uuid::new_v4());
+    let intruder = test_ctx(Uuid::new_v4());
+
+    let u = svc
+        .create_upstream(&owner, make_create_upstream_ip("openai"))
+        .await
+        .unwrap();
+    let r = svc
+        .create_route(&owner, make_create_route(u.id))
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        svc.delete_upstream(&intruder, u.id).await,
+        Err(DomainError::NotFound { .. })
+    ));
+    assert_eq!(svc.get_route(&owner, r.id).await.unwrap(), r);
 }
 
 // -- Alias resolution tests --
@@ -800,12 +816,13 @@ async fn resolve_alias_walks_tenant_chain_to_ancestor() {
     let child_ctx = test_ctx(child);
     let chain = svc.build_tenant_chain(&child_ctx).await.unwrap();
     let (resolved, _) = svc
-        .resolve_alias(&child_ctx, &chain, "api.openai.com", None)
+        .resolve_alias(&child_ctx, &chain, "api.openai.com", None, Tags::Load)
         .await
         .unwrap();
     assert_eq!(resolved.id, root_upstream.id);
 }
 
+/// ADR-0018: PERS-STORE-006.
 #[tokio::test]
 async fn resolve_alias_child_shadows_ancestor() {
     use crate::domain::model::{AuthConfig, SharingMode};
@@ -835,10 +852,151 @@ async fn resolve_alias_child_shadows_ancestor() {
     // Child resolves to its own upstream (shadow wins).
     let chain = svc.build_tenant_chain(&child_ctx).await.unwrap();
     let (resolved, _) = svc
-        .resolve_alias(&child_ctx, &chain, "api.openai.com", None)
+        .resolve_alias(&child_ctx, &chain, "api.openai.com", None, Tags::Load)
         .await
         .unwrap();
     assert_eq!(resolved.id, child_upstream.id);
+}
+
+/// Alias shadowing over four levels (root, a, b, leaf), on every store.
+/// Root and b share their upstream, and a shares nothing. The closest
+/// visible enabled upstream wins and an ancestor that shares nothing is
+/// skipped, with its routes. A disabled upstream falls back to the next one
+/// up. A tenant's own upstream wins over every ancestor, even unshared.
+///
+/// ADR-0018: PERS-STORE-006.
+async fn alias_shadowing_over_four_levels(backend: Backend) {
+    use crate::domain::model::{AuthConfig, SharingMode, UpdateUpstreamRequest};
+
+    let [root, a, b, leaf] = std::array::from_fn(|_| Uuid::new_v4());
+    let stores = Stores::new(backend);
+    let svc = ControlPlaneServiceImpl::new(
+        stores.upstreams,
+        stores.routes,
+        Arc::new(MockTenantResolverClient::with_hierarchy(
+            [root, a, b, leaf].map(TenantId).to_vec(),
+        )),
+        allow_all_enforcer(),
+        Arc::new(MockCredStoreClient::empty()),
+        Arc::new(SsrfGuard::disabled()),
+        None,
+    );
+    let shared = |enabled| CreateUpstreamRequest {
+        auth: Some(AuthConfig {
+            plugin_type: "noop".into(),
+            sharing: SharingMode::Inherit,
+            config: None,
+        }),
+        enabled,
+        ..make_create_upstream_hostname()
+    };
+    let root_up = svc
+        .create_upstream(&test_ctx(root), shared(true))
+        .await
+        .unwrap();
+    let a_up = svc
+        .create_upstream(&test_ctx(a), make_create_upstream_hostname())
+        .await
+        .unwrap();
+    let b_up = svc
+        .create_upstream(&test_ctx(b), shared(true))
+        .await
+        .unwrap();
+    let root_route = svc
+        .create_route(&test_ctx(root), make_create_route(root_up.id))
+        .await
+        .unwrap();
+    // A better match on the unshared upstream, which `leaf` must not see.
+    svc.create_route(
+        &test_ctx(a),
+        CreateRouteRequest {
+            priority: 9,
+            ..make_create_route(a_up.id)
+        },
+    )
+    .await
+    .unwrap();
+
+    // The upstream `tenant` resolves the alias to, and the route it selects.
+    let resolve = async |tenant: Uuid| {
+        let ctx = test_ctx(tenant);
+        let chain = svc.build_tenant_chain(&ctx).await.unwrap();
+        let (upstream, route) = svc
+            .resolve_alias(
+                &ctx,
+                &chain,
+                "api.openai.com",
+                Some(("POST", "/v1/chat/completions")),
+                Tags::Skip,
+            )
+            .await
+            .unwrap();
+        (upstream.id, route.map(|r| r.id))
+    };
+    assert_eq!(resolve(leaf).await, (b_up.id, Some(root_route.id)));
+    assert_eq!(resolve(b).await, (b_up.id, Some(root_route.id)));
+    assert_eq!(resolve(a).await.0, a_up.id, "its own, though unshared");
+
+    // b disabled: leaf and b fall back past a to root.
+    let disabled = shared(false);
+    svc.update_upstream(
+        &test_ctx(b),
+        b_up.id,
+        UpdateUpstreamRequest {
+            server: disabled.server,
+            protocol: disabled.protocol,
+            alias: disabled.alias,
+            auth: disabled.auth,
+            headers: disabled.headers,
+            plugins: disabled.plugins,
+            rate_limit: disabled.rate_limit,
+            cors: disabled.cors,
+            tags: disabled.tags,
+            enabled: disabled.enabled,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(resolve(leaf).await, (root_up.id, Some(root_route.id)));
+    assert_eq!(resolve(b).await, (root_up.id, Some(root_route.id)));
+
+    // leaf's own upstream, unshared, wins over every ancestor.
+    let leaf_up = svc
+        .create_upstream(&test_ctx(leaf), make_create_upstream_hostname())
+        .await
+        .unwrap();
+    assert_eq!(resolve(leaf).await, (leaf_up.id, Some(root_route.id)));
+}
+
+mod alias_shadowing_over_four_levels {
+    use super::{Backend, alias_shadowing_over_four_levels as case};
+
+    #[tokio::test]
+    async fn in_memory() {
+        case(Backend::Memory).await;
+    }
+
+    #[tokio::test]
+    async fn sqlite() {
+        case(Backend::Db(
+            crate::infra::storage::testing::shared_sqlite().await,
+        ))
+        .await;
+    }
+
+    #[cfg(feature = "integration")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn postgres() {
+        let server = crate::infra::storage::testing::postgres_server().await;
+        case(Backend::Db(server.fresh().await)).await;
+    }
+
+    #[cfg(feature = "integration")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn mysql() {
+        let server = crate::infra::storage::testing::mysql_server().await;
+        case(Backend::Db(server.fresh().await)).await;
+    }
 }
 
 #[tokio::test]
@@ -858,7 +1016,7 @@ async fn resolve_alias_private_ancestor_not_visible() {
     let child_ctx = test_ctx(child);
     let chain = svc.build_tenant_chain(&child_ctx).await.unwrap();
     let err = svc
-        .resolve_alias(&child_ctx, &chain, "api.openai.com", None)
+        .resolve_alias(&child_ctx, &chain, "api.openai.com", None, Tags::Load)
         .await
         .unwrap_err();
     assert!(matches!(err, DomainError::NotFound { .. }));
@@ -903,7 +1061,7 @@ async fn resolve_alias_disabled_ancestor_falls_through() {
     let child_ctx = test_ctx(child);
     let chain = svc.build_tenant_chain(&child_ctx).await.unwrap();
     let (resolved, _) = svc
-        .resolve_alias(&child_ctx, &chain, "api.openai.com", None)
+        .resolve_alias(&child_ctx, &chain, "api.openai.com", None, Tags::Load)
         .await
         .unwrap();
     assert_eq!(resolved.id, root_upstream.id);
@@ -933,7 +1091,7 @@ async fn resolve_alias_all_disabled_returns_upstream_disabled() {
     let child_ctx = test_ctx(child);
     let chain = svc.build_tenant_chain(&child_ctx).await.unwrap();
     let err = svc
-        .resolve_alias(&child_ctx, &chain, "api.openai.com", None)
+        .resolve_alias(&child_ctx, &chain, "api.openai.com", None, Tags::Load)
         .await
         .unwrap_err();
     assert!(matches!(err, DomainError::UpstreamDisabled { .. }));
@@ -972,7 +1130,7 @@ async fn resolve_alias_disabled_child_falls_through_to_ancestor() {
     // Child resolves: own upstream disabled → falls through to root ancestor.
     let chain = svc.build_tenant_chain(&child_ctx).await.unwrap();
     let (resolved, _) = svc
-        .resolve_alias(&child_ctx, &chain, "api.openai.com", None)
+        .resolve_alias(&child_ctx, &chain, "api.openai.com", None, Tags::Load)
         .await
         .unwrap();
     assert_eq!(resolved.id, root_upstream.id);
@@ -989,7 +1147,7 @@ async fn resolve_alias_no_match_in_tenant_chain_returns_not_found() {
     let child_ctx = test_ctx(child);
     let chain = svc.build_tenant_chain(&child_ctx).await.unwrap();
     let err = svc
-        .resolve_alias(&child_ctx, &chain, "nonexistent", None)
+        .resolve_alias(&child_ctx, &chain, "nonexistent", None, Tags::Load)
         .await
         .unwrap_err();
     assert!(matches!(err, DomainError::NotFound { .. }));
@@ -1031,6 +1189,7 @@ fn make_upstream(
         rate_limit,
         cors: None,
         tags,
+        managed_by: ManagedBy::Api,
     }
 }
 
@@ -1047,6 +1206,21 @@ fn make_rate_limit(sharing: SharingMode, rate: u32, window: Window) -> RateLimit
         response_headers: true,
         pool_owner_id: None,
     }
+}
+
+/// A candidate whose tenant is not in the chain sorts after the chain's,
+/// so it never wins over the subject tenant's own upstream.
+#[test]
+fn select_upstream_ranks_a_tenant_outside_the_chain_last() {
+    let (child, parent) = (Uuid::new_v4(), Uuid::new_v4());
+    let shared = Some(make_rate_limit(SharingMode::Inherit, 10, Window::Second));
+    let outsider = make_upstream(Uuid::new_v4(), "a", None, shared, None, vec![]);
+    let own = make_upstream(child, "a", None, None, None, vec![]);
+
+    let (selected, _) =
+        super::resolution::select_upstream(&[outsider, own.clone()], child, &[child, parent])
+            .expect("selected");
+    assert_eq!(selected.id, own.id);
 }
 
 #[test]
@@ -1269,6 +1443,7 @@ fn effective_config_route_rate_limit_applies_min() {
         tags: vec![],
         priority: 0,
         enabled: true,
+        managed_by: ManagedBy::Api,
     };
 
     let effective = compute_effective_config(&[u], Some(&route)).unwrap();
@@ -1448,6 +1623,7 @@ fn effective_config_route_cors_inherit_unions_with_upstream() {
         tags: vec![],
         priority: 0,
         enabled: true,
+        managed_by: ManagedBy::Api,
     };
 
     let effective =
@@ -1583,6 +1759,7 @@ fn effective_config_route_cors_merge_rejects_invalid_union() {
         tags: vec![],
         priority: 0,
         enabled: true,
+        managed_by: ManagedBy::Api,
     };
 
     let result = compute_effective_config(std::slice::from_ref(&upstream), Some(&route));
@@ -1839,6 +2016,7 @@ async fn bind_maps_not_found_error_to_secret_ref_not_accessible() {
         allow_all_enforcer(),
         Arc::new(MockCredStoreClient::erroring_not_found()),
         Arc::new(SsrfGuard::disabled()),
+        None,
     );
 
     let root_ctx = test_ctx(root);
@@ -1860,6 +2038,83 @@ async fn bind_maps_not_found_error_to_secret_ref_not_accessible() {
     assert!(
         matches!(err, DomainError::SecretRefNotAccessible { .. }),
         "expected SecretRefNotAccessible, got: {err:?}"
+    );
+}
+
+/// A credential-store outage is the gateway's problem, not the request's:
+/// `Internal` (500), so the registry reconcile treats it as fatal instead of
+/// skipping every upstream with a `secret_ref`. Any other credential-store
+/// refusal stays a validation error (400).
+#[tokio::test]
+async fn secret_ref_check_maps_a_credstore_outage_to_internal() {
+    use credstore_sdk::CredStoreError;
+    type MakeError = fn() -> CredStoreError;
+
+    let cases: [(MakeError, bool); 4] = [
+        (
+            || CredStoreError::ServiceUnavailable {
+                detail: "down".into(),
+                retry_after: None,
+            },
+            true,
+        ),
+        (|| CredStoreError::NoPluginAvailable, true),
+        (|| CredStoreError::AccessDenied, false),
+        (
+            || CredStoreError::InvalidSecretRef {
+                reason: "bad".into(),
+            },
+            false,
+        ),
+    ];
+    for (error, outage) in cases {
+        let svc = ControlPlaneServiceImpl::new(
+            Arc::new(InMemoryUpstreamRepo::new()),
+            Arc::new(InMemoryRouteRepo::new()),
+            Arc::new(MockTenantResolverClient::single_tenant()),
+            allow_all_enforcer(),
+            Arc::new(crate::domain::test_support::ErroringCredStore(error)),
+            Arc::new(SsrfGuard::disabled()),
+            None,
+        );
+        let mut req = make_create_upstream_hostname();
+        req.auth = Some(auth_with_secret_ref("cred://my-key"));
+        let err = svc
+            .create_upstream(&test_ctx(Uuid::new_v4()), req)
+            .await
+            .unwrap_err();
+        if outage {
+            assert!(matches!(err, DomainError::Internal { .. }), "{err:?}");
+        } else {
+            assert!(matches!(err, DomainError::Validation { .. }), "{err:?}");
+        }
+    }
+}
+
+/// A malformed `secret_ref` is a pure check: rejected before the credential
+/// store is asked.
+#[tokio::test]
+async fn malformed_secret_ref_is_rejected_before_the_credstore_is_asked() {
+    let svc = ControlPlaneServiceImpl::new(
+        Arc::new(InMemoryUpstreamRepo::new()),
+        Arc::new(InMemoryRouteRepo::new()),
+        Arc::new(MockTenantResolverClient::single_tenant()),
+        allow_all_enforcer(),
+        Arc::new(crate::domain::test_support::ErroringCredStore(|| {
+            credstore_sdk::CredStoreError::NoPluginAvailable
+        })),
+        Arc::new(SsrfGuard::disabled()),
+        None,
+    );
+    let mut req = make_create_upstream_hostname();
+    req.auth = Some(auth_with_secret_ref("cred://has spaces/and..dots"));
+    let err = svc
+        .create_upstream(&test_ctx(Uuid::new_v4()), req)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, DomainError::Validation { detail, .. } if detail.contains("invalid secret_ref")),
+        "{err:?}"
     );
 }
 
@@ -2216,7 +2471,7 @@ async fn proxy_target_resolves_route_from_ancestor_upstream() {
     // Child resolves proxy target — should find the route defined on
     // the root's upstream ID, not the child's.
     let (effective, route) = svc
-        .resolve_proxy_target(&child_ctx, "api.openai.com", "POST", "/v1/chat")
+        .resolve_proxy_target(&child_ctx, "api.openai.com", "POST", "/v1/chat", Tags::Load)
         .await
         .unwrap();
 
@@ -2296,7 +2551,7 @@ async fn proxy_target_prefers_child_route_over_ancestor() {
 
     // Child resolves — should prefer its own route (child upstream ID checked first).
     let (_effective, route) = svc
-        .resolve_proxy_target(&child_ctx, "api.openai.com", "POST", "/v1/chat")
+        .resolve_proxy_target(&child_ctx, "api.openai.com", "POST", "/v1/chat", Tags::Load)
         .await
         .unwrap();
 
@@ -2363,6 +2618,7 @@ fn route_private_plugins_replace_upstream() {
         tags: vec![],
         priority: 0,
         enabled: true,
+        managed_by: ManagedBy::Api,
     };
 
     let effective = compute_effective_config(&[u], Some(&route)).unwrap();
@@ -2397,6 +2653,7 @@ fn route_private_rate_limit_is_skipped() {
         tags: vec![],
         priority: 0,
         enabled: true,
+        managed_by: ManagedBy::Api,
     };
 
     let effective = compute_effective_config(&[u], Some(&route)).unwrap();
@@ -3148,7 +3405,7 @@ async fn resolve_alias_case_insensitive() {
     // Resolve with different casing — should still find the upstream.
     let chain = svc.build_tenant_chain(&ctx).await.unwrap();
     let (resolved, _) = svc
-        .resolve_alias(&ctx, &chain, "Api.OpenAI.COM", None)
+        .resolve_alias(&ctx, &chain, "Api.OpenAI.COM", None, Tags::Load)
         .await
         .unwrap();
     assert_eq!(resolved.id, u.id);
@@ -4783,6 +5040,7 @@ fn make_service_ssrf_enabled() -> ControlPlaneServiceImpl {
         allow_all_enforcer(),
         Arc::new(MockCredStoreClient::empty()),
         Arc::new(SsrfGuard::from_config(&Default::default()).unwrap()),
+        None,
     )
 }
 
@@ -4863,4 +5121,2288 @@ async fn update_upstream_ssrf_enabled_blocks_private_ip() {
         .await
         .unwrap_err();
     assert!(matches!(err, DomainError::Validation { .. }));
+}
+
+// -- canonical tags and HTTP methods --
+
+fn unsorted_tags() -> Vec<String> {
+    vec!["b".into(), "a".into(), "b".into()]
+}
+
+fn sorted_tags() -> Vec<String> {
+    vec!["a".into(), "b".into()]
+}
+
+#[tokio::test]
+async fn create_and_update_upstream_store_canonical_tags() {
+    let svc = make_service();
+    let ctx = test_ctx(Uuid::new_v4());
+
+    let mut req = make_create_upstream_ip("canon");
+    req.tags = unsorted_tags();
+    let created = svc.create_upstream(&ctx, req).await.unwrap();
+    assert_eq!(created.tags, sorted_tags());
+    assert_eq!(
+        svc.get_upstream(&ctx, created.id).await.unwrap().tags,
+        sorted_tags()
+    );
+
+    let mut update = make_update_from_upstream(&created);
+    update.tags = vec!["z".into(), "y".into(), "z".into()];
+    let updated = svc.update_upstream(&ctx, created.id, update).await.unwrap();
+    assert_eq!(updated.tags, vec!["y".to_owned(), "z".to_owned()]);
+}
+
+#[tokio::test]
+async fn create_and_update_route_store_canonical_tags_and_methods() {
+    let svc = make_service();
+    let ctx = test_ctx(Uuid::new_v4());
+    let upstream = svc
+        .create_upstream(&ctx, make_create_upstream_ip("canon-route"))
+        .await
+        .unwrap();
+
+    let mut req = make_create_route(upstream.id);
+    req.tags = unsorted_tags();
+    if let Some(http) = req.match_rules.http.as_mut() {
+        http.methods = vec![HttpMethod::Patch, HttpMethod::Get, HttpMethod::Get];
+    }
+    let created = svc.create_route(&ctx, req).await.unwrap();
+    assert_eq!(created.tags, sorted_tags());
+    assert_eq!(
+        created.match_rules.http.as_ref().unwrap().methods,
+        vec![HttpMethod::Get, HttpMethod::Patch]
+    );
+
+    let mut update = make_update_from_route(&created);
+    update.tags = vec!["d".into(), "c".into()];
+    if let Some(http) = update.match_rules.http.as_mut() {
+        http.methods = vec![HttpMethod::Delete, HttpMethod::Post, HttpMethod::Delete];
+    }
+    let updated = svc.update_route(&ctx, created.id, update).await.unwrap();
+    assert_eq!(updated.tags, vec!["c".to_owned(), "d".to_owned()]);
+    assert_eq!(
+        updated.match_rules.http.as_ref().unwrap().methods,
+        vec![HttpMethod::Post, HttpMethod::Delete]
+    );
+}
+
+// -- closest ancestor lookup --
+
+#[tokio::test]
+async fn closest_ancestor_lookup_picks_nearest_ancestor_with_alias() {
+    let (root, mid, leaf) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+    let resolver = MockTenantResolverClient::with_hierarchy(vec![
+        TenantId(root),
+        TenantId(mid),
+        TenantId(leaf),
+    ]);
+    let svc = make_service_with_resolver(resolver);
+
+    let root_up = svc
+        .create_upstream(&test_ctx(root), make_create_upstream_hostname())
+        .await
+        .unwrap();
+    let mid_up = svc
+        .create_upstream(&test_ctx(mid), make_create_upstream_hostname())
+        .await
+        .unwrap();
+
+    let chain = svc.build_tenant_chain(&test_ctx(leaf)).await.unwrap();
+    let found = ancestor::ancestor_upstreams(&*svc.upstreams, &chain, &root_up.alias)
+        .await
+        .unwrap();
+    assert_eq!(
+        found.iter().map(|u| u.id).collect::<Vec<_>>(),
+        vec![mid_up.id, root_up.id],
+        "closest first"
+    );
+
+    // The requesting tenant itself is never its own ancestor.
+    let mid_chain = svc.build_tenant_chain(&test_ctx(mid)).await.unwrap();
+    let found = ancestor::ancestor_upstreams(&*svc.upstreams, &mid_chain, &root_up.alias)
+        .await
+        .unwrap();
+    assert_eq!(
+        found.iter().map(|u| u.id).collect::<Vec<_>>(),
+        vec![root_up.id]
+    );
+
+    // A root tenant has no ancestors.
+    let root_chain = svc.build_tenant_chain(&test_ctx(root)).await.unwrap();
+    let found = ancestor::ancestor_upstreams(&*svc.upstreams, &root_chain, &root_up.alias)
+        .await
+        .unwrap();
+    assert!(found.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Storage failures are not "not found"
+// ---------------------------------------------------------------------------
+
+fn make_service_over(
+    upstreams: Arc<dyn UpstreamRepository>,
+    routes: Arc<dyn RouteRepository>,
+) -> ControlPlaneServiceImpl {
+    ControlPlaneServiceImpl::new(
+        upstreams,
+        routes,
+        Arc::new(MockTenantResolverClient::single_tenant()),
+        allow_all_enforcer(),
+        Arc::new(MockCredStoreClient::empty()),
+        Arc::new(SsrfGuard::disabled()),
+        None,
+    )
+}
+
+#[track_caller]
+fn assert_internal<T: std::fmt::Debug>(result: Result<T, DomainError>, op: &str) {
+    assert!(
+        matches!(result, Err(DomainError::Internal { .. })),
+        "{op}: a storage failure must surface as internal, got {result:?}"
+    );
+}
+
+/// An unknown upstream and an unreachable database are different answers:
+/// a 404 for an outage would tell the client the upstream is gone.
+#[tokio::test]
+async fn upstream_storage_failure_is_internal_not_not_found() {
+    let tenant = Uuid::new_v4();
+    let ctx = test_ctx(tenant);
+    let existing = make_service()
+        .create_upstream(&ctx, make_create_upstream_hostname())
+        .await
+        .unwrap();
+    // Delete reaches the upstream repository first.
+    let svc = make_service_over(
+        Arc::new(UnavailableStorage),
+        Arc::new(InMemoryRouteRepo::new()),
+    );
+
+    assert_internal(svc.get_upstream(&ctx, existing.id).await, "get");
+    assert_internal(
+        svc.update_upstream(&ctx, existing.id, make_update_from_upstream(&existing))
+            .await,
+        "update",
+    );
+    assert_internal(svc.delete_upstream(&ctx, existing.id).await, "delete");
+}
+
+#[tokio::test]
+async fn route_storage_failure_is_internal_not_not_found() {
+    let tenant = Uuid::new_v4();
+    let ctx = test_ctx(tenant);
+    let healthy = make_service();
+    let upstream = healthy
+        .create_upstream(&ctx, make_create_upstream_hostname())
+        .await
+        .unwrap();
+    let existing = healthy
+        .create_route(&ctx, make_create_route(upstream.id))
+        .await
+        .unwrap();
+    let svc = make_service_over(
+        Arc::new(InMemoryUpstreamRepo::new()),
+        Arc::new(UnavailableStorage),
+    );
+
+    assert_internal(svc.get_route(&ctx, existing.id).await, "get");
+    assert_internal(
+        svc.update_route(&ctx, existing.id, make_update_from_route(&existing))
+            .await,
+        "update",
+    );
+    assert_internal(svc.delete_route(&ctx, existing.id).await, "delete");
+}
+
+/// The upstream check in route create answers 400 only when the upstream is
+/// missing; an outage is not a validation error.
+#[tokio::test]
+async fn route_create_upstream_storage_failure_is_internal_not_validation() {
+    let ctx = test_ctx(Uuid::new_v4());
+    let svc = make_service_over(
+        Arc::new(UnavailableStorage),
+        Arc::new(InMemoryRouteRepo::new()),
+    );
+    assert_internal(
+        svc.create_route(&ctx, make_create_route(Uuid::new_v4()))
+            .await,
+        "create",
+    );
+}
+
+/// A storage outage during proxy resolution is not a 404: the client would
+/// read it as an unknown alias or route.
+#[tokio::test]
+async fn proxy_resolution_storage_failure_is_internal() {
+    let ctx = test_ctx(Uuid::new_v4());
+    let svc = make_service_over(
+        Arc::new(UnavailableStorage),
+        Arc::new(InMemoryRouteRepo::new()),
+    );
+    assert_internal(
+        svc.resolve_proxy_target(
+            &ctx,
+            "api.openai.com",
+            "POST",
+            "/v1/chat/completions",
+            Tags::Load,
+        )
+        .await,
+        "alias lookup",
+    );
+
+    // The upstream resolves; the route lookup fails.
+    let upstreams = Arc::new(InMemoryUpstreamRepo::new());
+    make_service_over(upstreams.clone(), Arc::new(InMemoryRouteRepo::new()))
+        .create_upstream(&ctx, make_create_upstream_hostname())
+        .await
+        .unwrap();
+    let svc = make_service_over(upstreams, Arc::new(UnavailableStorage));
+    assert_internal(
+        svc.resolve_proxy_target(
+            &ctx,
+            "api.openai.com",
+            "POST",
+            "/v1/chat/completions",
+            Tags::Load,
+        )
+        .await,
+        "route lookup",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Limits on stored values (sized columns and JSON; PostgreSQL rejects NUL)
+// ---------------------------------------------------------------------------
+
+#[track_caller]
+fn assert_validation<T: std::fmt::Debug>(result: Result<T, DomainError>, case: &str) {
+    assert!(
+        matches!(result, Err(DomainError::Validation { .. })),
+        "{case}: expected a validation error, got {result:?}"
+    );
+}
+
+fn tags(count: usize, bytes: usize) -> Vec<String> {
+    (0..count).map(|i| format!("{i:0>bytes$}")).collect()
+}
+
+fn grpc_rules(service: &str, method: &str) -> MatchRules {
+    MatchRules {
+        http: None,
+        grpc: Some(GrpcMatch {
+            service: service.into(),
+            method: method.into(),
+        }),
+    }
+}
+
+#[tokio::test]
+async fn upstream_tags_are_limited_on_create_and_update() {
+    let svc = make_service();
+    let ctx = test_ctx(Uuid::new_v4());
+    let with_tags = |tags| CreateUpstreamRequest {
+        tags,
+        ..make_create_upstream_ip("limits")
+    };
+
+    let at_limit = svc
+        .create_upstream(&ctx, with_tags(tags(64, 128)))
+        .await
+        .expect("64 tags of 128 bytes are accepted");
+    for (case, bad) in [
+        ("65 tags", tags(65, 1)),
+        ("a 129-byte tag", tags(1, 129)),
+        ("a NUL in a tag", vec!["a\0b".to_owned()]),
+        ("a newline in a tag", vec!["a\nb".to_owned()]),
+    ] {
+        assert_validation(
+            svc.create_upstream(&ctx, with_tags(bad.clone())).await,
+            case,
+        );
+        let mut update = make_update_from_upstream(&at_limit);
+        update.tags = bad;
+        assert_validation(svc.update_upstream(&ctx, at_limit.id, update).await, case);
+    }
+}
+
+#[tokio::test]
+async fn route_tags_and_match_fields_are_limited_on_create_and_update() {
+    let svc = make_service();
+    let ctx = test_ctx(Uuid::new_v4());
+    let upstream = svc
+        .create_upstream(&ctx, make_create_upstream_ip("limits"))
+        .await
+        .unwrap();
+    let http_rules = |path: String| MatchRules {
+        http: Some(HttpMatch {
+            methods: vec![HttpMethod::Get],
+            path,
+            query_allowlist: vec![],
+            path_suffix_mode: PathSuffixMode::Append,
+        }),
+        grpc: None,
+    };
+
+    let route = svc
+        .create_route(
+            &ctx,
+            CreateRouteRequest {
+                tags: tags(64, 128),
+                match_rules: http_rules(format!("/{}", "a".repeat(2047))),
+                ..make_create_route(upstream.id)
+            },
+        )
+        .await
+        .expect("64 tags and a 2048-byte path are accepted");
+
+    let long_name = "s".repeat(257);
+    let cases: [(&str, Vec<String>, MatchRules); 8] = [
+        ("65 tags", tags(65, 1), route.match_rules.clone()),
+        ("a 129-byte tag", tags(1, 129), route.match_rules.clone()),
+        (
+            "a NUL in a tag",
+            vec!["\0".into()],
+            route.match_rules.clone(),
+        ),
+        (
+            "a 2049-byte path",
+            vec![],
+            http_rules(format!("/{}", "a".repeat(2048))),
+        ),
+        ("a NUL in the path", vec![], http_rules("/v1\0".into())),
+        (
+            "a 257-byte gRPC service",
+            vec![],
+            grpc_rules(&long_name, "Get"),
+        ),
+        (
+            "a 257-byte gRPC method",
+            vec![],
+            grpc_rules("pkg.Svc", &long_name),
+        ),
+        (
+            "a control character in a gRPC name",
+            vec![],
+            grpc_rules("pkg.Svc", "Get\u{7}"),
+        ),
+    ];
+    for (case, tags, match_rules) in cases {
+        let create = CreateRouteRequest {
+            tags: tags.clone(),
+            match_rules: match_rules.clone(),
+            ..make_create_route(upstream.id)
+        };
+        assert_validation(svc.create_route(&ctx, create).await, case);
+        let mut update = make_update_from_route(&route);
+        update.tags = tags;
+        update.match_rules = match_rules;
+        assert_validation(svc.update_route(&ctx, route.id, update).await, case);
+    }
+}
+
+fn plugins(plugin_ref: &str) -> Option<crate::domain::model::PluginsConfig> {
+    Some(crate::domain::model::PluginsConfig {
+        sharing: crate::domain::model::SharingMode::Private,
+        items: vec![crate::domain::model::PluginBinding {
+            plugin_ref: plugin_ref.into(),
+            config: Default::default(),
+        }],
+    })
+}
+
+fn auth(plugin_type: &str) -> Option<crate::domain::model::AuthConfig> {
+    Some(crate::domain::model::AuthConfig {
+        plugin_type: plugin_type.into(),
+        sharing: crate::domain::model::SharingMode::Private,
+        config: None,
+    })
+}
+
+#[tokio::test]
+async fn upstream_refs_are_limited_on_create_and_update() {
+    let svc = make_service();
+    let ctx = test_ctx(Uuid::new_v4());
+    let at_limit = "r".repeat(256);
+    let over = "r".repeat(257);
+
+    let upstream = svc
+        .create_upstream(
+            &ctx,
+            CreateUpstreamRequest {
+                protocol: at_limit.clone(),
+                auth: auth(&at_limit),
+                plugins: plugins(&at_limit),
+                ..make_create_upstream_ip("limits")
+            },
+        )
+        .await
+        .expect("256-byte references are accepted");
+    let base = make_create_upstream_ip("limits");
+    let cases = [
+        (
+            "a 257-byte protocol",
+            CreateUpstreamRequest {
+                protocol: over.clone(),
+                ..base.clone()
+            },
+        ),
+        (
+            "a NUL in the protocol",
+            CreateUpstreamRequest {
+                protocol: "http\0".into(),
+                ..base.clone()
+            },
+        ),
+        (
+            "a 257-byte auth plugin type",
+            CreateUpstreamRequest {
+                auth: auth(&over),
+                ..base.clone()
+            },
+        ),
+        (
+            "a NUL in the auth plugin type",
+            CreateUpstreamRequest {
+                auth: auth("a\0"),
+                ..base.clone()
+            },
+        ),
+        (
+            "a 257-byte plugin ref",
+            CreateUpstreamRequest {
+                plugins: plugins(&over),
+                ..base.clone()
+            },
+        ),
+        (
+            "a NUL in a plugin ref",
+            CreateUpstreamRequest {
+                plugins: plugins("p\0"),
+                ..base.clone()
+            },
+        ),
+    ];
+    for (case, bad) in cases {
+        let mut alias_free = bad.clone();
+        alias_free.alias = Some("limits-bad".into());
+        assert_validation(svc.create_upstream(&ctx, alias_free).await, case);
+        let mut update = make_update_from_upstream(&upstream);
+        update.protocol = bad.protocol;
+        update.auth = bad.auth;
+        update.plugins = bad.plugins;
+        assert_validation(svc.update_upstream(&ctx, upstream.id, update).await, case);
+    }
+}
+
+#[tokio::test]
+async fn route_plugin_refs_and_query_allowlist_are_limited_on_create_and_update() {
+    let svc = make_service();
+    let ctx = test_ctx(Uuid::new_v4());
+    let upstream = svc
+        .create_upstream(&ctx, make_create_upstream_ip("limits"))
+        .await
+        .unwrap();
+    let with = |query_allowlist: Vec<String>, plugin_ref: &str| {
+        let mut req = make_create_route(upstream.id);
+        req.match_rules.http.as_mut().unwrap().query_allowlist = query_allowlist;
+        req.plugins = plugins(plugin_ref);
+        req
+    };
+
+    let route = svc
+        .create_route(&ctx, with(tags(64, 128), &"r".repeat(256)))
+        .await
+        .expect("64 query parameters of 128 bytes and a 256-byte plugin ref are accepted");
+    let cases = [
+        ("65 query parameters", with(tags(65, 1), "p")),
+        ("a 129-byte query parameter", with(tags(1, 129), "p")),
+        ("a NUL in a query parameter", with(vec!["a\0".into()], "p")),
+        ("a 257-byte plugin ref", with(vec![], &"r".repeat(257))),
+        ("a NUL in a plugin ref", with(vec![], "p\0")),
+    ];
+    for (case, bad) in cases {
+        assert_validation(svc.create_route(&ctx, bad.clone()).await, case);
+        let mut update = make_update_from_route(&route);
+        update.match_rules = bad.match_rules;
+        update.plugins = bad.plugins;
+        assert_validation(svc.update_route(&ctx, route.id, update).await, case);
+    }
+}
+
+fn plugin_chain(count: usize) -> Option<crate::domain::model::PluginsConfig> {
+    Some(crate::domain::model::PluginsConfig {
+        sharing: crate::domain::model::SharingMode::Private,
+        items: (0..count)
+            .map(|i| crate::domain::model::PluginBinding {
+                plugin_ref: format!("p{i}"),
+                config: Default::default(),
+            })
+            .collect(),
+    })
+}
+
+#[tokio::test]
+async fn plugin_bindings_are_limited_on_create_and_update() {
+    let svc = make_service();
+    let ctx = test_ctx(Uuid::new_v4());
+    let upstream = svc
+        .create_upstream(
+            &ctx,
+            CreateUpstreamRequest {
+                plugins: plugin_chain(32),
+                ..make_create_upstream_ip("limits")
+            },
+        )
+        .await
+        .expect("32 upstream plugins are accepted");
+    let over = CreateUpstreamRequest {
+        alias: Some("limits-bad".into()),
+        plugins: plugin_chain(33),
+        ..make_create_upstream_ip("limits")
+    };
+    assert_validation(svc.create_upstream(&ctx, over).await, "33 upstream plugins");
+    let mut update = make_update_from_upstream(&upstream);
+    update.plugins = plugin_chain(33);
+    assert_validation(
+        svc.update_upstream(&ctx, upstream.id, update).await,
+        "33 upstream plugins",
+    );
+
+    let route = svc
+        .create_route(
+            &ctx,
+            CreateRouteRequest {
+                plugins: plugin_chain(32),
+                ..make_create_route(upstream.id)
+            },
+        )
+        .await
+        .expect("32 route plugins are accepted");
+    let over = CreateRouteRequest {
+        plugins: plugin_chain(33),
+        ..make_create_route(upstream.id)
+    };
+    assert_validation(svc.create_route(&ctx, over).await, "33 route plugins");
+    let mut update = make_update_from_route(&route);
+    update.plugins = plugin_chain(33);
+    assert_validation(
+        svc.update_route(&ctx, route.id, update).await,
+        "33 route plugins",
+    );
+}
+
+/// `PostgreSQL`'s `jsonb` cannot store NUL, so no string stored inside a JSON
+/// column may contain one. Other control characters stay allowed there.
+#[tokio::test]
+async fn nul_in_strings_stored_as_json_is_rejected_on_create_and_update() {
+    use crate::domain::model::{
+        AuthConfig, HeadersConfig, PluginBinding, PluginsConfig, RequestHeaderRules,
+        ResponseHeaderRules,
+    };
+    use std::collections::HashMap;
+
+    let svc = make_service();
+    let ctx = test_ctx(Uuid::new_v4());
+    let map = |key: &str, value: &str| HashMap::from([(key.to_owned(), value.to_owned())]);
+    let auth = |config| {
+        Some(AuthConfig {
+            plugin_type: "apikey".into(),
+            sharing: SharingMode::Private,
+            config: Some(config),
+        })
+    };
+    let request = |rules: RequestHeaderRules| {
+        Some(HeadersConfig {
+            request: Some(rules),
+            response: None,
+        })
+    };
+    let response = |rules: ResponseHeaderRules| {
+        Some(HeadersConfig {
+            request: None,
+            response: Some(rules),
+        })
+    };
+    let plugin_config = |config| {
+        Some(PluginsConfig {
+            sharing: SharingMode::Private,
+            items: vec![PluginBinding {
+                plugin_ref: "p".into(),
+                config,
+            }],
+        })
+    };
+    let mut cors = make_cors(SharingMode::Private, vec!["https://app.example.com"]);
+    cors.expose_headers = vec!["x-trace\0".into()];
+
+    let upstream = svc
+        .create_upstream(
+            &ctx,
+            CreateUpstreamRequest {
+                auth: auth(map("prefix", "Bearer\t")),
+                plugins: plugin_config(map("note", "line\nbreak")),
+                ..make_create_upstream_ip("json-text")
+            },
+        )
+        .await
+        .expect("control characters other than NUL are accepted in JSON-stored values");
+    let base = CreateUpstreamRequest {
+        alias: Some("json-text-bad".into()),
+        ..make_create_upstream_ip("json-text")
+    };
+    let cases = [
+        (
+            "a NUL in an auth config value",
+            CreateUpstreamRequest {
+                auth: auth(map("header", "x\0")),
+                ..base.clone()
+            },
+        ),
+        (
+            "a NUL in an auth config key",
+            CreateUpstreamRequest {
+                auth: auth(map("x\0", "header")),
+                ..base.clone()
+            },
+        ),
+        (
+            "a NUL in a set request header",
+            CreateUpstreamRequest {
+                headers: request(RequestHeaderRules {
+                    set: map("x-team", "a\0"),
+                    ..Default::default()
+                }),
+                ..base.clone()
+            },
+        ),
+        (
+            "a NUL in a passthrough header",
+            CreateUpstreamRequest {
+                headers: request(RequestHeaderRules {
+                    passthrough_allowlist: vec!["x-\0".into()],
+                    ..Default::default()
+                }),
+                ..base.clone()
+            },
+        ),
+        (
+            "a NUL in a removed response header",
+            CreateUpstreamRequest {
+                headers: response(ResponseHeaderRules {
+                    remove: vec!["server\0".into()],
+                    ..Default::default()
+                }),
+                ..base.clone()
+            },
+        ),
+        (
+            "a NUL in a CORS exposed header",
+            CreateUpstreamRequest {
+                cors: Some(cors.clone()),
+                ..base.clone()
+            },
+        ),
+        (
+            "a NUL in a plugin config value",
+            CreateUpstreamRequest {
+                plugins: plugin_config(map("timeout_ms", "5\0")),
+                ..base.clone()
+            },
+        ),
+    ];
+    for (case, bad) in cases {
+        assert_validation(svc.create_upstream(&ctx, bad.clone()).await, case);
+        let mut update = make_update_from_upstream(&upstream);
+        update.auth = bad.auth;
+        update.headers = bad.headers;
+        update.cors = bad.cors;
+        update.plugins = bad.plugins;
+        assert_validation(svc.update_upstream(&ctx, upstream.id, update).await, case);
+    }
+
+    let route = svc
+        .create_route(&ctx, make_create_route(upstream.id))
+        .await
+        .unwrap();
+    let cases = [
+        (
+            "a NUL in a route plugin config key",
+            CreateRouteRequest {
+                plugins: plugin_config(map("k\0", "v")),
+                ..make_create_route(upstream.id)
+            },
+        ),
+        (
+            "a NUL in a route CORS exposed header",
+            CreateRouteRequest {
+                cors: Some(cors.clone()),
+                ..make_create_route(upstream.id)
+            },
+        ),
+    ];
+    for (case, bad) in cases {
+        assert_validation(svc.create_route(&ctx, bad.clone()).await, case);
+        let mut update = make_update_from_route(&route);
+        update.plugins = bad.plugins;
+        update.cors = bad.cors;
+        assert_validation(svc.update_route(&ctx, route.id, update).await, case);
+    }
+}
+
+/// A derived alias appends a non-standard port to the hostname, and the
+/// 253-character alias limit applies to the result, so every stored alias
+/// fits the `VARCHAR(253)` alias column.
+#[tokio::test]
+async fn derived_alias_with_a_port_stays_within_the_alias_limit() {
+    let (svc, registry) = in_memory_planes();
+    // The longest valid hostname.
+    let host = format!(
+        "{}.{}.{}.{}",
+        "a".repeat(63),
+        "b".repeat(63),
+        "c".repeat(63),
+        "d".repeat(61)
+    );
+    assert_eq!(host.len(), 253);
+    let mut req = make_create_upstream_hostname();
+    req.server.endpoints[0].host = host.clone();
+
+    let ctx = test_ctx(Uuid::new_v4());
+    let stored = svc.create_upstream(&ctx, req.clone()).await.unwrap();
+    assert_eq!(stored.alias, host);
+    let mut with_port = req.clone();
+    with_port.server.endpoints[0].port = 8443;
+    let err = svc
+        .create_upstream(&ctx, with_port.clone())
+        .await
+        .expect_err("a 258-character alias");
+    assert!(err.to_string().contains("must not exceed 253"), "{err}");
+
+    // The registry writer derives the alias by the same rules on update.
+    let ctx = test_ctx(Uuid::new_v4());
+    let stored = registry.create_registry_upstream(&ctx, req).await.unwrap();
+    let mut update = make_update_from_upstream(&stored);
+    update.server = with_port.server;
+    update.alias = None;
+    let err = registry
+        .update_registry_upstream(&ctx, stored.id, update)
+        .await
+        .expect_err("a 258-character alias");
+    assert!(err.to_string().contains("must not exceed 253"), "{err}");
+}
+
+// ---------------------------------------------------------------------------
+// SSRF hostname deny-list at resolution
+// ---------------------------------------------------------------------------
+
+/// An upstream stored before its hostname was denied stops resolving.
+///
+/// ADR-0018: PERS-PROXY-003.
+#[tokio::test]
+async fn resolution_rejects_an_upstream_whose_hostname_was_denied_later() {
+    let upstreams: Arc<dyn UpstreamRepository> = Arc::new(InMemoryUpstreamRepo::new());
+    let routes: Arc<dyn RouteRepository> = Arc::new(InMemoryRouteRepo::new());
+    let service = |guard| {
+        ControlPlaneServiceImpl::new(
+            upstreams.clone(),
+            routes.clone(),
+            Arc::new(MockTenantResolverClient::single_tenant()),
+            allow_all_enforcer(),
+            Arc::new(MockCredStoreClient::empty()),
+            Arc::new(guard),
+            None,
+        )
+    };
+    let ctx = test_ctx(Uuid::new_v4());
+    let before = service(SsrfGuard::from_config(&SsrfPolicy::default()).unwrap());
+    let upstream = before
+        .create_upstream(&ctx, make_create_upstream_hostname())
+        .await
+        .unwrap();
+    before
+        .create_route(&ctx, make_create_route(upstream.id))
+        .await
+        .unwrap();
+    let target = (&upstream.alias, "POST", "/v1/chat/completions");
+    before
+        .resolve_proxy_target(&ctx, target.0, target.1, target.2, Tags::Load)
+        .await
+        .expect("resolves before the policy changes");
+
+    let after = service(
+        SsrfGuard::from_config(&SsrfPolicy {
+            extra_deny_hostnames: vec!["api.openai.com".into()],
+            ..SsrfPolicy::default()
+        })
+        .unwrap(),
+    );
+    let err = after
+        .resolve_proxy_target(&ctx, target.0, target.1, target.2, Tags::Load)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, DomainError::Validation { detail, .. }
+            if detail.contains("is blocked by SSRF protection")),
+        "{err:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Route create racing an upstream delete
+// ---------------------------------------------------------------------------
+
+/// The upstream passes the check but is gone when the route is inserted:
+/// the foreign-key rejection answers like the check, with a validation error.
+#[tokio::test]
+async fn route_create_after_its_upstream_was_deleted_is_a_validation_error() {
+    use crate::infra::storage::DbRouteRepo;
+    use crate::infra::storage::testing::shared_sqlite;
+    use toolkit_db::DBProvider;
+
+    let upstreams: Arc<dyn UpstreamRepository> = Arc::new(InMemoryUpstreamRepo::new());
+    let db = DBProvider::<RepositoryError>::new(shared_sqlite().await);
+    let svc = ControlPlaneServiceImpl::new(
+        upstreams,
+        Arc::new(DbRouteRepo::new(db)),
+        Arc::new(MockTenantResolverClient::single_tenant()),
+        allow_all_enforcer(),
+        Arc::new(MockCredStoreClient::empty()),
+        Arc::new(SsrfGuard::disabled()),
+        None,
+    );
+    let ctx = test_ctx(Uuid::new_v4());
+    // Only the in-memory repository the check reads holds the upstream.
+    let upstream = svc
+        .create_upstream(&ctx, make_create_upstream_ip("gone"))
+        .await
+        .unwrap();
+
+    let err = svc
+        .create_route(&ctx, make_create_route(upstream.id))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, DomainError::Validation { detail, .. } if detail.contains("not found for this tenant")),
+        "{err:?}"
+    );
+}
+
+// -- Overlaps among the routes the types registry provides --
+
+#[test]
+fn registry_route_overlaps_follow_the_overlap_rule() {
+    let tenant = Uuid::new_v4();
+    let upstream = Uuid::new_v4();
+    let key = |tenant_id| RowKey {
+        tenant_id,
+        id: Uuid::new_v4(),
+    };
+    let base = make_create_route(upstream);
+    let a = (key(tenant), base.clone());
+    let check =
+        |b: (RowKey, CreateRouteRequest)| registry_route_overlaps(&[(a.0, &a.1), (b.0, &b.1)]);
+
+    let twin = key(tenant);
+    let (low, high) = if a.0.id < twin.id {
+        (a.0, twin)
+    } else {
+        (twin, a.0)
+    };
+    assert_eq!(
+        check((twin, base.clone())),
+        vec![(low, high, HttpMethod::Post)]
+    );
+
+    // Same content elsewhere, or not competing for a request: no overlap.
+    let other_upstream = make_create_route(Uuid::new_v4());
+    assert!(check((key(tenant), other_upstream)).is_empty());
+    assert!(check((key(Uuid::new_v4()), base.clone())).is_empty());
+    let disabled = CreateRouteRequest {
+        enabled: false,
+        ..base.clone()
+    };
+    assert!(check((key(tenant), disabled)).is_empty());
+    let other_priority = CreateRouteRequest {
+        priority: 1,
+        ..base.clone()
+    };
+    assert!(check((key(tenant), other_priority)).is_empty());
+    let mut other_method = base.clone();
+    other_method.match_rules.http.as_mut().unwrap().methods = vec![HttpMethod::Get];
+    assert!(check((key(tenant), other_method)).is_empty());
+    let mut grpc = base;
+    grpc.match_rules = MatchRules {
+        http: None,
+        grpc: Some(GrpcMatch {
+            service: "svc".into(),
+            method: "M".into(),
+        }),
+    };
+    assert!(check((key(tenant), grpc)).is_empty());
+}
+
+/// Every overlapping pair is reported, not only the first: three routes at
+/// the same path and method are three pairs.
+#[test]
+fn registry_route_overlaps_reports_every_pair() {
+    let tenant = Uuid::new_v4();
+    let base = make_create_route(Uuid::new_v4());
+    let mut keys: Vec<RowKey> = (0..3)
+        .map(|_| RowKey {
+            tenant_id: tenant,
+            id: Uuid::new_v4(),
+        })
+        .collect();
+    let routes: Vec<_> = keys.iter().map(|k| (*k, &base)).collect();
+    let pairs = registry_route_overlaps(&routes);
+    keys.sort();
+    assert_eq!(
+        pairs
+            .iter()
+            .map(|(a, b, _)| (a.id, b.id))
+            .collect::<Vec<_>>(),
+        vec![
+            (keys[0].id, keys[1].id),
+            (keys[0].id, keys[2].id),
+            (keys[1].id, keys[2].id)
+        ]
+    );
+}
+
+// -- Ownership: the registry reconcile never writes API rows --
+
+#[tokio::test]
+async fn registry_writes_to_api_rows_are_conflicts() {
+    let (svc, registry) = in_memory_planes();
+    let ctx = test_ctx(Uuid::new_v4());
+    let upstream = svc
+        .create_upstream(&ctx, make_create_upstream_hostname())
+        .await
+        .unwrap();
+    let route = svc
+        .create_route(&ctx, make_create_route(upstream.id))
+        .await
+        .unwrap();
+
+    let assert_api_owned = |result: Result<(), DomainError>, entity: &str, id: Uuid| match result {
+        Err(DomainError::Conflict { detail, .. }) => assert_eq!(
+            detail,
+            format!("{entity} {id} was created through the Management API, not the types registry")
+        ),
+        other => panic!("expected Conflict for {entity} {id}, got {other:?}"),
+    };
+    assert_api_owned(
+        registry
+            .update_registry_upstream(&ctx, upstream.id, make_update_from_upstream(&upstream))
+            .await
+            .map(drop),
+        "upstream",
+        upstream.id,
+    );
+    assert_api_owned(
+        registry
+            .update_registry_route(
+                &ctx,
+                route.id,
+                route.upstream_id,
+                make_update_from_route(&route),
+                UpstreamCheck::Read,
+            )
+            .await
+            .map(drop),
+        "route",
+        route.id,
+    );
+    assert_api_owned(
+        registry.delete_registry_route(&ctx, route.id).await,
+        "route",
+        route.id,
+    );
+    assert!(svc.get_route(&ctx, route.id).await.is_ok());
+    assert!(svc.get_upstream(&ctx, upstream.id).await.is_ok());
+}
+
+// ---------------------------------------------------------------------------
+// Resolution through the proxy configuration cache (ADR-0020)
+// ---------------------------------------------------------------------------
+
+/// A [`ProxyConfigReader`] over a real [`CachedProxyConfigReader`] that
+/// counts its calls, so a test knows resolution went through it.
+struct CountingReader {
+    inner: crate::infra::proxy_cache::CachedProxyConfigReader,
+    aliases: std::sync::atomic::AtomicUsize,
+    routes: std::sync::atomic::AtomicUsize,
+}
+
+impl CountingReader {
+    fn calls(&self) -> (usize, usize) {
+        use std::sync::atomic::Ordering::SeqCst;
+        (self.aliases.load(SeqCst), self.routes.load(SeqCst))
+    }
+}
+
+#[async_trait]
+impl ProxyConfigReader for CountingReader {
+    async fn upstreams_by_alias(
+        &self,
+        alias: &str,
+        chain: &[Uuid],
+    ) -> Result<Arc<[Upstream]>, RepositoryError> {
+        self.aliases
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.inner.upstreams_by_alias(alias, chain).await
+    }
+
+    async fn routes_of(&self, upstreams: &[RowKey]) -> Result<Vec<Arc<[Route]>>, RepositoryError> {
+        self.routes
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.inner.routes_of(upstreams).await
+    }
+}
+
+/// Two Control Planes over one store and tenant hierarchy (root first): the
+/// first resolves through a proxy configuration cache over the store, the
+/// second reads the store. The reader counts the cached one's reads.
+fn cached_and_uncached(
+    stores: &Stores,
+    hierarchy: &[Uuid],
+) -> (
+    ControlPlaneServiceImpl,
+    ControlPlaneServiceImpl,
+    Arc<CountingReader>,
+) {
+    use crate::infra::proxy_cache::{CachedProxyConfigReader, ProxyConfigCache};
+
+    let reader = Arc::new(CountingReader {
+        inner: CachedProxyConfigReader::new(
+            Arc::new(ProxyConfigCache::new(
+                std::time::Duration::from_secs(60),
+                std::time::Duration::ZERO,
+                100,
+                Arc::new(crate::domain::ports::NoopMetrics),
+            )),
+            stores.upstreams.clone(),
+            stores.routes.clone(),
+        ),
+        aliases: std::sync::atomic::AtomicUsize::new(0),
+        routes: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let service = |reader: Option<Arc<dyn ProxyConfigReader>>| {
+        ControlPlaneServiceImpl::new(
+            stores.upstreams.clone(),
+            stores.routes.clone(),
+            Arc::new(MockTenantResolverClient::with_hierarchy(
+                hierarchy.iter().copied().map(TenantId).collect(),
+            )),
+            allow_all_enforcer(),
+            Arc::new(MockCredStoreClient::empty()),
+            Arc::new(SsrfGuard::disabled()),
+            reader,
+        )
+    };
+    (service(Some(reader.clone())), service(None), reader)
+}
+
+/// What `tenant` resolves `alias` (and `method_path`) to, as a comparable
+/// value: the effective upstream and route, or the error.
+async fn resolution(
+    svc: &ControlPlaneServiceImpl,
+    tenant: Uuid,
+    alias: &str,
+    method_path: Option<(&str, &str)>,
+) -> Resolved {
+    let ctx = test_ctx(tenant);
+    let chain = svc.build_tenant_chain(&ctx).await.unwrap();
+    svc.resolve_alias(&ctx, &chain, alias, method_path, Tags::Skip)
+        .await
+        .map_err(Failed)
+}
+
+/// Over four levels, with a shadowing child, an unshared middle upstream,
+/// inherited rate limits and routes on several levels, every tenant resolves
+/// every target through the cache to the same upstream, route and effective
+/// config as without it, on a miss and on a hit.
+///
+/// ADR-0020: CACHE-HIT-002.
+async fn cached_resolution_matches_uncached(backend: Backend) {
+    let [root, a, b, leaf] = std::array::from_fn(|_| Uuid::new_v4());
+    let stores = Stores::new(backend);
+    let (cached, uncached, reader) = cached_and_uncached(&stores, &[root, a, b, leaf]);
+    let shared = |rate| CreateUpstreamRequest {
+        auth: Some(AuthConfig {
+            plugin_type: "noop".into(),
+            sharing: SharingMode::Inherit,
+            config: None,
+        }),
+        rate_limit: Some(make_rate_limit(SharingMode::Inherit, rate, Window::Minute)),
+        ..make_create_upstream_hostname()
+    };
+    let route = |upstream_id, methods, path: &str, priority| CreateRouteRequest {
+        match_rules: MatchRules {
+            http: Some(HttpMatch {
+                methods,
+                path: path.into(),
+                query_allowlist: vec![],
+                path_suffix_mode: PathSuffixMode::Append,
+            }),
+            grpc: None,
+        },
+        priority,
+        ..make_create_route(upstream_id)
+    };
+    let root_up = uncached
+        .create_upstream(&test_ctx(root), shared(1000))
+        .await
+        .unwrap();
+    let a_up = uncached
+        .create_upstream(&test_ctx(a), make_create_upstream_hostname())
+        .await
+        .unwrap();
+    let b_up = uncached
+        .create_upstream(&test_ctx(b), shared(100))
+        .await
+        .unwrap();
+    let root_chat = uncached
+        .create_route(&test_ctx(root), make_create_route(root_up.id))
+        .await
+        .unwrap();
+    let root_v1 = CreateRouteRequest {
+        rate_limit: Some(make_rate_limit(SharingMode::Private, 10, Window::Minute)),
+        ..route(
+            root_up.id,
+            vec![HttpMethod::Get, HttpMethod::Post],
+            "/v1",
+            0,
+        )
+    };
+    uncached
+        .create_route(&test_ctx(root), root_v1)
+        .await
+        .unwrap();
+    // A better match on the unshared upstream, which b and leaf must not see.
+    uncached
+        .create_route(
+            &test_ctx(a),
+            route(a_up.id, vec![HttpMethod::Post], "/v1/chat/completions", 9),
+        )
+        .await
+        .unwrap();
+    let b_embeddings = uncached
+        .create_route(
+            &test_ctx(b),
+            route(b_up.id, vec![HttpMethod::Post], "/v1/embeddings", 1),
+        )
+        .await
+        .unwrap();
+
+    let targets = [
+        None,
+        Some(("POST", "/v1/chat/completions")),
+        Some(("POST", "/v1/embeddings/x")),
+        Some(("GET", "/v1/models")),
+        Some(("DELETE", "/v1/models")),
+        Some(("BREW", "/v1")),
+        Some(("POST", "/v2")),
+    ];
+    for pass in ["miss", "hit"] {
+        for tenant in [root, a, b, leaf] {
+            for target in targets {
+                assert_eq!(
+                    resolution(&cached, tenant, "API.openai.com", target).await,
+                    resolution(&uncached, tenant, "API.openai.com", target).await,
+                    "{pass}: tenant {tenant}, {target:?}"
+                );
+            }
+        }
+    }
+    let lookups = 2 * 4 * targets.len();
+    assert_eq!(reader.calls().0, lookups, "every lookup reads its alias");
+    assert_eq!(
+        reader.calls().1,
+        lookups - 2 * 4 * 2,
+        "every lookup with a known method reads its routes"
+    );
+
+    // The hierarchy resolves as designed, so the comparison covers it.
+    let resolved = async |tenant, target| {
+        let (upstream, route) = resolution(&cached, tenant, "api.openai.com", Some(target))
+            .await
+            .unwrap();
+        (upstream.id, route.map(|r| r.id))
+    };
+    let chat = ("POST", "/v1/chat/completions");
+    let embeddings = ("POST", "/v1/embeddings/x");
+    assert_eq!(resolved(leaf, chat).await, (b_up.id, Some(root_chat.id)));
+    assert_eq!(
+        resolved(leaf, embeddings).await,
+        (b_up.id, Some(b_embeddings.id))
+    );
+    assert_eq!(
+        resolved(a, chat).await.0,
+        a_up.id,
+        "its own, though unshared"
+    );
+    assert_ne!(resolved(a, chat).await.1, Some(root_chat.id));
+}
+
+mod cached_resolution_matches_uncached {
+    use super::{Backend, cached_resolution_matches_uncached as case};
+
+    #[tokio::test]
+    async fn in_memory() {
+        case(Backend::Memory).await;
+    }
+
+    #[tokio::test]
+    async fn sqlite() {
+        case(Backend::Db(
+            crate::infra::storage::testing::shared_sqlite().await,
+        ))
+        .await;
+    }
+
+    #[cfg(feature = "integration")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn postgres() {
+        let server = crate::infra::storage::testing::postgres_server().await;
+        case(Backend::Db(server.fresh().await)).await;
+    }
+
+    #[cfg(feature = "integration")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn mysql() {
+        let server = crate::infra::storage::testing::mysql_server().await;
+        case(Backend::Db(server.fresh().await)).await;
+    }
+}
+
+/// Through the cache, an unknown alias is not found, an alias whose visible
+/// upstreams are all disabled is disabled, and a target no route matches is
+/// a route not found, as without it, on a miss and on a hit.
+///
+/// ADR-0020: CACHE-HIT-002.
+#[tokio::test]
+async fn cached_resolution_answers_not_found_and_disabled_as_uncached() {
+    let [root, child] = std::array::from_fn(|_| Uuid::new_v4());
+    let stores = Stores::new(Backend::Db(
+        crate::infra::storage::testing::shared_sqlite().await,
+    ));
+    let (cached, uncached, reader) = cached_and_uncached(&stores, &[root, child]);
+    let disabled = CreateUpstreamRequest {
+        auth: Some(AuthConfig {
+            plugin_type: "noop".into(),
+            sharing: SharingMode::Inherit,
+            config: None,
+        }),
+        enabled: false,
+        ..make_create_upstream_ip("off")
+    };
+    uncached
+        .create_upstream(&test_ctx(root), disabled)
+        .await
+        .unwrap();
+    let up = uncached
+        .create_upstream(&test_ctx(child), make_create_upstream_hostname())
+        .await
+        .unwrap();
+    uncached
+        .create_route(&test_ctx(child), make_create_route(up.id))
+        .await
+        .unwrap();
+
+    let not_found: fn(&Resolved) -> bool = is_not_found;
+    let cases = [
+        ("nope", Some(("POST", "/v1/chat/completions")), not_found),
+        ("off", None, is_disabled),
+        ("off", Some(("POST", "/v1/chat/completions")), is_disabled),
+        (
+            "api.openai.com",
+            Some(("GET", "/v1/chat/completions")),
+            not_found,
+        ),
+        ("api.openai.com", Some(("POST", "/v2")), not_found),
+    ];
+    for pass in ["miss", "hit"] {
+        for (alias, target, expected) in cases {
+            let got = resolution(&cached, child, alias, target).await;
+            assert_eq!(
+                got,
+                resolution(&uncached, child, alias, target).await,
+                "{pass}: {alias} {target:?}"
+            );
+            assert!(expected(&got), "{pass}: {alias} {target:?}: {got:?}");
+        }
+    }
+    assert_eq!(reader.calls(), (10, 4));
+}
+
+/// An alias no upstream can have (longer than the alias rules allow, with a
+/// character an alias cannot hold, or empty once normalized) is not found,
+/// as without the cache, and never reaches the cache: nothing is loaded or
+/// stored for it.
+///
+/// ADR-0020: CACHE-HIT-002.
+#[tokio::test]
+async fn an_alias_no_upstream_can_have_is_not_found_without_touching_the_cache() {
+    let tenant = Uuid::new_v4();
+    let stores = Stores::new(Backend::Db(
+        crate::infra::storage::testing::shared_sqlite().await,
+    ));
+    let (cached, uncached, reader) = cached_and_uncached(&stores, &[tenant]);
+    let too_long = "a".repeat(MAX_ALIAS_LENGTH + 1);
+    for alias in [too_long.as_str(), "api/openai", "...", "-"] {
+        for target in [None, Some(("GET", "/v1"))] {
+            assert_eq!(
+                resolution(&cached, tenant, alias, target).await,
+                resolution(&uncached, tenant, alias, target).await,
+                "{alias} {target:?}"
+            );
+            let ctx = test_ctx(tenant);
+            let chain = cached.build_tenant_chain(&ctx).await.unwrap();
+            let err = cached
+                .resolve_alias(&ctx, &chain, alias, target, Tags::Skip)
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(err, DomainError::NotFound { .. }),
+                "{alias} {target:?}: {err:?}"
+            );
+        }
+    }
+    assert_eq!(reader.calls(), (0, 0), "nothing loaded or stored");
+}
+
+/// A lookup with tags reads the repositories, never the cache: the cache
+/// holds no tags.
+///
+/// ADR-0020: CACHE-CONF-003.
+#[tokio::test]
+async fn resolution_with_tags_bypasses_the_cache() {
+    let tenant = Uuid::new_v4();
+    let stores = Stores::new(Backend::Db(
+        crate::infra::storage::testing::shared_sqlite().await,
+    ));
+    let (cached, _, reader) = cached_and_uncached(&stores, &[tenant]);
+    let ctx = test_ctx(tenant);
+    let up = cached
+        .create_upstream(
+            &ctx,
+            CreateUpstreamRequest {
+                tags: vec!["team-a".into()],
+                ..make_create_upstream_hostname()
+            },
+        )
+        .await
+        .unwrap();
+    cached
+        .create_route(
+            &ctx,
+            CreateRouteRequest {
+                tags: vec!["chat".into()],
+                ..make_create_route(up.id)
+            },
+        )
+        .await
+        .unwrap();
+
+    for _ in 0..2 {
+        let (upstream, route) = cached
+            .resolve_proxy_target(
+                &ctx,
+                "api.openai.com",
+                "POST",
+                "/v1/chat/completions",
+                Tags::Load,
+            )
+            .await
+            .unwrap();
+        // The effective config carries the upstream's and the route's tags.
+        assert_eq!(upstream.tags, ["team-a", "chat"]);
+        assert_eq!(route.tags, ["chat"]);
+    }
+    assert_eq!(reader.calls(), (0, 0));
+}
+
+// ---------------------------------------------------------------------------
+// Freshness of the proxy configuration cache (ADR-0020)
+// ---------------------------------------------------------------------------
+
+/// On one Control Plane resolving through the cache, the next lookup sees
+/// each upstream and route write, including the registry reconcile's
+/// upstream renames and route moves.
+///
+/// ADR-0020: CACHE-FRESH-001.
+#[tokio::test]
+async fn each_write_is_seen_by_the_next_cached_lookup() {
+    let tenant = Uuid::new_v4();
+    let f = CachedPlanes::new(Arc::new(MockTenantResolverClient::single_tenant())).await;
+    let ctx = test_ctx(tenant);
+    let chat = Some(("POST", "/v1/chat/completions"));
+    let openai = |target| (tenant, "api.openai.com", target);
+
+    let up = f
+        .assert_sees(
+            "upstream create",
+            &[openai(None), openai(chat)],
+            async || {
+                f.cp.create_upstream(&ctx, make_create_upstream_hostname())
+                    .await
+                    .unwrap()
+            },
+        )
+        .await;
+    let route = f
+        .assert_sees("route create", &[openai(chat)], async || {
+            f.cp.create_route(&ctx, make_create_route(up.id))
+                .await
+                .unwrap()
+        })
+        .await;
+    let route = f
+        .assert_sees("route update", &[openai(chat)], async || {
+            let req = UpdateRouteRequest {
+                priority: 5,
+                ..make_update_from_route(&route)
+            };
+            f.cp.update_route(&ctx, route.id, req).await.unwrap()
+        })
+        .await;
+    let mut route = route;
+    for (name, enabled) in [("route disable", false), ("route enable", true)] {
+        route = f
+            .assert_sees(name, &[openai(chat)], async || {
+                let req = UpdateRouteRequest {
+                    enabled,
+                    ..make_update_from_route(&route)
+                };
+                f.cp.update_route(&ctx, route.id, req).await.unwrap()
+            })
+            .await;
+    }
+    let up = f
+        .assert_sees(
+            "upstream update",
+            &[openai(None), openai(chat)],
+            async || {
+                let req = UpdateUpstreamRequest {
+                    rate_limit: Some(make_rate_limit(SharingMode::Private, 10, Window::Minute)),
+                    ..make_update_from_upstream(&up)
+                };
+                f.cp.update_upstream(&ctx, up.id, req).await.unwrap()
+            },
+        )
+        .await;
+    for (name, enabled) in [("upstream disable", false), ("upstream enable", true)] {
+        f.assert_sees(name, &[openai(None), openai(chat)], async || {
+            let req = UpdateUpstreamRequest {
+                enabled,
+                ..make_update_from_upstream(&up)
+            };
+            f.cp.update_upstream(&ctx, up.id, req).await.unwrap()
+        })
+        .await;
+    }
+    f.assert_sees("route delete", &[openai(chat)], async || {
+        f.cp.delete_route(&ctx, route.id).await.unwrap();
+    })
+    .await;
+    f.assert_sees("upstream delete", &[openai(None)], async || {
+        f.cp.delete_upstream(&ctx, up.id).await.unwrap();
+    })
+    .await;
+
+    let registry = &f.provisioner;
+    let from = registry
+        .create_registry_upstream(&ctx, make_create_upstream_ip("from"))
+        .await
+        .unwrap();
+    let to = registry
+        .create_registry_upstream(&ctx, make_create_upstream_ip("to"))
+        .await
+        .unwrap();
+    let route = registry
+        .create_registry_route(&ctx, make_create_route(from.id), UpstreamCheck::Read)
+        .await
+        .unwrap();
+    f.assert_sees(
+        "route move",
+        &[(tenant, "from", chat), (tenant, "to", chat)],
+        async || {
+            registry
+                .update_registry_route(
+                    &ctx,
+                    route.id,
+                    to.id,
+                    make_update_from_route(&route),
+                    UpstreamCheck::Read,
+                )
+                .await
+                .unwrap()
+        },
+    )
+    .await;
+    let renamed = f
+        .assert_sees(
+            "upstream rename",
+            &[
+                (tenant, "to", None),
+                (tenant, "to", chat),
+                (tenant, "renamed", None),
+                (tenant, "renamed", chat),
+            ],
+            async || {
+                let req = UpdateUpstreamRequest {
+                    alias: Some("renamed".into()),
+                    ..make_update_from_upstream(&to)
+                };
+                registry
+                    .update_registry_upstream(&ctx, to.id, req)
+                    .await
+                    .unwrap()
+            },
+        )
+        .await;
+    assert_eq!(renamed.alias, "renamed");
+}
+
+/// An upstream repository whose update commits, then never returns.
+struct UpdateThenHang {
+    inner: Arc<dyn UpstreamRepository>,
+    committed: Arc<tokio::sync::Notify>,
+}
+
+#[async_trait]
+impl UpstreamRepository for UpdateThenHang {
+    async fn create(&self, upstream: Upstream) -> Result<Upstream, RepositoryError> {
+        self.inner.create(upstream).await
+    }
+
+    async fn get_by_id(&self, tenant_id: Uuid, id: Uuid) -> Result<Upstream, RepositoryError> {
+        self.inner.get_by_id(tenant_id, id).await
+    }
+
+    async fn list(
+        &self,
+        tenant_id: Uuid,
+        query: &ListQuery,
+    ) -> Result<Vec<Upstream>, RepositoryError> {
+        self.inner.list(tenant_id, query).await
+    }
+
+    async fn update(&self, upstream: Upstream) -> Result<Upstream, RepositoryError> {
+        self.inner.update(upstream).await?;
+        self.committed.notify_one();
+        std::future::pending().await
+    }
+
+    async fn delete(&self, tenant_id: Uuid, id: Uuid) -> Result<(), RepositoryError> {
+        self.inner.delete(tenant_id, id).await
+    }
+
+    async fn list_by_alias_for_tenants(
+        &self,
+        alias: &str,
+        tenant_ids: &std::collections::HashSet<Uuid>,
+        tags: Tags,
+    ) -> Result<Vec<Upstream>, RepositoryError> {
+        self.inner
+            .list_by_alias_for_tenants(alias, tenant_ids, tags)
+            .await
+    }
+}
+
+/// A write whose future is dropped after its commit (its HTTP request was
+/// cancelled) is still seen by the next lookup.
+///
+/// ADR-0020: CACHE-FRESH-002.
+#[tokio::test]
+async fn a_write_dropped_after_its_commit_is_seen_by_the_next_lookup() {
+    let tenant = Uuid::new_v4();
+    let (db, recorder) = crate::infra::storage::testing::recorded_sqlite().await;
+    let stores = Stores::new(Backend::Db(db));
+    let committed = Arc::new(tokio::sync::Notify::new());
+    let hanging = UpdateThenHang {
+        inner: stores.upstreams.clone(),
+        committed: committed.clone(),
+    };
+    let f = CachedPlanes::over(
+        Stores {
+            upstreams: Arc::new(hanging),
+            ..stores
+        },
+        recorder,
+        Arc::new(MockTenantResolverClient::single_tenant()),
+    );
+    let ctx = test_ctx(tenant);
+    let up =
+        f.cp.create_upstream(&ctx, make_create_upstream_hostname())
+            .await
+            .unwrap();
+
+    let disabled = UpdateUpstreamRequest {
+        enabled: false,
+        ..make_update_from_upstream(&up)
+    };
+    let lookup = (tenant, "api.openai.com", None);
+    f.assert_sees("a dropped upstream update", &[lookup], async || {
+        let update = f.cp.update_upstream(&ctx, up.id, disabled);
+        tokio::select! {
+            result = update => panic!("the update never returns: {result:?}"),
+            () = committed.notified() => {}
+        }
+        // `update` is dropped here, after its commit.
+    })
+    .await;
+}
+
+/// Writes in an ancestor tenant, sharing changes included, change a
+/// descendant's next lookup through the cache.
+///
+/// ADR-0020: CACHE-FRESH-004.
+#[tokio::test]
+async fn an_ancestor_write_is_seen_by_a_descendant() {
+    let [root, child] = std::array::from_fn(|_| Uuid::new_v4());
+    let f = CachedPlanes::new(Arc::new(MockTenantResolverClient::with_hierarchy(vec![
+        TenantId(root),
+        TenantId(child),
+    ])))
+    .await;
+    let ctx = test_ctx(root);
+    let chat = Some(("POST", "/v1/chat/completions"));
+    let lookups = [
+        (child, "api.openai.com", None),
+        (child, "api.openai.com", chat),
+    ];
+    let auth = |sharing| {
+        Some(AuthConfig {
+            plugin_type: "noop".into(),
+            sharing,
+            config: None,
+        })
+    };
+    let shared = CreateUpstreamRequest {
+        auth: auth(SharingMode::Inherit),
+        ..make_create_upstream_hostname()
+    };
+
+    let up = f
+        .assert_sees("ancestor upstream create", &lookups, async || {
+            f.cp.create_upstream(&ctx, shared).await.unwrap()
+        })
+        .await;
+    f.assert_sees("ancestor route create", &lookups[1..], async || {
+        f.cp.create_route(&ctx, make_create_route(up.id))
+            .await
+            .unwrap()
+    })
+    .await;
+    // Private: nothing on the upstream is shared, so the descendant no
+    // longer sees it; shared again, it does.
+    let mut up = up;
+    for (name, sharing, visible) in [
+        (
+            "ancestor upstream made private",
+            SharingMode::Private,
+            false,
+        ),
+        ("ancestor upstream shared again", SharingMode::Inherit, true),
+    ] {
+        up = f
+            .assert_sees(name, &lookups, async || {
+                let req = UpdateUpstreamRequest {
+                    auth: auth(sharing),
+                    ..make_update_from_upstream(&up)
+                };
+                f.cp.update_upstream(&ctx, up.id, req).await.unwrap()
+            })
+            .await;
+        let answer = f.cached(lookups[0]).await;
+        if visible {
+            assert_eq!(answer.map(|(u, _)| u.id), Ok(up.id), "{name}");
+        } else {
+            assert!(is_not_found(&answer), "{name}: {answer:?}");
+        }
+    }
+    let up = f
+        .assert_sees("ancestor upstream update", &lookups, async || {
+            let req = UpdateUpstreamRequest {
+                rate_limit: Some(make_rate_limit(SharingMode::Inherit, 10, Window::Minute)),
+                ..make_update_from_upstream(&up)
+            };
+            f.cp.update_upstream(&ctx, up.id, req).await.unwrap()
+        })
+        .await;
+    f.assert_sees("ancestor upstream disable", &lookups, async || {
+        let req = UpdateUpstreamRequest {
+            enabled: false,
+            ..make_update_from_upstream(&up)
+        };
+        f.cp.update_upstream(&ctx, up.id, req).await.unwrap()
+    })
+    .await;
+    f.assert_sees("ancestor upstream delete", &lookups, async || {
+        f.cp.delete_upstream(&ctx, up.id).await.unwrap();
+    })
+    .await;
+    for lookup in lookups {
+        let answer = f.cached(lookup).await;
+        assert!(is_not_found(&answer), "deleted: {lookup:?}: {answer:?}");
+    }
+}
+
+/// A tenant whose chain changed (it moved under another parent) resolves
+/// under a new key: the answer for its new chain, while its old chain's
+/// entry stays cached.
+///
+/// ADR-0020: CACHE-FRESH-006.
+#[tokio::test]
+async fn a_changed_tenant_chain_resolves_under_a_new_key() {
+    let [root, before, after, tenant] = std::array::from_fn(|_| Uuid::new_v4());
+    let f = CachedPlanes::new(Arc::new(MockTenantResolverClient::single_tenant())).await;
+    let shared = CreateUpstreamRequest {
+        auth: Some(AuthConfig {
+            plugin_type: "noop".into(),
+            sharing: SharingMode::Inherit,
+            config: None,
+        }),
+        ..make_create_upstream_ip("x")
+    };
+    let mut ids = Vec::new();
+    for parent in [before, after] {
+        let up =
+            f.cp.create_upstream(&test_ctx(parent), shared.clone())
+                .await
+                .unwrap();
+        ids.push(up.id);
+    }
+    // As `build_tenant_chain` returns them: the tenant, then its ancestors.
+    let (old, new) = ([tenant, before, root], [tenant, after, root]);
+    let lookup = async |svc: &ControlPlaneServiceImpl, chain: &[Uuid]| {
+        svc.resolve_alias(&test_ctx(tenant), chain, "x", None, Tags::Skip)
+            .await
+            .map(|(upstream, _)| upstream.id)
+            .map_err(Failed)
+    };
+
+    assert_eq!(lookup(&f.cp, &old).await, Ok(ids[0]));
+    let selects = f.selects();
+    assert_eq!(lookup(&f.cp, &old).await, Ok(ids[0]));
+    assert_eq!(f.selects(), selects, "the old chain's answer is cached");
+
+    assert_eq!(lookup(&f.cp, &new).await, Ok(ids[1]));
+    assert_eq!(lookup(&f.uncached, &new).await, Ok(ids[1]));
+    assert!(f.selects() > selects, "the new chain loads");
+
+    let selects = f.selects();
+    assert_eq!(lookup(&f.cp, &old).await, Ok(ids[0]));
+    assert_eq!(f.selects(), selects, "the old chain's entry stays cached");
+}
+
+/// The SSRF check runs on every lookup, also on an upstream served from the
+/// cache: a Control Plane whose policy denies the host rejects an upstream
+/// another Control Plane cached, from that entry (no `SELECT`).
+///
+/// ADR-0020: CACHE-SAFE-001.
+#[tokio::test]
+async fn a_cached_upstream_whose_host_is_denied_later_is_rejected() {
+    use crate::infra::proxy_cache::{CachedProxyConfigReader, ProxyConfigCache};
+    use toolkit_db::test_support::QueryKind;
+
+    let (db, recorder) = crate::infra::storage::testing::recorded_sqlite().await;
+    let stores = Stores::new(Backend::Db(db));
+    let reader: Arc<dyn ProxyConfigReader> = Arc::new(CachedProxyConfigReader::new(
+        Arc::new(ProxyConfigCache::new(
+            std::time::Duration::from_secs(60),
+            std::time::Duration::ZERO,
+            100,
+            Arc::new(crate::domain::ports::NoopMetrics),
+        )),
+        stores.upstreams.clone(),
+        stores.routes.clone(),
+    ));
+    let service = |policy: SsrfPolicy| {
+        ControlPlaneServiceImpl::new(
+            stores.upstreams.clone(),
+            stores.routes.clone(),
+            Arc::new(MockTenantResolverClient::single_tenant()),
+            allow_all_enforcer(),
+            Arc::new(MockCredStoreClient::empty()),
+            Arc::new(SsrfGuard::from_config(&policy).unwrap()),
+            Some(reader.clone()),
+        )
+    };
+    let selects = || {
+        recorder
+            .events()
+            .iter()
+            .filter(|e| e.kind == QueryKind::Select)
+            .count()
+    };
+    let ctx = test_ctx(Uuid::new_v4());
+    let before = service(SsrfPolicy::default());
+    let upstream = before
+        .create_upstream(&ctx, make_create_upstream_hostname())
+        .await
+        .unwrap();
+    before
+        .create_route(&ctx, make_create_route(upstream.id))
+        .await
+        .unwrap();
+    let target = (&upstream.alias, "POST", "/v1/chat/completions");
+    before
+        .resolve_proxy_target(&ctx, target.0, target.1, target.2, Tags::Skip)
+        .await
+        .expect("resolves before the policy changes");
+
+    let after = service(SsrfPolicy {
+        extra_deny_hostnames: vec!["api.openai.com".into()],
+        ..SsrfPolicy::default()
+    });
+    let cached = selects();
+    let err = after
+        .resolve_proxy_target(&ctx, target.0, target.1, target.2, Tags::Skip)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, DomainError::Validation { detail, .. }
+            if detail.contains("is blocked by SSRF protection")),
+        "{err:?}"
+    );
+    assert_eq!(selects(), cached, "the upstream came from the cache");
+}
+
+fn ep(scheme: Scheme, host: &str) -> Endpoint {
+    Endpoint {
+        scheme,
+        host: host.into(),
+        port: 443,
+    }
+}
+
+fn on(hosts: &[&str]) -> Server {
+    Server {
+        endpoints: hosts.iter().map(|h| ep(Scheme::Https, h)).collect(),
+    }
+}
+
+#[test]
+fn server_within_is_a_one_way_subset_check() {
+    use super::merge::server_within;
+
+    let owner = on(&["a.example", "b.example"]);
+    assert!(server_within(&owner, &owner), "equal");
+    assert!(
+        server_within(&on(&["b.example", "a.example"]), &owner),
+        "order"
+    );
+    assert!(server_within(&on(&["b.example"]), &owner), "subset");
+    assert!(
+        server_within(&on(&["A.Example."]), &owner),
+        "case and trailing dot"
+    );
+    assert!(
+        !server_within(&on(&["a.example", "c.example"]), &owner),
+        "extra endpoint"
+    );
+    assert!(!server_within(&on(&["c.example"]), &owner), "disjoint");
+    assert!(!server_within(&on(&[]), &owner), "empty server");
+    assert!(!server_within(&on(&["a.example"]), &on(&[])), "empty owner");
+    let other_port = Server {
+        endpoints: vec![Endpoint {
+            port: 8443,
+            ..ep(Scheme::Https, "a.example")
+        }],
+    };
+    assert!(!server_within(&other_port, &owner), "port");
+    let plaintext = Server {
+        endpoints: vec![ep(Scheme::Http, "a.example")],
+    };
+    assert!(!server_within(&plaintext, &owner), "scheme");
+}
+
+/// An upstream on `hosts` with the given auth sharing (none for `None`) and,
+/// when `headers` is set, a request header naming it.
+fn layer(hosts: &[&str], auth: Option<SharingMode>, headers: Option<&str>) -> Upstream {
+    let mut u = make_upstream(
+        Uuid::new_v4(),
+        "svc",
+        auth.map(|sharing| AuthConfig {
+            plugin_type: "apikey".into(),
+            sharing,
+            config: None,
+        }),
+        None,
+        None,
+        vec![],
+    );
+    u.server = on(hosts);
+    u.headers = headers.map(|value| crate::domain::model::HeadersConfig {
+        request: Some(crate::domain::model::RequestHeaderRules {
+            set: [("x-owner".to_owned(), value.to_owned())].into(),
+            ..Default::default()
+        }),
+        response: None,
+    });
+    u
+}
+
+fn merged(chain: &[Upstream]) -> (Result<Upstream, DomainError>, Vec<super::merge::Withheld>) {
+    let mut withheld = Vec::new();
+    let result =
+        super::merge::compute_effective_config_reporting(chain, None, &mut |w| withheld.push(w));
+    (result, withheld)
+}
+
+#[test]
+fn a_child_on_part_of_the_owners_endpoints_keeps_the_credential() {
+    let root = layer(&["a", "a2"], Some(SharingMode::Inherit), Some("root"));
+    let child = layer(&["a"], None, None);
+    let (effective, withheld) = merged(&[root.clone(), child]);
+    let effective = effective.unwrap();
+    assert!(effective.auth.is_some());
+    assert!(effective.headers.is_some());
+    assert!(withheld.is_empty());
+}
+
+#[test]
+fn a_child_with_an_endpoint_the_owner_lacks_loses_the_credential() {
+    use super::merge::WithheldKind;
+
+    let root = layer(&["a"], Some(SharingMode::Inherit), Some("root"));
+    let child = layer(&["a", "b"], None, None);
+    let (effective, withheld) = merged(&[root.clone(), child.clone()]);
+    let effective = effective.unwrap();
+    assert!(effective.auth.is_none());
+    assert!(effective.headers.is_none());
+    let kinds: Vec<_> = withheld.iter().map(|w| w.kind).collect();
+    assert_eq!(kinds, vec![WithheldKind::Auth, WithheldKind::Headers]);
+    assert!(
+        withheld
+            .iter()
+            .all(|w| w.owner_id == root.id && w.upstream_id == child.id)
+    );
+}
+
+/// The credential is checked against its owner's endpoints, not the level
+/// above: a leaf may use an endpoint the root lists that the middle tenant
+/// left out.
+#[test]
+fn an_enforced_auth_is_checked_against_its_owner() {
+    let root = layer(&["a", "a2"], Some(SharingMode::Enforce), None);
+    let mid = layer(&["a"], None, None);
+
+    let (effective, _) = merged(&[root.clone(), mid.clone(), layer(&["a2"], None, None)]);
+    assert!(effective.unwrap().auth.is_some());
+
+    let (refused, withheld) = merged(&[root.clone(), mid, layer(&["b"], None, None)]);
+    assert!(
+        matches!(&refused, Err(DomainError::Forbidden { reason, .. })
+            if reason == super::merge::ENFORCED_AUTH_OTHER_SERVER),
+        "{refused:?}"
+    );
+    assert_eq!(withheld.len(), 1);
+    assert_eq!(withheld[0].kind, super::merge::WithheldKind::EnforcedAuth);
+    assert_eq!(withheld[0].owner_id, root.id);
+}
+
+/// The middle tenant's own key belongs to the middle tenant's endpoints,
+/// even if the root lists more.
+#[test]
+fn a_middle_tenants_key_stays_on_its_endpoints() {
+    let root = layer(&["a", "a2"], Some(SharingMode::Inherit), None);
+    let mid = layer(&["a"], Some(SharingMode::Inherit), None);
+    let leaf = layer(&["a2"], None, None);
+    let (effective, withheld) = merged(&[root, mid.clone(), leaf]);
+    assert!(effective.unwrap().auth.is_none());
+    assert_eq!(withheld[0].owner_id, mid.id);
+}
+
+/// Headers have their own owner: a child that sets its auth but not its
+/// headers still checks the root's headers against the root's endpoints.
+#[test]
+fn headers_and_auth_have_separate_owners() {
+    let root = layer(&["a"], Some(SharingMode::Inherit), Some("root"));
+    let child = layer(&["b"], Some(SharingMode::Private), None);
+    let (effective, withheld) = merged(&[root, child]);
+    let effective = effective.unwrap();
+    assert!(effective.auth.is_some(), "the child's own auth");
+    assert!(effective.headers.is_none());
+    assert_eq!(
+        withheld.iter().map(|w| w.kind).collect::<Vec<_>>(),
+        vec![super::merge::WithheldKind::Headers]
+    );
+}
+
+/// An enforced root auth binds a grandchild even when the tenant between them
+/// bound the alias without auth of its own: the grandchild cannot move the
+/// alias to another server.
+#[tokio::test]
+async fn an_auth_enforced_above_the_closest_ancestor_still_pins_the_server() {
+    use crate::domain::model::{AuthConfig, SharingMode};
+
+    let (root, mid, leaf) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+    let resolver = MockTenantResolverClient::with_hierarchy(vec![
+        TenantId(root),
+        TenantId(mid),
+        TenantId(leaf),
+    ]);
+    let svc = make_service_with_resolver(resolver);
+
+    let mut root_req = make_create_upstream_ip("svc");
+    root_req.auth = Some(AuthConfig {
+        plugin_type: "noop".into(),
+        sharing: SharingMode::Enforce,
+        config: None,
+    });
+    svc.create_upstream(&test_ctx(root), root_req)
+        .await
+        .unwrap();
+    // The middle tenant binds on the root's server, with no auth of its own.
+    svc.create_upstream(&test_ctx(mid), make_create_upstream_ip("svc"))
+        .await
+        .unwrap();
+
+    let mut moved = make_create_upstream_ip("svc");
+    moved.server.endpoints[0].host = "10.6.6.6".into();
+    let err = svc
+        .create_upstream(&test_ctx(leaf), moved)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DomainError::Validation { .. }), "{err:?}");
+
+    // On the root's server the bind is fine.
+    svc.create_upstream(&test_ctx(leaf), make_create_upstream_ip("svc"))
+        .await
+        .unwrap();
+}
+
+/// The server that counts is the enforcing ancestor's, not the closest one's:
+/// a tenant in between that shadows the alias elsewhere with nothing to share
+/// is invisible to its descendants and skipped by the merge.
+#[tokio::test]
+async fn an_enforced_auth_pins_bindings_to_the_enforcing_ancestors_server() {
+    use crate::domain::model::{AuthConfig, SharingMode};
+
+    let (root, mid, leaf) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+    let resolver = MockTenantResolverClient::with_hierarchy(vec![
+        TenantId(root),
+        TenantId(mid),
+        TenantId(leaf),
+    ]);
+    let svc = make_service_with_resolver(resolver);
+    let auth = |sharing| AuthConfig {
+        plugin_type: "noop".into(),
+        sharing,
+        config: None,
+    };
+
+    let mut root_req = make_create_upstream_ip("svc");
+    root_req.auth = Some(auth(SharingMode::Inherit));
+    let root_up = svc
+        .create_upstream(&test_ctx(root), root_req)
+        .await
+        .unwrap();
+    // The middle tenant shadows on another server and shares nothing.
+    let mut mid_req = make_create_upstream_ip("svc");
+    mid_req.server.endpoints[0].host = "10.0.0.2".into();
+    svc.create_upstream(&test_ctx(mid), mid_req).await.unwrap();
+    // The root enforces its auth afterwards.
+    let mut enforce = make_update_from_upstream(&root_up);
+    enforce.auth = Some(auth(SharingMode::Enforce));
+    svc.update_upstream(&test_ctx(root), root_up.id, enforce)
+        .await
+        .unwrap();
+
+    let mut on_mid_server = make_create_upstream_ip("svc");
+    on_mid_server.server.endpoints[0].host = "10.0.0.2".into();
+    let err = svc
+        .create_upstream(&test_ctx(leaf), on_mid_server)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DomainError::Validation { .. }), "{err:?}");
+    svc.create_upstream(&test_ctx(leaf), make_create_upstream_ip("svc"))
+        .await
+        .unwrap();
+}
+
+/// Under an enforced auth a binding is checked against the enforcing
+/// ancestor's endpoints: a subset is fine, an extra endpoint is not.
+#[tokio::test]
+async fn an_enforced_auth_allows_bindings_on_part_of_its_endpoints() {
+    use crate::domain::model::{AuthConfig, SharingMode};
+
+    let (root, child) = (Uuid::new_v4(), Uuid::new_v4());
+    let resolver = MockTenantResolverClient::with_hierarchy(vec![TenantId(root), TenantId(child)]);
+    let svc = make_service_with_resolver(resolver);
+
+    let two = |hosts: &[&str]| {
+        let mut req = make_create_upstream_ip("svc");
+        req.server.endpoints = hosts
+            .iter()
+            .map(|h| Endpoint {
+                scheme: Scheme::Https,
+                host: (*h).into(),
+                port: 443,
+            })
+            .collect();
+        req
+    };
+    let mut root_req = two(&["10.0.0.1", "10.0.0.2"]);
+    root_req.auth = Some(AuthConfig {
+        plugin_type: "noop".into(),
+        sharing: SharingMode::Enforce,
+        config: None,
+    });
+    svc.create_upstream(&test_ctx(root), root_req)
+        .await
+        .unwrap();
+
+    let err = svc
+        .create_upstream(&test_ctx(child), two(&["10.0.0.2", "10.6.6.6"]))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DomainError::Validation { .. }), "{err:?}");
+    svc.create_upstream(&test_ctx(child), two(&["10.0.0.2"]))
+        .await
+        .unwrap();
+}
+
+/// On the proxy path every withheld credential is counted, and each binding
+/// warns at most once a minute; the SDK's resolve reports nothing.
+#[tokio::test]
+#[tracing_test::traced_test]
+async fn withheld_credentials_are_counted_and_warned_once() {
+    use crate::domain::model::{AuthConfig, SharingMode};
+    use crate::domain::ports::metric_labels::withheld_outcome;
+    use crate::domain::test_support::ProvisioningMetrics;
+
+    let (root, child) = (Uuid::new_v4(), Uuid::new_v4());
+    let resolver = MockTenantResolverClient::with_hierarchy(vec![TenantId(root), TenantId(child)]);
+    let metrics = Arc::new(ProvisioningMetrics::default());
+    let svc = make_service_with_resolver(resolver).with_metrics(metrics.clone());
+
+    let mut root_req = make_create_upstream_ip("svc");
+    root_req.auth = Some(AuthConfig {
+        plugin_type: "noop".into(),
+        sharing: SharingMode::Inherit,
+        config: None,
+    });
+    let root_up = svc
+        .create_upstream(&test_ctx(root), root_req)
+        .await
+        .unwrap();
+    svc.create_route(&test_ctx(root), make_create_route(root_up.id))
+        .await
+        .unwrap();
+    let mut child_req = make_create_upstream_ip("svc");
+    child_req.server.endpoints[0].host = "10.6.6.6".into();
+    svc.create_upstream(&test_ctx(child), child_req)
+        .await
+        .unwrap();
+
+    let (method, path) = ("POST", "/v1/chat/completions");
+    for _ in 0..2 {
+        let (effective, _) = svc
+            .resolve_proxy_target(&test_ctx(child), "svc", method, path, Tags::Skip)
+            .await
+            .unwrap();
+        assert!(effective.auth.is_none());
+    }
+    svc.resolve_proxy_target(&test_ctx(child), "svc", method, path, Tags::Load)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        *metrics.withheld.lock().unwrap(),
+        vec![
+            ("svc".to_owned(), withheld_outcome::DROPPED_AUTH),
+            ("svc".to_owned(), withheld_outcome::DROPPED_AUTH),
+        ]
+    );
+    logs_assert(|lines: &[&str]| {
+        match lines
+            .iter()
+            .filter(|l| l.contains("ancestor auth dropped"))
+            .count()
+        {
+            1 => Ok(()),
+            n => Err(format!("expected one warning, got {n}")),
+        }
+    });
+}
+
+/// A full warning log keeps the quiet windows it has: a binding that warned
+/// stays quiet, and a new one waits for a slot.
+#[test]
+fn a_full_withheld_log_keeps_its_quiet_windows() {
+    use super::merge::{Withheld, WithheldKind};
+    use super::withheld::WithheldLog;
+
+    let log = WithheldLog::default();
+    let withheld = |owner_id| Withheld {
+        owner_id,
+        upstream_id: Uuid::nil(),
+        alias: "svc".into(),
+        kind: WithheldKind::Auth,
+    };
+    let first = withheld(Uuid::new_v4());
+    assert!(log.warns(&first));
+    for _ in 1..1024 {
+        assert!(log.warns(&withheld(Uuid::new_v4())));
+    }
+    assert!(!log.warns(&withheld(Uuid::new_v4())), "no free slot");
+    assert!(!log.warns(&first), "still quiet");
+}
+
+/// A disabled ancestor is not in the proxy merge, so its enforced auth does
+/// not decide where a binding may go.
+#[tokio::test]
+async fn a_disabled_ancestors_enforced_auth_does_not_pin_bindings() {
+    use crate::domain::model::{AuthConfig, SharingMode};
+
+    let (root, mid, leaf) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+    let resolver = MockTenantResolverClient::with_hierarchy(vec![
+        TenantId(root),
+        TenantId(mid),
+        TenantId(leaf),
+    ]);
+    let svc = make_service_with_resolver(resolver);
+    let auth = |sharing| AuthConfig {
+        plugin_type: "noop".into(),
+        sharing,
+        config: None,
+    };
+    let at = |host: &str| {
+        let mut req = make_create_upstream_ip("svc");
+        req.server.endpoints[0].host = host.into();
+        req
+    };
+
+    let mut root_req = at("10.0.0.1");
+    root_req.auth = Some(auth(SharingMode::Inherit));
+    let root_up = svc
+        .create_upstream(&test_ctx(root), root_req)
+        .await
+        .unwrap();
+    let mut mid_req = at("10.0.0.2");
+    mid_req.auth = Some(auth(SharingMode::Enforce));
+    svc.create_upstream(&test_ctx(mid), mid_req).await.unwrap();
+    // The root enforces its auth afterwards, and is disabled.
+    let mut update = make_update_from_upstream(&root_up);
+    update.auth = Some(auth(SharingMode::Enforce));
+    update.enabled = false;
+    svc.update_upstream(&test_ctx(root), root_up.id, update)
+        .await
+        .unwrap();
+
+    let err = svc
+        .create_upstream(&test_ctx(leaf), at("10.0.0.1"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DomainError::Validation { .. }), "{err:?}");
+    svc.create_upstream(&test_ctx(leaf), at("10.0.0.2"))
+        .await
+        .unwrap();
 }

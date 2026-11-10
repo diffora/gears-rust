@@ -1,18 +1,11 @@
-//! Domain-owned capability ports (ISP/DIP).
+//! Domain-owned capability ports.
 //!
-//! Each trait names only the `Store` methods a specific consumer requires.
-//! Consumers depend on `Arc<dyn XxxStore>` (or a generic bound); the concrete
-//! `Store` type satisfies all of them via `impl` blocks in `infra/storage/store.rs`.
-//!
-//! Defining the traits here (in the domain layer) is the DIP move: the domain
-//! owns the port; infrastructure (`Store`) implements it. Neither the cleanup
-//! engine nor the multipart service imports `crate::infra::storage::Store`
-//! directly — they name only this module.
-//!
-//! `async-trait` is used to match the crate's existing `Authorizer` convention.
+//! Each trait names only the `Store` methods one consumer needs; the concrete `Store`
+//! implements them all, so consumers never import `crate::infra::storage::Store`.
 
 use async_trait::async_trait;
 use time::OffsetDateTime;
+use toolkit_macros::domain_model;
 use toolkit_security::{AccessScope, SecurityContext};
 use uuid::Uuid;
 
@@ -25,22 +18,56 @@ use crate::domain::policy::{
     PolicyBody, PolicyScope, RetentionRuleBody, RetentionScope, StoredPolicy, StoredRetentionRule,
 };
 
-// ── CleanupStore ──────────────────────────────────────────────────────────────
+/// Bind a just-finalized version as the file's content in the SAME transaction as the finalize
+/// (single-part `bind=auto`), under the same optimistic CAS as a manual `bind`.
+#[domain_model]
+#[derive(Debug, Clone)]
+pub struct AutoBindOnFinalize {
+    pub expected_content_id: Option<Uuid>,
+    pub audit: AuditEntry,
+    pub event: Option<FileEvent>,
+}
 
-/// Narrow persistence port for the cleanup engine.
-///
-/// Contains only the `Store` methods that `CleanupEngine` invokes.
-/// `Store` implements this trait in `infra/storage/store.rs`.
+/// Result of `finalize_version`.
+#[domain_model]
+#[derive(Debug, Clone, Copy)]
+pub struct FinalizeVersionOutcome {
+    pub updated: bool,
+    pub bound: bool,
+}
+
+/// Completion facts known before the bind outcome (everything but `bind_state`/`etag`/`current_etag`).
+#[domain_model]
+#[derive(Debug, Clone)]
+pub struct MultipartFinishSnapshot {
+    pub upload_id: Uuid,
+    pub version_id: Uuid,
+    pub size: i64,
+    pub content_hash: Vec<u8>,
+    pub hash_mode: crate::infra::content::hash_mode::HashMode,
+    pub part_count: Option<i32>,
+    pub session_audit: AuditEntry,
+}
+
+/// Result of [`MultipartStore::finalize_multipart_version`].
+#[domain_model]
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Clone)]
+pub struct FinalizeMultipartOutcome {
+    pub updated: bool,
+    pub bound: bool,
+    /// The terminal `completing -> completed` CAS won in this transaction; `false` when `updated` is
+    /// `false` or the lease was taken over (the caller re-checks and converges).
+    pub session_completed: bool,
+    /// Current content `ETag` when the auto-bind CAS lost (`Some` only then). Read in this
+    /// transaction so it agrees with the persisted snapshot, not a later read.
+    pub current_etag: Option<String>,
+}
+
+/// Persistence port for the cleanup engine.
 #[async_trait]
 pub trait CleanupStore: Send + Sync {
-    /// List pending version rows older than `older_than`, excluding any
-    /// version still backing a live `in_progress` multipart session
-    /// (`expires_at > now`) -- such a version is never selected, regardless
-    /// of age, so the sweep cannot reclaim it out from under an in-progress
-    /// upload. A session whose `expires_at` has already passed is not
-    /// excluded: it is aborted by the next sweep step
-    /// (`sweep_expired_multipart`) and its version becomes reclaimable on a
-    /// later sweep.
+    /// List pending versions older than `older_than`, excluding any backing a live
     async fn list_abandoned_pending_versions(
         &self,
         older_than: OffsetDateTime,
@@ -55,13 +82,9 @@ pub trait CleanupStore: Send + Sync {
         audit: AuditEntry,
     ) -> Result<bool, DomainError>;
 
-    /// Delete a version row iff it is still `pending` + audit, in one
-    /// transaction. Returns `true` if removed.
-    ///
-    /// Status-guarded CAS (P2 0.3 step 5) -- used by the cleanup engine
-    /// instead of [`Self::delete_version`] when reclaiming an expired
-    /// multipart session's pending version, so a version already flipped to
-    /// `available` by a racing `complete_multipart_upload` is never deleted.
+    /// Delete a version row iff it is still `pending` + audit, in one transaction.
+    /// Returns `true` if removed. Status-guarded so a version flipped to `available`
+    /// by a racing `complete_multipart_upload` is never deleted.
     async fn delete_pending_version(
         &self,
         file_id: Uuid,
@@ -69,7 +92,7 @@ pub trait CleanupStore: Send + Sync {
         audit: AuditEntry,
     ) -> Result<bool, DomainError>;
 
-    /// List `in_progress` multipart sessions whose `expires_at` is before `now`.
+    /// List `in_progress` (or lease-lapsed `completing`) sessions with `expires_at` before `now`.
     async fn list_expired_multipart_uploads(
         &self,
         now: OffsetDateTime,
@@ -108,14 +131,10 @@ pub trait CleanupStore: Send + Sync {
     /// Fetch a file by id (unscoped -- the sweep runs across all tenants).
     async fn get_file(&self, file_id: Uuid) -> Result<Option<File>, DomainError>;
 
-    /// Whether `file_id` currently has at least one `in_progress` multipart
-    /// upload session (regardless of `expires_at`). Guards the P2 2.8
-    /// orphan-file delete against racing a not-yet-expired multipart session
-    /// whose pending version was just reclaimed by `sweep_abandoned_pending`
-    /// (keyed only on version age, not multipart session state) -- without
-    /// this check, deleting the file would `ON DELETE CASCADE` the still
-    /// live session out from under the upload.
-    async fn has_in_progress_multipart_for_file(&self, file_id: Uuid) -> Result<bool, DomainError>;
+    /// Whether `file_id` has an active (`in_progress` or `completing`) session, regardless of
+    /// `expires_at`/`lease_until`. Guards orphan-file delete (the file would `ON DELETE CASCADE` a
+    /// live session); only the expired-multipart sweep's CAS may declare a stuck lease abandoned.
+    async fn has_active_multipart_for_file(&self, file_id: Uuid) -> Result<bool, DomainError>;
 
     /// Delete a file row, optionally enqueue a file-event, and audit — all in
     /// one transaction. Returns `true` if a row was removed.
@@ -127,10 +146,8 @@ pub trait CleanupStore: Send + Sync {
         event: Option<FileEvent>,
     ) -> Result<bool, DomainError>;
 
-    /// Delete the parent `files` row of an abandoned-pending-version orphan
-    /// (P2 2.8), re-verifying **inside the same transaction** that the file
-    /// still has zero versions and a `NULL` `content_id` before deleting it.
-    /// Returns `true` if the row was removed.
+    /// Delete an orphan `files` row, re-verifying **in the same transaction** that it
+    /// still has zero versions and a `NULL` `content_id`. Returns `true` if removed.
     async fn delete_orphan_file_with_event(
         &self,
         file_id: Uuid,
@@ -138,27 +155,20 @@ pub trait CleanupStore: Send + Sync {
         event: Option<FileEvent>,
     ) -> Result<bool, DomainError>;
 
-    /// Bulk-delete all `idempotency_keys` rows whose `expires_at` is at or
-    /// before `now`. Returns the number of rows removed.
+    /// Bulk-delete `idempotency_keys` rows with `expires_at <= now`; returns the count.
     async fn delete_expired_idempotency_keys(
         &self,
         now: OffsetDateTime,
     ) -> Result<u64, DomainError>;
 }
 
-// ── MultipartStore ────────────────────────────────────────────────────────────
-
-/// Narrow persistence port for the multipart upload service.
-///
-/// Contains only the `Store` methods that `MultipartService` invokes.
-/// `Store` implements this trait in `infra/storage/store.rs`.
+/// Persistence port for the multipart upload service.
 #[async_trait]
 pub trait MultipartStore: Send + Sync {
     /// Fetch a file by `(scope, file_id)`, or return `FileNotFound`.
     async fn require_file(&self, scope: &AccessScope, file_id: Uuid) -> Result<File, DomainError>;
 
-    /// Fetch the policy for a given `(policy_scope, scope_owner_id)` within a
-    /// tenant. Returns `None` when none is configured.
+    /// Fetch the policy for `(policy_scope, scope_owner_id)` in a tenant, if any.
     async fn get_policy(
         &self,
         scope: &AccessScope,
@@ -187,9 +197,12 @@ pub trait MultipartStore: Send + Sync {
         file_id: Uuid,
         version_id: Uuid,
         backend_upload_handle: &str,
+        backend_id: &str,
+        backend_path: &str,
         declared_mime: &str,
         declared_size: u64,
         part_size: u64,
+        auto_bind: bool,
         expires_at: OffsetDateTime,
         now: OffsetDateTime,
     ) -> Result<(), DomainError>;
@@ -206,6 +219,8 @@ pub trait MultipartStore: Send + Sync {
         file_id: Uuid,
         version_id: Uuid,
     ) -> Result<Option<FileVersion>, DomainError>;
+
+    async fn get_version_manifest(&self, version_id: Uuid) -> Result<Option<String>, DomainError>;
 
     /// Insert or replace a multipart upload part.
     #[allow(clippy::too_many_arguments)]
@@ -227,17 +242,12 @@ pub trait MultipartStore: Send + Sync {
 
     /// Record a version's size + hash and mark it `available`.
     ///
-    /// `hash_mode`/`part_count`/`manifest` (ADR-0006) let the multipart
-    /// completion persist the `multipart-composite-sha256` discriminator, its
-    /// part count, and the offset-manifest row transactionally with the
-    /// version-row update. `manifest` is `Some` only for
-    /// `multipart-composite-sha256` completions.
+    /// `hash_mode`/`part_count`/`manifest` (ADR-0006) are persisted transactionally with
+    /// the version row; `manifest` is `Some` only for `multipart-composite-sha256`.
+    /// `validated_mime` is the sniffed MIME type stored in place of the declared one.
     ///
-    /// `validated_mime` (P2 remediation item 1.10) is the sniffed/canonical
-    /// MIME type to persist in place of the client's declared type, mirroring
-    /// the single-part `Store::finalize_version`'s `mime_type` parameter —
-    /// `complete_multipart_upload` sniffs the assembled object's leading
-    /// bytes before calling this, so it is always `Some` on that path.
+    /// `auto_bind`, when `Some`, binds in the same transaction under the same CAS as a manual `bind`;
+    /// a lost CAS is reported in `bound`, not an error.
     #[allow(clippy::too_many_arguments)]
     async fn finalize_version(
         &self,
@@ -250,13 +260,47 @@ pub trait MultipartStore: Send + Sync {
         manifest: Option<String>,
         validated_mime: Option<String>,
         audit: AuditEntry,
-    ) -> Result<bool, DomainError>;
+        auto_bind: Option<AutoBindOnFinalize>,
+    ) -> Result<FinalizeVersionOutcome, DomainError>;
 
-    /// Mark a multipart session as `completed` + audit in one transaction.
+    /// Finalize a multipart version AND move its session `completing -> completed` (with snapshot)
+    /// in one transaction with the auto-bind CAS, so a crash cannot leave no snapshot.
+    #[allow(clippy::too_many_arguments)]
+    async fn finalize_multipart_version(
+        &self,
+        file_id: Uuid,
+        manifest: Option<String>,
+        validated_mime: Option<String>,
+        finalize_audit: AuditEntry,
+        auto_bind: Option<AutoBindOnFinalize>,
+        finish: MultipartFinishSnapshot,
+    ) -> Result<FinalizeMultipartOutcome, DomainError>;
+
+    /// Terminal `completing -> completed` + snapshot (`result_json`) + audit in one transaction,
+    /// for the takeover/converge paths. `lease_owner` must still match.
     async fn complete_multipart_upload(
         &self,
         upload_id: Uuid,
+        lease_owner: &str,
+        result_json: &str,
         audit: AuditEntry,
+    ) -> Result<bool, DomainError>;
+
+    /// Acquire (or take over an expired) completion lease with one conditional UPDATE.
+    /// `false` = a live lease exists or the session is terminal.
+    async fn acquire_multipart_complete_lease(
+        &self,
+        upload_id: Uuid,
+        owner: &str,
+        lease_until: OffsetDateTime,
+        now: OffsetDateTime,
+    ) -> Result<bool, DomainError>;
+
+    /// Release a held lease back to `in_progress`, scoped to `owner`.
+    async fn release_multipart_complete_lease(
+        &self,
+        upload_id: Uuid,
+        owner: &str,
     ) -> Result<bool, DomainError>;
 
     /// Mark a multipart session as `aborted` + audit in one transaction.
@@ -273,25 +317,25 @@ pub trait MultipartStore: Send + Sync {
         version_id: Uuid,
         audit: AuditEntry,
     ) -> Result<bool, DomainError>;
+
+    /// Delete an orphan `files` row, re-verifying **in the same transaction** that it has zero
+    /// versions and a `NULL` `content_id`. Returns `true` if removed.
+    async fn delete_orphan_file_with_event(
+        &self,
+        file_id: Uuid,
+        audit: AuditEntry,
+        event: Option<FileEvent>,
+    ) -> Result<bool, DomainError>;
 }
 
-// ── PolicyStore ───────────────────────────────────────────────────────────────
-
-/// Narrow persistence port for the policy administration service.
-///
-/// Contains only the `Store` methods that `PolicyService` invokes.
-/// `Store` implements this trait in `infra/storage/store.rs`.
+/// Persistence port for the policy administration service.
 #[async_trait]
 pub trait PolicyStore: Send + Sync {
-    /// Resolve a `file`-scope retention rule's `scope_target_id` to a `File`
-    /// (needed to re-authorize per-file `WRITE` before create/delete). Mirrors
-    /// the identical method on `MultipartStore` — same underlying
-    /// `Store::require_file`/`FileRepo` lookup, exposed through this narrower
-    /// port too.
+    /// Resolve a `file`-scope rule's `scope_target_id` to a `File`, so per-file
+    /// `WRITE` can be re-authorized.
     async fn require_file(&self, scope: &AccessScope, file_id: Uuid) -> Result<File, DomainError>;
 
-    /// Fetch the raw policy for a given `(policy_scope, scope_owner_id)` within
-    /// a tenant. Returns `None` when none is configured.
+    /// Fetch the raw policy for `(policy_scope, scope_owner_id)` in a tenant, if any.
     async fn get_policy(
         &self,
         scope: &AccessScope,
@@ -319,6 +363,20 @@ pub trait PolicyStore: Send + Sync {
         tenant_id: Uuid,
     ) -> Result<Vec<StoredRetentionRule>, DomainError>;
 
+    /// List retention rules for a tenant, cursor-paginated in either direction. Items are always in
+    /// canonical order (`created_at DESC, rule_id DESC`); `cursor` resumes in the direction it carries.
+    ///
+    /// # Errors
+    /// A cursor error (`domain::pagination`) for a mismatched or malformed
+    /// `cursor`, or the underlying store error.
+    async fn list_retention_rules_page(
+        &self,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        limit: u64,
+        cursor: Option<toolkit_odata::CursorV1>,
+    ) -> Result<toolkit_odata::Page<StoredRetentionRule>, DomainError>;
+
     /// Insert a new retention rule. Returns the assigned `rule_id`.
     async fn insert_retention_rule(
         &self,
@@ -337,9 +395,8 @@ pub trait PolicyStore: Send + Sync {
         rule_id: Uuid,
     ) -> Result<bool, DomainError>;
 
-    /// Fetch a single retention rule by `rule_id`, if it exists. Used by
-    /// `delete_retention_rule` to re-authorize by scope/target before deleting
-    /// (a bare `rule_id` carries no ownership information on its own).
+    /// Fetch a retention rule by `rule_id`; callers use it to re-authorize by
+    /// scope/target (a bare id carries no ownership).
     async fn get_retention_rule(
         &self,
         scope: &AccessScope,
@@ -347,28 +404,13 @@ pub trait PolicyStore: Send + Sync {
     ) -> Result<Option<StoredRetentionRule>, DomainError>;
 }
 
-// ── DataPlanePort ─────────────────────────────────────────────────────────────
-
-/// Narrow control-plane port for the data-plane service.
-///
-/// `DataPlaneService` only needs four control-plane operations:
-/// access to the backend registry (for construction), pre-flight auth,
-/// version look-up, and post-upload finalization. Exposing a focused
-/// trait here (ISP/DIP) lets `data_plane.rs` avoid a direct dependency
-/// on the full `FileService` type, keeping its fan-in off `service.rs`
-/// and reducing `service.rs`'s HK `fan_in`.
-///
-/// `FileService` implements this trait in `domain/service.rs`.
+/// Control-plane operations the data-plane service needs, implemented by `FileService`.
 #[async_trait]
 pub trait DataPlanePort: Send + Sync {
     /// The backend registry shared between the control and data planes.
-    /// Used by `DataPlaneService::new` to clone the registry without
-    /// needing a direct reference to `FileService`.
     fn backends(&self) -> &crate::infra::backend::BackendRegistry;
 
-    /// Authorize a write operation for the given file before bytes are
-    /// persisted. Called as a pre-flight check before the blob is written
-    /// to the backend so a rejected request never touches storage.
+    /// Pre-flight write authorization, so a rejected request never touches storage.
     async fn authorize_write(
         &self,
         ctx: &SecurityContext,
@@ -394,24 +436,10 @@ pub trait DataPlanePort: Send + Sync {
     ) -> Result<(), DomainError>;
 }
 
-// ── FileStorageMetricsPort ──────────────────────────────────────────────────────
-
-/// Metrics port (P2 1.8 remediation — zero metrics/observability).
-///
-/// Follows the platform's established `OTel` `Meter`-method-API pattern (mirrors
-/// `gears/mini-chat/mini-chat/src/domain/ports.rs`'s `MiniChatMetricsPort` /
-/// `infra/metrics.rs`'s `MiniChatMetricsMeter`) rather than the `metrics`-crate
-/// macros. `crate::infra::metrics::FileStorageMetricsMeter` is the sole
-/// OTel-backed implementation, obtained via `opentelemetry::global::meter_with_scope`
-/// once per process — `gear.rs` for the control plane, `bin/sidecar.rs` for the
-/// data plane. `crate::infra::metrics::NoopMetrics` is the default so every
-/// existing `FileService::new` / `MultipartService::new` call site (used
-/// throughout the integration-test suite) keeps compiling unchanged; real
-/// wiring is opted into via `.with_metrics(...)`.
+/// Metrics port. `FileStorageMetricsMeter` is the `OTel`-backed implementation;
+/// `NoopMetrics` is the default, real wiring is opted into via `.with_metrics(...)`.
 pub trait FileStorageMetricsPort: Send + Sync {
-    /// Record a control-plane service-entry-point outcome, e.g.
-    /// `record_operation("create_file", "ok")` / `("bind", "denied")` /
-    /// `("finalize_upload", "error")`.
+    /// Record a control-plane operation outcome, e.g. `("create_file", "ok")`.
     fn record_operation(&self, op: &str, result: &str);
 
     /// Record a storage-backend operation failure (`backend_id`, `op`).
@@ -421,9 +449,7 @@ pub trait FileStorageMetricsPort: Send + Sync {
     /// `"initiate_multipart_upload"`).
     fn record_quota_denied(&self, op: &str);
 
-    /// Record one background cleanup sweep's tallies — mirrors
-    /// `cleanup::SweepResult`'s counters (`idempotency_keys_deleted` landed
-    /// in the P2 1.9 remediation; `abandoned_files_deleted` in P2 2.8).
+    /// Record one cleanup sweep's tallies (mirrors `cleanup::SweepResult`).
     fn record_sweep_result(
         &self,
         abandoned_pending_deleted: u64,
@@ -441,10 +467,7 @@ pub trait FileStorageMetricsPort: Send + Sync {
 
     /// Record one sidecar HTTP request's route/method/status/latency.
     ///
-    /// The control plane's own REST routes already get
-    /// `http.server.request.duration` from the platform's api-gateway
-    /// (`gears/system/api-gateway/src/middleware/http_metrics.rs`, applied to
-    /// every proxied gear route) — this port method is only wired at the
-    /// sidecar, a standalone process the gateway never proxies.
+    /// Only wired at the sidecar; control-plane routes get request metrics from the
+    /// api-gateway.
     fn record_request(&self, route: &str, method: &str, status: u16, latency_ms: f64);
 }

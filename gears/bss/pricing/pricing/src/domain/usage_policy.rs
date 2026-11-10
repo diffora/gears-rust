@@ -1,9 +1,6 @@
 //! Shape and semantic identity of immutable entry policies.
 use super::RuleError;
-use bss_pricing_sdk::{
-    Digest,
-    terms::{AggregationScope, RatingWindow, UsageRatingPolicyInput},
-};
+use bss_pricing_sdk::{Digest, terms::UsageRatingPolicyInput};
 
 /// Validate shape only. The five rating rules have no free text; the meter is the SKU's.
 /// # Errors
@@ -36,13 +33,6 @@ pub fn entry_policy_key(policy: &UsageRatingPolicyInput) -> Digest {
     bss_pricing_sdk::digest::policy_digest(policy)
 }
 
-/// A minimum fee is unsupported on an hourly window and on any resource-scoped policy (D-504).
-#[must_use]
-pub fn refuses_minimum_fee(content: &UsageRatingPolicyInput) -> bool {
-    matches!(content.rating_window, RatingWindow::CalendarHour { .. })
-        || content.aggregation_scope == AggregationScope::Resource
-}
-
 /// Compare the SKU's meter and unit with the provider's answer and the policy fold.
 /// # Errors
 /// `METER_POLICY_MISMATCH` means the answer does not certify this SKU's quantities.
@@ -66,6 +56,7 @@ pub fn validate_meter_policy(
 }
 
 /// A deploy-3 `quantity_semantics` copy, checked against the SKU and the provider, then dropped.
+#[toolkit_macros::domain_model]
 pub struct LegacyQuantity<'a> {
     /// Meter id the client sent.
     pub meter_id: &'a str,
@@ -121,25 +112,5 @@ mod tests {
             fold: Fold::Sum,
         };
         assert!(super::validate_policy_shape(&policy).is_ok());
-    }
-
-    #[test]
-    fn a_resource_scoped_floor_and_an_hourly_fee_are_the_same_refusal() {
-        use bss_pricing_sdk::terms::*;
-        let mut policy = UsageRatingPolicyInput {
-            rating_window: RatingWindow::BillingCycle,
-            aggregation_scope: AggregationScope::SubscriptionLine,
-            reset: Reset::RatingWindowStart,
-            partial_window: PartialWindow::ActualQuantityFullThresholds,
-            fold: Fold::Sum,
-        };
-        assert!(!super::refuses_minimum_fee(&policy));
-        policy.aggregation_scope = AggregationScope::Resource;
-        assert!(super::refuses_minimum_fee(&policy));
-        policy.aggregation_scope = AggregationScope::SubscriptionLine;
-        policy.rating_window = RatingWindow::CalendarHour {
-            timezone: Timezone::Utc,
-        };
-        assert!(super::refuses_minimum_fee(&policy));
     }
 }

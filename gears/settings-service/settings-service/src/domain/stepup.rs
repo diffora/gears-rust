@@ -1,4 +1,3 @@
-// Created: 2026-09-07 by Virtuozzo International GmbH
 //! The step-up verifier port.
 //!
 //! Setting a value on a declaration that requires elevated confirmation needs
@@ -10,6 +9,7 @@
 //! for. A binding that cannot fail is not a binding at all.
 
 use std::time::Duration;
+use toolkit_macros::domain_model;
 
 use async_trait::async_trait;
 use uuid::Uuid;
@@ -19,7 +19,7 @@ use uuid::Uuid;
 /// [`INTERACTIVE_SUBJECT_TYPES`] — and an unlabelled one — is a service
 /// principal for the purposes of step-up: no ceremony a machine performs
 /// proves that a person is present.
-pub const USER_SUBJECT_TYPE: &str = "gts.cf.core.security.subject_user.v1~";
+pub const USER_SUBJECT_TYPE: &str = toolkit_gts::gts_id!("cf.core.security.subject_user.v1~");
 
 /// Subject types that denote an interactive human session.
 ///
@@ -39,6 +39,7 @@ pub const USER_SUBJECT_TYPE: &str = "gts.cf.core.security.subject_user.v1~";
 pub const INTERACTIVE_SUBJECT_TYPES: &[&str] = &[USER_SUBJECT_TYPE, "user"];
 
 /// What a deployment requires of a step-up token.
+#[domain_model]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StepUpRequirement {
     /// How old `auth_time` may be. Deployment-configured and never above five
@@ -58,6 +59,7 @@ impl StepUpRequirement {
 }
 
 /// Why a token does not prove a recent re-authentication.
+#[domain_model]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StepUpRefusal {
     /// No token was presented.
@@ -104,6 +106,7 @@ impl StepUpRefusal {
 }
 
 /// The session the token must confirm.
+#[domain_model]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StepUpSubject {
     /// The platform subject id of the session.

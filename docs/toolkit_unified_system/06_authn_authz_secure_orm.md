@@ -61,7 +61,12 @@ OperationBuilder::get("/users-info/v1/health")
 
 The builder enforces at compile time that every route declares its auth posture before `.register()`:
 - `.authenticated()` marks the route as protected, then requires `.require_license_features::<L>(features)` (or `.no_license_required()`) before registration.
-- `.anonymous()` marks the route as unauthenticated and automatically satisfies the license requirement.
+- `.anonymous()` marks the route as unauthenticated and automatically satisfies the license requirement. Handlers on it receive an anonymous `SecurityContext`, on the gateway and on an out-of-process gear's own listener alike, and a presented bearer is ignored on both: an anonymous operation answers the same whatever bearer is presented. A presented `X-ToolKit-Internal-Token` is still validated there wherever `internal_auth` is configured, and an invalid one gets `401`.
+- `.platform_authenticated()` admits a validated `X-ToolKit-Internal-Token` only, for platform-plane routes that gears in other processes call; a bearer alone gets `401` — on the gear's own listener and through the API Gateway alike. The gateway validates the token with its inbound `internal_auth` authenticator and, with none configured, warns at startup and refuses the route. Its `OpenAPI` operation requires the `internalToken` apiKey scheme, and gateway discovery never publishes it, since the edge strips the internal token. It still requires a license decision. A bearer is never validated on these routes: alone it is dropped and the call gets `401` `MISSING_INTERNAL_TOKEN`. Handlers read the caller with `Extension<PlatformSecurityContext>` only, never a tenant `SecurityContext`, and the gateway's `route_policies` scopes do not apply to platform routes. Listeners install the stack with `toolkit_http_middleware::layer_route_auth`. A plane is per route, never per request: an API offered on both planes gets two route sets on distinct paths (for example `/types-registry/v2/…` for tenants and `/types-registry/v2/platform/…` for platform callers). `#[toolkit::rest_contract]` registers every `PlatformSecurityContext` method with `.platform_authenticated()` and refuses `#[anonymous]` on one.
+
+A listener never serves a plane it cannot check. An `OoP` gear that serves `.authenticated()` operations without a tenant authenticator refuses to start. One that serves `.platform_authenticated()` operations without `oop_http.internal_auth` warns at startup, and each of them answers `401`, as on the gateway: a linked gear's platform route that nobody calls does not stop the process. At request time a tenant or undeclared route on a listener without a tenant authenticator answers `401` `TENANT_AUTH_NOT_CONFIGURED` rather than reaching the handler unauthenticated, and a request no route matches answers `404` without running the router's fallback; such a gear warns at startup that routes not declared through `OperationBuilder` are refused. For development, `oop_http.auth_disabled` mirrors the gateway's `auth_disabled`: without a tenant authenticator, non-platform routes run with the default tenant `SecurityContext`, and platform routes still need a validated internal token. An installed tenant authenticator still wins. A worker advertised at a routable address with `auth_disabled` logs an error at startup, since every tenant's request reaching it runs as the default tenant.
+
+A request carries one plane (ADR-0008). On routes covered by the auth stack of the gateway or an `OoP` listener, a request presenting both an `Authorization` header and an `X-ToolKit-Internal-Token` is refused with `401` `MIXED_CREDENTIALS` before either authenticator runs, whatever the route's declaration and whether either credential is valid. A lone credential of the other plane is dropped unvalidated, header and all: the bearer on a `.platform_authenticated()` route, the internal token on an `.authenticated()` one (and, on a listener, on a route without a declaration). So a tenant handler never sees a `PlatformSecurityContext`, and, when tenant authentication is enabled, an `.authenticated()` call carrying only a token gets `401` `MISSING_BEARER`. `.anonymous()` routes keep a lone credential of either plane.
 
 The API Gateway middleware uses these declarations to decide how to handle each request:
 - **Protected routes**: extract bearer token → call AuthN Resolver → inject `SecurityContext` into request extensions. Returns 401 if token is invalid.
@@ -272,7 +277,7 @@ Available dimension attributes:
 
 ### Standard property auto-mapping
 
-The `Scopable` derive macro maps dimension columns to well-known PEP property names in the `SCOPE_PROPERTIES` table:
+The `Scopable` derive generates one constant, `ScopableEntity::SCOPE: EntityScope<Column>`, with a field per dimension. `EntityScope::resolve_property()` maps the well-known PEP property names onto those fields:
 
 | Dimension attribute | PEP property name | Constant |
 |---------------------|-------------------|----------|
@@ -280,28 +285,23 @@ The `Scopable` derive macro maps dimension columns to well-known PEP property na
 | `resource_col = "id"` | `"id"` | `pep_properties::RESOURCE_ID` |
 | `owner_col = "user_id"` | `"owner_id"` | `pep_properties::OWNER_ID` |
 
-This means if you declare `tenant_col = "tenant_id"`, the macro generates:
+`type_col` has no property name, so no scope can address it. For `tenant_col = "tenant_id", resource_col = "id", no_owner, no_type` the macro generates:
 
 ```rust
-const SCOPE_PROPERTIES: &'static [(&'static str, Self::Column)] = &[
-    ("owner_tenant_id", Column::TenantId),
-    ("id", Column::Id),
-    // ...
-];
-
-// And the other half of the same decision: the dimensions answered `no_*`.
-const UNSCOPED_DIMENSIONS: &'static [&'static str] = &["owner_id"];
+impl ScopableEntity for Entity {
+    const SCOPE: EntityScope<Self::Column> = EntityScope::Scoped(Dimensions {
+        tenant: Some(Column::TenantId),
+        resource: Some(Column::Id),
+        owner: None,
+        type_col: None,
+        custom: &[],
+    });
+}
 ```
 
-That table is the only place the mapping is written. `resolve_property()`, `scope_columns()` and the `tenant_col()` / `resource_col()` / `owner_col()` accessors are all provided by the `ScopeProperties` trait, which reads them back out of it; none of them can be implemented per entity, because `ScopeProperties` is blanket-implemented for every `ScopableEntity` and a second implementation is a coherence error. Before this, the lookup and the column list were separate hand-written methods that could — and did — describe different sets (issue #4726).
+and `#[secure(unrestricted)]` generates `EntityScope::Unrestricted`. `Dimensions` has no `Default`, so a hand-written scope must name every dimension too.
 
-`type_col` is the exception: it gets no table entry, because no property name addresses it, and it stays a method of `ScopableEntity`.
-
-`UNSCOPED_DIMENSIONS` is the table's complement, and it is what makes the rule above enforceable for a hand-written implementation. It names no column, so it is not the duplication #4726 was about; what it records is which of the three dimensions the entity was asked about and answered "no" to. Every one of `owner_tenant_id`, `id` and `owner_id` must appear in exactly one of the two lists, checked by `ScopeProperties::DIMENSIONS_ARE_DECLARED` when the entity is compiled.
-
-The reason it is needed at all is that `tenant_col()` returns `None` both for an entity with no tenant column and for one whose table forgot the row, and the write-side guards — `tenant_id is required` in `secure_insert`, `tenant_id is immutable` in `secure_update` and in the upsert and bulk-update builders — all skip themselves on `None`. Reads fail closed in that situation (`SimpleTenantFilter` emits `WHERE false`), and so do inserts and updates under a tenant-constrained scope, because the unresolvable property fails every constraint. What was left open was every guard that checks an invariant rather than asking the scope, and no runtime check can close it, because at runtime the two cases are the same `None`.
-
-When the PDP returns a constraint like `In("owner_tenant_id", [uuid1, uuid2])`, `SecureConn` calls `resolve_property("owner_tenant_id")`, gets `Column::TenantId`, and generates `WHERE tenant_id IN (uuid1, uuid2)`.
+When the PDP returns a constraint like `In("owner_tenant_id", [uuid1, uuid2])`, `SecureConn` calls `E::SCOPE.resolve_property("owner_tenant_id")`, gets `Column::TenantId`, and generates `WHERE tenant_id IN (uuid1, uuid2)`.
 
 ### Custom properties with `pep_prop`
 
@@ -328,7 +328,7 @@ pub struct Model {
 }
 ```
 
-This adds `("city_id", Column::CityId)` to the generated `SCOPE_PROPERTIES` table.
+This adds `("city_id", Column::CityId)` to the generated `custom` list, so `resolve_property("city_id")` returns `Column::CityId`.
 
 To use the custom property, include it in both `ResourceType.supported_properties` and the PDP policy:
 
@@ -355,7 +355,7 @@ PDP constraint: In("city_id", [uuid]) ← PDP returns constraint on this propert
          ↓
 PEP compiler: ScopeFilter::In("city_id", [uuid]) → AccessScope
          ↓
-SecureConn → build_scope_condition::<E>() → E::resolve_property("city_id")
+SecureConn → build_scope_condition::<E>() → E::SCOPE.resolve_property("city_id")
          ↓
 Column::CityId → WHERE city_id IN (uuid)
 ```

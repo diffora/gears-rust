@@ -1,6 +1,6 @@
 [package]
 name = "cf-api-contracts"
-version = "0.1.0"
+version = "0.1.3"
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
@@ -9,10 +9,13 @@ description = "api-contracts example module — PaymentApi with local and HTTP t
 rust-version.workspace = true
 publish = false
 
+[lib]
+name = "cf_api_contracts"
+
 [features]
 default = []
 # OpenTelemetry in generated clients: W3C traceparent propagation + RED metrics.
-otel = ["api-contracts-sdk/otel"]
+otel = ["toolkit/otel", "api-contracts-sdk/otel"]
 grpc-client = [
     "api-contracts-sdk/grpc-client",
     "toolkit-contract/grpc-client",

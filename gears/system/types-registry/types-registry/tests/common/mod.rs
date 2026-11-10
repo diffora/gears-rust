@@ -4,6 +4,7 @@
 //!
 //! Each test binary uses a subset of these helpers, hence the lint allowances.
 
+pub mod platform_server;
 mod test_stores;
 
 use std::path::{Path, PathBuf};
@@ -151,7 +152,9 @@ where
 {
     use std::time::Duration;
 
-    const DEADLINE: Duration = Duration::from_secs(2);
+    // Generous on purpose: coverage-instrumented builds under full test
+    // parallelism deliver slower, and the wait ends as soon as the value arrives.
+    const DEADLINE: Duration = Duration::from_secs(10);
     const FIRST_BACKOFF: Duration = Duration::from_millis(10);
     const MAX_BACKOFF: Duration = Duration::from_millis(100);
 
@@ -207,6 +210,18 @@ pub fn allow_all() -> AccessScope {
 }
 
 #[must_use]
+/// The caller a test's direct service call is made for: a platform workload, as the local
+/// platform client passes it. P0 reads it nowhere (C2/C6).
+#[allow(
+    dead_code,
+    reason = "not every integration test crate that compiles common uses the shared caller"
+)]
+pub fn caller() -> types_registry::domain::caller::CallerContext<'static> {
+    static CONTEXT: std::sync::LazyLock<toolkit_security::PlatformSecurityContext> =
+        std::sync::LazyLock::new(toolkit_security::PlatformSecurityContext::outbound_marker);
+    types_registry::domain::caller::CallerContext::Platform(&CONTEXT)
+}
+
 pub fn metrics() -> std::sync::Arc<dyn types_registry::domain::ports::metrics::AdmissionMetrics> {
     std::sync::Arc::new(types_registry::domain::ports::metrics::NoopMetrics)
 }

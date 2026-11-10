@@ -54,8 +54,9 @@ const TENANT_B: Uuid = Uuid::from_u128(0xB);
 mod node {
     use super::*;
 
-    #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
+    #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, toolkit_db::secure::Scopable)]
     #[sea_orm(table_name = "pgq_node")]
+    #[secure(tenant_col = "tenant_id", resource_col = "id", no_owner, no_type)]
     pub struct Model {
         #[sea_orm(primary_key, auto_increment = false)]
         pub tenant_id: Uuid,
@@ -68,30 +69,14 @@ mod node {
     pub enum Relation {}
 
     impl ActiveModelBehavior for ActiveModel {}
-
-    impl toolkit_db::secure::ScopableEntity for Entity {
-        const SCOPE_PROPERTIES: &'static [(&'static str, Self::Column)] = &[
-            (
-                toolkit_security::pep_properties::OWNER_TENANT_ID,
-                Column::TenantId,
-            ),
-            (toolkit_security::pep_properties::RESOURCE_ID, Column::Id),
-        ];
-
-        const UNSCOPED_DIMENSIONS: &'static [&'static str] =
-            &[toolkit_security::pep_properties::OWNER_ID];
-
-        fn type_col() -> Option<Column> {
-            None
-        }
-    }
 }
 
 mod edge {
     use super::*;
 
-    #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
+    #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, toolkit_db::secure::Scopable)]
     #[sea_orm(table_name = "pgq_edge")]
+    #[secure(tenant_col = "tenant_id", resource_col = "id", no_owner, no_type)]
     pub struct Model {
         #[sea_orm(primary_key, auto_increment = false)]
         pub tenant_id: Uuid,
@@ -105,23 +90,6 @@ mod edge {
     pub enum Relation {}
 
     impl ActiveModelBehavior for ActiveModel {}
-
-    impl toolkit_db::secure::ScopableEntity for Entity {
-        const SCOPE_PROPERTIES: &'static [(&'static str, Self::Column)] = &[
-            (
-                toolkit_security::pep_properties::OWNER_TENANT_ID,
-                Column::TenantId,
-            ),
-            (toolkit_security::pep_properties::RESOURCE_ID, Column::Id),
-        ];
-
-        const UNSCOPED_DIMENSIONS: &'static [&'static str] =
-            &[toolkit_security::pep_properties::OWNER_ID];
-
-        fn type_col() -> Option<Column> {
-            None
-        }
-    }
 }
 
 struct Kb;
@@ -163,8 +131,9 @@ impl toolkit_db::secure::pgq::EdgeOf<Kb> for edge::Entity {
 mod open_node {
     use super::*;
 
-    #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
+    #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, toolkit_db::secure::Scopable)]
     #[sea_orm(table_name = "pgq_open_node")]
+    #[secure(tenant_col = "tenant_id", resource_col = "id", no_owner, no_type)]
     pub struct Model {
         #[sea_orm(primary_key, auto_increment = false)]
         pub id: i64,
@@ -176,30 +145,14 @@ mod open_node {
     pub enum Relation {}
 
     impl ActiveModelBehavior for ActiveModel {}
-
-    impl toolkit_db::secure::ScopableEntity for Entity {
-        const SCOPE_PROPERTIES: &'static [(&'static str, Self::Column)] = &[
-            (
-                toolkit_security::pep_properties::OWNER_TENANT_ID,
-                Column::TenantId,
-            ),
-            (toolkit_security::pep_properties::RESOURCE_ID, Column::Id),
-        ];
-
-        const UNSCOPED_DIMENSIONS: &'static [&'static str] =
-            &[toolkit_security::pep_properties::OWNER_ID];
-
-        fn type_col() -> Option<Column> {
-            None
-        }
-    }
 }
 
 mod open_edge {
     use super::*;
 
-    #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
+    #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, toolkit_db::secure::Scopable)]
     #[sea_orm(table_name = "pgq_open_edge")]
+    #[secure(tenant_col = "tenant_id", resource_col = "id", no_owner, no_type)]
     pub struct Model {
         #[sea_orm(primary_key, auto_increment = false)]
         pub id: i64,
@@ -212,23 +165,6 @@ mod open_edge {
     pub enum Relation {}
 
     impl ActiveModelBehavior for ActiveModel {}
-
-    impl toolkit_db::secure::ScopableEntity for Entity {
-        const SCOPE_PROPERTIES: &'static [(&'static str, Self::Column)] = &[
-            (
-                toolkit_security::pep_properties::OWNER_TENANT_ID,
-                Column::TenantId,
-            ),
-            (toolkit_security::pep_properties::RESOURCE_ID, Column::Id),
-        ];
-
-        const UNSCOPED_DIMENSIONS: &'static [&'static str] =
-            &[toolkit_security::pep_properties::OWNER_ID];
-
-        fn type_col() -> Option<Column> {
-            None
-        }
-    }
 }
 
 struct OpenKb;
@@ -397,11 +333,11 @@ struct Stand {
     _container: ContainerAsync<Postgres>,
 }
 
-/// Bring up `PostgreSQL` 19, or explain why not.
+/// Bring up `PostgreSQL` 19 beta, or explain why not.
 ///
-/// `None` means skip. While the image is pre-GA that is the default;
-/// `GEARS_TEST_PG_GRAPH_REQUIRED=1` makes an unavailable image a failure, so a
-/// lane that is supposed to cover PG19 cannot pass by skipping.
+/// `None` means skip, the default: the beta tags can disappear from Docker Hub
+/// (gears-rust #5343). `GEARS_TEST_PG_GRAPH_REQUIRED=1` makes an unavailable
+/// image a failure.
 async fn stand() -> Option<Stand> {
     let request = test_containers::postgres_graph()
         .with_env_var("POSTGRES_PASSWORD", "pass")

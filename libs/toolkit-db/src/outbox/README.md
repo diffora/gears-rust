@@ -60,6 +60,13 @@ catalog instead of being rebuilt through default table-name replacement on every
 operation. Dynamic SQL is still built for runtime-cardinality cases such as
 multi-row inserts and `IN (...)` lists.
 
+Queue registration initializes metadata atomically. On PostgreSQL, MySQL and
+MariaDB its transaction uses `READ COMMITTED` so active processors cannot leave
+it reading an old repeatable-read snapshot. This applies only to registration, not to the
+connection's default isolation. When binary logging is enabled on MySQL or
+MariaDB, configure `ROW` or `MIXED`; statement-only logging does not support
+these read-committed writes.
+
 For MySQL, migrations also create `<prefix>_body_id_sequence` and
 `<prefix>_incoming_id_sequence`. Batch enqueue reserves body IDs first and
 incoming IDs second by locking the singleton row with `SELECT ... FOR UPDATE`,
@@ -579,11 +586,11 @@ else is infrastructure noise that will resolve itself.
 ### Worker Overhead
 
 Infrastructure overhead (scheduling, notifiers, semaphores) with no-op actions.
-A backend feature is still required: the bench declares
-`required-features = ["_any-backend"]`, which `sqlite`/`pg`/`mysql` activate.
+The worker runtime lives in `toolkit-taskward`, and so does its bench; it needs
+no database:
 
 ```bash
-cargo bench -p cf-gears-toolkit-db --features sqlite --bench worker_overhead
+cargo bench -p cf-gears-toolkit-taskward --bench worker_overhead
 ```
 
 ### Outbox Throughput
@@ -605,18 +612,18 @@ cargo bench -p cf-gears-toolkit-db --features mysql --bench outbox_throughput --
 ### Makefile Targets
 
 ```bash
-make bench-pg              # PostgreSQL standard
-make bench-pg-longhaul     # PostgreSQL 1M + 10M messages
-make bench-mysql           # MySQL standard
-make bench-sqlite          # SQLite standard
-make bench-db              # All engines
-make bench-db-longhaul     # All engines, long-haul
+make bench-toolkit-db-outbox DB=pg              # PostgreSQL standard
+make bench-toolkit-db-outbox DB=pg LONGHAUL=1   # PostgreSQL 1M + 10M messages
+make bench-toolkit-db-outbox DB=mysql           # MySQL standard
+make bench-toolkit-db-outbox DB=sqlite          # SQLite standard
+make bench-toolkit-db-outbox                    # All engines
+make bench-toolkit-db-outbox LONGHAUL=1         # All engines, long-haul
 ```
 
 ### Resource-Limited Runs
 
 ```bash
 systemd-run --user --scope -p MemoryMax=4G -p CPUQuota=200% \
-  cargo bench -p cf-gears-toolkit-db --features sqlite --bench worker_overhead \
+  cargo bench -p cf-gears-toolkit-taskward --bench worker_overhead \
   -- --warm-up-time 1 --measurement-time 3 --sample-size 10
 ```

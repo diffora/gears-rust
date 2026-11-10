@@ -13,16 +13,18 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use aws_lc_rs::digest::{SHA256, digest as sha256};
 use graph_storage_sdk::models::{EmbeddingSpaceId, NodeSpec, RemainingBudget, TypeRecord};
 use graph_storage_sdk::plugin_api::{
     EmbedRequest, EmbeddingProviderError, EmbeddingProviderV1, EmbeddingState, NodeEmbedding,
 };
 use tokio_util::sync::CancellationToken;
+use toolkit_macros::domain_model;
+use toolkit_security::crypto::hash::Sha256;
 
 use crate::domain::error::DomainError;
 
 /// Whether this deployment can serve vectors at all, and under which epoch.
+#[domain_model]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SpaceState {
     /// Vectors written and read under this epoch.
@@ -34,6 +36,7 @@ pub enum SpaceState {
 }
 
 /// Composes, hashes and embeds. Holds the one active provider.
+#[domain_model]
 pub struct EmbeddingCoordinator {
     provider: Arc<dyn EmbeddingProviderV1>,
     state: SpaceState,
@@ -364,6 +367,7 @@ pub fn declared_paths<'a>(
 /// What a store already holds for a node, in the only terms the decision
 /// below needs. Deliberately not the row: the built-in store keeps a
 /// `PgVector` and the fake a `Vec<f32>`, and neither difference matters here.
+#[domain_model]
 #[derive(Clone, Copy, Debug)]
 pub struct StoredVector<'a> {
     pub has_vector: bool,
@@ -377,6 +381,7 @@ pub struct StoredVector<'a> {
 /// The FR names these states; how a store spells them on its columns is its
 /// own business, but *which* state applies must not be. A check that lives in
 /// one implementation is a check the conformance suite cannot see.
+#[domain_model]
 #[derive(Clone, Debug, PartialEq)]
 pub enum VectorOutcome {
     /// Embedded and current: store this vector under this epoch.
@@ -400,6 +405,7 @@ pub enum VectorOutcome {
 /// What the coordinator decided for one node, as a store receives it: the
 /// per-node decision and the epoch new vectors are stamped with. One value
 /// because neither means anything without the other.
+#[domain_model]
 #[derive(Clone, Copy, Debug)]
 pub struct PlannedVector<'a> {
     pub decided: &'a NodeEmbedding,
@@ -443,7 +449,7 @@ pub fn decide_vector(
 /// between a *preserved* vector and a *stale* one.
 #[must_use]
 pub fn input_hash(input: &str) -> String {
-    hex::encode(sha256(&SHA256, input.as_bytes()))
+    hex::encode(Sha256::digest(input.as_bytes()))
 }
 
 /// Compose what a node embeds from: its name, then the payload values at the

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use sea_orm::{ConnectionTrait, FromQueryResult, Statement, TransactionTrait};
+use sea_orm::{ConnectionTrait, FromQueryResult, Statement};
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
@@ -8,10 +8,10 @@ use super::super::Outbox;
 use super::super::dialect::AllocSql;
 use super::super::prioritizer::SharedPrioritizer;
 use super::super::store::OutboxStore;
-use super::super::taskward::{Directive, WorkerAction};
 use super::super::types::{OutboxError, SequencerConfig};
 use crate::Db;
 use crate::contention::is_retryable_contention;
+use toolkit_taskward::{Directive, WorkerAction};
 
 /// Report emitted by a sequencer execution cycle.
 #[derive(Debug, Clone)]
@@ -86,7 +86,7 @@ impl Sequencer {
                 break;
             }
 
-            let txn = conn.begin().await?;
+            let txn = self.db.begin_tx().await?;
 
             // Try to acquire row lock
             if let Some(lock_sql) = store.lock_partition() {

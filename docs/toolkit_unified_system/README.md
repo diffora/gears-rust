@@ -27,7 +27,9 @@ This folder contains the ToolKit developer documentation, split by topic for foc
 | Quick checklists, templates | `10_checklists_and_templates.md` | |
 | Unit & integration testing (philosophy, patterns, infrastructure) | `12_unit_testing.md` | |
 | E2E testing (philosophy, patterns, infrastructure) | `13_e2e_testing.md` | |
+| DB behavior testing & audit (rules with no exceptions, audit method; choices with a price in TRADEOFFS) | `14_db_behavior_testing.md` | `docs/arch/database/TRADEOFFS.md` |
 | HTTP client (TLS, retries, timeouts, concurrency, OTel tracing, auth hook) | | `docs/adrs/toolkit/0001-toolkit-hyper-tower-http-client.md` |
+| Client circuit breaker (`toolkit-resilience`) | | `docs/adrs/toolkit/0005-toolkit-client-circuit-breaker.md` |
 | AuthN/AuthZ, PolicyEnforcer, PEP enforcement | `06_authn_authz_secure_orm.md` | `docs/arch/authorization/DESIGN.md` |
 | Authentication (inbound JWT/OIDC policies, outbound OAuth2 client-credentials) | | `docs/adrs/toolkit/0002-toolkit-auth-oauth2-client.md` |
 | Which control catches which class of defect (inverse lookup, before merge) | `16_defect_class_to_control_map.md` | |
@@ -62,9 +64,11 @@ This folder contains the ToolKit developer documentation, split by topic for foc
 - `11_database_patterns.md` – DBRunner/SecureTx executors, transactions, repository pattern, database migrations.
 - `12_unit_testing.md` – Philosophy, reliability principles, infrastructure, assert patterns, naming, priority matrix for unit/integration tests.
 - `13_e2e_testing.md` – Philosophy, integration seams concept, pytest infrastructure, test patterns, anti-patterns for E2E tests.
+- `14_db_behavior_testing.md` – DB-behavior testing as a third test layer: rules with no exceptions and the audit method; load- and guarantee-dependent choices are in `docs/arch/database/TRADEOFFS.md`.
 - `16_defect_class_to_control_map.md` – The inverse lookup: given a class of defect (tenant bypass, missing gate, global tables, wire/storage type mismatch, error classification, disclosure, in-process bypass, N+1, write-skew, API completeness, coverage that proves nothing), which control is supposed to catch it. Use it to find the class a defect belongs to, and to check that an applicable class has a control rather than an intention.
 
 ### Related ADRs
 
 - `docs/adrs/toolkit/0001-toolkit-hyper-tower-http-client.md` – **toolkit-http**: Hyper+Tower HTTP client with TLS, retries, timeouts, concurrency limiting, decompression, OTel tracing, and extensible auth layer hook.
 - `docs/adrs/toolkit/0002-toolkit-auth-oauth2-client.md` – **toolkit-auth**: Inbound JWT/OIDC route-level policies and outbound OAuth2 client-credentials flow with automatic token refresh and `Authorization: Bearer` injection.
+- `docs/adrs/toolkit/0005-toolkit-client-circuit-breaker.md` – **toolkit-resilience**: client-side circuit breaker as a tower layer, counted per attempt below retry.

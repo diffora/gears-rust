@@ -10,16 +10,17 @@ use sea_orm::Set;
 use sea_orm::entity::prelude::*;
 use sea_orm_migration::prelude as mig;
 use toolkit_db::migration_runner::run_migrations_for_testing;
-use toolkit_db::secure::{Db, DbConn, ScopableEntity, ScopeError, secure_insert};
+use toolkit_db::secure::{Db, DbConn, ScopeError, secure_insert};
 use toolkit_db::{ConnectOpts, connect_db};
-use toolkit_security::{AccessScope, pep_properties};
+use toolkit_security::AccessScope;
 use uuid::Uuid;
 
 mod tenant_ent {
     use super::*;
 
-    #[derive(Debug, Clone, PartialEq, Eq, DeriveEntityModel)]
+    #[derive(Debug, Clone, PartialEq, Eq, DeriveEntityModel, toolkit_db::secure::Scopable)]
     #[sea_orm(table_name = "tenant_insert_test")]
+    #[secure(tenant_col = "tenant_id", no_resource, no_owner, no_type)]
     pub struct Model {
         #[sea_orm(primary_key)]
         pub id: i64,
@@ -33,25 +34,12 @@ mod tenant_ent {
     impl ActiveModelBehavior for ActiveModel {}
 }
 
-impl ScopableEntity for tenant_ent::Entity {
-    const SCOPE_PROPERTIES: &'static [(&'static str, Self::Column)] = &[(
-        pep_properties::OWNER_TENANT_ID,
-        tenant_ent::Column::TenantId,
-    )];
-
-    const UNSCOPED_DIMENSIONS: &'static [&'static str] =
-        &[pep_properties::RESOURCE_ID, pep_properties::OWNER_ID];
-
-    fn type_col() -> Option<<Self as EntityTrait>::Column> {
-        None
-    }
-}
-
 mod unrestricted_ent {
     use super::*;
 
-    #[derive(Debug, Clone, PartialEq, Eq, DeriveEntityModel)]
+    #[derive(Debug, Clone, PartialEq, Eq, DeriveEntityModel, toolkit_db::secure::Scopable)]
     #[sea_orm(table_name = "unrestricted_insert_test")]
+    #[secure(unrestricted)]
     pub struct Model {
         #[sea_orm(primary_key)]
         pub id: i64,
@@ -62,18 +50,6 @@ mod unrestricted_ent {
     pub enum Relation {}
 
     impl ActiveModelBehavior for ActiveModel {}
-}
-
-impl ScopableEntity for unrestricted_ent::Entity {
-    const IS_UNRESTRICTED: bool = true;
-
-    const SCOPE_PROPERTIES: &'static [(&'static str, Self::Column)] = &[];
-
-    const UNSCOPED_DIMENSIONS: &'static [&'static str] = &[];
-
-    fn type_col() -> Option<<Self as EntityTrait>::Column> {
-        None
-    }
 }
 
 struct CreateSecureInsertTenantValidationTables;

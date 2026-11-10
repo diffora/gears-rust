@@ -21,6 +21,10 @@
 //!   matching the in-process (`api-gateway`) path. The drain guard also catches
 //!   panics so a panic can neither drop the client connection nor leak the
 //!   in-flight counter (which would otherwise stall graceful drain).
+//! - **Request/trace context** — the outermost `trace_context_middleware`
+//!   continues the inbound W3C `traceparent` and scopes the inbound
+//!   `x-request-id` (`toolkit_trace_context::with_request_id`), so the gear's
+//!   span carries the edge id and outbound `toolkit-http` calls forward it.
 //!
 //! The server is driven by [`OopHttpServer`], invoked from the `HostRuntime`
 //! `OoP` path: it binds and serves the probes **before** the gear's `start()`
@@ -49,11 +53,12 @@ use url::Url;
 
 use cf_system_sdks::directory::{DirectoryClient, RegisterInstanceInfo, ServiceEndpoint};
 use toolkit_canonical_errors::CanonicalError;
-use toolkit_http_middleware::{internal_auth_middleware, security_context_middleware};
+use toolkit_http_middleware::{RouteAuthPolicy, TenantPlane, layer_route_auth_with};
 use toolkit_security::{DynBearerAuthenticator, DynInternalAuthenticator};
 
 use super::readiness::ReadinessState;
 use crate::api::canonical_error_middleware;
+use crate::api::operation_builder::OperationSpec;
 
 /// `Retry-After` (seconds) advertised while the gear is draining.
 const DRAIN_RETRY_AFTER_SECONDS: u64 = 5;
@@ -116,6 +121,10 @@ pub struct OopServeOptions {
     /// Platform-plane authenticator; when `Some`, `internal_auth_middleware` is
     /// installed on gear routes (runs before the tenant plane).
     pub internal_authenticator: Option<DynInternalAuthenticator>,
+    /// Development only (`oop_http.auth_disabled`): without a tenant authenticator,
+    /// non-platform routes run with the default tenant `SecurityContext` instead of
+    /// being refused. Platform routes still require a validated platform caller.
+    pub auth_disabled: bool,
     /// Stable addressing labels (k8s `matchLabels` style) advertised with this
     /// instance's directory registration for label-based selection.
     pub labels: BTreeMap<String, String>,
@@ -148,7 +157,26 @@ impl OopServeOptions {
             directory,
             bearer_authenticator: None,
             internal_authenticator: None,
+            auth_disabled: false,
             labels: BTreeMap::new(),
+        }
+    }
+
+    /// Development only: see [`Self::auth_disabled`].
+    #[must_use]
+    pub fn with_auth_disabled(mut self, auth_disabled: bool) -> Self {
+        self.auth_disabled = auth_disabled;
+        self
+    }
+
+    /// The listener's tenant plane: the bearer authenticator when one is installed, else
+    /// [`TenantPlane::Disabled`] under `auth_disabled`, else [`TenantPlane::Absent`].
+    #[must_use]
+    pub fn tenant_plane(&self) -> TenantPlane {
+        match (&self.bearer_authenticator, self.auth_disabled) {
+            (Some(bearer), _) => TenantPlane::Authenticator(bearer.clone()),
+            (None, true) => TenantPlane::Disabled,
+            (None, false) => TenantPlane::Absent,
         }
     }
 
@@ -468,35 +496,67 @@ fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
 // Router assembly
 // ---------------------------------------------------------------------------
 
-/// Apply the framework middleware stack to the composed gear router: auth planes
-/// (when injected), the drain guard, and the canonical-error layer.
-///
-/// Probes are NOT layered here — they live on the outer router (see
-/// [`build_outer_router`]) so they stay unguarded and answerable during startup
-/// and drain.
+/// Before the application group started, serve only platform-plane and
+/// anonymous routes: a tenant-plane route (and an unknown path) replies `503`
+/// rather than run without a tenant authenticator.
+async fn bootstrap_plane_gate(
+    State(policy): State<Arc<RouteAuthPolicy>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let auth = request
+        .extensions()
+        .get::<axum::extract::MatchedPath>()
+        .and_then(|path| policy.resolve(request.method(), path.as_str()));
+    match auth {
+        Some(toolkit_security::RouteAuth::Platform | toolkit_security::RouteAuth::Anonymous) => {
+            next.run(request).await
+        }
+        _ => CanonicalError::service_unavailable()
+            .with_retry_after_seconds(STARTING_RETRY_AFTER_SECONDS)
+            .with_detail("tenant-plane routes are served once the application group has started")
+            .create()
+            .into_response(),
+    }
+}
+
+/// Derive the listener policy from [`OperationSpec::auth`].
+pub(super) fn route_auth_policy<S>(specs: impl IntoIterator<Item = S>) -> RouteAuthPolicy
+where
+    S: std::ops::Deref<Target = OperationSpec>,
+{
+    specs
+        .into_iter()
+        .map(|spec| (spec.method.clone(), spec.path.clone(), spec.auth))
+        .collect()
+}
+
+/// Layer policy, auth, drain guard and canonical errors. Probes stay on
+/// [`build_outer_router`] so they remain available during startup and drain.
 fn layer_gear_router(
     gear_router: Router,
+    route_auth: RouteAuthPolicy,
+    tenant_plane: TenantPlane,
     drain_guard: DrainGuard,
     options: &OopServeOptions,
 ) -> Router {
-    let mut gear = gear_router;
+    // Policy, both auth planes and the platform gate, in the order
+    // `cpt-cf-adr-two-plane-auth` requires. Both planes fail closed: platform routes
+    // without an internal authenticator, tenant and unlisted routes without a bearer
+    // authenticator (unless `auth_disabled`). `check_route_auth` refuses to start
+    // before that can happen for a declared tenant operation.
+    let gear = layer_route_auth_with(
+        gear_router,
+        route_auth,
+        tenant_plane,
+        options.internal_authenticator.clone(),
+    );
+    layer_serving(gear, drain_guard)
+}
 
-    // Auth planes (installed only when injected). Add tenant plane first so it
-    // is *inner* to the platform plane — `internal_auth_middleware` must run
-    // BEFORE `security_context_middleware` (`cpt-cf-adr-two-plane-auth`).
-    if let Some(bearer) = options.bearer_authenticator.clone() {
-        gear = gear.layer(from_fn_with_state(
-            Arc::new(bearer),
-            security_context_middleware::<DynBearerAuthenticator>,
-        ));
-    }
-    if let Some(internal) = options.internal_authenticator.clone() {
-        gear = gear.layer(from_fn_with_state(
-            Arc::new(internal),
-            internal_auth_middleware::<DynInternalAuthenticator>,
-        ));
-    }
-
+/// The layers every served gear router gets outside its auth stack: drain guard,
+/// canonical errors and the trace context.
+fn layer_serving(mut gear: Router, drain_guard: DrainGuard) -> Router {
     // Drain guard sits just inside the canonical-error layer: it rejects new
     // requests while draining and tracks the in-flight count (catching handler
     // panics so the counter can never leak and stall the drain).
@@ -526,23 +586,20 @@ async fn trace_context_middleware(req: Request, next: Next) -> Response {
     use tracing::Instrument as _;
     use tracing::field::Empty;
 
-    // Record the gateway-supplied `x-request-id` (forwarded to this gear, absent
-    // when the gear is reached without the gateway) and the wire `trace_id` /
+    // Record the inbound `x-request-id` — the edge-minted id, forwarded
+    // hop-to-hop by the gateway proxy and by `toolkit-http` clients, absent
+    // when the gear is reached without one — and the wire `trace_id` /
     // `parent.trace_id` on the span, so an OoP gear's log lines join to the
     // gateway access log and the wire trace even with the text console format,
-    // without OTel, or with the log-correlation splice off. The id is the
-    // gateway's; this gear does not mint one.
-    let request_id = req
-        .headers()
-        .get("x-request-id")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("n/a");
+    // without OTel, or with the log-correlation splice off. This gear does not
+    // mint one.
+    let request_id = toolkit_trace_context::extract_request_id(req.headers());
 
     let span = tracing::info_span!(
         "http_request",
         method = %req.method(),
         uri = %req.uri().path(),
-        request_id = %request_id,
+        request_id = %request_id.as_deref().unwrap_or("n/a"),
         trace_id = Empty,
         parent.trace_id = Empty,
     );
@@ -552,7 +609,9 @@ async fn trace_context_middleware(req: Request, next: Next) -> Response {
     // `toolkit_trace_context`; without `otel` it records the ids from the header.
     toolkit_trace_context::set_parent_from_headers(&span, req.headers());
 
-    next.run(req).instrument(span).await
+    // Install the edge request id as the task-local carrier so outbound
+    // `toolkit-http` calls (generated contract clients) forward it.
+    toolkit_trace_context::with_request_id(request_id, next.run(req).instrument(span)).await
 }
 
 // ---------------------------------------------------------------------------
@@ -656,7 +715,33 @@ pub(super) struct OopHttpServer {
     options: OopServeOptions,
     cancel: CancellationToken,
     registration_task: Option<tokio::task::JoinHandle<()>>,
-    serve: tokio::task::JoinHandle<anyhow::Result<()>>,
+    /// The `OpenAPI` document `registration_task` registers, and the channel
+    /// replacing its registration info.
+    presence_openapi: Option<Arc<str>>,
+    presence_updates: Option<tokio::sync::watch::Sender<RegisterInstanceInfo>>,
+    /// Presence of co-hosted provider gears other than `options.gear_name`
+    /// (the system group's, published before the application group), each
+    /// deregistered on [`join`](Self::join) like the root's.
+    provider_presence: Vec<(String, tokio::task::JoinHandle<()>)>,
+    /// Taken by [`join`](Self::join); aborted by `Drop` otherwise.
+    serve: Option<tokio::task::JoinHandle<anyhow::Result<()>>>,
+}
+
+/// Dropped without [`join`](OopHttpServer::join) — the lifecycle future was
+/// dropped — the server closes its listeners and presence instead of
+/// outliving the runtime.
+impl Drop for OopHttpServer {
+    fn drop(&mut self) {
+        if let Some(task) = self.registration_task.take() {
+            task.abort();
+        }
+        for (_, task) in self.provider_presence.drain(..) {
+            task.abort();
+        }
+        if let Some(serve) = self.serve.take() {
+            serve.abort();
+        }
+    }
 }
 
 impl OopHttpServer {
@@ -733,7 +818,10 @@ impl OopHttpServer {
             options,
             cancel,
             registration_task: None,
-            serve,
+            presence_openapi: None,
+            presence_updates: None,
+            provider_presence: Vec::new(),
+            serve: Some(serve),
         })
     }
 
@@ -762,45 +850,177 @@ impl OopHttpServer {
                 "tenant-plane authenticator installed (security_context_middleware enabled)"
             );
         } else {
-            tracing::warn!(
+            tracing::info!(
                 gear = %self.options.gear_name,
-                "no tenant-plane authenticator registered in ClientHub; tenant plane not installed"
+                "no tenant-plane authenticator registered in ClientHub"
             );
         }
     }
 
-    /// Publish the composed gear routes (they go live atomically) and start
-    /// background directory presence + dependency resolution.
+    /// Refuse to serve tenant operations without a bearer authenticator (unless
+    /// `auth_disabled`): a startup error names the cause instead of a listener that
+    /// refuses every tenant request. Without one, a route the policy does not list is
+    /// refused too, which only a warning can flag: the router cannot list its routes.
+    /// Platform operations without an internal authenticator only warn (when layered):
+    /// the platform gate already refuses each request, and a linked gear's platform route
+    /// nobody calls must not stop the process.
     ///
-    /// Presence (registration + heartbeat) and dep resolution start here — only
-    /// once the gear can actually serve — so the directory never advertises a
-    /// not-yet-serving instance.
-    pub(super) fn attach(&mut self, gear_router: Router, openapi_json: String) {
-        let openapi_arc: Arc<str> = Arc::from(openapi_json);
-        let layered = layer_gear_router(gear_router, self.drain_guard.clone(), &self.options);
-        self.late.publish(layered, Arc::clone(&openapi_arc));
+    /// # Errors
+    /// When tenant operations are declared and no tenant authenticator is available.
+    pub(super) fn check_route_auth(&self, route_auth: &RouteAuthPolicy) -> anyhow::Result<()> {
+        if !matches!(self.options.tenant_plane(), TenantPlane::Absent) {
+            return Ok(());
+        }
+        let gear = &self.options.gear_name;
+        let tenant = route_auth.tenant_routes();
+        if !tenant.is_empty() {
+            anyhow::bail!(
+                "gear '{gear}' serves tenant operations but no tenant authenticator is \
+                 available (link authn-resolver, or set oop_http.auth_disabled for \
+                 development): {tenant:?}"
+            );
+        }
+        tracing::warn!(
+            gear = %gear,
+            reason = "TENANT_AUTH_NOT_CONFIGURED",
+            "no tenant authenticator on this listener: a route not declared through \
+             OperationBuilder is refused with 401 (link authn-resolver, or set \
+             oop_http.auth_disabled for development)"
+        );
+        Ok(())
+    }
+
+    /// Serve system platform-plane and anonymous routes before application startup;
+    /// tenant routes and unknown paths return `503` until tenant auth is installed.
+    /// Does not mark startup complete or advertise; see [`start_presence`](Self::start_presence).
+    pub(super) fn publish_bootstrap_routes(
+        &mut self,
+        gear_router: Router,
+        openapi_json: String,
+        route_auth: RouteAuthPolicy,
+    ) {
+        // The outer gate blocks tenant calls. Keep anonymous contexts anonymous,
+        // even with `auth_disabled`; install tenant auth with the final routes.
+        let authenticated = layer_route_auth_with(
+            gear_router,
+            route_auth.clone(),
+            TenantPlane::Absent,
+            self.options.internal_authenticator.clone(),
+        );
+        let gated = authenticated.layer(from_fn_with_state(
+            Arc::new(route_auth),
+            bootstrap_plane_gate,
+        ));
+        let layered = layer_serving(gated, self.drain_guard.clone());
+        self.late.publish(layered, Arc::from(openapi_json));
+        tracing::info!(
+            gear = %self.options.gear_name,
+            "OoP system routes attached (platform plane only)"
+        );
+    }
+
+    /// Atomically publish the composed gear routes (with auth policy) and their
+    /// `OpenAPI` document on the bound listener, replacing the bootstrap
+    /// routes, and mark startup complete.
+    ///
+    /// Dependency resolution runs in the proxy-wiring phase before serving;
+    /// directory presence is started separately by
+    /// [`start_presence`](Self::start_presence).
+    ///
+    /// # Errors
+    /// When the route policy fails [`Self::check_route_auth`]; nothing is published.
+    pub(super) fn attach(
+        &mut self,
+        gear_router: Router,
+        openapi_json: String,
+        route_auth: RouteAuthPolicy,
+    ) -> anyhow::Result<()> {
+        // A declared operation whose plane has no validator would refuse every request;
+        // stop here, before serving, and say why.
+        self.check_route_auth(&route_auth)?;
+        let layered = layer_gear_router(
+            gear_router,
+            route_auth,
+            self.options.tenant_plane(),
+            self.drain_guard.clone(),
+            &self.options,
+        );
+        self.late.publish(layered, Arc::from(openapi_json));
         self.readiness.mark_startup_complete();
         tracing::info!(gear = %self.options.gear_name, "OoP gear routes attached (now serving)");
+        Ok(())
+    }
 
-        // Single directory-presence task: registration + heartbeat + self-heal.
-        // Dependency resolution is handled by the proxy-wiring phase (typed
-        // `#[toolkit::consumes]` clients), which runs before serving.
+    /// Start directory registration, heartbeats and self-heal with the current
+    /// `OpenAPI` document. Later calls register a changed document without
+    /// interrupting heartbeats, so gateway discovery sees the newly served routes.
+    /// An unchanged document is a no-op.
+    pub(super) fn start_presence(&mut self) {
+        let openapi = self.late.openapi();
+        if let Some(updates) = &self.presence_updates {
+            if self.presence_openapi != openapi {
+                updates.send_replace(self.registration_info(openapi.as_ref()));
+                self.presence_openapi = openapi;
+            }
+            return;
+        }
+        let registration_info = self.registration_info(openapi.as_ref());
+        self.presence_openapi = openapi;
+        let (updates, presence) = tokio::sync::watch::channel(registration_info);
+        self.presence_updates = Some(updates);
+        let directory = Arc::clone(&self.options.directory);
+        let heartbeat_interval = self.options.heartbeat_interval;
+        let cancel = self.cancel.clone();
+        self.registration_task = Some(tokio::spawn(async move {
+            super::oop_registration::presence_loop_with_updates(
+                directory,
+                presence,
+                heartbeat_interval,
+                cancel,
+            )
+            .await;
+        }));
+    }
+
+    /// The advertised gear's registration, with `openapi`.
+    fn registration_info(&self, openapi: Option<&Arc<str>>) -> RegisterInstanceInfo {
         let mut registration_info = RegisterInstanceInfo::new(
             self.options.gear_name.clone(),
             self.options.instance_id.clone(),
         )
         .with_rest_endpoint(ServiceEndpoint::new(self.options.advertise_uri.clone()))
-        .with_openapi_spec(openapi_arc.to_string())
         .with_labels(self.options.labels.clone());
+        if let Some(openapi) = openapi {
+            registration_info = registration_info.with_openapi_spec(openapi.to_string());
+        }
         if let Some(version) = self.options.version.clone() {
             registration_info = registration_info.with_version(version);
         }
-        self.registration_task = Some(tokio::spawn(super::oop_registration::presence_loop(
-            Arc::clone(&self.options.directory),
-            registration_info,
-            self.options.heartbeat_interval,
-            self.cancel.clone(),
-        )));
+        registration_info
+    }
+
+    /// Advertise a co-hosted provider at this listener's URL and instance id,
+    /// even while the root starts. Uses normal directory retries and heartbeats.
+    pub(super) fn start_provider_presence(&mut self, gear: String) {
+        if gear == self.options.gear_name
+            || self.provider_presence.iter().any(|(name, _)| *name == gear)
+        {
+            return;
+        }
+        let mut info = RegisterInstanceInfo::new(gear.clone(), self.options.instance_id.clone())
+            .with_rest_endpoint(ServiceEndpoint::new(self.options.advertise_uri.clone()))
+            .with_labels(self.options.labels.clone());
+        if let Some(version) = self.options.version.clone() {
+            info = info.with_version(version);
+        }
+        let directory = Arc::clone(&self.options.directory);
+        let heartbeat_interval = self.options.heartbeat_interval;
+        let cancel = self.cancel.clone();
+        let task = tokio::spawn(async move {
+            super::oop_registration::presence_loop(directory, info, heartbeat_interval, cancel)
+                .await;
+        });
+        self.provider_presence.push((gear, task));
     }
 
     /// Wait for the server to drain on shutdown, then deregister from
@@ -810,13 +1030,29 @@ impl OopHttpServer {
     /// # Errors
     /// Propagates a serve error; deregistration failures are logged only.
     pub(super) async fn join(mut self) -> anyhow::Result<()> {
-        let serve_result = match self.serve.await {
+        // Awaited in place: if this future is dropped, `Drop` still aborts it.
+        let Some(serve) = self.serve.as_mut() else {
+            anyhow::bail!("OoP serve task already joined");
+        };
+        let serve_result = match serve.await {
             Ok(r) => r,
             Err(e) => Err(anyhow::anyhow!("OoP serve task join error: {e}")),
         };
+        self.serve = None;
 
         if let Some(task) = self.registration_task.take() {
             task.abort();
+        }
+        for (gear, task) in std::mem::take(&mut self.provider_presence) {
+            task.abort();
+            if let Err(e) = self
+                .options
+                .directory
+                .deregister_instance(&gear, &self.options.instance_id)
+                .await
+            {
+                tracing::warn!(gear, error = %e, "deregistration from DirectoryService failed on shutdown");
+            }
         }
         if let Err(e) = self
             .options

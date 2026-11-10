@@ -1,9 +1,8 @@
 """Consumer group CRUD scenarios (consumer/groups/1.01-1.09).
 
 Each test creates its own group to avoid cross-test interference.
-``groups/1.08`` (named group JOIN) is xfail: named groups are provisioned via
-the types-registry at startup and the E2E config does not include a pre-seeded
-named group entity.
+``groups/1.08`` (named group JOIN) is xfail: the gear does not implement
+named consumer groups yet, and a JOIN naming one answers 501.
 ``groups/1.09`` (cross-tenant ownership) tests are xfail: the standalone
 config sets ``auth_disabled: true``, so tenant isolation cannot be exercised.
 ``groups/1.06`` validation tests (client_agent length, description encoding)
@@ -41,7 +40,7 @@ async def test_create_anonymous_group_returns_201(api):
 
 
 async def test_create_anonymous_group_no_body_returns_201(api):
-    """scenario: consumer/groups/1.01 — the request body is optional."""
+    """scenario: consumer/groups/1.01 - the request body is optional."""
     async with api() as client:
         resp = await client.post("/consumer-groups")
     assert resp.status_code == 201
@@ -245,8 +244,8 @@ async def test_get_unknown_group_returns_404(api):
 
 @pytest.mark.xfail(
     reason=(
-        "named groups require a types-registry entity; "
-        "no named group is pre-seeded in the E2E standalone config"
+        "named consumer groups are not implemented: a JOIN naming one answers "
+        "501 (domain/local_broker.rs), so seeding one would not make it testable"
     ),
     strict=False,
 )
@@ -255,8 +254,8 @@ async def test_named_group_join_without_create_step(api):
 
     A named consumer group has a well-known GTS identifier registered via
     types_registry at startup.  The consumer JOINs directly without a prior
-    POST /consumer-groups.  This test is xfail because no named group entity is
-    included in the E2E standalone config.
+    POST /consumer-groups.  This test is xfail until the gear implements named
+    groups; JOIN currently answers 501 Not Implemented.
     """
     named_group_id = "gts.cf.core.events.consumer_group.v1~cf.e2e.event_broker.named_group.v1"
     tenant_id = str(uuid.uuid4())
@@ -284,7 +283,7 @@ async def test_cross_tenant_get_anonymous_group_returns_403(api):
 
     Tenant A creates an anonymous group; tenant B's GET on that group must
     return 403, not 200.  In standalone mode auth is disabled so the server
-    returns 200 — hence strict xfail.
+    returns 200 - hence strict xfail.
     """
     async with api() as client:
         create_resp = await client.post("/consumer-groups")
@@ -293,7 +292,7 @@ async def test_cross_tenant_get_anonymous_group_returns_403(api):
 
         # In a real deployment this request would carry a different tenant's
         # bearer token.  Standalone auth is disabled so this is indistinguishable
-        # from the owning tenant — the test is here to document the contract.
+        # from the owning tenant - the test is here to document the contract.
         get_resp = await client.get(f"/consumer-groups/{group_id}")
     assert get_resp.status_code == 403
     body = get_resp.json()

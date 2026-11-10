@@ -1,4 +1,3 @@
-// Created: 2026-09-15 by Virtuozzo International GmbH
 //! The `pending_secrets` table.
 
 use sea_orm::entity::prelude::*;
@@ -33,6 +32,7 @@ pub struct Model {
     pub expires_at: OffsetDateTime,
 }
 
+/// Relations of the `pending_secret` entity (none).
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {}
 

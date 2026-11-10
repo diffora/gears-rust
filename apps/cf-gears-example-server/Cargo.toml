@@ -7,18 +7,25 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 
+[[bin]]
+name = "cf-gears-example-server"
+
 [lints]
 workspace = true
 
 [features]
 default = []
 file-parser = ["dep:file_parser"]
-github-mirror = ["dep:github_mirror"]
+github-mirror = ["dep:github_mirror", "credstore"]
 simple-user-settings = ["dep:simple_user_settings"]
 nodes-registry = ["dep:nodes_registry"]
 resource-group = ["dep:resource_group"]
 grpc-hub = ["dep:grpc_hub"]
 oagw = ["dep:api_egress"]
+# OAGW with the cluster gear in the same process (plus grpc-hub, which cluster
+# requires), needed on a database for the proxy configuration cache (ADR-0020);
+# `oagw` alone runs OAGW in memory only.
+oagw-embedded = ["oagw", "api_egress/cluster", "dep:cluster", "grpc-hub"]
 credstore = ["dep:credstore"]
 graph-storage = ["dep:graph-storage"]
 settings-service = ["dep:settings_service", "credstore"]
@@ -54,12 +61,33 @@ bss-ledger = ["dep:bss_ledger"]
 usage-collector = ["dep:usage_collector"]
 timescaledb-usage-collector = ["dep:timescaledb_usage_collector_plugin"]
 clickhouse-usage-collector = ["dep:clickhouse_usage_collector_plugin"]
+# Quota Enforcement gear, its storage plugin, and the platform cluster gear it
+# elects its sweepers on (with grpc-hub, which cluster requires). Opt-in.
+quota-enforcement = [
+    "dep:quota_enforcement",
+    "dep:quota_enforcement_storage_plugin",
+    "dep:cluster",
+    "grpc-hub",
+]
 # Content-based file type detection in file-parser (see that crate's `magika`
 # feature doc comment for what it pulls in).
 magika = ["file_parser/magika"]
 bss-products = ["dep:bss_products"]
+# Orders requires the Event Broker gear (D-200) and the plugins its standalone deployment
+# resolves: the standalone cluster cache and the SQLite event-log backend.
+# Orders E2E/development hosts only; ordinary bss-orders builds do not enable this.
+bss-orders-test-authz = ["bss-orders", "dep:bss-orders-test-authz-plugin"]
+bss-orders = [
+    "dep:bss_orders",
+    "dep:event_broker",
+    "dep:standalone-cluster-plugin",
+    "dep:sqlite-event-broker-plugin",
+]
 bss-pricing = ["dep:bss_pricing", "bss-products"]
 bss-approvals = ["dep:bss_approvals"]
+# The admission gate links its default engine plugin, policy-engine.
+admission-control = ["dep:admission-control", "policy-engine"]
+policy-engine = ["dep:policy-engine"]
 
 [dependencies]
 mimalloc = { workspace = true }
@@ -130,11 +158,26 @@ bss_rate_provider_http_json_plugin = { package = "cf-gears-bss-rate-provider-htt
 usage_collector = { package = "cf-gears-usage-collector", path = "../../gears/system/usage-collector/usage-collector", optional = true }
 timescaledb_usage_collector_plugin = { package = "cf-gears-timescaledb-usage-collector-plugin", path = "../../gears/system/usage-collector/plugins/timescaledb-usage-collector-plugin", optional = true }
 clickhouse_usage_collector_plugin = { package = "cf-gears-clickhouse-usage-collector-plugin", path = "../../gears/system/usage-collector/plugins/clickhouse-usage-collector-plugin", optional = true }
+# Optional Quota Enforcement gear + its plugins
+quota_enforcement = { package = "cf-gears-quota-enforcement", path = "../../gears/system/quota-enforcement/quota-enforcement", optional = true }
+quota_enforcement_storage_plugin = { package = "cf-gears-quota-enforcement-storage-plugin", path = "../../gears/system/quota-enforcement/plugins/quota-enforcement-storage-plugin", optional = true }
+cluster = { package = "cf-gears-cluster", path = "../../gears/system/cluster/cluster", optional = true }
 
 # Optional BSS Plan & Price Modeling gear
 bss_pricing = { package = "cf-gears-bss-pricing", path = "../../gears/bss/pricing/pricing", optional = true }
 bss_products = { package = "cf-gears-bss-products", path = "../../gears/bss/products/products", optional = true }
+bss_orders = { package = "cf-gears-bss-orders", path = "../../gears/bss/orders/orders", optional = true }
+bss-orders-test-authz-plugin = { package = "cf-gears-bss-orders-test-authz-plugin", path = "../../gears/bss/orders/test-authz-plugin", optional = true }
+event_broker = { package = "cf-gears-event-broker", path = "../../gears/system/event-broker/event-broker", optional = true }
+standalone-cluster-plugin = { package = "cf-gears-standalone-cluster-plugin", path = "../../gears/system/cluster/plugins/standalone-cluster-plugin", optional = true }
+sqlite-event-broker-plugin = { package = "cf-gears-sqlite-event-broker-plugin", path = "../../gears/system/event-broker/plugins/sqlite-event-broker-plugin", optional = true }
 bss_approvals = { package = "cf-gears-bss-approvals", path = "../../gears/bss/approvals/approvals", optional = true }
+
+# Optional Admission Control gear
+admission-control = { package = "cf-gears-admission-control", path = "../../gears/system/admission-control/admission-control", optional = true }
+
+# Optional Policy Engine gear (an admission-control engine plugin)
+policy-engine = { package = "cf-gears-policy-engine", path = "../../gears/system/policy-engine/policy-engine", optional = true }
 
 # Optional example module
 users-info = { path = "../../examples/toolkit/users-info/users-info", optional = true }

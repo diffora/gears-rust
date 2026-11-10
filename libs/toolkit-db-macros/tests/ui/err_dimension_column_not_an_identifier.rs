@@ -2,17 +2,11 @@
 // a macro panic.
 //
 // The `pep_prop` fixture next to this one covers the custom properties. The
-// four dimensions reach `syn::Ident::new` the same way, through
-// `generate_col_impl` and `generate_scope_properties`, and used to abort
+// four dimensions used to reach `syn::Ident::new` the same way and abort
 // expansion with a bare `proc macro panicked` and no span.
 
 use toolkit_db_macros::Scopable;
 
 #[derive(Scopable)]
-#[secure(
-    tenant_col = "2fa_id",
-    resource_col = "id",
-    no_owner,
-    no_type
-)]
+#[secure(tenant_col = "2fa_id", resource_col = "id", no_owner, no_type)]
 struct Model;

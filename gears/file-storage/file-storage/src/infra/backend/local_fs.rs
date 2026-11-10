@@ -1,20 +1,14 @@
-//! Local filesystem storage backend
-//! (`cpt-cf-file-storage-fr-backend-abstraction`).
+//! Local filesystem storage backend.
 //!
-//! Blobs are stored at `<root>/<sanitized-path>`. The opaque path
-//! (`/{file_id}/{version_id}`) is sanitized to prevent traversal outside root.
+//! Blobs live at `<root>/<sanitized-path>`; the opaque path is sanitized to prevent traversal
+//! outside root.
 //!
-//! `put` never writes directly to the target path. Instead it: (1) writes the
-//! bytes to a sibling temp file (`<target>.tmp.<uuid>`) in the same directory
-//! as `target`, so the final rename below is on the same filesystem; (2)
-//! fsyncs the temp file's data + metadata before the handle is dropped; (3)
-//! atomically renames the temp file onto `target` (a same-filesystem POSIX
-//! rename never exposes a torn/partial file to a concurrent reader); (4)
-//! best-effort fsyncs the parent directory so the rename's directory entry
-//! itself is durable (needed on some filesystems, e.g. ext4/xfs, to survive a
-//! crash). Step (4) is best-effort: if directory fsync is unsupported or
-//! fails, a warning is logged and `put` still returns `Ok`, since the blob
-//! itself is already durably in place after the rename.
+//! Writes never touch the target directly: bytes go to a sibling temp file
+//! (`<target>.tmp.<uuid>`, same filesystem), which is fsynced and then atomically renamed
+//! onto the target, so readers never see a partial file. The parent directory is then fsynced
+//! best-effort (needed on ext4/xfs for the rename to survive a crash); if that fails, a
+//! warning is logged and the write still succeeds. `publish_exclusive` is the same but publishes
+//! with `hard_link`, which fails if the target exists.
 
 use std::path::{Path, PathBuf};
 
@@ -29,13 +23,39 @@ use uuid::Uuid;
 use crate::domain::error::DomainError;
 use crate::infra::content::hash;
 
-use super::{BackendCapabilities, StorageBackend};
+use super::{BackendCapabilities, PublishOutcome, StorageBackend};
+
+/// Creates a probe file in `root`, hard-links it to a sibling name and removes both; the probe
+/// files never outlive the call. Runs in its own task, so cancelling the waiting future (a
+/// `/readyz` timeout) cannot skip the cleanup.
+async fn probe_hard_links(root: &Path) -> Result<(), String> {
+    let src = LocalFsBackend::tmp_path_for(&root.join(".hardlink-probe"));
+    let dst = LocalFsBackend::tmp_path_for(&root.join(".hardlink-probe-link"));
+    tokio::spawn(async move {
+        let result = match tokio::fs::write(&src, b"probe").await {
+            Err(e) => Err(format!("cannot write a probe file in storage root: {e}")),
+            Ok(()) => tokio::fs::hard_link(&src, &dst).await.map_err(|e| {
+                format!(
+                    "storage root does not support hard links, required for exclusive publish: {e}"
+                )
+            }),
+        };
+        drop(tokio::fs::remove_file(&dst).await);
+        drop(tokio::fs::remove_file(&src).await);
+        result
+    })
+    .await
+    .unwrap_or_else(|e| Err(format!("hard-link probe task failed: {e}")))
+}
 
 /// Filesystem-backed blob store rooted at a configured directory.
 pub struct LocalFsBackend {
     id: String,
     root: PathBuf,
     fsync_parent_dir: bool,
+    /// Set once the hard-link self-test of `root` succeeded (see `is_ready`); failures are not
+    /// remembered.
+    hard_links_ok: tokio::sync::OnceCell<()>,
 }
 
 impl LocalFsBackend {
@@ -45,19 +65,19 @@ impl LocalFsBackend {
             id: id.into(),
             root: root.into(),
             fsync_parent_dir: true,
+            hard_links_ok: tokio::sync::OnceCell::new(),
         }
     }
 
-    /// Enable/disable the best-effort parent-directory fsync performed after
-    /// each successful `put`'s rename. Defaults to `true`.
+    /// Enable/disable the best-effort parent-directory fsync after rename (default `true`).
     #[must_use]
     pub fn with_fsync_parent_dir(mut self, enabled: bool) -> Self {
         self.fsync_parent_dir = enabled;
         self
     }
 
-    /// Map an opaque backend path to a concrete file path under `root`, rejecting
-    /// any component that could escape the root (`..`, absolute, etc.).
+    /// Map an opaque backend path to a file path under `root`, rejecting components that
+    /// could escape it (`..`, `.`, backslashes).
     fn resolve(&self, path: &str) -> Result<PathBuf, DomainError> {
         let mut out = self.root.clone();
         for comp in path.split('/').filter(|c| !c.is_empty()) {
@@ -66,61 +86,51 @@ impl LocalFsBackend {
             }
             out.push(comp);
         }
-        // The resolved path must still be under root.
         if !out.starts_with(&self.root) {
             return Err(DomainError::backend(&self.id, "path escapes backend root"));
         }
         Ok(out)
     }
 
-    fn io_err(&self, e: impl std::fmt::Display) -> DomainError {
-        DomainError::backend(&self.id, e.to_string())
+    /// Transient I/O kinds are `BackendUnavailable`, the rest `Backend` (see `classify_io_error`).
+    pub(super) fn io_err(&self, e: &std::io::Error) -> DomainError {
+        super::classify_io_error(&self.id, e)
     }
 
-    /// Best-effort directory fsync: opening a directory for read and calling
-    /// `sync_all` flushes its directory-entry metadata (e.g. a rename) to
-    /// durable storage on platforms/filesystems that support it.
+    /// Best-effort directory fsync (flushes directory entries such as a rename).
     async fn fsync_dir(&self, dir: &std::path::Path) -> std::io::Result<()> {
         let dir_handle = tokio::fs::File::open(dir).await?;
         dir_handle.sync_all().await
     }
 
-    /// Resolve `path` to its target file, ensuring the parent directory
-    /// exists. Shared setup step for both `put` (whole-buffer write) and
-    /// `put_stream` (chunked write) — both write into a sibling temp file
-    /// under the same parent before converging on `publish_tmp`.
+    /// Resolve `path` to its target file and create the parent directory.
     async fn prepare_target(&self, path: &str) -> Result<(PathBuf, Option<PathBuf>), DomainError> {
         let target = self.resolve(path)?;
         let parent = target.parent().map(Path::to_path_buf);
         if let Some(parent) = &parent {
             tokio::fs::create_dir_all(parent)
                 .await
-                .map_err(|e| self.io_err(e))?;
+                .map_err(|e| self.io_err(&e))?;
         }
         Ok((target, parent))
     }
 
-    /// A sibling temp-file path for `target`, unique per call.
+    /// A unique sibling temp-file path for `target`.
     fn tmp_path_for(target: &Path) -> PathBuf {
         PathBuf::from(format!("{}.tmp.{}", target.display(), Uuid::now_v7()))
     }
 
-    /// Atomically publish an already-written-and-fsynced temp file at
-    /// `target`: rename it into place, then best-effort fsync the parent
-    /// directory so the rename's directory entry is durable. Shared tail of
-    /// `put` and `put_stream` — see module docs for the full durability
-    /// rationale.
+    /// Rename a written and fsynced temp file onto `target`, then fsync the parent
+    /// best-effort (see module docs).
     async fn publish_tmp(
         &self,
         tmp: &Path,
         target: &Path,
         parent: Option<&Path>,
     ) -> Result<(), DomainError> {
-        // Atomic same-filesystem replace: a concurrent reader either sees the
-        // old file or the fully-written new one, never a torn mix.
         tokio::fs::rename(tmp, target)
             .await
-            .map_err(|e| self.io_err(e))?;
+            .map_err(|e| self.io_err(&e))?;
 
         if self.fsync_parent_dir
             && let Some(parent) = parent
@@ -135,11 +145,49 @@ impl LocalFsBackend {
         Ok(())
     }
 
-    /// Stream `stream`'s chunks into `tmp`, hashing incrementally and
-    /// aborting (without waiting for the rest of the stream) the moment the
-    /// running byte count exceeds `max_size`. Returns `(bytes_written,
-    /// digest)` on success. Caller is responsible for cleaning up `tmp` on
-    /// error and for the final `sync_all`/rename/parent-fsync sequence.
+    /// Hard-link `tmp` at `target` **iff `target` does not exist**: `link(2)` atomically fails with
+    /// `AlreadyExists`, unlike `rename`. On success `tmp` is removed and the parent fsynced best-effort.
+    ///
+    /// `Ok(true)` = this call created `target`; `Ok(false)` = it already existed (caller removes `tmp`).
+    async fn publish_tmp_exclusive(
+        &self,
+        tmp: &Path,
+        target: &Path,
+        parent: Option<&Path>,
+    ) -> Result<bool, DomainError> {
+        match tokio::fs::hard_link(tmp, target).await {
+            Ok(()) => {
+                self.finish_exclusive_publish(tmp, parent).await;
+                Ok(true)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+            Err(e) => Err(self.io_err(&e)),
+        }
+    }
+
+    /// Best-effort tail of a hard-link publish: remove `tmp` and fsync the parent; failures are logged.
+    async fn finish_exclusive_publish(&self, tmp: &Path, parent: Option<&Path>) {
+        // A failure leaves a harmless extra link, cleaned up like any stray `*.tmp.*`.
+        if let Err(e) = tokio::fs::remove_file(tmp).await {
+            tracing::warn!(
+                error = ?e,
+                "failed to remove temp file's directory entry after hard-link publish"
+            );
+        }
+
+        if self.fsync_parent_dir
+            && let Some(parent) = parent
+            && let Err(e) = self.fsync_dir(parent).await
+        {
+            tracing::warn!(
+                error = ?e,
+                "parent-dir fsync failed or unsupported by this filesystem, continuing"
+            );
+        }
+    }
+
+    /// Stream chunks into `tmp`, hashing incrementally and aborting as soon as the byte count
+    /// exceeds `max_size`. The caller removes `tmp` on error and publishes it on success.
     async fn write_stream_to_tmp(
         &self,
         tmp: &Path,
@@ -148,17 +196,17 @@ impl LocalFsBackend {
     ) -> Result<(u64, [u8; 32]), DomainError> {
         let mut file = tokio::fs::File::create(tmp)
             .await
-            .map_err(|e| self.io_err(e))?;
+            .map_err(|e| self.io_err(&e))?;
         let mut hasher = hash::Hasher::new();
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|e| self.io_err(e))?;
-            file.write_all(&chunk).await.map_err(|e| self.io_err(e))?;
+            let chunk = chunk.map_err(|e| self.io_err(&e))?;
+            file.write_all(&chunk).await.map_err(|e| self.io_err(&e))?;
             hasher.update(&chunk);
             if max_size.is_some_and(|m| hasher.len() > m) {
                 return Err(DomainError::validation("size", "exceeds max_size"));
             }
         }
-        file.sync_all().await.map_err(|e| self.io_err(e))?;
+        file.sync_all().await.map_err(|e| self.io_err(&e))?;
         let bytes_written = hasher.len();
         let digest = hash::digest_to_array(hasher.finalize());
         Ok((bytes_written, digest))
@@ -174,7 +222,6 @@ impl StorageBackend for LocalFsBackend {
     fn capabilities(&self) -> BackendCapabilities {
         BackendCapabilities {
             range_native: true,
-            // Local filesystem writes survive process restarts.
             durable: true,
             ..BackendCapabilities::default()
         }
@@ -184,18 +231,17 @@ impl StorageBackend for LocalFsBackend {
         let (target, parent) = self.prepare_target(path).await?;
         let tmp = Self::tmp_path_for(&target);
 
-        // Write + fsync the temp file before it is ever visible at `target`.
         let write_result = async {
             let mut file = tokio::fs::File::create(&tmp)
                 .await
-                .map_err(|e| self.io_err(e))?;
-            file.write_all(&bytes).await.map_err(|e| self.io_err(e))?;
-            file.sync_all().await.map_err(|e| self.io_err(e))
+                .map_err(|e| self.io_err(&e))?;
+            file.write_all(&bytes).await.map_err(|e| self.io_err(&e))?;
+            file.sync_all().await.map_err(|e| self.io_err(&e))
         }
         .await;
 
         if let Err(e) = write_result {
-            // Best-effort cleanup: never leave an orphaned `*.tmp.*` behind.
+            // Best-effort cleanup of the temp file.
             drop(tokio::fs::remove_file(&tmp).await);
             return Err(e);
         }
@@ -203,14 +249,8 @@ impl StorageBackend for LocalFsBackend {
         self.publish_tmp(&tmp, &target, parent.as_deref()).await
     }
 
-    /// Stream a blob into `path` without ever buffering the whole body in
-    /// memory: chunks are written + hashed as they arrive, and the running
-    /// byte count is checked against `max_size` after every chunk so an
-    /// oversized upload is aborted mid-stream (the moment the limit is
-    /// crossed) rather than after the full body has been received. The
-    /// partial temp file is removed on any failure path (oversized, I/O
-    /// error, or a stream error), exactly like `put`'s cleanup-on-failure
-    /// behavior.
+    /// Writes and hashes chunks as they arrive without buffering the body; an oversized
+    /// upload is aborted mid-stream. The partial temp file is removed on any failure.
     async fn put_stream(
         &self,
         path: &str,
@@ -225,8 +265,7 @@ impl StorageBackend for LocalFsBackend {
         let (bytes_written, digest) = match write_result {
             Ok(v) => v,
             Err(e) => {
-                // Best-effort cleanup: never leave a partial `*.tmp.*` behind,
-                // whether the failure was an oversized stream or an I/O error.
+                // Best-effort cleanup of the partial temp file.
                 drop(tokio::fs::remove_file(&tmp).await);
                 return Err(e);
             }
@@ -236,18 +275,49 @@ impl StorageBackend for LocalFsBackend {
         Ok((bytes_written, digest))
     }
 
+    /// Like `put_stream`, but publishes via `publish_tmp_exclusive`.
+    async fn publish_exclusive(
+        &self,
+        path: &str,
+        stream: BoxStream<'_, std::io::Result<Bytes>>,
+        max_size: Option<u64>,
+    ) -> Result<PublishOutcome, DomainError> {
+        let (target, parent) = self.prepare_target(path).await?;
+        let tmp = Self::tmp_path_for(&target);
+
+        let write_result = self.write_stream_to_tmp(&tmp, stream, max_size).await;
+        let (bytes_written, digest) = match write_result {
+            Ok(v) => v,
+            Err(e) => {
+                drop(tokio::fs::remove_file(&tmp).await);
+                return Err(e);
+            }
+        };
+
+        let created = self
+            .publish_tmp_exclusive(&tmp, &target, parent.as_deref())
+            .await;
+        // Not published (target existed and is untouched, or the link failed): drop this attempt's temp file.
+        if !matches!(created, Ok(true)) {
+            drop(tokio::fs::remove_file(&tmp).await);
+        }
+        Ok(PublishOutcome {
+            bytes_written,
+            digest,
+            created: created?,
+        })
+    }
+
     async fn get(&self, path: &str) -> Result<Bytes, DomainError> {
         let target = self.resolve(path)?;
-        let data = tokio::fs::read(&target).await.map_err(|e| self.io_err(e))?;
+        let data = tokio::fs::read(&target)
+            .await
+            .map_err(|e| self.io_err(&e))?;
         Ok(Bytes::from(data))
     }
 
-    /// Stream the blob at `path` from disk in fixed-size chunks via manual
-    /// `AsyncReadExt` reads, so a read-back (e.g. finalize's) never
-    /// materializes more than one chunk of the file in memory regardless of
-    /// its size. This crate does not otherwise depend on `tokio-util`, so
-    /// this deliberately avoids `ReaderStream` rather than pulling in a new
-    /// dependency for a single call site.
+    /// Streams the file in fixed-size chunks, so at most one chunk is in memory. Manual
+    /// reads avoid pulling in `tokio-util` for `ReaderStream`.
     async fn get_stream(
         &self,
         path: &str,
@@ -257,11 +327,9 @@ impl StorageBackend for LocalFsBackend {
         let target = self.resolve(path)?;
         let file = tokio::fs::File::open(&target)
             .await
-            .map_err(|e| self.io_err(e))?;
+            .map_err(|e| self.io_err(&e))?;
 
-        // `state` is `None` once a read has errored or the file is exhausted,
-        // so the stream terminates cleanly rather than re-polling a file
-        // handle that already reported an error.
+        // `state` is `None` after an error or EOF so the stream ends instead of re-polling.
         let stream = futures::stream::unfold(Some(file), |state| async move {
             let mut file = state?;
             let mut buf = vec![0u8; CHUNK_SIZE];
@@ -277,41 +345,37 @@ impl StorageBackend for LocalFsBackend {
         Ok(Box::pin(stream))
     }
 
-    /// Native range read: seek to the requested offset and read only the
-    /// requested bytes, never materializing the whole blob.
+    /// Seeks to the offset and reads only the requested bytes.
     async fn get_range(&self, path: &str, range: ByteRange) -> Result<Bytes, DomainError> {
         let target = self.resolve(path)?;
         let mut file = tokio::fs::File::open(&target)
             .await
-            .map_err(|e| self.io_err(e))?;
-        let total = file.metadata().await.map_err(|e| self.io_err(e))?.len();
+            .map_err(|e| self.io_err(&e))?;
+        let total = file.metadata().await.map_err(|e| self.io_err(&e))?.len();
         let Some((start, end)) = range.resolve(total) else {
             return Err(DomainError::validation("range", "unsatisfiable byte range"));
         };
-        // `resolve` yields an inclusive end; clamp defensively against `total`.
+        // `resolve` yields an inclusive end; clamp defensively.
         let end = end.min(total.saturating_sub(1));
-        // Fail cleanly on an oversized range instead of asking the allocator for
-        // `usize::MAX` (which would turn it into an OOM/panic path).
+        // Reject an oversized range rather than risk an OOM allocation.
         let len = usize::try_from(end - start + 1)
             .map_err(|_| DomainError::validation("range", "requested byte range is too large"))?;
         file.seek(std::io::SeekFrom::Start(start))
             .await
-            .map_err(|e| self.io_err(e))?;
+            .map_err(|e| self.io_err(&e))?;
         let mut buf = vec![0u8; len];
         file.read_exact(&mut buf)
             .await
-            .map_err(|e| self.io_err(e))?;
+            .map_err(|e| self.io_err(&e))?;
         Ok(Bytes::from(buf))
     }
 
-    /// Cheap stat: reads only the file's metadata, never its content, so
-    /// range-aware callers (P2 1.11) can resolve a `Range` request without
-    /// paying for a full read first.
+    /// Reads only the file's metadata.
     async fn size(&self, path: &str) -> Result<u64, DomainError> {
         let target = self.resolve(path)?;
         let meta = tokio::fs::metadata(&target)
             .await
-            .map_err(|e| self.io_err(e))?;
+            .map_err(|e| self.io_err(&e))?;
         Ok(meta.len())
     }
 
@@ -321,7 +385,7 @@ impl StorageBackend for LocalFsBackend {
             Ok(()) => Ok(()),
             // Idempotent: a missing blob is a successful delete.
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(self.io_err(e)),
+            Err(e) => Err(self.io_err(&e)),
         }
     }
 
@@ -332,23 +396,17 @@ impl StorageBackend for LocalFsBackend {
         match tokio::fs::metadata(&target).await {
             Ok(_) => Ok(true),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(e) => Err(self.io_err(e)),
+            Err(e) => Err(self.io_err(&e)),
         }
     }
 
-    /// Walk the root directory recursively and return all file paths as
-    /// backend-relative paths in the form `"/{component}/{component}"`.
-    ///
-    /// Non-existent root (fresh install with no uploads yet) returns an empty
-    /// vec rather than an error.
-    ///
-    /// @cpt-cf-file-storage-fr-orphan-reconciliation
+    /// Walks `root` recursively, returning backend-relative paths (`"/{a}/{b}"`).
+    /// A missing root (no uploads yet) yields an empty list.
     async fn list_paths(&self) -> Result<Vec<String>, DomainError> {
-        // If the root does not exist yet (no blobs written), return empty.
         match tokio::fs::metadata(&self.root).await {
             Ok(_) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
-            Err(e) => return Err(self.io_err(e)),
+            Err(e) => return Err(self.io_err(&e)),
         }
 
         let mut paths = Vec::new();
@@ -357,14 +415,13 @@ impl StorageBackend for LocalFsBackend {
         while let Some(dir) = stack.pop() {
             let mut entries = tokio::fs::read_dir(&dir)
                 .await
-                .map_err(|e| self.io_err(e))?;
+                .map_err(|e| self.io_err(&e))?;
 
-            while let Some(entry) = entries.next_entry().await.map_err(|e| self.io_err(e))? {
-                let ft = entry.file_type().await.map_err(|e| self.io_err(e))?;
+            while let Some(entry) = entries.next_entry().await.map_err(|e| self.io_err(&e))? {
+                let ft = entry.file_type().await.map_err(|e| self.io_err(&e))?;
                 if ft.is_dir() {
                     stack.push(entry.path());
                 } else if ft.is_file() {
-                    // Strip the root prefix and convert OS separator to '/'.
                     let abs = entry.path();
                     if let Ok(rel) = abs.strip_prefix(&self.root) {
                         let rel_str = rel.to_string_lossy().replace('\\', "/");
@@ -377,17 +434,19 @@ impl StorageBackend for LocalFsBackend {
         Ok(paths)
     }
 
-    /// Readiness probe: confirms `root` exists and is a directory. Catches
-    /// an unmounted volume or a misconfigured root before a real request
-    /// tries to read/write through it. Never touches file content.
+    /// Readiness probe: `root` exists and is a directory (catches an unmounted volume) and supports
+    /// hard links, which `publish_exclusive` requires (a success is cached for the process).
     async fn is_ready(&self) -> Result<(), DomainError> {
         let meta = tokio::fs::metadata(&self.root)
             .await
-            .map_err(|e| self.io_err(e))?;
-        if meta.is_dir() {
-            Ok(())
-        } else {
-            Err(DomainError::backend(&self.id, "root is not a directory"))
+            .map_err(|e| self.io_err(&e))?;
+        if !meta.is_dir() {
+            return Err(DomainError::backend(&self.id, "root is not a directory"));
         }
+        self.hard_links_ok
+            .get_or_try_init(|| probe_hard_links(&self.root))
+            .await
+            .map_err(|m| DomainError::backend(&self.id, m))?;
+        Ok(())
     }
 }

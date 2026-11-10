@@ -1,4 +1,3 @@
-// Created: 2026-08-13 by Virtuozzo International GmbH
 //! Category operations.
 //!
 //! Generic over the repository rather than holding a trait object: the
@@ -8,9 +7,10 @@
 //! every operation below can run in a transaction when its caller needs one.
 
 use toolkit_db::secure::DBRunner;
+use toolkit_macros::domain_model;
 use toolkit_security::SecurityContext;
 
-use crate::audit::{AuditOperation, AuditRecord, AuditSink, AuditValue, ImageClass};
+use crate::audit::{ActorTenant, AuditOperation, AuditRecord, AuditSink, AuditValue, ImageClass};
 use toolkit_security::AccessScope;
 use uuid::Uuid;
 
@@ -24,6 +24,7 @@ use crate::domain::precondition::{self, ETag};
 /// The two always travel together — an audit record needs both, and splitting
 /// them across parameters invites a call site that supplies one and forgets the
 /// other.
+#[domain_model]
 #[derive(Clone, Copy)]
 pub struct Actor<'a> {
     /// The authenticated caller.
@@ -49,9 +50,30 @@ fn snapshot(category: &Category) -> serde_json::Value {
 }
 
 /// Category create, read, update and delete.
+#[domain_model]
 pub struct CategoryService<R, S> {
     repo: R,
     sink: S,
+}
+
+/// The refusal for a category that declarations still reference, shared by the
+/// advisory check and the foreign-key path so both word the count alike.
+fn still_referenced(count: u64) -> DomainError {
+    DomainError::Conflict {
+        detail: format!("the category still has {count} declaration(s) referencing it"),
+    }
+}
+
+/// The refusal a delete answers once the best-effort recount is in.
+///
+/// The `409` is the floor: a recount that finds nothing, or failed (`None`),
+/// leaves the original refusal as it was. An enrichment must never turn a
+/// correct refusal into a `500`.
+pub(crate) fn refusal_with_count(original: DomainError, count: Option<u64>) -> DomainError {
+    match count {
+        Some(n) if n > 0 => still_referenced(n),
+        _ => original,
+    }
 }
 
 impl<R: CategoryRepository, S: AuditSink> CategoryService<R, S> {
@@ -89,6 +111,7 @@ impl<R: CategoryRepository, S: AuditSink> CategoryService<R, S> {
             key.as_str(),
             None,
             actor.ctx.subject_id().to_string(),
+            ActorTenant::of(actor.ctx.subject_tenant_id()),
             operation,
             actor.request_id,
         );
@@ -167,7 +190,7 @@ impl<R: CategoryRepository, S: AuditSink> CategoryService<R, S> {
         conn: &C,
         scope: &AccessScope,
         query: &toolkit_odata::ODataQuery,
-    ) -> Result<toolkit_odata::Page<Category>, DomainError> {
+    ) -> Result<crate::domain::odata::Listing<Category>, DomainError> {
         crate::domain::odata::reject_unsupported_options(query, "categories")?;
         crate::domain::odata::reject_unsortable::<crate::domain::odata::CategoryOrderField>(
             query,
@@ -279,12 +302,29 @@ impl<R: CategoryRepository, S: AuditSink> CategoryService<R, S> {
         Ok(updated)
     }
 
+    /// How many declarations reference the category, retired ones included.
+    ///
+    /// For a caller that wants the number after a refused delete, on a
+    /// connection that is not the refused transaction.
+    ///
+    /// # Errors
+    /// [`DomainError::Internal`] / [`DomainError::Unavailable`] as the
+    /// repository reports them.
+    pub async fn blocking_declarations<C: DBRunner>(
+        &self,
+        conn: &C,
+        id: Uuid,
+    ) -> Result<u64, DomainError> {
+        self.repo.count_referencing_declarations(conn, id).await
+    }
+
     /// Delete a category, guarded by `If-Match` and the no-orphan rule.
     ///
     /// # Errors
     /// [`DomainError::PreconditionRequired`] / [`DomainError::PreconditionFailed`]
     /// as for [`Self::update`], [`DomainError::NotFound`] when not visible, and
     /// [`DomainError::Conflict`] while any declaration still references it.
+    // @cpt-dod:cpt-cf-settings-service-dod-category-management-no-orphan:p1
     pub async fn delete<C: DBRunner>(
         &self,
         conn: &C,
@@ -323,15 +363,14 @@ impl<R: CategoryRepository, S: AuditSink> CategoryService<R, S> {
         // the category first is told how much is in the way, not merely that
         // something is.
         if referencing > 0 {
-            return Err(DomainError::Conflict {
-                detail: format!(
-                    "the category still has {referencing} declaration(s) referencing it"
-                ),
-            });
+            return Err(still_referenced(referencing));
         }
         // @cpt-end:cpt-cf-settings-service-algo-category-management-no-orphan-guard:p1:inst-cat-orphan-3
         // @cpt-end:cpt-cf-settings-service-flow-category-management-delete:p1:inst-cat-delete-9
 
+        // Nothing may follow a refused delete on this connection: PostgreSQL
+        // aborts the transaction on a failed statement, so the foreign-key
+        // refusal goes out as it is and the caller counts after the rollback.
         self.repo
             .delete(conn, scope, id, current.updated_at)
             .await?;

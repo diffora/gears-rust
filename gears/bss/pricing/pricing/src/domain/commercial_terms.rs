@@ -1,12 +1,13 @@
 //! Pure supported-sale profile. The caller supplies independently resolved selected bindings.
 use super::{RuleError, book, money, usage_policy};
 use bss_pricing_sdk::{
+    Digest,
     acceptance::{CommercialReason as R, NewSaleQuery, Term},
-    digest::{billing_terms_digest, money_digest, policy_digest, template_digest},
+    digest::{billing_terms_digest, money_digest, policy_digest, template_digest, terms_digest},
+    numeric,
     read::{AcceptedBinding, ChargeKind, PriceModel},
     terms::{BillingAnchor, BillingCycle, RatingWindow, Rounding, TermsSource},
 };
-use rust_decimal::Decimal;
 use std::collections::BTreeSet;
 use time::{Month, Time, UtcOffset};
 
@@ -23,12 +24,19 @@ pub struct SaleObservation {
     pub sku_active: bool,
     pub sku_sellable: bool,
     pub covered: bool,
+    /// The revision's book sells on the acceptance day and on the sale's start day (D-524).
+    pub book_valid: bool,
 }
 /// Validate live new-sale eligibility; provider errors never become these booleans.
 /// # Errors
-/// `NotSellable` for ineligible revision/SKU facts, `ResolutionChanged` for coverage loss.
+/// `NotSellable` for ineligible revision, book or SKU facts, `ResolutionChanged` for coverage loss.
 pub fn validate_new_sale_observation(o: &SaleObservation) -> Result<(), RuleError> {
-    if !o.revision_is_current || !o.revision_available || !o.sku_active || !o.sku_sellable {
+    if !o.revision_is_current
+        || !o.revision_available
+        || !o.book_valid
+        || !o.sku_active
+        || !o.sku_sellable
+    {
         return Err(R::NotSellable.into());
     }
     if !o.covered {
@@ -45,7 +53,7 @@ pub fn validate_commercial_terms(
     q: &NewSaleQuery,
     bindings: &[AcceptedBinding],
 ) -> Result<(), RuleError> {
-    if q.quantity <= Decimal::ZERO {
+    if bss_pricing_sdk::numeric::validate_positive_quantity(q.quantity).is_err() {
         return Err(R::InvalidQuantity.into());
     }
     if matches!(q.term, Term::FixedPeriods { count: 0 }) {
@@ -69,6 +77,10 @@ pub fn validate_commercial_terms(
     }
     validate_billing_terms(q)?;
     validate_selections(q, bindings)?;
+    // The shape only, never the current currency table: every binding's price currency must
+    // equal the market's (`validate_binding`), and each price took its currency from a book the
+    // table knew when the price was written. An issued quote then replays whatever the table
+    // says later.
     if !book::currency_code(&q.market.currency) {
         return Err(R::CurrencyMismatch.into());
     }
@@ -81,6 +93,28 @@ pub fn validate_commercial_terms(
     }
     for b in bindings {
         validate_binding(q, b)?;
+    }
+    Ok(())
+}
+/// Validate an issued receipt as stored: its frozen query and bindings as
+/// [`validate_commercial_terms`] does, then its terms digest recomputed from that content. Each
+/// price is checked at its own stored currency spec, never the current currency table's, so a
+/// receipt replays whatever the table says later; a stored field edited without its digest is
+/// refused.
+///
+/// The receipt was checked when it was issued, so any refusal here means the stored row is
+/// corrupt. Fulfilment answers it as a corrupt row (a logged 500), never as a client error.
+/// # Errors
+/// The first refusal of [`validate_commercial_terms`], then `ACCEPTANCE_MISMATCH` when the stored
+/// content no longer hashes to `issued_terms_digest`.
+pub fn validate_stored_terms(
+    q: &NewSaleQuery,
+    bindings: &[AcceptedBinding],
+    issued_terms_digest: &Digest,
+) -> Result<(), RuleError> {
+    validate_commercial_terms(q, bindings)?;
+    if terms_digest(q, bindings) != *issued_terms_digest {
+        return Err(R::AcceptanceMismatch.into());
     }
     Ok(())
 }
@@ -134,7 +168,7 @@ fn validate_binding(q: &NewSaleQuery, b: &AcceptedBinding) -> Result<(), RuleErr
     if b.price_book_entry_id.is_nil() || b.price_book_entry_id != b.price.price_book_entry_id {
         return Err(R::BindingEntryMismatch.into());
     }
-    if b.price.currency != q.market.currency {
+    if b.price.currency.code() != q.market.currency {
         return Err(R::CurrencyMismatch.into());
     }
     if b.dimension_key
@@ -203,9 +237,6 @@ fn validate_model_and_policy(q: &NewSaleQuery, b: &AcceptedBinding) -> Result<()
                 return Err(R::MeterPolicyMismatch.into());
             }
             let hourly = matches!(p.content.rating_window, RatingWindow::CalendarHour { .. });
-            if b.price.minimum_fee.is_some() && usage_policy::refuses_minimum_fee(&p.content) {
-                return Err(R::UnsupportedTerms.into());
-            }
             let at = q.billing_terms.anchor_at.to_offset(UtcOffset::UTC);
             if hourly
                 && q.billing_terms.anchor == BillingAnchor::SubscriptionStart
@@ -217,12 +248,30 @@ fn validate_model_and_policy(q: &NewSaleQuery, b: &AcceptedBinding) -> Result<()
     }
     Ok(())
 }
+/// The price's money at its own stored currency spec. The spec itself is valid by type: a stored
+/// receipt whose currency or scale `CurrencySpec` refuses does not decode. Every value must
+/// satisfy the pricing profile, the minimum fee must be a multiple of the increment of that
+/// scale, and the money digest must match the content, scale included.
 fn validate_money(b: &AcceptedBinding) -> Result<(), RuleError> {
     match &b.price.model {
         PriceModel::Flat { amount }
         | PriceModel::PerUnit {
             unit_amount: amount,
-        } if *amount < Decimal::ZERO => return Err(R::InvalidMoney.into()),
+        } => {
+            if numeric::validate_rate(*amount).is_err() {
+                return Err(R::InvalidMoney.into());
+            }
+        }
+        PriceModel::Package {
+            package_size,
+            package_price,
+        } => {
+            if numeric::validate_positive_quantity(*package_size).is_err()
+                || numeric::validate_rate(*package_price).is_err()
+            {
+                return Err(R::InvalidMoney.into());
+            }
+        }
         PriceModel::Volume { tiers } | PriceModel::Graduated { tiers } => {
             let tiers: Vec<_> = tiers
                 .iter()
@@ -235,9 +284,11 @@ fn validate_money(b: &AcceptedBinding) -> Result<(), RuleError> {
                 return Err(R::InvalidTiers.into());
             }
         }
-        _ => {}
     }
-    if b.price.minimum_fee.is_some_and(|v| v < Decimal::ZERO) {
+    if b.price
+        .minimum_fee
+        .is_some_and(|fee| numeric::validate_minimum_fee(fee, &b.price.currency).is_err())
+    {
         return Err(R::InvalidMoney.into());
     }
     if money_digest(&b.price) != b.price.money_digest {
@@ -263,9 +314,9 @@ fn validate_invoice(b: &AcceptedBinding) -> Result<(), RuleError> {
     {
         return Err(R::IncompleteCommercialInputs.into());
     }
-    if b.invoice.currency_scale != book::minor_digits(&b.price.currency)
-        || b.invoice.rounding != Rounding::HalfEven
-    {
+    // The line rounds half even at the price's own stored scale; the invoice has no scale of its
+    // own to disagree with it.
+    if b.invoice.rounding != Rounding::HalfEven {
         return Err(R::UnsupportedTerms.into());
     }
     if template_digest(&b.invoice.template) != b.invoice.template_digest {

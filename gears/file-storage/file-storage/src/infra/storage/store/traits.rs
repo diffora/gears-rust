@@ -1,8 +1,5 @@
-//! Trait implementations: [`CleanupStore`], [`MultipartStore`], [`PolicyStore`].
-//!
-//! Each impl is a thin delegation to the `Store` inherent methods defined in
-//! the sibling files. This file exists purely to separate the boilerplate from
-//! the intent-method implementations.
+//! Trait impls (`CleanupStore`, `MultipartStore`, `PolicyStore`): thin delegations to the
+//! `Store` inherent methods.
 
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -91,8 +88,8 @@ impl CleanupStore for Store {
         Store::get_file(self, &toolkit_security::AccessScope::allow_all(), file_id).await
     }
 
-    async fn has_in_progress_multipart_for_file(&self, file_id: Uuid) -> Result<bool, DomainError> {
-        Store::has_in_progress_multipart_for_file(self, file_id).await
+    async fn has_active_multipart_for_file(&self, file_id: Uuid) -> Result<bool, DomainError> {
+        Store::has_active_multipart_for_file(self, file_id).await
     }
 
     async fn delete_file_with_event(
@@ -169,9 +166,12 @@ impl MultipartStore for Store {
         file_id: Uuid,
         version_id: Uuid,
         backend_upload_handle: &str,
+        backend_id: &str,
+        backend_path: &str,
         declared_mime: &str,
         declared_size: u64,
         part_size: u64,
+        auto_bind: bool,
         expires_at: OffsetDateTime,
         now: OffsetDateTime,
     ) -> Result<(), DomainError> {
@@ -181,9 +181,12 @@ impl MultipartStore for Store {
             file_id,
             version_id,
             backend_upload_handle,
+            backend_id,
+            backend_path,
             declared_mime,
             declared_size,
             part_size,
+            auto_bind,
             expires_at,
             now,
         )
@@ -203,6 +206,10 @@ impl MultipartStore for Store {
         version_id: Uuid,
     ) -> Result<Option<FileVersion>, DomainError> {
         Store::get_version(self, file_id, version_id).await
+    }
+
+    async fn get_version_manifest(&self, version_id: Uuid) -> Result<Option<String>, DomainError> {
+        Store::get_version_manifest(self, version_id).await
     }
 
     async fn upsert_multipart_part(
@@ -245,11 +252,9 @@ impl MultipartStore for Store {
         manifest: Option<String>,
         validated_mime: Option<String>,
         audit: crate::domain::audit::AuditEntry,
-    ) -> Result<bool, DomainError> {
-        // `validated_mime` is the sniffed/canonical type computed by
-        // `complete_multipart_upload` from the assembled object's leading
-        // bytes (P2 remediation item 1.10) — persisted in place of the
-        // client's declared type, mirroring the single-part finalize paths.
+        auto_bind: Option<crate::domain::ports::AutoBindOnFinalize>,
+    ) -> Result<crate::domain::ports::FinalizeVersionOutcome, DomainError> {
+        // Persist the sniffed `validated_mime` in place of the declared type.
         Store::finalize_version(
             self,
             file_id,
@@ -261,6 +266,29 @@ impl MultipartStore for Store {
             manifest,
             validated_mime,
             audit,
+            auto_bind,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn finalize_multipart_version(
+        &self,
+        file_id: Uuid,
+        manifest: Option<String>,
+        validated_mime: Option<String>,
+        finalize_audit: crate::domain::audit::AuditEntry,
+        auto_bind: Option<crate::domain::ports::AutoBindOnFinalize>,
+        finish: crate::domain::ports::MultipartFinishSnapshot,
+    ) -> Result<crate::domain::ports::FinalizeMultipartOutcome, DomainError> {
+        Store::finalize_multipart_version(
+            self,
+            file_id,
+            manifest,
+            validated_mime,
+            finalize_audit,
+            auto_bind,
+            finish,
         )
         .await
     }
@@ -268,9 +296,29 @@ impl MultipartStore for Store {
     async fn complete_multipart_upload(
         &self,
         upload_id: Uuid,
+        lease_owner: &str,
+        result_json: &str,
         audit: crate::domain::audit::AuditEntry,
     ) -> Result<bool, DomainError> {
-        Store::complete_multipart_upload(self, upload_id, audit).await
+        Store::complete_multipart_upload(self, upload_id, lease_owner, result_json, audit).await
+    }
+
+    async fn acquire_multipart_complete_lease(
+        &self,
+        upload_id: Uuid,
+        owner: &str,
+        lease_until: OffsetDateTime,
+        now: OffsetDateTime,
+    ) -> Result<bool, DomainError> {
+        Store::acquire_multipart_complete_lease(self, upload_id, owner, lease_until, now).await
+    }
+
+    async fn release_multipart_complete_lease(
+        &self,
+        upload_id: Uuid,
+        owner: &str,
+    ) -> Result<bool, DomainError> {
+        Store::release_multipart_complete_lease(self, upload_id, owner).await
     }
 
     async fn abort_multipart_upload(
@@ -288,6 +336,15 @@ impl MultipartStore for Store {
         audit: crate::domain::audit::AuditEntry,
     ) -> Result<bool, DomainError> {
         Store::delete_version(self, file_id, version_id, audit).await
+    }
+
+    async fn delete_orphan_file_with_event(
+        &self,
+        file_id: Uuid,
+        audit: crate::domain::audit::AuditEntry,
+        event: Option<crate::domain::audit::FileEvent>,
+    ) -> Result<bool, DomainError> {
+        Store::delete_orphan_file_with_event(self, file_id, audit, event).await
     }
 }
 
@@ -338,6 +395,16 @@ impl crate::domain::ports::PolicyStore for Store {
         tenant_id: Uuid,
     ) -> Result<Vec<crate::domain::policy::StoredRetentionRule>, DomainError> {
         Store::list_retention_rules(self, scope, tenant_id).await
+    }
+
+    async fn list_retention_rules_page(
+        &self,
+        scope: &toolkit_security::AccessScope,
+        tenant_id: Uuid,
+        limit: u64,
+        cursor: Option<toolkit_odata::CursorV1>,
+    ) -> Result<toolkit_odata::Page<crate::domain::policy::StoredRetentionRule>, DomainError> {
+        Store::list_retention_rules_page(self, scope, tenant_id, limit, cursor).await
     }
 
     async fn insert_retention_rule(

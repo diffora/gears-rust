@@ -6,14 +6,15 @@
 //! be scoped is refused, and a label cannot be shared.
 
 use super::pgq::{Endpoint, GraphDeclaration, PropertyGraph, VertexOf};
-use crate::secure::{ScopeError, ScopeProperties};
+use crate::secure::{ScopableEntity, ScopeError};
 
 /// A vertex with the usual tenant/resource dimensions.
 mod node {
     use sea_orm::entity::prelude::*;
 
-    #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
+    #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, toolkit_db::secure::Scopable)]
     #[sea_orm(table_name = "graph_node")]
+    #[secure(tenant_col = "tenant_id", resource_col = "id", no_owner, no_type)]
     pub struct Model {
         #[sea_orm(primary_key, auto_increment = false)]
         pub tenant_id: Uuid,
@@ -26,34 +27,15 @@ mod node {
     pub enum Relation {}
 
     impl ActiveModelBehavior for ActiveModel {}
-
-    impl crate::secure::ScopableEntity for Entity {
-        const SCOPE_PROPERTIES: &'static [(&'static str, Self::Column)] = &[
-            (
-                toolkit_security::access_scope::pep_properties::OWNER_TENANT_ID,
-                Column::TenantId,
-            ),
-            (
-                toolkit_security::access_scope::pep_properties::RESOURCE_ID,
-                Column::Id,
-            ),
-        ];
-
-        const UNSCOPED_DIMENSIONS: &'static [&'static str] =
-            &[toolkit_security::pep_properties::OWNER_ID];
-
-        fn type_col() -> Option<Column> {
-            None
-        }
-    }
 }
 
 /// An edge that carries a tenant, as a secure graph element must.
 mod edge {
     use sea_orm::entity::prelude::*;
 
-    #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
+    #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, toolkit_db::secure::Scopable)]
     #[sea_orm(table_name = "graph_edge")]
+    #[secure(tenant_col = "tenant_id", resource_col = "id", no_owner, no_type)]
     pub struct Model {
         #[sea_orm(primary_key, auto_increment = false)]
         pub tenant_id: Uuid,
@@ -67,26 +49,6 @@ mod edge {
     pub enum Relation {}
 
     impl ActiveModelBehavior for ActiveModel {}
-
-    impl crate::secure::ScopableEntity for Entity {
-        const SCOPE_PROPERTIES: &'static [(&'static str, Self::Column)] = &[
-            (
-                toolkit_security::access_scope::pep_properties::OWNER_TENANT_ID,
-                Column::TenantId,
-            ),
-            (
-                toolkit_security::access_scope::pep_properties::RESOURCE_ID,
-                Column::Id,
-            ),
-        ];
-
-        const UNSCOPED_DIMENSIONS: &'static [&'static str] =
-            &[toolkit_security::pep_properties::OWNER_ID];
-
-        fn type_col() -> Option<Column> {
-            None
-        }
-    }
 }
 
 /// A vertex whose scope columns are **not** all key columns. Without one of
@@ -95,8 +57,14 @@ mod edge {
 mod owned {
     use sea_orm::entity::prelude::*;
 
-    #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
+    #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, toolkit_db::secure::Scopable)]
     #[sea_orm(table_name = "owned_thing")]
+    #[secure(
+        tenant_col = "tenant_id",
+        resource_col = "id",
+        owner_col = "owner_id",
+        no_type
+    )]
     pub struct Model {
         #[sea_orm(primary_key, auto_increment = false)]
         pub id: i64,
@@ -108,73 +76,6 @@ mod owned {
     pub enum Relation {}
 
     impl ActiveModelBehavior for ActiveModel {}
-
-    impl crate::secure::ScopableEntity for Entity {
-        const SCOPE_PROPERTIES: &'static [(&'static str, Self::Column)] = &[
-            (
-                toolkit_security::access_scope::pep_properties::OWNER_TENANT_ID,
-                Column::TenantId,
-            ),
-            (
-                toolkit_security::access_scope::pep_properties::RESOURCE_ID,
-                Column::Id,
-            ),
-            (
-                toolkit_security::access_scope::pep_properties::OWNER_ID,
-                Column::OwnerId,
-            ),
-        ];
-
-        const UNSCOPED_DIMENSIONS: &'static [&'static str] = &[];
-
-        fn type_col() -> Option<Column> {
-            None
-        }
-    }
-}
-
-/// Two property names for one column — an entity where an extra authorization
-/// property is another way to ask about the tenant. The column appears twice in
-/// `scope_columns()` by design (see the trait's documentation), which is what
-/// makes this the fixture that can observe the declaration deduplicating.
-mod aliased {
-    use sea_orm::entity::prelude::*;
-
-    #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
-    #[sea_orm(table_name = "aliased_thing")]
-    pub struct Model {
-        #[sea_orm(primary_key, auto_increment = false)]
-        pub tenant_id: Uuid,
-        #[sea_orm(primary_key, auto_increment = false)]
-        pub id: i64,
-    }
-
-    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-    pub enum Relation {}
-
-    impl ActiveModelBehavior for ActiveModel {}
-
-    impl crate::secure::ScopableEntity for Entity {
-        const SCOPE_PROPERTIES: &'static [(&'static str, Self::Column)] = &[
-            (
-                toolkit_security::access_scope::pep_properties::OWNER_TENANT_ID,
-                Column::TenantId,
-            ),
-            // A second name for the same column.
-            ("home_tenant_id", Column::TenantId),
-            (
-                toolkit_security::access_scope::pep_properties::RESOURCE_ID,
-                Column::Id,
-            ),
-        ];
-
-        const UNSCOPED_DIMENSIONS: &'static [&'static str] =
-            &[toolkit_security::pep_properties::OWNER_ID];
-
-        fn type_col() -> Option<Column> {
-            None
-        }
-    }
 }
 
 /// A closure table, shaped exactly like the platform's real ones: a pair of
@@ -183,8 +84,9 @@ mod aliased {
 mod closure {
     use sea_orm::entity::prelude::*;
 
-    #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
+    #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, toolkit_db::secure::Scopable)]
     #[sea_orm(table_name = "tenant_closure")]
+    #[secure(no_tenant, no_resource, no_owner, no_type)]
     pub struct Model {
         #[sea_orm(primary_key, auto_increment = false)]
         pub ancestor_id: Uuid,
@@ -196,20 +98,6 @@ mod closure {
     pub enum Relation {}
 
     impl ActiveModelBehavior for ActiveModel {}
-
-    impl crate::secure::ScopableEntity for Entity {
-        const SCOPE_PROPERTIES: &'static [(&'static str, Self::Column)] = &[];
-
-        const UNSCOPED_DIMENSIONS: &'static [&'static str] = &[
-            toolkit_security::pep_properties::OWNER_TENANT_ID,
-            toolkit_security::pep_properties::RESOURCE_ID,
-            toolkit_security::pep_properties::OWNER_ID,
-        ];
-
-        fn type_col() -> Option<Column> {
-            None
-        }
-    }
 }
 
 struct Kb;
@@ -288,54 +176,6 @@ fn a_scope_column_outside_the_key_still_reaches_the_properties_list() {
     assert!(
         props.contains(&"owner_id".to_owned()),
         "the owner column must be filterable inside a pattern: {props:?}"
-    );
-}
-
-/// A column two properties both name reaches `PROPERTIES` **once**.
-///
-/// `scope_columns()` reports it per table entry, so the declaration is the one
-/// place that has to collapse the repeat, and `CREATE PROPERTY GRAPH` is where
-/// a repeat would be wrong: a column listed twice in one element's
-/// `PROPERTIES` is a DDL `PostgreSQL` rejects. The trait's own test covers the
-/// table and the list; this one covers the consumer, so removing the guard in
-/// `GraphDeclaration::element` fails a test rather than only contradicting a
-/// doc comment.
-#[test]
-fn a_column_two_properties_name_reaches_properties_once() {
-    struct Aliased;
-    impl PropertyGraph for Aliased {
-        const GRAPH_NAME: &'static str = "aliased";
-        fn declaration() -> Result<GraphDeclaration, ScopeError> {
-            GraphDeclaration::new::<Self>().vertex::<Self, aliased::Entity>(&["tenant_id", "id"])
-        }
-    }
-    impl VertexOf<Aliased> for aliased::Entity {
-        const LABEL: &'static str = "aliased";
-    }
-
-    // The list the declaration is built from does carry the repeat.
-    let listed: Vec<&str> = <aliased::Entity as ScopeProperties>::scope_columns()
-        .iter()
-        .map(sea_orm::IdenStatic::as_str)
-        .collect();
-    assert_eq!(
-        listed,
-        vec!["tenant_id", "tenant_id", "id"],
-        "the fixture must actually repeat a column, or this test proves nothing"
-    );
-
-    let declaration = Aliased::declaration().expect("declares");
-    let props = declaration.properties_of("aliased").expect("declared");
-    assert_eq!(
-        props,
-        ["tenant_id".to_owned(), "id".to_owned()],
-        "each column belongs in PROPERTIES once"
-    );
-
-    let sql = declaration.create_statement().expect("renders");
-    assert!(
-        sql.contains(r#"LABEL "aliased" PROPERTIES ("tenant_id", "id")"#),
-        "{sql}"
     );
 }
 
@@ -516,9 +356,9 @@ fn the_derive_enumerates_custom_pep_properties() {
         impl ActiveModelBehavior for ActiveModel {}
     }
 
-    let names: Vec<&str> = <derived::Entity as ScopeProperties>::scope_columns()
-        .iter()
-        .map(sea_orm::IdenStatic::as_str)
+    let names: Vec<&str> = <derived::Entity as ScopableEntity>::SCOPE
+        .scope_columns()
+        .map(|column| sea_orm::IdenStatic::as_str(&column))
         .collect();
     assert!(names.contains(&"tenant_id"), "{names:?}");
     assert!(names.contains(&"id"), "{names:?}");

@@ -5,11 +5,17 @@ use std::collections::HashMap;
 /// `SQLite` journal mode options.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum JournalMode {
+    /// `journal_mode=DELETE`: rollback journal is deleted after each transaction.
     Delete,
+    /// `journal_mode=WAL`: write-ahead logging.
     Wal,
+    /// `journal_mode=MEMORY`: rollback journal is kept in memory.
     Memory,
+    /// `journal_mode=TRUNCATE`: rollback journal is truncated to zero length instead of deleted.
     Truncate,
+    /// `journal_mode=PERSIST`: rollback journal header is zeroed instead of deleted.
     Persist,
+    /// `journal_mode=OFF`: no rollback journal is kept.
     Off,
 }
 
@@ -31,9 +37,13 @@ impl JournalMode {
 /// `SQLite` synchronous mode options.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SyncMode {
+    /// `synchronous=OFF`: no syncing; fastest but risks corruption on power loss.
     Off,
+    /// `synchronous=NORMAL`: sync at the most critical moments only.
     Normal,
+    /// `synchronous=FULL`: sync after every critical write for maximum durability.
     Full,
+    /// `synchronous=EXTRA`: like `FULL`, additionally syncing the directory after journal removal.
     Extra,
 }
 
@@ -50,11 +60,40 @@ impl SyncMode {
     }
 }
 
+/// How toolkit-db begins a `SQLite` transaction that may write (`transaction_mode`).
+///
+/// Not a PRAGMA: toolkit-db reads it from the DSN like one and strips it before connecting.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TransactionMode {
+    /// `transaction_mode=deferred` (the default): a plain `BEGIN`, which takes no lock until the
+    /// first statement. A transaction that reads and then writes fails at once with
+    /// `SQLITE_BUSY` while another connection holds the write lock; `busy_timeout` does not apply.
+    #[default]
+    Deferred,
+    /// `transaction_mode=immediate`: `BEGIN IMMEDIATE`, which takes the write lock up front and
+    /// waits for it under `busy_timeout`, so concurrent writers queue instead of failing.
+    Immediate,
+}
+
+impl TransactionMode {
+    /// Parse from string (case-insensitive); the one parser for the DSN and `params` paths.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_uppercase().as_str() {
+            "DEFERRED" => Some(TransactionMode::Deferred),
+            "IMMEDIATE" => Some(TransactionMode::Immediate),
+            _ => None,
+        }
+    }
+}
+
 /// Parsed `SQLite` PRAGMA parameters.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Pragmas {
+    /// Journal mode requested via the `journal_mode` parameter.
     pub journal_mode: Option<JournalMode>,
+    /// Synchronous mode requested via the `synchronous` parameter.
     pub synchronous: Option<SyncMode>,
+    /// Busy timeout in milliseconds requested via the `busy_timeout` parameter.
     pub busy_timeout_ms: Option<i64>,
     /// Compatibility: support legacy `wal=true|false|1|0`
     pub wal_toggle: Option<bool>,
@@ -79,6 +118,8 @@ impl Pragmas {
                 "wal" => {
                     pragmas.wal_toggle = Self::parse_wal_toggle(value);
                 }
+                // Not a PRAGMA, and parsed strictly by the caller (`sqlite_pragma::transaction_mode`).
+                "transaction_mode" => {}
                 _ => {
                     tracing::debug!("Unknown SQLite PRAGMA parameter: {}", key);
                 }
@@ -224,6 +265,19 @@ mod tests {
 
         let pragmas = Pragmas::from_pairs(&pairs);
         assert_eq!(pragmas.wal_toggle, Some(false));
+    }
+
+    #[test]
+    fn test_transaction_mode_parsing() {
+        assert_eq!(
+            TransactionMode::parse("immediate"),
+            Some(TransactionMode::Immediate)
+        );
+        assert_eq!(
+            TransactionMode::parse("DEFERRED"),
+            Some(TransactionMode::Deferred)
+        );
+        assert_eq!(TransactionMode::parse("exclusive"), None);
     }
 
     #[test]

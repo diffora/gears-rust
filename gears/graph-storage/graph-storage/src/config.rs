@@ -29,32 +29,25 @@ pub enum EmbeddingProviderKind {
 }
 
 /// Which backend serves one-hop expansion.
+///
+/// Only the two-query hop exists. The key stays so existing configurations
+/// keep loading; `pgq` is refused at startup (gears-rust #5267).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HopStrategy {
-    /// The SQL/PGQ hop where the server provides it, the two-query hop where
-    /// it does not. The default, because it is a preference and not a
-    /// demand: the gear's baseline is `PostgreSQL` 16 and SQL/PGQ a backend
-    /// capability (ADR-0001), so a server without it is served, not refused.
-    /// Readiness reports that fallback as `Degraded`; naming `two_query`
-    /// states the choice outright and reports healthy.
+    /// The two-query hop. The default.
     #[default]
     Auto,
-    /// One-statement SQL/PGQ `GRAPH_TABLE` hop (requires `PostgreSQL` 19+),
-    /// as a demand. On a server that cannot provide it the gear is not ready
-    /// and traversal is refused, rather than quietly served by another
-    /// backend: an operator who asked for this one by name would otherwise
-    /// never learn they are not getting it (ADR-0001, point 2).
+    /// Retired; refused by [`GraphStorageConfig::validate`].
     Pgq,
-    /// Two scoped queries; the universal fallback every deployment can serve.
+    /// The two-query hop, named outright.
     TwoQuery,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct GraphStorageConfig {
-    /// Traversal backend. SQL/PGQ falls back to `two_query` per request when
-    /// the scope defeats it, always with a logged reason.
+    /// Traversal backend: `auto` or `two_query`, both the two-query hop.
     pub traversal_hop: HopStrategy,
 
     /// Vector width of the deployment's single embedding space. Fixed at
@@ -159,6 +152,13 @@ pub struct GraphStorageConfig {
     pub traversal_max_edges_scanned: u64,
     pub search_max_arm_limit: u32,
     pub projection_max_page: u32,
+    /// The most rows a count of a listing counts exactly (`GET /nodes:count`).
+    ///
+    /// Past it the answer is this number with `capped` set, so the cost of a
+    /// count is bounded by configuration rather than by the size of the
+    /// tenant: the database counts at most this many rows plus one and
+    /// answers one number.
+    pub projection_count_max: u32,
     /// Absolute deadline for interactive operations, seconds.
     pub deadline_interactive_secs: u64,
     /// Idempotency receipt retention, days.
@@ -238,6 +238,7 @@ impl Default for GraphStorageConfig {
             traversal_max_edges_scanned: 100_000,
             search_max_arm_limit: 50,
             projection_max_page: 200,
+            projection_count_max: 10_000,
             deadline_interactive_secs: 10,
             idempotency_retention_days: 7,
             ontology_max_chain_depth: 3,
@@ -335,6 +336,14 @@ impl GraphStorageConfig {
     /// Enforce the hard ranges of the Capacity and Admission Contract.
     pub fn validate(&self) -> anyhow::Result<()> {
         let mut errors: Vec<String> = Vec::new();
+        if self.traversal_hop == HopStrategy::Pgq {
+            errors.push(
+                "traversal_hop `pgq` is retired: PostgreSQL 19 GA ships without SQL/PGQ \
+                 (gears-rust #5267); use `two_query` (or `auto`), which every supported \
+                 server runs"
+                    .to_owned(),
+            );
+        }
         self.check_embedding_ranges(&mut errors);
         self.check_write_ranges(&mut errors);
         self.check_graph_ranges(&mut errors);
@@ -448,8 +457,8 @@ impl GraphStorageConfig {
         }
         // A node read is one element plus its adjacency, and the adjacency is
         // the half that grows: every entry carries an edge key, an edge type,
-        // a neighbour key and a neighbour type, each of them a
-        // caller-controlled identifier. Bounded by a count alone it is the
+        // a neighbour key, a neighbour type and the edge's discriminator, each
+        // of them a caller-controlled identifier. Bounded by a count alone it is the
         // same shape of gap as a page bounded by a count alone, and it has no
         // runtime measure behind it -- the ceiling is small and fixed, which
         // is exactly when a startup check is the right instrument.
@@ -461,7 +470,7 @@ impl GraphStorageConfig {
         // could not tell an unreferenced node from a truncated answer. So the
         // worst case a single read returns is two full sides, and sizing this
         // for one was the check quietly guaranteeing half of what it claimed.
-        let entry = 4u64.saturating_mul(u64::from(self.identifier_max_bytes));
+        let entry = 5u64.saturating_mul(u64::from(self.identifier_max_bytes));
         let entries = u64::from(self.node_read_max_adjacency)
             .saturating_mul(Self::ADJACENCY_DIRECTIONS)
             .saturating_mul(entry);
@@ -469,7 +478,7 @@ impl GraphStorageConfig {
         if node_read > self.response_max_bytes {
             errors.push(format!(
                 "one node read is up to {node_read} bytes -- item_max_bytes ({}) plus \
-                 node_read_max_adjacency ({}) entries of four identifiers each ({}) in \
+                 node_read_max_adjacency ({}) entries of five identifiers each ({}) in \
                  each of two directions -- above response_max_bytes ({})",
                 self.item_max_bytes,
                 self.node_read_max_adjacency,
@@ -512,6 +521,7 @@ impl GraphStorageConfig {
         );
         check_range!(errors, self, search_max_arm_limit, 1u32, 500u32);
         check_range!(errors, self, projection_max_page, 1u32, 1_000u32);
+        check_range!(errors, self, projection_count_max, 1u32, 1_000_000u32);
         check_range!(errors, self, deadline_interactive_secs, 1u64, 300u64);
         check_range!(errors, self, idempotency_retention_days, 1u32, 365u32);
         check_range!(errors, self, ontology_max_chain_depth, 3u8, 16u8);
@@ -617,13 +627,11 @@ mod tests {
     /// The traversal backend defaults to a preference, and the three
     /// spellings an operator writes are the three that parse.
     ///
-    /// `auto` is the default because the gear's baseline is `PostgreSQL` 16
-    /// and SQL/PGQ a capability of 19: a default of `pgq` made every
-    /// deployment on the baseline a demand the server could not meet, which
-    /// is why readiness could never report that demand as the failure the
-    /// matrix says it is.
+    /// `pgq` still parses, so the refusal can name it, and is refused at
+    /// startup: it was a demand for a backend that no released PostgreSQL
+    /// serves, and silently serving the two-query hop instead would hide that.
     #[test]
-    fn the_traversal_backend_defaults_to_a_preference() {
+    fn the_retired_sqlpgq_backend_is_refused_by_name() {
         assert_eq!(
             GraphStorageConfig::default().traversal_hop,
             HopStrategy::Auto
@@ -641,6 +649,25 @@ mod tests {
             serde_json::from_value::<HopStrategy>(serde_json::json!("pattern")).is_err(),
             "an unknown backend is refused, not defaulted"
         );
+        for accepted in [HopStrategy::Auto, HopStrategy::TwoQuery] {
+            let config = GraphStorageConfig {
+                traversal_hop: accepted,
+                ..GraphStorageConfig::default()
+            };
+            assert!(config.validate().is_ok(), "{accepted:?} is accepted");
+        }
+        let refused = GraphStorageConfig {
+            traversal_hop: HopStrategy::Pgq,
+            ..GraphStorageConfig::default()
+        }
+        .validate()
+        .expect_err("`pgq` is refused at startup");
+        assert!(
+            refused
+                .to_string()
+                .contains("traversal_hop `pgq` is retired"),
+            "{refused}"
+        );
     }
 
     /// The node-read invariant is sized for what a node read actually
@@ -657,7 +684,7 @@ mod tests {
     #[test]
     fn the_node_read_invariant_counts_both_directions_of_adjacency() {
         let defaults = GraphStorageConfig::default();
-        let entry = 4 * u64::from(defaults.identifier_max_bytes);
+        let entry = 5 * u64::from(defaults.identifier_max_bytes);
         let one_side = u64::from(defaults.item_max_bytes)
             + u64::from(defaults.node_read_max_adjacency) * entry;
         let both_sides = one_side + u64::from(defaults.node_read_max_adjacency) * entry;
@@ -683,6 +710,34 @@ mod tests {
         };
         assert!(message.contains("node_read_max_adjacency"), "{message}");
         assert!(message.contains("two directions"), "{message}");
+    }
+
+    /// An adjacency entry is five identifiers: the edge's discriminator is
+    /// returned on it as well. A budget that holds both directions at four
+    /// identifiers an entry and not at five is a node read that answers
+    /// larger than the check guaranteed.
+    #[test]
+    fn the_node_read_invariant_counts_the_discriminator() {
+        let defaults = GraphStorageConfig::default();
+        let both_sides = |identifiers: u64| {
+            u64::from(defaults.item_max_bytes)
+                + 2 * u64::from(defaults.node_read_max_adjacency)
+                    * identifiers
+                    * u64::from(defaults.identifier_max_bytes)
+        };
+        let cfg = GraphStorageConfig {
+            response_max_bytes: u64::midpoint(both_sides(4), both_sides(5)),
+            // Out of the way, as in the test above.
+            traversal_max_nodes: 1,
+            search_max_arm_limit: 1,
+            projection_max_page: 1,
+            ..defaults
+        };
+        let message = match cfg.validate() {
+            Err(error) => error.to_string(),
+            Ok(()) => panic!("a budget under five identifiers an entry must be refused"),
+        };
+        assert!(message.contains("five identifiers each"), "{message}");
     }
 
     /// Every number legal on its own, and the product is four gigabytes.

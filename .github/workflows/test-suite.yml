@@ -1,0 +1,211 @@
+name: Test Suite
+
+# Runs the Rust unit tests (nextest) on one OS.
+# Called by ci.yml (Linux) and macos-windows-tests.yml (macOS and Windows).
+#
+# Jobs show up as `<caller job> / nextest`. test-report.yml relies on these
+# names.
+on:
+  workflow_call:
+    inputs:
+      os:
+        description: >-
+          Runner label or routing expression. ci.yml passes the self-hosted rule
+          (see .github/runners/README.md); macos-windows-tests.yml passes
+          macos-latest and windows-latest.
+        required: true
+        type: string
+    # No `secrets:` list: the read-write key of the shared build cache is an
+    # environment secret of `ci-trusted`, which callers pass with `secrets: inherit`.
+
+# A called workflow does not get the caller's env, so set it here.
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: full
+  CARGO_INCREMENTAL: "0"
+  CI_PREINSTALLED_TOOLS: nextest
+
+jobs:
+  nextest:
+    name: nextest
+    runs-on: ${{ inputs.os }}
+    # Only a push to main enters the environment, whose read-write key for the
+    # shared build cache GitHub releases to main alone; every other run reads.
+    environment:
+      name: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && 'ci-trusted' || '' }}
+      deployment: false
+    env:
+      # Windows: use lld-link. It comes with LLVM on the runner and links much
+      # faster than link.exe.
+      RUSTFLAGS: ${{ startsWith(inputs.os, 'windows') && '-C debuginfo=0 -C linker=lld-link' || '-C debuginfo=0' }}
+      # nextest writes JUnit under the `ci` profile, and the Makefile copies it
+      # to JUNIT_DIR. Keep it relative: make's sh breaks on Windows backslashes.
+      NEXTEST_PROFILE: ci
+      JUNIT_DIR: test-results
+    steps:
+      - name: Free disk space
+        if: runner.os == 'Linux' && runner.environment == 'github-hosted'
+        uses: jlumbroso/free-disk-space@ceedf095f4ec1a097402bc6bd80831f2e1a6fde6 # v2.0.0
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          swap-storage: true
+
+      # GitHub-hosted macOS images carry extra Xcode versions, the Android SDK,
+      # .NET and simulator runtimes that the tests never use. The test build needs
+      # ~90 GiB on macOS (75 GiB of test binaries, 14 GiB of trybuild output;
+      # measured locally 2026-11-05), and nightly runs died with the disk full (#5710).
+      - name: Free disk space (macOS)
+        if: runner.os == 'macOS' && runner.environment == 'github-hosted'
+        shell: bash
+        continue-on-error: true
+        run: |
+          df -h "$GITHUB_WORKSPACE"
+          active="$(cd "$(xcode-select -p)/../.." && pwd -P)"
+          echo "Active developer dir: $(xcode-select -p) -> keeping $active"
+          for app in /Applications/Xcode*.app; do
+            [ -e "$app" ] || continue
+            [ -L "$app" ] && continue
+            [ "$(cd "$app" && pwd -P)" = "$active" ] && continue
+            echo "Removing $app"
+            sudo rm -rf "$app"
+          done
+          sudo rm -rf "${ANDROID_HOME:-$HOME/Library/Android/sdk}" "$HOME/.dotnet" /usr/local/share/dotnet
+          xcrun simctl runtime delete all 2>/dev/null || true
+          df -h "$GITHUB_WORKSPACE"
+
+      - name: Force LF in working tree (w/a for Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install protoc
+        if: runner.environment == 'github-hosted'
+        uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
+        with:
+          tool: protoc@3.34.1
+
+      - name: Install Go (required for aws-lc-fips-sys FIPS build)
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.21.x'  # pinned - see docs/security/fips/TOOLCHAIN.md
+          cache: false
+
+      - name: Install Rust toolchain from rust-toolchain.toml
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup show
+
+      - name: Install nextest
+        if: runner.environment == 'github-hosted'
+        uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
+        with:
+          tool: nextest
+
+      # Linux only: the macOS and Windows legs run on GitHub-hosted runners.
+      - name: Set up the shared build cache
+        if: runner.os == 'Linux'
+        id: cache
+        uses: ./.github/actions/ci-cache
+        with:
+          rw-key-id: ${{ secrets.CI_CACHE_RW_KEY_ID }}
+          rw-secret: ${{ secrets.CI_CACHE_RW_SECRET }}
+          trusted: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          rust: true
+          downloads: |
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          downloads-key: cargo-${{ hashFiles('**/Cargo.lock') }}
+          downloads-restore-keys: cargo-
+
+      # GitHub-hosted runs (fork pull requests, the kill switch) keep the
+      # registry cache; on the self-hosted runners ci-cache covers it.
+      # Caches the Cargo registry and git deps, not target/.
+      - name: Cache Cargo/target
+        if: ${{ runner.os != 'Linux' || steps.cache.outputs.mode == 'none' }}
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          cache-bin: false
+          cache-targets: false
+          shared-key: pr-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
+      # Samples free disk once a minute for the rest of the job; the report step
+      # below prints the low point.
+      - name: Start disk sampler (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          # shellcheck disable=SC2016  # single quotes are intentional: expanded by the inner bash
+          nohup bash -c 'while :; do echo "$(date -u +%H:%M:%S) $(df -k "$GITHUB_WORKSPACE" | awk "NR==2 {print \$4}")"; sleep 60; done' \
+            > "$RUNNER_TEMP/df-samples.log" 2>&1 &
+
+      - name: cargo test (no macros)
+        shell: bash
+        run: tools/scripts/with_rust_annotations.sh make test-no-macros
+
+      # Runs on failure too: a failed night is exactly when these numbers matter.
+      - name: Disk usage report (macOS)
+        if: ${{ !cancelled() && runner.os == 'macOS' }}
+        shell: bash
+        run: |
+          df -h "$GITHUB_WORKSPACE"
+          du -sh target target/debug/deps target/tests 2>/dev/null || true
+          if [ -s "$RUNNER_TEMP/df-samples.log" ]; then
+            low=$(awk '{print $2}' "$RUNNER_TEMP/df-samples.log" | sort -n | head -1)
+            gib=$(awk -v k="$low" 'BEGIN { printf "%.1f", k / 1048576 }')
+            echo "Lowest free disk during the run: ${gib} GiB"
+            echo "macOS disk: lowest free space during the test run: **${gib} GiB** (samples: $(wc -l < "$RUNNER_TEMP/df-samples.log"))" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # test-report.yml turns this into GitHub checks, because this job cannot
+      # write checks on fork PRs. Runs on failure too, so failed tests show up.
+      - name: Upload Rust test results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rust-tests-${{ runner.os }}
+          path: test-results/*.xml
+          if-no-files-found: warn
+          retention-days: 14
+
+      # macOS only (#5710): the hosted macOS runner sometimes fails file
+      # operations with OS errors on unrelated files: "Illegal byte sequence
+      # (os error 92)" on reading a checked-in Cargo.toml, SQLite "disk I/O
+      # error", "Bus error: 10", fresh binaries that "cannot execute". Disk is
+      # not full when it happens. Keep the kernel's storage messages from a
+      # failed or cancelled run, so the cause can be pinned down and reported.
+      # `log show` needs no sudo on the hosted image.
+      - name: Collect macOS kernel storage log
+        if: ${{ (failure() || cancelled()) && runner.os == 'macOS' }}
+        shell: bash
+        run: |
+          out="$RUNNER_TEMP/macos-kernel-log"
+          mkdir -p "$out"
+          df -h "$GITHUB_WORKSPACE" > "$out/df.txt" 2>&1 || true
+          log show --last 3h --style compact --predicate 'process == "kernel"' \
+            > "$out/kernel.log" 2>&1 || true
+          grep -iE 'apfs|nvme|disk[0-9]|I/O error|checksum|corrupt' "$out/kernel.log" \
+            > "$out/kernel-storage.log" || true
+          gzip -f "$out/kernel.log"
+          echo "Kernel storage lines: $(wc -l < "$out/kernel-storage.log")"
+          # Errors only, without the sandbox noise every macOS boot produces.
+          grep -iE 'error|fail|corrupt|checksum' "$out/kernel-storage.log" \
+            | grep -viE 'sandbox|MACF' | tail -40 || true
+
+      - name: Upload macOS kernel storage log
+        if: ${{ (failure() || cancelled()) && runner.os == 'macOS' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: macos-kernel-log
+          path: ${{ runner.temp }}/macos-kernel-log/
+          if-no-files-found: warn
+          retention-days: 14

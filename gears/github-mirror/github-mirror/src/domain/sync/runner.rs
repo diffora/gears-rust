@@ -14,9 +14,11 @@ use std::sync::atomic::{AtomicU8, Ordering};
 
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
+use toolkit_macros::domain_model;
 
 use super::queue::TaskQueue;
 use super::task::{ExtractionTask, Lane, NewTask, RunIdentity, TaskKind, TaskPhase, TaskPriority};
+use super::telemetry::SessionTelemetry;
 use super::worker::{Worker, WorkerContext, WorkerDispatcher};
 use crate::domain::error::DomainError;
 
@@ -64,6 +66,7 @@ fn ramp(span: u64, total: u64, remaining: u64) -> u64 {
 }
 
 /// How one run went, in tasks.
+#[domain_model]
 #[derive(Debug, Default)]
 pub struct RunReport {
     pub tasks_done: u64,
@@ -79,6 +82,7 @@ impl RunReport {
 }
 
 /// One task that did not finish, with the error it stopped on.
+#[domain_model]
 #[derive(Debug)]
 pub struct TaskFailure {
     pub kind: Option<TaskKind>,
@@ -116,6 +120,7 @@ struct TaskOutcome {
 }
 
 /// Sequential phase driver for a single repository sync.
+#[domain_model]
 pub struct RepoPhaseRunner {
     queue: Arc<TaskQueue>,
     dispatcher: Arc<WorkerDispatcher>,
@@ -123,6 +128,7 @@ pub struct RepoPhaseRunner {
     max_concurrent_tasks: usize,
     cancel: CancellationToken,
     progress: Arc<AtomicU8>,
+    telemetry: Option<Arc<SessionTelemetry>>,
 }
 
 impl RepoPhaseRunner {
@@ -145,7 +151,14 @@ impl RepoPhaseRunner {
             max_concurrent_tasks: max_concurrent_tasks.get(),
             cancel,
             progress,
+            telemetry: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_telemetry(mut self, telemetry: Arc<SessionTelemetry>) -> Self {
+        self.telemetry = Some(telemetry);
+        self
     }
 
     /// Work out the current percentage and publish it, keeping the published
@@ -153,6 +166,9 @@ impl RepoPhaseRunner {
     fn publish_progress(&self) {
         let percent = u8::try_from(self.estimate_permille().div_euclid(10).min(100)).unwrap_or(100);
         self.progress.fetch_max(percent, Ordering::Relaxed);
+        if let Some(telemetry) = &self.telemetry {
+            telemetry.set_task_counts(self.queue.status_counts(self.run.session_id));
+        }
     }
 
     /// Where the run is, in permille, from the live queue counts.

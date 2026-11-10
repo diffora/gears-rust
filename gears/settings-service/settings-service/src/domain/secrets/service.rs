@@ -1,4 +1,3 @@
-// Created: 2026-09-07 by Virtuozzo International GmbH
 //! The machine-only plaintext path.
 //!
 //! Reached through the SDK reader and nowhere else. The caller is authorized
@@ -8,6 +7,7 @@
 //! here is cached: the effective cache keeps holding the reference only.
 
 use std::sync::Arc;
+use toolkit_macros::domain_model;
 
 use secrecy::SecretString;
 use settings_service_sdk::gts::VALUE_SCHEMA;
@@ -16,7 +16,7 @@ use toolkit_db::secure::DBRunner;
 use toolkit_security::{AccessScope, SecurityContext};
 use uuid::Uuid;
 
-use crate::audit::{AuditOperation, AuditRecord, AuditSink, AuditValue};
+use crate::audit::{ActorTenant, AuditOperation, AuditRecord, AuditSink, AuditValue};
 use crate::domain::access::AccessRepository;
 use crate::domain::declaration::DeclarationRepository;
 use crate::domain::error::DomainError;
@@ -28,6 +28,7 @@ use crate::field;
 
 /// Resolves a [`SecretHandle`] to plaintext for an authorized machine caller.
 // @cpt-dod:cpt-cf-settings-service-dod-secret-values-machine-path:p1
+#[domain_model]
 pub struct SecretResolver<D, V, A, S> {
     resolver: Arc<ValueResolver<D, V, A>>,
     secrets: Arc<dyn SecretManager>,
@@ -134,6 +135,7 @@ where
             effective.key.as_str(),
             Some(effective.tenant_id),
             ctx.subject_id().to_string(),
+            ActorTenant::of(ctx.subject_tenant_id()),
             AuditOperation::SecretUse,
             Uuid::new_v4().to_string(),
         )

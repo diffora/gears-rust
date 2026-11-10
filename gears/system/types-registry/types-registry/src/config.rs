@@ -24,6 +24,10 @@ const MAX_DELIVERY_ATTEMPTS: u32 = i16::MAX as u32 - 1;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct TypesRegistryConfig {
+    /// Which contracts this registry provides; see [`RegistryMode`].
+    #[serde(default)]
+    pub mode: RegistryMode,
+
     /// Fields to check for GTS entity ID (in order of priority).
     /// Default: `["$id", "gtsId", "id"]`
     pub entity_id_fields: Vec<String>,
@@ -64,6 +68,20 @@ pub struct TypesRegistryConfig {
     /// Metrics naming configuration.
     #[serde(default)]
     pub metrics: MetricsConfig,
+}
+
+/// Which contracts a types-registry instance provides.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RegistryMode {
+    /// The legacy `TypesRegistryClient` and its v1 routes, plus — with a database bound —
+    /// `PlatformTypesRegistryApi` and `TypesRegistryApi`, locally and over REST.
+    #[default]
+    Full,
+    /// Serve only the legacy client and v1 routes; new-API consumers resolve remotely.
+    /// A bound database is migrated but not seeded or used for admission.
+    /// Directory advertisement is disabled to keep new-API discovery remote.
+    LegacyOnly,
 }
 
 /// Metrics configuration.
@@ -129,8 +147,9 @@ impl Default for Limits {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct WorkerSettings {
-    /// Positive wall-clock admission budget. Expiry causes redelivery.
-    /// This does not guarantee spawned work finishes before gear shutdown.
+    /// Positive wall-clock admission budget; expiry triggers redelivery. Spawned work
+    /// may outlive gear shutdown. Also bounds the entire startup seed set, including
+    /// all batches and passes; expiry fails boot (SPEC §8.1).
     #[serde(with = "toolkit_utils::humantime_serde")]
     pub operation_timeout: Duration,
     /// Revalidation attempts before failure; `1` allows no retry.
@@ -290,6 +309,7 @@ impl SingleCacheSettings {
 impl Default for TypesRegistryConfig {
     fn default() -> Self {
         Self {
+            mode: RegistryMode::default(),
             entity_id_fields: vec!["$id".to_owned(), "gtsId".to_owned(), "id".to_owned()],
             schema_id_fields: vec!["$schema".to_owned(), "gtsTid".to_owned(), "type".to_owned()],
             entities: Vec::new(),

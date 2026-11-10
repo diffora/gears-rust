@@ -65,25 +65,16 @@
 //! If you prefer not to use the derive macro:
 //!
 //! ```rust,ignore
-//! use toolkit_db::secure::ScopableEntity;
-//! use toolkit_security::access_scope::pep_properties;
+//! use toolkit_db::secure::{Dimensions, EntityScope, ScopableEntity};
 //!
 //! impl ScopableEntity for Entity {
-//!     // One table: every property this entity understands, and the column it
-//!     // means. The lookup, the column list and the tenant/resource/owner
-//!     // accessors are all read back out of it by `ScopeProperties`.
-//!     const SCOPE_PROPERTIES: &'static [(&'static str, Self::Column)] = &[
-//!         (pep_properties::OWNER_TENANT_ID, Column::TenantId),
-//!         (pep_properties::RESOURCE_ID, Column::Id),
-//!     ];
-//!
-//!     // And the dimensions it does not name. Each of the three belongs to
-//!     // exactly one of the two lists, checked when the entity is compiled.
-//!     const UNSCOPED_DIMENSIONS: &'static [&'static str] = &[pep_properties::OWNER_ID];
-//!
-//!     fn type_col() -> Option<Self::Column> {
-//!         None
-//!     }
+//!     const SCOPE: EntityScope<Column> = EntityScope::Scoped(Dimensions {
+//!         tenant: Some(Column::TenantId),
+//!         resource: Some(Column::Id),
+//!         owner: None,
+//!         type_col: None,
+//!         custom: &[],
+//!     });
 //! }
 //! ```
 //!
@@ -137,7 +128,7 @@ mod tx_error;
 // Public API re-exports
 
 // Core types
-pub use entity_traits::{ScopableEntity, ScopeProperties};
+pub use entity_traits::{Dimensions, EntityScope, ScopableEntity};
 pub use error::{ScopeError, is_foreign_key_violation, is_unique_violation};
 
 // Security types from toolkit-security

@@ -166,10 +166,173 @@ async fn f07_successor_and_deprecation_keep_exact_original_bindings() {
 }
 
 async fn fixture() -> AcceptanceFixture {
-    let mut f = AcceptanceFixture::new().await;
+    later(AcceptanceFixture::new().await)
+}
+/// The sale starts at ten; the clock follows.
+fn later(mut f: AcceptanceFixture) -> AcceptanceFixture {
     f.query.start_at += time::Duration::hours(10);
     f.clock.advance(time::Duration::hours(10));
     f
+}
+
+/// Issue, persist, change the currency table: an issued receipt is stored as issued and its price
+/// reads at the stored scale. `XTS` (no ISO scale) is configured at 2 when its price is written and
+/// the receipt is issued, then a state over the same database configures it at 3. (The replay, the
+/// fulfilment check and the hold under the changed table are `a_receipt_keeps_its_snapshot` in
+/// `numeric_boundaries`.) A stored price scale edited without its money digest, or with it but
+/// without the terms digest, is a corrupt row at fulfilment: a 500, never a client refusal.
+#[tokio::test]
+async fn a_currency_table_change_leaves_an_issued_receipt_as_it_was() {
+    use bss_pricing::{
+        api::{
+            pricing_acceptance::PricingAcceptanceProvider, pricing_read::PricingReadProvider,
+            rest::authoring::AuthoringState, sellability::SellabilityProvider,
+        },
+        config::SellerHoldPolicy,
+        domain::currency::CurrencyScales,
+        infra::{
+            commercial_terms::{CommercialTermsService, wire},
+            storage::repo::acceptance_repo,
+        },
+    };
+    use bss_pricing_sdk::{digest::money_digest, read::PriceQuery};
+    use std::sync::Arc;
+    let catalog = Arc::new(plan_support::Catalog::default());
+    let fixture = plan_support::Fixture::with_currency_scales(catalog.clone(), &[("XTS", 2)]).await;
+    let f = later(AcceptanceFixture::in_currency(fixture, catalog, "XTS").await);
+    let issued = accept(&f).await;
+    let price = &issued.bindings[0].price;
+    assert_eq!(
+        (price.currency.code(), price.currency.scale()),
+        ("XTS", 2),
+        "the price is issued at the table's scale"
+    );
+    assert_eq!(
+        price.model,
+        PriceModel::PerUnit {
+            unit_amount: 10.into()
+        }
+    );
+    let tenant = f.ctx.subject_tenant_id();
+    let scope = toolkit_db::secure::AccessScope::for_tenant(tenant);
+    let stored = acceptance_repo::find(
+        &f.fixture.db.conn().unwrap(),
+        &scope,
+        tenant,
+        issued.acceptance_id,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        wire::decode_acceptance(&stored.receipt_json).unwrap(),
+        issued,
+        "the stored receipt is the issued one"
+    );
+
+    // The deployment's table changes; the database does not.
+    let state = Arc::new(
+        AuthoringState::new(f.fixture.db.clone(), f.fixture.state.hub.clone())
+            .await
+            .unwrap()
+            .with_currency_scales(Arc::new(
+                CurrencyScales::try_new([("XTS".to_owned(), 3)].into()).unwrap(),
+            )),
+    );
+    assert_eq!(
+        state
+            .currency_scales()
+            .resolve("XTS")
+            .map(|spec| spec.scale()),
+        Some(3),
+        "the table now says 3"
+    );
+    let enforcer = Arc::new(plan_support::entry_support::enforcer_for(tenant));
+    let service = Arc::new(CommercialTermsService::new(
+        state.clone(),
+        enforcer.clone(),
+        f.clock.clone(),
+        SellerHoldPolicy::default(),
+    ));
+    let sellability = SellabilityProvider::new(service.clone());
+    let acceptance = PricingAcceptanceProvider::new(service);
+    let read = PricingReadProvider::new(state, enforcer)
+        .price(
+            &f.ctx,
+            PriceQuery {
+                catalog: CatalogRef { tenant_id: tenant },
+                price_id: price.price_id,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        (read.currency, read.money_digest),
+        (price.currency.clone(), price.money_digest),
+        "the price reads at its stored scale"
+    );
+    let q = AcceptanceFixture::fulfilment_query(&issued);
+
+    // A price scale edited in the stored receipt without its money digest is other money: the
+    // receipt fails its own terms (`MONEY_DIGEST_MISMATCH`), so the row is corrupt.
+    let edited = stored
+        .receipt_json
+        .replace("\"currency_scale\":\"2\"", "\"currency_scale\":\"3\"");
+    assert_ne!(edited, stored.receipt_json, "the receipt stores the scale");
+    store_receipt(&f, &edited).await;
+    corrupt(
+        &sellability
+            .check_fulfilment(&f.ctx, q.clone())
+            .await
+            .unwrap_err(),
+    );
+    // With its money digest recomputed, the terms digest still names the issued content
+    // (`ACCEPTANCE_MISMATCH` on the stored receipt): corrupt at the check and at the hold.
+    let mut forged = wire::decode_acceptance(&edited).unwrap();
+    forged.bindings[0].price.money_digest = money_digest(&forged.bindings[0].price);
+    store_receipt(&f, &wire::encode_acceptance(&forged).unwrap()).await;
+    corrupt(
+        &sellability
+            .check_fulfilment(&f.ctx, q.clone())
+            .await
+            .unwrap_err(),
+    );
+    corrupt(
+        &acceptance
+            .hold(&f.ctx, q, meta("another"))
+            .await
+            .unwrap_err(),
+    );
+}
+/// A stored receipt that fails its own terms is a corrupt row: an internal error with no
+/// commercial reason, the same answer as a receipt that does not decode.
+fn corrupt(e: &toolkit_canonical_errors::CanonicalError) {
+    assert_eq!(e.status_code(), 500, "a corrupt stored receipt is a 500");
+    assert_eq!(
+        e.diagnostic(),
+        Some("invalid stored commercial receipt"),
+        "the stored receipt is reported as corrupt"
+    );
+    assert_eq!(
+        bss_pricing::infra::commercial_terms::errors::commercial_reason(e),
+        None,
+        "a corrupt stored receipt is no client refusal"
+    );
+}
+/// Overwrite the one stored acceptance's receipt, as a tampered row would hold it.
+async fn store_receipt(f: &AcceptanceFixture, receipt_json: &str) {
+    use sea_orm::{ConnectionTrait, Database, DbBackend, Statement};
+    let changed = Database::connect(&*f.fixture.dsn)
+        .await
+        .unwrap()
+        .execute_raw(Statement::from_sql_and_values(
+            DbBackend::Sqlite,
+            "UPDATE pricing_acceptance SET receipt_json = ?",
+            [receipt_json.into()],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(changed.rows_affected(), 1, "one acceptance is stored");
 }
 
 #[tokio::test]
@@ -897,6 +1060,195 @@ async fn receipt_id_scoped_grant_applies_to_parent_before_child_rows_or_replay()
         404
     );
     assert_eq!(hold_counts(&f).await, (1, 2));
+}
+
+/// D-524: the book must sell on the acceptance day and on the start day. The fixture accepts on
+/// 2026-10-01 at 10:00 UTC. Closing the book before that day refuses a fresh check as
+/// `NotSellable`; opening it only after that day does too; the receipt already written still
+/// reads back and still holds (owner, 2026-10-06: only the new sale is refused). A fresh sale is a
+/// new order version; the accepted order line replays its original receipt.
+#[tokio::test]
+async fn book_outside_its_window_refuses_a_fresh_sale_and_keeps_the_receipt() {
+    for (column, value, key) in [
+        ("valid_until", "2026-10-01", "closed"),
+        ("valid_from", "2026-10-02", "not-yet"),
+    ] {
+        let f = fixture().await;
+        let a = accept(&f).await;
+        f.execute(&format!(
+            "UPDATE pricing_price_book SET {column}='{value}', version=version+1"
+        ))
+        .await;
+        let mut fresh = f.query.clone();
+        fresh.order_version = 2;
+        reason(
+            &f.sellability
+                .check(&f.ctx, fresh, meta(key))
+                .await
+                .unwrap_err(),
+            "NotSellable",
+        );
+        assert_eq!(
+            f.counts().await.0,
+            1,
+            "{key}: the refused check wrote no acceptance"
+        );
+        assert_eq!(
+            f.sellability
+                .check(&f.ctx, f.query.clone(), meta(&format!("replay-{key}")))
+                .await
+                .unwrap(),
+            a,
+            "{key}: the accepted order line replays its receipt"
+        );
+        assert_eq!(
+            f.acceptance
+                .acceptance(&f.ctx, receipt_query(&a))
+                .await
+                .unwrap(),
+            a,
+            "{key}"
+        );
+        let held = hold(&f, &a, &format!("hold-{key}")).await;
+        assert_eq!(held.bindings, a.bindings, "{key}");
+    }
+}
+
+/// D-524: each day is judged alone. The start-day leg accepts on 2026-10-01 at 10:00 a sale that
+/// starts on 2026-10-02 at 09:00: a book closing on 2026-10-02 refuses it, one open to 2026-10-03
+/// sells it. The acceptance-day leg accepts on 2026-09-30 at 23:00 a sale that starts on 2026-10-01
+/// at 10:00: a book opening on 2026-10-01 refuses it, one open from 2026-09-30 sells it.
+#[tokio::test]
+async fn book_window_judges_the_acceptance_day_and_the_start_day_each_alone() {
+    let at = |day: &str, hour: i64| {
+        seam_support::date(day).midnight().assume_utc() + time::Duration::hours(hour)
+    };
+    for (leg, now, start, column, refused, sells) in [
+        (
+            "start-day",
+            at("2026-10-01", 10),
+            at("2026-10-02", 9),
+            "valid_until",
+            "2026-10-02",
+            "2026-10-03",
+        ),
+        (
+            "acceptance-day",
+            at("2026-09-30", 23),
+            at("2026-10-01", 10),
+            "valid_from",
+            "2026-10-01",
+            "2026-09-30",
+        ),
+    ] {
+        let f = fixture().await;
+        *f.clock.0.lock() = now;
+        let mut q = f.query.clone();
+        q.start_at = start;
+        f.execute(&format!(
+            "UPDATE pricing_price_book SET {column}='{refused}', version=version+1"
+        ))
+        .await;
+        reason(
+            &f.sellability
+                .check(&f.ctx, q.clone(), meta(leg))
+                .await
+                .expect_err(leg),
+            "NotSellable",
+        );
+        assert_eq!(
+            f.counts().await.0,
+            0,
+            "{leg}: the refused check wrote no acceptance"
+        );
+        f.execute(&format!(
+            "UPDATE pricing_price_book SET {column}='{sells}', version=version+1"
+        ))
+        .await;
+        let accepted = f
+            .sellability
+            .check(&f.ctx, q, meta(&format!("{leg}-control")))
+            .await
+            .unwrap();
+        assert_eq!(
+            (accepted.accepted_at, accepted.query.start_at),
+            (now, start),
+            "{leg}: the window covering both days sells"
+        );
+    }
+}
+
+/// D-524: the commit judges the window again on its own clock. Observed at 2026-10-01 23:30 for a
+/// sale starting then, the book (closing on 2026-10-02) sells; the meter answer moves the clock past
+/// midnight, so the commit's day is 2026-10-02 and the receipt would be dated on a day the book does
+/// not sell: `NotSellable`, and nothing is written.
+#[tokio::test]
+async fn book_window_is_judged_again_on_the_commit_clock() {
+    let mut f = AcceptanceFixture::new().await;
+    let late = time::Duration::minutes(23 * 60 + 30);
+    f.query.start_at += late;
+    f.clock.advance(late);
+    f.execute("UPDATE pricing_price_book SET valid_until='2026-10-02', version=version+1")
+        .await;
+    f.hook(vec![], Some(time::Duration::hours(1)), false);
+    reason(
+        &f.sellability
+            .check(&f.ctx, f.query.clone(), meta("midnight"))
+            .await
+            .unwrap_err(),
+        "NotSellable",
+    );
+    assert_eq!(
+        f.counts().await.0,
+        0,
+        "the refused commit wrote no acceptance"
+    );
+}
+
+/// D-524: the observation judges the window on its own day. Observed at 2026-10-01 23:30 for a sale
+/// starting on 2026-10-02 at 00:30, a book opening on 2026-10-02 does not sell on the observation
+/// day; the meter answer moves the clock past midnight, so the commit alone would find both days
+/// inside the window. The observation refuses it: `NotSellable`, and nothing is written.
+#[tokio::test]
+async fn book_window_is_judged_on_the_observation_day() {
+    let mut f = AcceptanceFixture::new().await;
+    let late = time::Duration::minutes(23 * 60 + 30);
+    f.query.start_at += late + time::Duration::hours(1);
+    f.clock.advance(late);
+    f.execute("UPDATE pricing_price_book SET valid_from='2026-10-02', version=version+1")
+        .await;
+    f.hook(vec![], Some(time::Duration::hours(1)), false);
+    reason(
+        &f.sellability
+            .check(&f.ctx, f.query.clone(), meta("before-opening"))
+            .await
+            .unwrap_err(),
+        "NotSellable",
+    );
+    assert_eq!(
+        f.counts().await.0,
+        0,
+        "the refused observation wrote no acceptance"
+    );
+}
+
+/// D-525 end to end: a stored minimum fee on the fixture's usage price (its billing-cycle,
+/// subscription-line policy) is sold through the real check and frozen in the receipt's binding.
+#[tokio::test]
+async fn a_minimum_fee_reaches_the_receipt_through_the_real_check() {
+    let f = fixture().await;
+    // Stored as canonical text (D-527): no trailing fractional zero.
+    f.execute("UPDATE pricing_price SET min_fee='0.1', version=version+1")
+        .await;
+    let resolved = f.resolved().await;
+    let mut q = f.query.clone();
+    q.resolved_bindings_digest =
+        bss_pricing_sdk::digest::selected_bindings_digest(&resolved, &q.selections).unwrap();
+    let a = f.sellability.check(&f.ctx, q, meta("floor")).await.unwrap();
+    assert_eq!(
+        a.bindings[0].price.minimum_fee,
+        Some("0.1".parse::<rust_decimal::Decimal>().unwrap())
+    );
 }
 
 #[path = "review_fix/mod.rs"]

@@ -1,4 +1,4 @@
-error: pep_prop: column name '2fa_col' does not form a valid column variant ('2faCol'); use a snake_case identifier
+error: secure: column name '2fa_col' is not a valid column identifier
   --> tests/ui/err_pep_column_not_an_identifier.rs:15:14
    |
 15 |     pep_prop(second_factor = "2fa_col")

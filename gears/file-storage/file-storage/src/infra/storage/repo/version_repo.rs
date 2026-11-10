@@ -4,7 +4,7 @@ use sea_orm::sea_query::{Expr, Query};
 use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder, QuerySelect, Set};
 use time::OffsetDateTime;
 use toolkit_db::secure::{
-    DBRunner, SecureDeleteExt, SecureEntityExt, SecureUpdateExt, secure_insert,
+    DBRunner, SecureDeleteExt, SecureEntityExt, SecureUpdateExt, max_bind_params_for, secure_insert,
 };
 use toolkit_security::AccessScope;
 use uuid::Uuid;
@@ -12,7 +12,6 @@ use uuid::Uuid;
 use file_storage_sdk::{FileVersion, VersionStatus};
 
 use crate::domain::error::DomainError;
-use crate::infra::storage::db::db_err;
 use crate::infra::storage::entity::file_version::{ActiveModel, Column, Entity};
 use crate::infra::storage::entity::multipart_upload::{
     Column as MultipartUploadColumn, Entity as MultipartUploadEntity,
@@ -52,30 +51,15 @@ impl VersionRepo {
             backend_id: Set(v.backend_id.clone()),
             backend_path: Set(v.backend_path.clone()),
             created_at: Set(v.created_at),
+            bound_on_finalize: Set(v.bound_on_finalize),
         };
         secure_insert::<Entity>(am, scope, conn)
             .await
-            .map_err(db_err)?;
+            .map_err(DomainError::from)?;
         Ok(())
     }
 
-    /// Fetch a single version by `(file_id, version_id)`.
-    ///
-    /// P2 2.2: this used to delegate to [`Self::list_by_file`] and `.find()`
-    /// the target in Rust, with a comment claiming a direct two-column
-    /// predicate "proved unreliable across the secure layer". Re-investigated
-    /// for this change: `mark_available`/`finalize`/`clear_current`/
-    /// `set_current`/`delete`/`delete_if_status`/`rebind_backend` below all
-    /// use this exact `Condition::all()` two-`.add()` shape successfully on
-    /// `update_many()`/`delete_many()`, and `SecureSelect::filter()` (see
-    /// `toolkit_db::secure::select`) supports the same composition on
-    /// `find()`. A direct-predicate `.one()` query was verified against
-    /// `version_repo_get_returns_correct_row_among_many` (versions seeded
-    /// across two files, sharing a UUID prefix pattern) with no cross-file
-    /// bleed, so the scan-and-filter workaround was not a real limitation —
-    /// the original comment's claim does not reproduce. Kept as a direct
-    /// query, closing the per-file amplification-DoS surface on the
-    /// `get`/`finalize`/`bind`/`download_url` hot path.
+    /// Fetch a single version by `(file_id, version_id)` with a direct predicate.
     pub async fn get<C: DBRunner>(
         &self,
         conn: &C,
@@ -93,11 +77,14 @@ impl VersionRepo {
             .scope_with(scope)
             .one(conn)
             .await
-            .map_err(db_err)?;
+            .map_err(DomainError::from)?;
         Ok(found.map(Into::into))
     }
 
-    /// List a page of a file's versions, newest first.
+    /// List a page of a file's versions, newest first, offset-paginated.
+    ///
+    /// Ordered `(created_at, version_id)` descending; `version_id` is the tie-breaker for equal
+    /// `created_at`. The REST listing uses `list_by_file_page`.
     pub async fn list_by_file<C: DBRunner>(
         &self,
         conn: &C,
@@ -109,13 +96,66 @@ impl VersionRepo {
         let rows = Entity::find()
             .filter(Column::FileId.eq(file_id))
             .order_by_desc(Column::CreatedAt)
+            .order_by_desc(Column::VersionId)
             .limit(limit)
             .offset(offset)
             .secure()
             .scope_with(scope)
             .all(conn)
             .await
-            .map_err(db_err)?;
+            .map_err(DomainError::from)?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    /// List a page of a file's versions, newest first, keyset-paginated in either direction
+    /// (backs `GET /files/{id}/versions`). Same canonical order as `list_by_file`; see
+    /// `FileRepo::list_page` for the forward/backward predicates, mirrored on `version_id`.
+    /// Callers fetch `limit + 1` rows to detect a further page.
+    pub(crate) async fn list_by_file_page<C: DBRunner>(
+        &self,
+        conn: &C,
+        scope: &AccessScope,
+        file_id: Uuid,
+        limit: u64,
+        after: Option<crate::domain::pagination::Seek>,
+    ) -> Result<Vec<FileVersion>, DomainError> {
+        use crate::domain::pagination::Direction;
+
+        let mut filter = Condition::all().add(Column::FileId.eq(file_id));
+        let direction = after.map_or(Direction::Forward, |s| s.direction);
+        if let Some(seek) = after {
+            let pred = match direction {
+                Direction::Forward => super::tuple_lt(
+                    (Entity, Column::CreatedAt),
+                    (Entity, Column::VersionId),
+                    seek.created_at,
+                    seek.id,
+                ),
+                Direction::Backward => super::tuple_gt(
+                    (Entity, Column::CreatedAt),
+                    (Entity, Column::VersionId),
+                    seek.created_at,
+                    seek.id,
+                ),
+            };
+            filter = filter.add(pred);
+        }
+        let mut query = Entity::find().filter(filter);
+        query = match direction {
+            Direction::Forward => query
+                .order_by_desc(Column::CreatedAt)
+                .order_by_desc(Column::VersionId),
+            Direction::Backward => query
+                .order_by_asc(Column::CreatedAt)
+                .order_by_asc(Column::VersionId),
+        };
+        let rows = query
+            .limit(limit)
+            .secure()
+            .scope_with(scope)
+            .all(conn)
+            .await
+            .map_err(DomainError::from)?;
         Ok(rows.into_iter().map(Into::into).collect())
     }
 
@@ -142,19 +182,14 @@ impl VersionRepo {
             .scope_with(scope)
             .exec(conn)
             .await
-            .map_err(db_err)?;
+            .map_err(DomainError::from)?;
         Ok(())
     }
 
-    /// Record the streamed content's size and hash and mark the version
-    /// `available` (the sidecar calls this after durably writing the bytes).
+    /// Record the content's size and hash and mark a `pending` version `available`.
     ///
-    /// `hash_mode`/`part_count` (ADR-0006) are set here, at **finalize** time,
-    /// not at pending-insert time — a pending row is created before it is
-    /// known whether the upload will complete single-part (`whole-sha256`,
-    /// `part_count = None`) or multipart (`multipart-composite-sha256`,
-    /// `part_count = Some(n)`). `hash_algorithm` is never touched (it is
-    /// always `'SHA-256'` for both modes).
+    /// `hash_mode`/`part_count` are set here, not at insert time, since a pending row
+    /// is created before it is known whether the upload is single-part or multipart.
     #[allow(clippy::too_many_arguments)]
     pub async fn finalize<C: DBRunner>(
         &self,
@@ -168,8 +203,6 @@ impl VersionRepo {
         part_count: Option<i32>,
         mime_type: Option<String>,
     ) -> Result<bool, DomainError> {
-        // Scope the update to the full `(file_id, version_id)` key so a
-        // version_id that belongs to a different file cannot be finalized here.
         let mut update = Entity::update_many()
             .col_expr(Column::Size, Expr::value(size))
             .col_expr(Column::HashValue, Expr::value(hash_value))
@@ -179,9 +212,8 @@ impl VersionRepo {
                 Column::Status,
                 Expr::value(file_storage_sdk::VersionStatus::Available.as_str()),
             );
-        // `mime_type` is only rewritten when the caller has a validated/sniffed
-        // type to persist (single-part finalize); the multipart-complete path
-        // passes `None` and leaves the declared type untouched.
+        // `mime_type` is rewritten only when given (single-part finalize); multipart
+        // complete passes `None` and keeps the declared type.
         if let Some(mime_type) = mime_type {
             update = update.col_expr(Column::MimeType, Expr::value(mime_type));
         }
@@ -196,14 +228,12 @@ impl VersionRepo {
             .scope_with(scope)
             .exec(conn)
             .await
-            .map_err(db_err)?;
+            .map_err(DomainError::from)?;
         Ok(res.rows_affected == 1)
     }
 
     /// Insert the `version_hash_manifest` row for a `multipart-composite-sha256`
-    /// version (ADR-0006 §4/§5). Called in the **same transaction** as
-    /// [`Self::finalize`] so the manifest and the version row's
-    /// `(hash_mode, part_count, hash_value = root)` are committed atomically.
+    /// version; call in the same transaction as `finalize`.
     pub async fn insert_manifest<C: DBRunner>(
         &self,
         conn: &C,
@@ -219,13 +249,11 @@ impl VersionRepo {
         };
         secure_insert::<ManifestEntity>(am, scope, conn)
             .await
-            .map_err(db_err)?;
+            .map_err(DomainError::from)?;
         Ok(())
     }
 
-    /// Fetch the `version_hash_manifest` row's manifest text for a version, if
-    /// one exists (`multipart-composite-sha256` versions only). Used by
-    /// `migrate_backend` and any mode-aware re-verification path.
+    /// Fetch the manifest text of a version, if any (`multipart-composite-sha256` only).
     pub async fn get_manifest<C: DBRunner>(
         &self,
         conn: &C,
@@ -238,19 +266,52 @@ impl VersionRepo {
             .scope_with(scope)
             .one(conn)
             .await
-            .map_err(db_err)?;
+            .map_err(DomainError::from)?;
         Ok(found.map(|m| m.manifest))
     }
 
-    /// Clear the `is_current` flag on all versions of a file (used before
-    /// promoting a new current version, to honour the unique-current index).
+    /// Batched [`Self::get_manifest`] keyed by `version_id`; versions without a manifest are absent.
+    ///
+    /// `version_ids` is chunked to [`max_bind_params_for`] minus
+    /// [`Self::GET_MANIFESTS_RESERVED_PARAMS`] so a large page cannot exceed the bind-parameter limit.
+    const GET_MANIFESTS_RESERVED_PARAMS: usize = 16;
+
+    pub async fn get_manifests<C: DBRunner>(
+        &self,
+        conn: &C,
+        scope: &AccessScope,
+        version_ids: &[Uuid],
+    ) -> Result<std::collections::HashMap<Uuid, String>, DomainError> {
+        if version_ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let chunk_size = max_bind_params_for(conn)
+            .saturating_sub(Self::GET_MANIFESTS_RESERVED_PARAMS)
+            .max(1);
+        let mut manifests = std::collections::HashMap::new();
+        for chunk in version_ids.chunks(chunk_size) {
+            let rows = ManifestEntity::find()
+                .filter(ManifestColumn::VersionId.is_in(chunk.iter().copied()))
+                .secure()
+                .scope_with(scope)
+                .all(conn)
+                .await
+                .map_err(DomainError::from)?;
+            manifests.extend(rows.into_iter().map(|m| (m.version_id, m.manifest)));
+        }
+        Ok(manifests)
+    }
+
+    /// Clear `is_current` on all versions of a file (before promoting a new current one).
+    ///
+    /// Returns the rows cleared; `0` is expected for a brand-new file, unlike [`Self::set_current`].
     pub async fn clear_current<C: DBRunner>(
         &self,
         conn: &C,
         scope: &AccessScope,
         file_id: Uuid,
-    ) -> Result<(), DomainError> {
-        Entity::update_many()
+    ) -> Result<u64, DomainError> {
+        let res = Entity::update_many()
             .col_expr(Column::IsCurrent, Expr::value(false))
             .filter(
                 Condition::all()
@@ -261,19 +322,22 @@ impl VersionRepo {
             .scope_with(scope)
             .exec(conn)
             .await
-            .map_err(db_err)?;
-        Ok(())
+            .map_err(DomainError::from)?;
+        Ok(res.rows_affected)
     }
 
-    /// Promote one version to `is_current = true`.
+    /// Promote one version to `is_current = true`; returns the rows updated (0 or 1).
+    ///
+    /// A concurrent `delete_version` can remove the version after the bind CAS; callers MUST treat
+    /// `0` as a fatal conflict and abort, or `files.content_id` would dangle.
     pub async fn set_current<C: DBRunner>(
         &self,
         conn: &C,
         scope: &AccessScope,
         file_id: Uuid,
         version_id: Uuid,
-    ) -> Result<(), DomainError> {
-        Entity::update_many()
+    ) -> Result<u64, DomainError> {
+        let res = Entity::update_many()
             .col_expr(Column::IsCurrent, Expr::value(true))
             .filter(
                 Condition::all()
@@ -284,23 +348,59 @@ impl VersionRepo {
             .scope_with(scope)
             .exec(conn)
             .await
-            .map_err(db_err)?;
+            .map_err(DomainError::from)?;
+        Ok(res.rows_affected)
+    }
+
+    /// Make `version_id` the file's only current version after its bind CAS won.
+    ///
+    /// # Errors
+    /// `DomainError::Conflict` if the version vanished (`set_current` updated 0 rows), so the
+    /// caller's transaction aborts instead of leaving `files.content_id` dangling.
+    pub async fn promote_current<C: DBRunner>(
+        &self,
+        conn: &C,
+        scope: &AccessScope,
+        file_id: Uuid,
+        version_id: Uuid,
+    ) -> Result<(), DomainError> {
+        self.clear_current(conn, scope, file_id).await?;
+        if self.set_current(conn, scope, file_id, version_id).await? == 0 {
+            return Err(DomainError::conflict(
+                "target version no longer exists -- it was deleted concurrently",
+            ));
+        }
         Ok(())
     }
 
-    /// Delete a single version. Returns the number of rows removed (0 or 1
-    /// for this `(file_id, version_id)`-keyed predicate).
+    /// Record that a version won its finalize-time bind CAS (same transaction), so a retried
+    /// finalize replays it instead of re-reading `files.content_id`. Returns the rows updated.
+    pub async fn mark_bound_on_finalize<C: DBRunner>(
+        &self,
+        conn: &C,
+        scope: &AccessScope,
+        file_id: Uuid,
+        version_id: Uuid,
+    ) -> Result<u64, DomainError> {
+        let res = Entity::update_many()
+            .col_expr(Column::BoundOnFinalize, Expr::value(true))
+            .filter(
+                Condition::all()
+                    .add(Column::FileId.eq(file_id))
+                    .add(Column::VersionId.eq(version_id)),
+            )
+            .secure()
+            .scope_with(scope)
+            .exec(conn)
+            .await
+            .map_err(DomainError::from)?;
+        Ok(res.rows_affected)
+    }
+
+    /// Delete a single version; returns the number of rows removed (0 or 1).
     ///
-    /// P2 2.7: the predicate is guarded with `is_current = false` so a delete
-    /// can never remove the version a file's `content_id` currently points
-    /// at, even if the caller's own "is this current?" check ran against a
-    /// stale snapshot (a concurrent `bind` promoted this exact version to
-    /// current in between). The guard is evaluated by the DB in the same
-    /// statement as the delete, so there is no window between "check" and
-    /// "delete" for a race to land in. Returning the raw row count (rather
-    /// than a bool) lets [`crate::infra::storage::store::Store::delete_version`]
-    /// tell "deleted" apart from "not found / guarded because current" without
-    /// re-deriving that distinction from a second predicate.
+    /// Guarded with `is_current = false` in the same statement, so a concurrent `bind`
+    /// that promoted this version cannot be raced into deleting the current content.
     pub async fn delete<C: DBRunner>(
         &self,
         conn: &C,
@@ -319,19 +419,13 @@ impl VersionRepo {
             .scope_with(scope)
             .exec(conn)
             .await
-            .map_err(db_err)?;
+            .map_err(DomainError::from)?;
         Ok(res.rows_affected)
     }
 
-    /// Delete a single version row iff its current `status` matches `expected`.
-    /// Returns `true` if a row was removed, `false` if the row is missing or
-    /// its status no longer matches (a concurrent writer already moved it on).
-    ///
-    /// Status-guarded delete CAS -- same `Condition::all()` pattern as
-    /// [`Self::finalize`]'s pending-only guard (P2 0.4). Used by the cleanup
-    /// sweep (P2 0.3 step 5) so a pending version that a racing
-    /// `complete_multipart_upload` has already flipped to `available` can
-    /// never be deleted out from under it.
+    /// Delete a version row iff its `status` matches `expected`; `false` if missing or
+    /// already moved on. Lets the sweep avoid deleting a pending version that a racing
+    /// `complete_multipart_upload` just made `available`.
     pub async fn delete_if_status<C: DBRunner>(
         &self,
         conn: &C,
@@ -351,26 +445,16 @@ impl VersionRepo {
             .scope_with(scope)
             .exec(conn)
             .await
-            .map_err(db_err)?;
+            .map_err(DomainError::from)?;
         Ok(res.rows_affected > 0)
     }
 
-    /// List all `pending` version rows whose `created_at` is older than
-    /// `older_than`, **excluding** any version that is still the backing
-    /// version of a live `in_progress` multipart session (`expires_at >
-    /// now`). Used by the orphan-reconciliation sweep.
+    /// List `pending` versions created before `older_than`, excluding versions backing an active
+    /// multipart session (live `in_progress`, or any `completing`).
     ///
-    /// A long-running multipart upload (big file, generous URL TTL) keeps its
-    /// backing version `pending` for the whole session, which can outlive
-    /// `orphan_grace_secs`; without this guard the sweep would delete the
-    /// version out from under the in-progress upload. A session whose
-    /// `expires_at` has *already* passed is deliberately NOT excluded here --
-    /// it is aborted by the next sweep step (`sweep_expired_multipart`), and
-    /// its version becomes reclaimable on a later sweep once the session row
-    /// itself transitions out of `in_progress`.
-    ///
-    /// @cpt-cf-file-storage-fr-orphan-reconciliation
-    /// @cpt-dod:cpt-cf-file-storage-dod-cleanup-live-multipart-guard:p1
+    /// A long multipart upload keeps its version `pending` for the whole session. An expired
+    /// `in_progress` session is not excluded (the sweep aborts it first). `completing` is excluded
+    /// unconditionally: a completer may be assembling; a stuck one is reaped by the expired-multipart CAS.
     pub async fn list_pending_older_than<C: DBRunner>(
         &self,
         conn: &C,
@@ -388,8 +472,15 @@ impl VersionRepo {
                             Query::select()
                                 .column(MultipartUploadColumn::VersionId)
                                 .from(MultipartUploadEntity)
-                                .and_where(MultipartUploadColumn::State.eq("in_progress"))
-                                .and_where(MultipartUploadColumn::ExpiresAt.gt(now))
+                                .cond_where(
+                                    Condition::any()
+                                        .add(
+                                            Condition::all()
+                                                .add(MultipartUploadColumn::State.eq("in_progress"))
+                                                .add(MultipartUploadColumn::ExpiresAt.gt(now)),
+                                        )
+                                        .add(MultipartUploadColumn::State.eq("completing")),
+                                )
                                 .to_owned(),
                         ),
                     ),
@@ -399,22 +490,13 @@ impl VersionRepo {
             .scope_with(scope)
             .all(conn)
             .await
-            .map_err(db_err)?;
+            .map_err(DomainError::from)?;
         Ok(rows.into_iter().map(Into::into).collect())
     }
 
-    /// Transactionally update `backend_id` and `backend_path` for a version row,
-    /// CAS-gated on the version's *current* `backend_id`/`backend_path`.
-    /// Used by backend migration.
-    ///
-    /// `0` rows affected now means either "version gone" (the row's
-    /// `(file_id, version_id)` no longer exists — today's meaning) **or**
-    /// "the backend pointer changed concurrently" (a different migration won
-    /// the race and already moved the row past `expected_backend_id`/
-    /// `expected_backend_path`) — the caller must re-fetch to distinguish
-    /// these.
-    ///
-    /// @cpt-cf-file-storage-fr-backend-migration
+    /// Update `backend_id`/`backend_path`, CAS-gated on the current values (backend
+    /// migration). `false` means the version is gone or another migration moved it
+    /// first; the caller must re-fetch to tell which.
     #[allow(clippy::too_many_arguments)]
     pub async fn rebind_backend<C: DBRunner>(
         &self,
@@ -441,7 +523,7 @@ impl VersionRepo {
             .scope_with(scope)
             .exec(conn)
             .await
-            .map_err(db_err)?;
+            .map_err(DomainError::from)?;
         Ok(res.rows_affected > 0)
     }
 }

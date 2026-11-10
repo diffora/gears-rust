@@ -1,6 +1,8 @@
 # Constructor Fabric Gears (Rust)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/constructorfabric/gears-rust/badge)](https://scorecard.dev/viewer/?uri=github.com/constructorfabric/gears-rust) [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/12050/badge)](https://www.bestpractices.dev/projects/12050)
 
+Nightly: [![e2e nightly](https://github.com/constructorfabric/gears-rust/actions/workflows/e2e.yml/badge.svg?event=schedule)](https://github.com/constructorfabric/gears-rust/actions/workflows/e2e.yml?query=event%3Aschedule) [![clippy nightly](https://github.com/constructorfabric/gears-rust/actions/workflows/clippy-nightly.yml/badge.svg?event=schedule)](https://github.com/constructorfabric/gears-rust/actions/workflows/clippy-nightly.yml?query=event%3Aschedule) [![macOS/Windows tests nightly](https://github.com/constructorfabric/gears-rust/actions/workflows/macos-windows-tests.yml/badge.svg?event=schedule)](https://github.com/constructorfabric/gears-rust/actions/workflows/macos-windows-tests.yml?query=event%3Aschedule) [![unused deps nightly](https://github.com/constructorfabric/gears-rust/actions/workflows/shear-nightly.yml/badge.svg?event=schedule)](https://github.com/constructorfabric/gears-rust/actions/workflows/shear-nightly.yml?query=event%3Aschedule) · [open nightly issues](https://github.com/constructorfabric/gears-rust/issues?q=is%3Aissue%20is%3Aopen%20label%3Anightly)
+
 <p align="center">
   <img src="docs/img/gears.png" style='max-width: 800px' alt="Constructor Fabric Gears diagram">
 </p>
@@ -15,7 +17,8 @@ Gears span three broad categories:
 - **GenAI** gears for chat, retrieval, prompt orchestration, and related AI capabilities.
 
 See also:
-- [WHY_GEARS](docs/WHY_GEARS.md) explaining why to chose Rust/Gears for your XaaS project.
+- [WHY_GEARS](docs/WHY_GEARS.md) explaining why to choose Gears as the foundation for your XaaS product (for technical decision-makers).
+- [WHY_RUST](docs/WHY_RUST.md) comparing Rust + Gears with Go and C# (technical deep dive for developers).
 - [OVERVIEW](docs/slides/1_OVERVIEW.md) HTML slides explaining the key Constructor Fabric Gears concepts.
 - [GEARS](docs/GEARS.md) for gears overview.
 
@@ -23,7 +26,7 @@ See also:
 
 1. **Secure XaaS framework with defense-in-depth** — Every API handler enforces authentication, authorization, tenant isolation, and scoped DB access by default. Security is structural, not opt-in, validated at build time using integrated dynamic lints.
 
-2. **Three-tier gear hierarchy** — *Gears Toolkit* (`libs/` — ToolKit, DB access, error model, API middleware), *System gears* (`gears/system/` — API gateway, authn/authz, tenancy, event system, resource groups, type registry), and *Service gears* (`gears/` — serverless runtime, GenAI subsystems, and domain-specific libraries).
+2. **Three-tier gear hierarchy** — *Gears Toolkit* (`libs/` — ToolKit, DB access, error model, API middleware), *Core gears* (`gears/system/` — API gateway, authn/authz, tenancy, event system, resource groups, type registry), and *Service gears* (`gears/` — serverless runtime, GenAI subsystems, and domain-specific libraries).
 
 3. **Composable libraries, vendor-controlled deployment** — Each gear owns its API surface and database, communicates via a Rust-native SDK that facades local vs. remote calls, and is fully infrastructure-agnostic. Vendors choose which gears to bundle and whether to deploy single-process (edge/on-prem), multi-node (bare metal), or on Kubernetes.
 
@@ -32,7 +35,7 @@ See also:
 5. **Extensible domain model via Global Type System** — Gears expose extensible domain objects whose metadata and types are customizable through [GTS](https://github.com/globaltypesystem/gts-spec) — define new event types, user settings, LLM model attributes, etc. CRUD API handlers support customization via hooks and callbacks as serverless functions and workflows.
 
 **Engineering principles:**
-- **Spec-Driven Development**: [Specification templates](docs/spec-templates/README.md) (PRD, Design, ADR, Feature) define what gets built *before* code is written. Every gear is well documented.
+- **Spec-Driven Development**: [Specification templates](studio-kit-gears/artifacts/README.md) (PRD, Design, ADR, Feature) define what gets built *before* code is written. Every gear is well documented.
 - **Shift Left**: Custom architecture lints (via `cargo gears lint`) enforce design rules at compile time, alongside Clippy, [tests](#testing), fuzzing, and security audits in CI
 - **Quality First**: 90%+ test coverage target with unit, integration, E2E, performance, and security testing
 - **Core in Rust**: Compile-time safety, deep static analysis including project-specific lints, so more issues are prevented before review/runtime
@@ -144,7 +147,7 @@ gears:
 
 See [TOOLKIT UNIFIED SYSTEM](docs/toolkit_unified_system/README.md) and [TOOLKIT_PLUGINS.md](docs/TOOLKIT_PLUGINS.md) for details.
 
-Individual gears live under `gears/<name>/`, usually with a gear crate and an SDK crate. The Makefile builds a single gear by selecting those packages, while `make run GEAR=<name>` composes the example server with `--no-default-features` and the gear feature plus the static local development system gears. Runtime settings stay in YAML under `gears:<gear_name>:` with separate `config` and optional gear-owned `database` sections.
+Individual gears live under `gears/<name>/`, usually with a gear crate and an SDK crate. The Makefile builds a single gear by selecting those packages, while `make run GEAR=<name>` composes the example server with `--no-default-features` and the gear feature plus the static local development core gears. Runtime settings stay in YAML under `gears:<gear_name>:` with separate `config` and optional gear-owned `database` sections.
 
 ## Documentation
 
@@ -237,7 +240,7 @@ Other tests:
 ```bash
 make test            # unit tests (workspace)
 make test GEAR=file-parser  # unit tests for one gear and its SDK crate
-make test-sqlite     # integration tests (SQLite, no external DB required)
+make test-integration LANE=toolkit-db-sqlite  # integration tests (SQLite, no external DB required)
 make e2e-local       # end-to-end tests (builds + starts server automatically)
 make e2e-local SUITE=file-parser  # suite E2E scope plus the default E2E target
 make e2e-docker      # end-to-end tests (builds + starts server in Docker)

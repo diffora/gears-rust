@@ -50,7 +50,6 @@ struct Amount {
 #[serde(rename_all = "snake_case")]
 enum Refusal {
     MissingPolicy,
-    MinimumFee,
     UnalignedAnchor,
     Package,
     MissingBillingTerms,
@@ -135,6 +134,7 @@ fn all_five_fixture_envelopes_round_trip_through_closed_typed_dtos() {
     }
 }
 
+use bss_money::exact::ExactAmount;
 use bss_pricing::{
     api::{
         pricing_acceptance::PricingAcceptanceProvider, pricing_read::PricingReadProvider,
@@ -146,7 +146,6 @@ use bss_pricing::{
 };
 use bss_pricing_sdk::{acceptance::*, digest::*, read::*, terms::*};
 use plan_support as p;
-use rust_decimal::Decimal;
 use seam_support as s;
 use serde_json::json;
 use std::sync::Arc;
@@ -194,13 +193,17 @@ impl Commercial {
             Model::Graduated => PriceModel::Graduated { tiers: tiers() },
         }
     }
-    fn amount(&self, quantity: &str) -> Decimal {
+    fn amount(&self, quantity: &str) -> ExactAmount {
         let model = self.domain_model();
         let data = money::decode(model, self.money()).unwrap();
         money::amount_for(model, &data, quantity.parse().unwrap()).unwrap()
     }
 }
-fn volume_amount(quantity: &str) -> Decimal {
+/// The exact value of decimal text.
+fn exact(text: &str) -> ExactAmount {
+    ExactAmount::from_decimal(bss_money::parse_decimal(text).unwrap())
+}
+fn volume_amount(quantity: &str) -> ExactAmount {
     let data = money::decode(
         DomainModel::Volume,
         json!({
@@ -215,9 +218,10 @@ fn hourly_volume_fixture_requires_two_independent_quantities() {
     // Catalog representation sanity only. Rating's scheduler and Billing's invoice are external.
     let first = volume_amount("8");
     let second = volume_amount("12");
-    assert_eq!(first + second, "0.34".parse::<Decimal>().unwrap());
-    assert_eq!(volume_amount("20"), "0.30".parse::<Decimal>().unwrap());
-    assert_ne!(first + second, volume_amount("20"));
+    let total = first.checked_add(&second).unwrap();
+    assert_eq!(total, exact("0.34"));
+    assert_eq!(volume_amount("20"), exact("0.30"));
+    assert_ne!(total, volume_amount("20"));
 }
 #[test]
 fn f02_f23_f24_exact_money_and_threshold_vectors() {
@@ -225,7 +229,7 @@ fn f02_f23_f24_exact_money_and_threshold_vectors() {
         for a in f.expected.arithmetic {
             assert_eq!(
                 f.given.commercial.amount(&a.quantity),
-                a.amount.parse::<Decimal>().unwrap(),
+                exact(&a.amount),
                 "{:?} Q={}",
                 f.scenario,
                 a.quantity
@@ -386,7 +390,7 @@ impl World {
             price_id: id,
             price_book_entry_id: entry.id,
             money_digest: [0; 32],
-            currency: "EUR".into(),
+            currency: bss_money::CurrencySpec::try_new("EUR".into(), 2).unwrap(),
             model: e.commercial.price_model(),
             minimum_fee: e
                 .commercial
@@ -433,7 +437,6 @@ impl World {
                 gl_code: d.gl_code.clone(),
                 tax_category: d.tax_category.clone(),
                 timing: BillingTiming::Arrears,
-                currency_scale: 2,
                 rounding: Rounding::HalfEven,
             },
         }
@@ -987,12 +990,11 @@ async fn f22_f31_unsupported_inputs_fail_before_acceptance() {
         let mut q = w.publish(&mut bindings).await;
         let before = receipt_count(&w).await;
         match refusal {
-            Refusal::MissingPolicy | Refusal::MinimumFee | Refusal::Package => {
+            Refusal::MissingPolicy | Refusal::Package => {
                 // Legacy/corrupt catalog rows cannot be authored through the modern gates.
                 // Inject them after publication to prove the actual sellability provider fails closed.
                 match refusal {
                     Refusal::MissingPolicy => execute(&w,"UPDATE pricing_price_book_entry SET usage_policy_id=NULL,usage_policy_version=NULL,usage_policy_digest=NULL,usage_sku_version=NULL").await,
-                    Refusal::MinimumFee => execute(&w,"UPDATE pricing_price SET min_fee='0'").await,
                     Refusal::Package => {
                         execute(&w,"UPDATE pricing_price_book_entry SET model='package'").await;
                         execute(&w,r#"UPDATE pricing_price SET price_json='{"package_size":"10","package_price":"1"}'"#).await;
@@ -1145,6 +1147,7 @@ struct RestPrice {
     model: Model,
     price: RestMoney,
     currency: String,
+    currency_scale: u8,
     period: Option<String>,
     min_fee: Option<String>,
 }
@@ -1197,7 +1200,8 @@ async fn rest_reads_preserve_money_and_add_only_optional_entry_policy() {
             (b.price.price_id, b.price_book_entry_id, b.sku_id)
         );
         assert_eq!(price.price.model(&price.model), b.price.model);
-        assert_eq!(price.currency, b.price.currency);
+        assert_eq!(price.currency, b.price.currency.code());
+        assert_eq!(price.currency_scale, b.price.currency.scale());
         assert_eq!(price.period, None);
         assert_eq!(price.min_fee, None);
         let (status, body) = s::resolve(

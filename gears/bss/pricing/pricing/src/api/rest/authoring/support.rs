@@ -14,7 +14,7 @@ use axum::{
 use toolkit::api::canonical_prelude::{CanonicalError, resource_error};
 use toolkit_db::{
     Db, DbTx,
-    secure::{AccessScope, DBRunner},
+    secure::{AccessScope, DBRunner, TxAccessMode, TxConfig},
 };
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
@@ -346,10 +346,23 @@ pub enum DoorError {
     #[error("the vote names another generation; the unit is at {current}")]
     Generation { current: i32 },
 }
+/// What a draft whose currency scale the table changed asks of its author at submit: the draft
+/// is not locked, so the author edits it, which takes today's scale.
+const SCALE_CHANGED_AT_SUBMIT: &str =
+    "the currency scale changed after the price was drafted; edit the draft and submit it again";
+/// The same refusal at apply: the unit locks the draft, so it is withdrawn first.
+const SCALE_CHANGED_AT_APPLY: &str = "the currency scale changed after the price was submitted; \
+     the submitter withdraws the unit, edits the draft and submits it again";
+/// What a draft in a currency the table no longer lists is told: no edit makes it a price.
+const CURRENCY_NOT_LISTED: &str = "the currency table no longer lists the book's currency, so \
+     the book takes no new price and no edit makes this draft one";
 /// Refusals of the shared approval engine and the `prices` subject, with their codes.
 ///
 /// A pure-rule refusal is 400 with its code (D-403); a conflict is 409; separation of duties
-/// and the submitter-only withdraw are 403. Database errors stay typed for the retry loop.
+/// and the submitter-only withdraw are 403. Database errors stay typed for the retry loop. A
+/// draft whose stored currency scale is not the table's today is 409 `CURRENCY_SCALE_CHANGED`,
+/// and a draft in a currency the table no longer lists is 409 `BOOK_CURRENCY_INVALID`, at submit
+/// and at apply alike; each detail says what the caller can do.
 #[must_use]
 pub fn approval_failure(error: bss_approval::ApprovalError) -> DoorError {
     use bss_approval::ApprovalError as A;
@@ -358,6 +371,24 @@ pub fn approval_failure(error: bss_approval::ApprovalError) -> DoorError {
             context: "approval".into(),
             source,
         }),
+        A::InvalidSubmit {
+            code: code @ "CURRENCY_SCALE_CHANGED",
+            detail,
+            ..
+        } => conflict_because(code, format!("{detail}: {SCALE_CHANGED_AT_SUBMIT}")).into(),
+        A::ApplyRefused {
+            code: code @ "CURRENCY_SCALE_CHANGED",
+            detail,
+        } => conflict_because(code, format!("{detail}: {SCALE_CHANGED_AT_APPLY}")).into(),
+        A::InvalidSubmit {
+            code: code @ "BOOK_CURRENCY_INVALID",
+            detail,
+            ..
+        }
+        | A::ApplyRefused {
+            code: code @ "BOOK_CURRENCY_INVALID",
+            detail,
+        } => conflict_because(code, format!("{detail}: {CURRENCY_NOT_LISTED}")).into(),
         A::InvalidSubmit { code, field, .. } => match code {
             "PRICE_NOT_DRAFT"
             | "ENTRY_REFERENCE_LOST"
@@ -521,26 +552,58 @@ pub async fn transaction_door<T: Send + 'static>(
         Box<dyn std::future::Future<Output = Result<T, DoorError>> + Send + 'a>,
     > + Send,
 ) -> Result<T, DoorError> {
-    transaction_coded(db, CONTENDED, work).await
+    transaction_coded(db, CONTENDED, TxConfig::serializable(), work).await
 }
-/// Run `work` serializably with the toolkit's contention retries. A driver error the retry
-/// classifier still calls contention after the last attempt becomes 409 `code`.
-async fn transaction_coded<T: Send + 'static>(
+/// [`transaction`] for a door that only reads.
+/// # Errors
+/// As [`transaction`].
+pub async fn transaction_read<T: Send + 'static>(
     db: &Db,
-    code: &'static str,
+    work: impl for<'a> FnMut(
+        &'a DbTx<'a>,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<T, DoorError>> + Send + 'a>,
+    > + Send,
+) -> Result<T, CanonicalError> {
+    transaction_door_read(db, work).await.map_err(Into::into)
+}
+/// [`transaction_door`] for a door that only reads: serializable and read-only. On a database
+/// whose writers begin `IMMEDIATE` (`transaction_mode`) it keeps `SQLite`'s deferred `BEGIN`, so
+/// it never queues for the write lock; Postgres refuses any write in it.
+/// # Errors
+/// As [`transaction_door`].
+pub async fn transaction_door_read<T: Send + 'static>(
+    db: &Db,
     work: impl for<'a> FnMut(
         &'a DbTx<'a>,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<T, DoorError>> + Send + 'a>,
     > + Send,
 ) -> Result<T, DoorError> {
-    db.transaction_with_retry(
-        toolkit_db::secure::TxConfig::serializable(),
-        driver_source,
-        work,
-    )
-    .await
-    .map_err(|error| exhausted_contention(db.backend(), code, error))
+    transaction_coded(db, CONTENDED, read_only(), work).await
+}
+/// Serializable and read-only: the reading doors' transaction.
+fn read_only() -> TxConfig {
+    TxConfig {
+        access_mode: Some(TxAccessMode::ReadOnly),
+        ..TxConfig::serializable()
+    }
+}
+/// Run `work` under `config` with the toolkit's contention retries. A driver error the retry
+/// classifier still calls contention after the last attempt becomes 409 `code`.
+async fn transaction_coded<T: Send + 'static>(
+    db: &Db,
+    code: &'static str,
+    config: TxConfig,
+    work: impl for<'a> FnMut(
+        &'a DbTx<'a>,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<T, DoorError>> + Send + 'a>,
+    > + Send,
+) -> Result<T, DoorError> {
+    db.transaction_with_retry(config, driver_source, work)
+        .await
+        .map_err(|error| exhausted_contention(db.backend(), code, error))
 }
 /// The driver error the retry classifier judges, if the door's error carries one.
 fn driver_source(error: &DoorError) -> Option<&sea_orm::DbErr> {
@@ -646,15 +709,24 @@ pub async fn unit_transaction_observed_with_events<T: Send + 'static>(
         Box<dyn std::future::Future<Output = Result<T, DoorError>> + Send + 'a>,
     > + Send,
 ) -> Result<T, DoorError> {
-    events::transaction_with_attempts(
-        db,
-        sink,
-        toolkit_db::secure::TxConfig::serializable(),
-        1,
-        driver_source,
-        work,
-    )
-    .await
+    events::transaction_with_attempts(db, sink, TxConfig::serializable(), 1, driver_source, work)
+        .await
+}
+/// [`unit_transaction_observed_with_events`] for a capture that only reads (see
+/// [`transaction_door_read`]).
+/// # Errors
+/// As [`unit_transaction_observed_with_events`].
+pub async fn unit_transaction_observed_read<T: Send + 'static>(
+    db: &Db,
+    sink: &EventSink,
+    work: impl for<'a> FnMut(
+        &'a DbTx<'a>,
+        TxOutbox,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<T, DoorError>> + Send + 'a>,
+    > + Send,
+) -> Result<T, DoorError> {
+    events::transaction_with_attempts(db, sink, read_only(), 1, driver_source, work).await
 }
 
 /// [`transaction_coded`] through [`events::transaction`]: the same isolation, retries and
@@ -670,15 +742,9 @@ async fn events_coded<T: Send + 'static>(
         Box<dyn std::future::Future<Output = Result<T, DoorError>> + Send + 'a>,
     > + Send,
 ) -> Result<T, DoorError> {
-    events::transaction(
-        db,
-        sink,
-        toolkit_db::secure::TxConfig::serializable(),
-        driver_source,
-        work,
-    )
-    .await
-    .map_err(|error| exhausted_contention(db.backend(), code, error))
+    events::transaction(db, sink, TxConfig::serializable(), driver_source, work)
+        .await
+        .map_err(|error| exhausted_contention(db.backend(), code, error))
 }
 /// Classify a finished transaction's error: retryable contention is the door's 409 `code`, kept
 /// as a typed conflict so each door names its own resource (phase 4 second review B-1): an

@@ -7,11 +7,11 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use authz_resolver_sdk::{AuthZResolverApi, PolicyEnforcer};
+use authz_resolver_sdk::PolicyEnforcer;
 use tenant_resolver_sdk::TenantResolverClient;
 use tokio_util::sync::CancellationToken;
 use toolkit::api::OpenApiRegistry;
-use toolkit::contracts::{DatabaseCapability, SystemCapability};
+use toolkit::contracts::DatabaseCapability;
 use toolkit::lifecycle::ReadySignal;
 use toolkit::{Gear, GearCtx, RestApiCapability};
 use toolkit_db::DBProvider;
@@ -29,15 +29,12 @@ use crate::infra::storage::repo_impl::SecretRepoImpl;
 use crate::infra::tenant_resolver::TenantResolverDir;
 use crate::infra::types_registry::GtsSecretTypeResolver;
 
-// `system` capability is required in this platform: consumers like `oagw` are
-// system modules and resolve `CredStoreClientV1` from the ClientHub during their
-// `init`. System modules initialize before non-system ones
-// (`modules_by_system_priority`), so credstore must also be a system module to
-// register its client before those consumers init.
+// `deps = [credstore]` ensures consumers such as `oagw` find its client during `init`.
+#[toolkit::consumes(contract = authz_resolver_sdk::AuthZResolverApi, from = "authz-resolver")]
 #[toolkit::gear(
     name = "credstore",
-    deps = [authz_resolver, tenant_resolver, types_registry],
-    capabilities = [system, db, rest, stateful],
+    deps = [tenant_resolver, types_registry],
+    capabilities = [db, rest, stateful],
     lifecycle(entry = "serve", stop_timeout = "30s", await_ready)
 )]
 pub struct CredStoreGear {
@@ -57,6 +54,7 @@ impl CredStoreGear {
         clippy::redundant_pub_crate,
         reason = "module-private serve entry-point invoked by the toolkit runtime"
     )]
+    /// Lifecycle entry point: requires `init` to have populated the service, signals readiness, then runs the periodic reaper tick until `cancel` fires.
     pub(crate) async fn serve(
         self: Arc<Self>,
         cancel: CancellationToken,
@@ -107,15 +105,13 @@ impl Gear for CredStoreGear {
 
         let repo = Arc::new(SecretRepoImpl::new(Arc::clone(&db)));
 
-        let authz_client = ctx
-            .client_hub()
-            .get::<dyn AuthZResolverApi>()
-            .map_err(|e| anyhow::anyhow!("failed to get AuthZResolverApi: {e}"))?;
         // No PDP capabilities: credstore projects no authorization tables
         // (no `tenant_closure`), so the PDP hands it pre-expanded, flat
-        // tenant predicates (AUTHZ_USAGE_SCENARIOS S09–S11).
-        let enforcer = PolicyEnforcer::new(authz_client);
-        info!("authz-resolver client resolved from client hub; PolicyEnforcer wired");
+        // tenant predicates (AUTHZ_USAGE_SCENARIOS S09–S11). The resolver is
+        // consumed, wired after `init` (locally or remotely), so the enforcer
+        // fetches it from the hub per call.
+        let enforcer = PolicyEnforcer::from_hub(ctx.client_hub());
+        info!("PolicyEnforcer wired to the consumed authz-resolver");
 
         let tr_client = ctx
             .client_hub()
@@ -173,10 +169,6 @@ impl Gear for CredStoreGear {
     }
 }
 
-// Empty system capability: credstore needs no pre_init/post_init work, only the
-// system-priority init ordering (see the module attribute above).
-impl SystemCapability for CredStoreGear {}
-
 impl DatabaseCapability for CredStoreGear {
     fn migrations(&self) -> Vec<Box<dyn sea_orm_migration::MigrationTrait>> {
         use sea_orm_migration::MigratorTrait;
@@ -203,3 +195,7 @@ impl RestApiCapability for CredStoreGear {
         Ok(router)
     }
 }
+
+#[cfg(test)]
+#[path = "gear_tests.rs"]
+mod gear_tests;

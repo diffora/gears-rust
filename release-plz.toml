@@ -148,6 +148,11 @@ changelog_update = false
 git_release_enable = false
 
 [[package]]
+name = "cf-gears-toolkit-http-proxy"
+changelog_update = false
+git_release_enable = false
+
+[[package]]
 name = "cf-gears-toolkit-http-middleware"
 changelog_update = false
 git_release_enable = false
@@ -203,6 +208,16 @@ changelog_update = false
 git_release_enable = false
 
 [[package]]
+name = "cf-gears-toolkit-taskward"
+changelog_update = false
+git_release_enable = false
+
+[[package]]
+name = "cf-gears-toolkit-durable-execution"
+changelog_update = false
+git_release_enable = false
+
+[[package]]
 name = "cf-gears-toolkit-utils"
 changelog_update = false
 git_release_enable = false
@@ -229,6 +244,11 @@ name = "cf-gears-toolkit-contract-protogen"
 changelog_update = false
 git_release_enable = false
 
+[[package]]
+name = "cf-gears-toolkit-resilience"
+changelog_update = false
+git_release_enable = false
+
 # TLS/FIPS support crates (libs/rustls-*). Framework infrastructure, so they follow the
 # `libs/**` rule. Flip these two to `true` if they should ever get their own release
 # notes — they are the only judgement call in this list.
@@ -250,5 +270,59 @@ git_release_enable = false
 
 [[package]]
 name = "cf-gears-system-sdk-directory"
+changelog_update = false
+git_release_enable = false
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Semver check opt-outs.
+#
+# cargo-semver-checks builds each changed crate and its last published version
+# without Cargo.lock, so with the newest versions of its dependencies. When that
+# build fails, the release PR job fails on every push. A crate listed here skips
+# the check, and its version bump comes from commit messages alone.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# kreuzberg 4.x accepts any `zip >= 7` (still true of 4.10.4), and zip 9 broke the
+# 4.9.x build; 4.10.4 is unverified against zip 9. Our Cargo.lock keeps working
+# versions, but the check ignores it. kreuzberg-lts main caps zip at 8 (15c0102d);
+# remove this entry once file-parser is on a kreuzberg release that caps zip and
+# that file-parser version is published.
+[[package]]
+name = "cf-gears-file-parser"
+semver_check = false
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Git-only artifacts.
+#
+# These are applications/examples, NOT crates.io libraries, so their Cargo.toml keeps
+# `publish = false`. `git_only = true` makes release-plz version-manage and TAG them
+# from git (no cargo registry) so they appear in the `release` action's `releases`
+# output — which .github/workflows/release-plz.yml uses to publish their Docker image
+# + Helm chart in the same run.
+#
+# Regular gears are `publish = true`: release-plz releases them to crates.io the normal
+# way and they show up in the same `releases` output, so they need NO entry here —
+# adding their chart to deploy/components.yaml is enough for the publish workflow to
+# pick them up. git_only is only for these `publish = false` exceptions.
+# ─────────────────────────────────────────────────────────────────────────────
+[[package]]
+name = "cf-gears-flight-control"
+git_only = true
+
+[[package]]
+name = "hello"
+git_only = true
+changelog_update = false
+git_release_enable = false
+
+[[package]]
+name = "cf-api-contracts"
+git_only = true
+changelog_update = false
+git_release_enable = false
+
+[[package]]
+name = "cf-api-contracts-consumer"
+git_only = true
 changelog_update = false
 git_release_enable = false

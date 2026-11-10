@@ -10,9 +10,12 @@ use toolkit_gts::GtsInstanceId;
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
-use crate::domain::authz::{EVENT_TYPE_RESOURCE, tenant_authorized};
+use crate::domain::audit;
+use crate::domain::authz::{event_type_resource, tenant_authorized};
 use crate::domain::backend::BackendResolver;
 use crate::domain::error::{DomainError, ErrorCode};
+use crate::domain::idempotency::{ChainRun, ProducerIdempotencyOutcome};
+use crate::domain::producer_reset::ProducerResetScope;
 use event_broker_sdk::models::EventType;
 
 use crate::domain::model::{Event, Meta};
@@ -25,8 +28,8 @@ use crate::domain::model::{Event, Meta};
 /// determines its partition is that type's `partition_key` pointer, so an event
 /// can never disagree with its type about either and there is nothing for the
 /// broker to cross-check. [`IngestService::publish_event`] resolves both and
-/// returns the [`Event`] the request became, with the topic and the selected
-/// partition stamped on it.
+/// returns the [`Event`] the request became, with the topic stamped on it; the
+/// partition is the backend's to assign.
 #[domain_model]
 #[derive(Debug, Clone)]
 pub struct PublishRequest {
@@ -42,35 +45,41 @@ pub struct PublishRequest {
     pub meta: Option<Meta>,
 }
 
-/// Result of a batch publish - which events were accepted (in submission
-/// order) and which were rejected with a reason.
+/// Outcome of admitting a batch, all-or-nothing (feature 0001 §5.2): some
+/// event was newly enqueued, or every event was a duplicate - which the REST
+/// layer answers `200` rather than `202`. A stateless event is never a
+/// duplicate, so a batch carrying one is always `Accepted`.
 #[domain_model]
-#[derive(Debug, Clone, Default)]
-pub struct BatchResult {
-    pub accepted: Vec<Uuid>,
-    pub failed: Vec<(Uuid, String)>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BatchAck {
+    Accepted,
+    Duplicate,
 }
 
-/// Outcome of admitting one event. Both variants carry the stamped event (the
-/// batch path needs it regardless); the distinction is whether the event was
-/// newly admitted or matched an idempotent duplicate - a lost-ack retry of the
-/// producer chain's current head - which the REST layer answers `200` (no new
-/// row written) rather than `202`.
+/// Outcome of admitting one event. Both variants carry the stamped event; the
+/// distinction is whether the event was newly admitted or matched an
+/// idempotent duplicate - a lost-ack retry of the producer chain's current
+/// head - which the REST layer answers `200` (no new row written) rather than
+/// `202`.
+#[domain_model]
 #[derive(Debug, Clone)]
 pub enum PublishAck {
     Accepted(Event),
     Duplicate(Event),
 }
 
-impl PublishAck {
-    /// The stamped event, discarding the accepted/duplicate distinction - for
-    /// callers (the batch loop) that only need the event.
-    #[must_use]
-    pub fn into_event(self) -> Event {
-        match self {
-            Self::Accepted(event) | Self::Duplicate(event) => event,
-        }
-    }
+/// Outcome of a synchronous publish (`Prefer: wait=N`, DESIGN.md:1335): the
+/// backend stored every admitted event within N (`201 Created`), N elapsed
+/// first with the events still enqueued to be stored later (`202 Accepted`),
+/// or every event was a duplicate so nothing was enqueued and there was
+/// nothing to wait for (`200 OK`). An append failure is retried, never
+/// answered, so it surfaces as `TimedOut`, not an error.
+#[domain_model]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncPublishAck {
+    Stored,
+    TimedOut,
+    Duplicate,
 }
 
 /// Dedup protocol mode a producer registers under (`ADR-0004`).
@@ -79,6 +88,61 @@ impl PublishAck {
 pub enum ProducerMode {
     Chained,
     Monotonic,
+}
+
+/// A synchronous-publish trace: a per-publish UUID the broker mints and the
+/// waiting request subscribes to (feature 0007 §4.1). Never on the wire.
+#[domain_model]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SyncTrace(Uuid);
+
+impl SyncTrace {
+    /// A fresh trace. A v4 (random) UUID rather than a time-ordered v7, so new
+    /// trace rows do not cluster at the tail of the outbox's non-unique `trace`
+    /// index (where an ack's countdown could gap-lock the next insert).
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+
+    /// The underlying id, for subscribing and for stamping the outbox row.
+    #[must_use]
+    pub fn id(self) -> Uuid {
+        self.0
+    }
+}
+
+impl Default for SyncTrace {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// How a prepared publish is stamped onto the outbox: an async publish records
+/// nothing, a synchronous publish rides a [`SyncTrace`] its waiting request is
+/// told the completion of. An enum rather than an `Option<Uuid>` argument, the
+/// gear's convention for a parameter with two distinct meanings.
+#[domain_model]
+#[derive(Debug, Clone, Copy)]
+pub enum OutboxStamp {
+    Async,
+    Sync(SyncTrace),
+}
+
+impl OutboxStamp {
+    /// Whether this is a synchronous publish (the outbox row is flushed
+    /// `Flush::Sync` and the batch is enqueued under its trace).
+    const fn is_sync(self) -> bool {
+        matches!(self, Self::Sync(_))
+    }
+
+    /// The trace to enqueue the row under, if any.
+    const fn trace(self) -> Option<Uuid> {
+        match self {
+            Self::Sync(trace) => Some(trace.0),
+            Self::Async => None,
+        }
+    }
 }
 
 /// Input to `IngestService::register_producer` - this codebase's convention
@@ -112,20 +176,13 @@ pub struct ProducerRecord {
     pub mode: ProducerMode,
 }
 
-/// One partition's `last_sequence` cursor.
-#[domain_model]
-#[derive(Debug, Clone, Copy)]
-pub struct ProducerPartitionCursor {
-    pub partition: i32,
-    pub last_sequence: i64,
-}
-
-/// Cursors for one topic - the partitions a producer has published to.
+/// A producer's chain on one topic: its `last_sequence`. The chain is kept per
+/// `(producer_id, topic)`; no partition is part of it (ADR-0004 "Chain Scope").
 #[domain_model]
 #[derive(Debug, Clone)]
 pub struct ProducerTopicCursors {
     pub topic: GtsInstanceId,
-    pub partitions: Vec<ProducerPartitionCursor>,
+    pub last_sequence: i64,
 }
 
 /// Result of `IngestService::get_producer_cursors` (`docs/openapi.yaml`'s
@@ -140,54 +197,6 @@ pub struct ProducerCursors {
     pub topics: Vec<ProducerTopicCursors>,
 }
 
-/// Which `evbk_producer_state` rows `IngestService::reset_producer` clears.
-/// Not `Option<(String, i32)>` on the method signature itself - an enum
-/// keeps the "clear everything" vs "clear one (topic, partition)" choice
-/// explicit at call sites.
-#[domain_model]
-#[derive(Debug, Clone)]
-pub enum ProducerResetScope {
-    All,
-    TopicPartition { topic: String, partition: i32 },
-}
-
-/// The two optional selectors a `:reset` request carries, before the domain
-/// decides which [`ProducerResetScope`] they mean. Its own type (rather than a
-/// two-argument function) so the decision reads as a real conversion and the
-/// REST layer can hand it over without making the decision itself: the choice -
-/// and the rejection of an ambiguous shape - lives here in the domain, not in
-/// the request DTO.
-#[derive(Debug)]
-pub struct ProducerResetSelector {
-    pub topic: Option<String>,
-    pub partition: Option<i32>,
-}
-
-impl TryFrom<ProducerResetSelector> for ProducerResetScope {
-    type Error = DomainError;
-
-    /// A topic without a partition (or a partition without a topic) is
-    /// ambiguous - a topic spans partitions - and is refused rather than
-    /// silently widened to "reset everything". Both absent means all
-    /// producers; both present, one `(topic, partition)`.
-    fn try_from(selector: ProducerResetSelector) -> Result<Self, DomainError> {
-        match (selector.topic, selector.partition) {
-            (Some(topic), Some(partition)) => Ok(Self::TopicPartition { topic, partition }),
-            (None, None) => Ok(Self::All),
-            (Some(_), None) => Err(DomainError::Validation {
-                code: ErrorCode::InvalidBody,
-                message: "a producer reset scoped to a topic must also name its partition"
-                    .to_owned(),
-            }),
-            (None, Some(_)) => Err(DomainError::Validation {
-                code: ErrorCode::InvalidBody,
-                message: "a producer reset scoped to a partition must also name its topic"
-                    .to_owned(),
-            }),
-        }
-    }
-}
-
 #[async_trait]
 pub trait IngestService: Send + Sync {
     /// Validate, sequence, and enqueue one event for persistence
@@ -199,14 +208,45 @@ pub trait IngestService: Send + Sync {
     ) -> Result<PublishAck, DomainError>;
 
     /// Validate and enqueue a batch of events whose event types all resolve to
-    /// the same topic (`DESIGN.md:639`). Events name no topic themselves, so
+    /// the same topic (feature 0001 §5.2). Events name no topic themselves, so
     /// batch homogeneity is a property of the resolved types, not of a field
     /// the producer set.
     async fn publish_batch(
         &self,
         ctx: &SecurityContext,
         requests: Vec<PublishRequest>,
-    ) -> Result<BatchResult, DomainError>;
+    ) -> Result<BatchAck, DomainError>;
+
+    /// [`publish_event`](Self::publish_event), held until the backend stores
+    /// the event or `wait` elapses (`Prefer: wait=N`, DESIGN.md:1335). `wait`
+    /// is the requested hold, clamped to the broker's configured ceiling; pass
+    /// `Duration::MAX` to hold for as long as the broker allows. A duplicate is
+    /// answered at once, never waited on.
+    async fn publish_event_sync(
+        &self,
+        ctx: &SecurityContext,
+        request: PublishRequest,
+        wait: std::time::Duration,
+    ) -> Result<SyncPublishAck, DomainError>;
+
+    /// [`publish_batch`](Self::publish_batch), held until the backend stores
+    /// every admitted event of the batch or `wait` elapses. The hold applies
+    /// to the batch as a whole and is clamped like
+    /// [`publish_event_sync`](Self::publish_event_sync); an all-duplicate batch
+    /// is answered at once.
+    async fn publish_batch_sync(
+        &self,
+        ctx: &SecurityContext,
+        requests: Vec<PublishRequest>,
+        wait: std::time::Duration,
+    ) -> Result<SyncPublishAck, DomainError>;
+
+    /// The ceiling a `Prefer: wait=N` hold is clamped to
+    /// (`config::PublishConfig::max_wait_secs`). The REST layer reports the
+    /// applied wait with `Preference-Applied: wait=<seconds>` (RFC 7240 §3), so
+    /// a client can tell a synchronous `202` from a preference the broker
+    /// ignored; the value is whole seconds, as the header carries.
+    fn max_sync_wait(&self) -> std::time::Duration;
 
     /// Mint a fresh `producer_id` bound to `ctx`'s calling principal
     /// (`docs/openapi.yaml`'s `POST /v1/producers`).
@@ -216,7 +256,7 @@ pub trait IngestService: Send + Sync {
         input: ProducerRegistrationInput,
     ) -> Result<ProducerRegistration, DomainError>;
 
-    /// Read per-`(topic, partition)` `last_sequence` cursors for a producer.
+    /// Read a producer's per-topic `last_sequence` cursors.
     /// Principal-bound - only the registering principal may call this
     /// (`docs/openapi.yaml`'s `GET /v1/producers/{id}/cursors`).
     async fn get_producer_cursors(
@@ -246,8 +286,7 @@ pub trait IngestService: Send + Sync {
         ctx: &SecurityContext,
     ) -> Result<Vec<crate::domain::model::Topic>, DomainError>;
 
-    /// `GET /v1/topics/segments`. `ctx` is threaded to the storage backend's
-    /// `query`, which is itself security-context-first.
+    /// `GET /v1/topics/segments`.
     async fn list_topic_segments(
         &self,
         ctx: &SecurityContext,
@@ -260,14 +299,13 @@ pub trait IngestService: Send + Sync {
     async fn list_event_types(&self, ctx: &SecurityContext) -> Result<Vec<EventType>, DomainError>;
 }
 
-/// Producer identity/ownership bookkeeping - separate from `EventRepo`'s
-/// per-`(producer_id, topic, partition)` sequence state (`IdempotencyGuard`
-/// owns that) because registration/ownership/client-agent are keyed purely
-/// by `producer_id`, with no topic/partition dimension.
+/// Producer identity/ownership bookkeeping - separate from the
+/// per-`(producer_id, topic)` sequence state (`IdempotencyGuard` owns that)
+/// because registration/ownership/client-agent are keyed purely by
+/// `producer_id`, with no topic dimension.
 #[async_trait]
 pub trait ProducerRegistry: Send + Sync {
-    /// `tenant_id` (eb-single-process-implementation decision log entry 28)
-    /// is captured from `ctx.subject_tenant_id()` at the call site, never
+    /// `tenant_id` is captured from `ctx.subject_tenant_id()` at the call site, never
     /// overridable - matches `ConsumerGroup.tenant_id`'s own "non-overridable,
     /// captured from `SecurityContext`" convention.
     async fn register(
@@ -298,19 +336,33 @@ pub trait ProducerRegistry: Send + Sync {
 }
 
 /// Real `IngestService`: topic/event-type resolution via
-/// `SpecificationManager` (eb-single-process-implementation D1), partition
-/// resolution (`partition_key` else `tenant_id`,
-/// `event-broker-producer-api`'s partition contract), idempotency via
-/// `IdempotencyGuard`, and durable append via the backend resolved through
-/// `BackendResolver` (D3). Generic over one repo type implementing the traits
+/// `SpecificationManager`, partition-key resolution, and idempotency plus
+/// durable enqueue via `IdempotencyGuard`; the backend append happens when the
+/// ingest outbox drains. Generic over one repo type implementing the traits
 /// it needs (idempotency, producer registry - neither topics nor events have
 /// a repo contract).
+#[domain_model]
 pub struct IngestServiceImpl<R> {
     repo: std::sync::Arc<R>,
     policy_enforcer: PolicyEnforcer,
     spec_manager: std::sync::Arc<dyn crate::domain::specification::SpecificationManager>,
     backend_resolver: std::sync::Arc<dyn BackendResolver>,
     batch: crate::config::BatchConfig,
+    /// The `default` outbox group's partitions: what an event's ingest
+    /// partition is taken modulo, so it has to be the count the group's queue
+    /// was registered with.
+    outbox_partitions: crate::domain::outbox::OutboxPartitions,
+    /// How a synchronous publish learns its events were stored: it subscribes
+    /// to the publish's outbox trace before the enqueue commits and awaits its
+    /// completion (`domain::sync_wait::SyncWaitRegistry`, feature 0007 §4.1).
+    /// Cross-instance through the outbox's own notifier, so a publish whose rows
+    /// drain on another instance still resolves.
+    sync_wait: std::sync::Arc<dyn crate::domain::sync_wait::SyncWaitRegistry>,
+    /// The ceiling a `Prefer: wait=N` hold is clamped to
+    /// (`config::PublishConfig::max_wait_secs`): the broker never holds a
+    /// publish open longer than the operator allows, so the service that does
+    /// the waiting owns the cap rather than each caller carrying it.
+    sync_wait_max: std::time::Duration,
 }
 
 impl<R> IngestServiceImpl<R> {
@@ -319,12 +371,13 @@ impl<R> IngestServiceImpl<R> {
     /// publish request to a stream.
     ///
     /// # Errors
+    ///
     /// `DomainError::NotFound` with `EventTypeNotFound` when the type is not
-    /// registered.
+    /// registered; `DomainError::StorageUnavailable` when it cannot be read.
     async fn resolve_topic(&self, event_type: &GtsTypeId) -> Result<GtsInstanceId, DomainError> {
         self.spec_manager
             .get_event_type(event_type)
-            .await
+            .await?
             .map(|resolved| resolved.topic)
             .ok_or_else(|| DomainError::NotFound {
                 code: ErrorCode::EventTypeNotFound,
@@ -333,6 +386,19 @@ impl<R> IngestServiceImpl<R> {
             })
     }
 
+    /// The requested synchronous-publish hold, never beyond the broker's
+    /// configured ceiling (`Prefer: wait=N` is capped by configuration).
+    fn clamp_wait(&self, wait: std::time::Duration) -> std::time::Duration {
+        wait.min(self.sync_wait_max)
+    }
+
+    // Each argument is a distinct, fully-required dependency and this is the
+    // single construction site (via `build_handler_state`), so a deps-struct
+    // would add indirection without preventing any real mistake.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each is a distinct fully-required dependency, built at one site"
+    )]
     #[must_use]
     pub fn new(
         repo: std::sync::Arc<R>,
@@ -340,6 +406,9 @@ impl<R> IngestServiceImpl<R> {
         spec_manager: std::sync::Arc<dyn crate::domain::specification::SpecificationManager>,
         backend_resolver: std::sync::Arc<dyn BackendResolver>,
         batch: crate::config::BatchConfig,
+        outbox_partitions: crate::domain::outbox::OutboxPartitions,
+        sync_wait: std::sync::Arc<dyn crate::domain::sync_wait::SyncWaitRegistry>,
+        sync_wait_max: std::time::Duration,
     ) -> Self {
         Self {
             repo,
@@ -347,33 +416,49 @@ impl<R> IngestServiceImpl<R> {
             spec_manager,
             backend_resolver,
             batch,
+            outbox_partitions,
+            sync_wait,
+            sync_wait_max,
         }
     }
 }
 
-#[async_trait]
-impl<R> IngestService for IngestServiceImpl<R>
+/// One validated event, ready for the chain check and the enqueue: the
+/// stamped event and what the idempotency guard enqueues for it.
+struct PreparedPublish {
+    event: Event,
+    enqueue: crate::domain::idempotency::PublishEnqueue,
+}
+
+impl<R> IngestServiceImpl<R>
 where
-    R: crate::domain::idempotency::IdempotencyGuard + ProducerRegistry + Send + Sync + 'static,
+    R: ProducerRegistry + Send + Sync + 'static,
 {
-    async fn publish_event(
+    /// Everything a publish checks before its chain is: authorization, the
+    /// event and subject types, the topic and its provisioning, the producer,
+    /// the payload schema; then the stamped event and its ingest partition.
+    /// Writes nothing, so a batch prepares every event before enqueueing any.
+    async fn prepare_publish(
         &self,
         ctx: &SecurityContext,
         request: PublishRequest,
-    ) -> Result<PublishAck, DomainError> {
-        use crate::domain::idempotency::ProducerIdempotencyOutcome;
-
-        // Authz/tenant-scope enforcement (`gears-rust#4516`,
-        // `eb-authz-enforcement`) - before topic/schema validation, per
-        // `DESIGN.md`'s Validation Pipeline step 1 ordering.
+        stamp: OutboxStamp,
+    ) -> Result<PreparedPublish, DomainError> {
+        // Reject non-event types, then authorize before topic/schema validation
+        // (`docs/DESIGN.md`, Validation Pipeline step 1 and §3.3).
+        let event_type_resource = event_type_resource(&request.r#type)?;
         self.policy_enforcer
             .access_scope_with(
                 ctx,
-                &EVENT_TYPE_RESOURCE,
+                &event_type_resource,
                 "produce",
                 None,
                 &AccessRequest::new()
                     .resource_property("event_type_id", request.r#type.as_ref())
+                    .resource_property(
+                        toolkit_security::pep_properties::OWNER_TENANT_ID,
+                        request.tenant_id,
+                    )
                     .require_constraints(false),
             )
             .await
@@ -385,11 +470,13 @@ where
             })?;
         tenant_authorized(ctx, &self.policy_enforcer, "produce", request.tenant_id).await?;
 
-        // NOTE(perf): most first-level fields are deterministic per type (a few are type-overridden), so they could be checked without full schema validation.
+        // NOTE(perf): most first-level fields are deterministic per type (a few
+        // are type-overridden), so they could be checked without full schema
+        // validation.
         let event_type = self
             .spec_manager
             .get_event_type(&request.r#type)
-            .await
+            .await?
             .ok_or_else(|| DomainError::NotFound {
                 code: ErrorCode::EventTypeNotFound,
                 message: format!("event type '{}' is not registered", request.r#type),
@@ -401,7 +488,7 @@ where
         let topic = self
             .spec_manager
             .get_topic(&event_type.topic)
-            .await
+            .await?
             .ok_or_else(|| DomainError::NotFound {
                 code: ErrorCode::TopicNotFound,
                 message: format!("topic '{}' is not registered", event_type.topic),
@@ -410,12 +497,25 @@ where
 
         subject_type_allowed(&event_type, request.subject_type.as_ref())?;
 
-        // A chained/monotonic publish names a registered producer. Resolve it
-        // before running the chain check so an unknown `producer_id` - never
-        // registered, or aged out - is reported as a `404 ProducerNotFound`
-        // naming the producer, not as the `503` a downstream foreign-key
-        // failure in `check_and_enqueue` would otherwise surface
-        // (`DESIGN.md:1163`). The producer's own outbox recovers this into a
+        // A topic its backend does not hold yet cannot take events: answered
+        // `503`, retryable, until provisioning completes (feature 0006 §4.2).
+        if !matches!(
+            self.spec_manager.topic_state(&topic.id).await?,
+            Some(crate::domain::specification::TopicState::Provisioned { .. })
+        ) {
+            return Err(DomainError::StorageUnavailable {
+                reason: format!(
+                    "topic '{}' is not provisioned on its storage backend yet",
+                    topic.id
+                ),
+                source: None,
+            });
+        }
+
+        // A chained/monotonic publish names a registered producer. Resolving it
+        // before the chain check reports an unknown `producer_id` - never
+        // registered, or since deleted - as a `404 ProducerNotFound` naming the
+        // producer. The producer's own outbox recovers this into a
         // re-registration, so it is the producer resource that is named (not
         // the targeted topic). The same lookup yields the registered `mode`,
         // which the chain check needs to apply the right rule. A stateless
@@ -455,27 +555,15 @@ where
 
         // The routing contract is the event type's, not this publisher's: the
         // type names a member of the event with a JSON Pointer, and the value
-        // at it is what decides the partition. Every producer of the type
-        // therefore routes identically, which is the property consumers of it
-        // depend on.
-        let partition_input =
-            crate::domain::backend::partition_input(&request, &event_type.partition_key)?;
-        let partition = partition_for(
-            &partition_input,
-            (*topic.settings.partitions().value())
-                .max(1)
-                .cast_unsigned(),
-        );
+        // at it is what the backend partitions the event by. Ingest assigns no
+        // topic partition: it only places the event in the ingest outbox
+        // partition of its key, so events of one key drain in publish order.
+        let key = crate::domain::backend::partition_input(&request, &event_type.partition_key)?;
+        let ingest_partition =
+            crate::domain::outbox::outbox_partition_for(&topic.id, &key, self.outbox_partitions);
 
-        // Broker-logical `sequence` is genuinely unknowable here: persist
-        // is now asynchronous (design.md D5's ingest-side outbox), matching
-        // DESIGN.md's "the producer gets 202 in milliseconds... backend
-        // persist completes asynchronously" - `sequence`/`sequence_time`
-        // stay `None` on the returned `Event` rather than a wasteful
-        // read-after-write for a value this design doesn't have yet.
-        // The resolved topic and the selected `partition` are stamped here so
-        // the outbox payload (this exact `Event`, JSON-encoded - no separate
-        // envelope type) carries both through to the leased handler.
+        // Partition, sequence and sequence time are the backend's, assigned
+        // when the outbox drains the event; none is known here.
         let event = Event {
             id: request.id,
             r#type: request.r#type,
@@ -488,66 +576,61 @@ where
             trace_parent: request.trace_parent,
             data: request.data,
             meta: request.meta,
-            partition: Some(partition),
+            partition: None,
             sequence: None,
             sequence_time: None,
         };
-        let payload = serde_json::to_vec(&event)
-            .map_err(|e| DomainError::Internal(format!("serialize ingest outbox payload: {e}")))?;
+        let payload = serde_json::to_vec(&crate::domain::outbox::IngestPayload {
+            topic: topic.id.clone(),
+            key,
+            event: event.clone(),
+            // A sync row is flushed `Flush::Sync` by the worker so a `201`'s
+            // event is immediately readable; the wait itself rides the outbox
+            // trace below, not the payload.
+            stored_wait: stamp.is_sync(),
+        })
+        .map_err(|e| DomainError::Internal(format!("serialize ingest outbox payload: {e}")))?;
 
         let mut request = crate::domain::idempotency::PublishEnqueue::builder(
-            partition,
+            ingest_partition,
             payload,
             crate::domain::outbox::INGEST_PAYLOAD_TYPE,
         );
+        // Enqueue under the publish's trace, so the admitted rows become one
+        // traced outbox batch the waiting publish is told the completion of.
+        if let Some(trace) = stamp.trace() {
+            request = request.trace(trace);
+        }
         if let Some(meta) = event.meta.clone() {
             request = request.chain(crate::domain::idempotency::ProducerChainCheck {
                 producer_id: meta.producer_id,
                 topic: topic.id.clone(),
-                partition,
                 previous: meta.previous.unwrap_or(0),
                 sequence: meta.sequence,
                 // `producer_mode` is set for every non-nil producer resolved
-                // above; a nil producer_id keeps the historical chained rule.
+                // above; a nil producer_id is checked as chained.
                 mode: producer_mode.unwrap_or(ProducerMode::Chained),
             });
         }
 
-        // `check_and_enqueue` is the one DB transaction spanning the
-        // producer-chain check and the outbox insert (design.md D5;
-        // `domain/idempotency.rs`'s trait doc) - the actual backend persist
-        // happens later, out-of-transaction, when the outbox processor
-        // drains the row.
-        match self.repo.check_and_enqueue(request.build()).await? {
-            ProducerIdempotencyOutcome::Accept => {}
-            ProducerIdempotencyOutcome::DuplicateIgnore => {
-                return Ok(PublishAck::Duplicate(event));
-            }
-            ProducerIdempotencyOutcome::SequenceViolation { last_sequence } => {
-                return Err(DomainError::SequenceViolation {
-                    topic: topic.id.to_string(),
-                    partition,
-                    last_sequence,
-                });
-            }
-        }
-
-        Ok(PublishAck::Accepted(event))
+        Ok(PreparedPublish {
+            event,
+            enqueue: request.build(),
+        })
     }
 
-    #[toolkit_macros::temporary(
-        tracking = "gears-rust#4347",
-        reason = "loops over `publish_event` per event instead of one \
-                  atomic multi-event append/idempotency-check - no shared \
-                  transaction spans the batch (see the comment above); must \
-                  become real batch-level append/check-and-record once a \
-                  transactional backend or outbox lands"
-    )]
-    async fn publish_batch(
+    /// Everything a batch publish checks and prepares before any row is
+    /// written (feature 0001 §5.2): the size and payload bounds, the
+    /// repeated-id and single-topic rules, each event's own preparation
+    /// (stamped with `trace`), and each run's shape (R3). Writes nothing, so
+    /// the caller runs the one enqueue transaction. Shared by the async and
+    /// synchronous batch paths.
+    async fn prepare_batch(
         &self,
         ctx: &SecurityContext,
         requests: Vec<PublishRequest>,
-    ) -> Result<BatchResult, DomainError> {
+        stamp: OutboxStamp,
+    ) -> Result<Vec<crate::domain::idempotency::PublishEnqueue>, DomainError> {
         let max = self.batch.max_size as usize;
         if requests.len() > max {
             return Err(DomainError::BatchTooLarge {
@@ -555,8 +638,14 @@ where
                 max,
             });
         }
+        // Feature 0001 §5.2 R1.
         if requests.is_empty() {
-            return Ok(BatchResult::default());
+            return Err(DomainError::EmptyBatch);
+        }
+        // Feature 0001 §5.2 R13, decided on the request as sent, before it is
+        // split into runs.
+        if let Some(index) = first_repeated_event_id(&requests) {
+            return Err(DomainError::DuplicateEventId { index });
         }
 
         // The payload byte bound is measured from the requests' own data. The
@@ -596,23 +685,181 @@ where
             }
         }
 
-        // Per-event durability is not rolled back on a mid-batch
-        // `SequenceViolation` (documented simplification of this in-memory
-        // backing - see `eb-rest-handlers`'s design.md; a real transactional
-        // backend would wrap the whole batch in one transaction instead).
-        // A batch is all-or-nothing: any one event's rejection (payload
-        // validation, sequence violation, ...) rejects the whole request with
-        // that error, rather than being swallowed into a per-event `failed`
-        // list behind a `202`. (Per-event durability of the events that ran
-        // before the failure is still not rolled back - the same documented
-        // simplification of this in-memory backing noted above; a transactional
-        // backend validates the batch before appending any of it.)
-        let mut result = BatchResult::default();
+        // All-or-nothing: every event is validated before any is enqueued, and
+        // the enqueue is one transaction that a chain violation rolls back.
+        let mut enqueues = Vec::with_capacity(requests.len());
         for request in requests {
-            let stamped = self.publish_event(ctx, request).await?.into_event();
-            result.accepted.push(stamped.id);
+            let PreparedPublish { enqueue, .. } = self.prepare_publish(ctx, request, stamp).await?;
+            enqueues.push(enqueue);
         }
-        Ok(result)
+        // Feature 0001 §5.2 R3: each run's own shape, before any chain state
+        // is read. It needs each producer's mode, which preparing resolved. A
+        // single publish is a run of one that R3 does not gate; its chain
+        // decision refuses a non-advancing link on its own.
+        for run in ChainRun::split(&enqueues) {
+            if let Some(index) = run.first_malformed() {
+                return Err(DomainError::MalformedRun { index });
+            }
+        }
+        Ok(enqueues)
+    }
+}
+
+#[async_trait]
+impl<R> IngestService for IngestServiceImpl<R>
+where
+    R: crate::domain::idempotency::IdempotencyGuard + ProducerRegistry + Send + Sync + 'static,
+{
+    async fn publish_event(
+        &self,
+        ctx: &SecurityContext,
+        request: PublishRequest,
+    ) -> Result<PublishAck, DomainError> {
+        let PreparedPublish { event, enqueue } = self
+            .prepare_publish(ctx, request, OutboxStamp::Async)
+            .await?;
+
+        // `check_and_enqueue` is the one DB transaction spanning the
+        // producer-chain check and the outbox insert - the backend append
+        // happens later, out of transaction, when the outbox processor
+        // drains the row.
+        match self.repo.check_and_enqueue(enqueue).await? {
+            ProducerIdempotencyOutcome::Accept => {}
+            ProducerIdempotencyOutcome::DuplicateIgnore => {
+                return Ok(PublishAck::Duplicate(event));
+            }
+            // A single publish is a run of one (feature 0001 §5.2), so its
+            // violation names index 0.
+            ProducerIdempotencyOutcome::SequenceViolation {
+                producer_id,
+                last_sequence,
+            } => {
+                return Err(DomainError::SequenceViolation {
+                    index: 0,
+                    producer_id,
+                    topic: event.topic.to_string(),
+                    last_sequence,
+                });
+            }
+        }
+
+        Ok(PublishAck::Accepted(event))
+    }
+
+    async fn publish_batch(
+        &self,
+        ctx: &SecurityContext,
+        requests: Vec<PublishRequest>,
+    ) -> Result<BatchAck, DomainError> {
+        let enqueues = self
+            .prepare_batch(ctx, requests, OutboxStamp::Async)
+            .await?;
+        let expected = enqueues.len();
+        let outcomes = self.repo.check_and_enqueue_batch(enqueues).await?;
+        if outcomes.len() != expected {
+            return Err(DomainError::Internal(format!(
+                "the batch enqueue answered {} outcomes for {expected} events",
+                outcomes.len(),
+            )));
+        }
+        // Every event a duplicate -> `200` (feature 0001 §5.2 "Outcome"). The
+        // pseudo-code's `last_seen_at` touch on `event_broker_producer` is not
+        // made: the column is not yet implemented (tracked in #5651).
+        if outcomes
+            .iter()
+            .all(|outcome| *outcome == ProducerIdempotencyOutcome::DuplicateIgnore)
+        {
+            Ok(BatchAck::Duplicate)
+        } else {
+            Ok(BatchAck::Accepted)
+        }
+    }
+
+    async fn publish_event_sync(
+        &self,
+        ctx: &SecurityContext,
+        request: PublishRequest,
+        wait: std::time::Duration,
+    ) -> Result<SyncPublishAck, DomainError> {
+        let wait = self.clamp_wait(wait);
+        // A fresh per-publish trace: the row is enqueued under it and the outbox
+        // tells us once it is stored (feature 0007 §4.1).
+        let trace = SyncTrace::new();
+        let PreparedPublish { event, enqueue } = self
+            .prepare_publish(ctx, request, OutboxStamp::Sync(trace))
+            .await?;
+
+        // Subscribe before the enqueue commits, so the completion can never be
+        // missed; a duplicate (no row enqueued) drops it with no statement.
+        let waiter = self.sync_wait.subscribe(trace);
+        match self.repo.check_and_enqueue(enqueue).await? {
+            ProducerIdempotencyOutcome::Accept => {}
+            // A duplicate wrote no row and is already durable: `200`, no wait.
+            ProducerIdempotencyOutcome::DuplicateIgnore => return Ok(SyncPublishAck::Duplicate),
+            ProducerIdempotencyOutcome::SequenceViolation {
+                producer_id,
+                last_sequence,
+            } => {
+                return Err(DomainError::SequenceViolation {
+                    index: 0,
+                    producer_id,
+                    topic: event.topic.to_string(),
+                    last_sequence,
+                });
+            }
+        }
+
+        Ok(if waiter.stored(wait).await {
+            SyncPublishAck::Stored
+        } else {
+            SyncPublishAck::TimedOut
+        })
+    }
+
+    async fn publish_batch_sync(
+        &self,
+        ctx: &SecurityContext,
+        requests: Vec<PublishRequest>,
+        wait: std::time::Duration,
+    ) -> Result<SyncPublishAck, DomainError> {
+        let wait = self.clamp_wait(wait);
+        let trace = SyncTrace::new();
+        let enqueues = self
+            .prepare_batch(ctx, requests, OutboxStamp::Sync(trace))
+            .await?;
+        let expected = enqueues.len();
+
+        // Subscribe before the enqueue commits, so the batch's completion can
+        // never be missed; an all-duplicate batch drops it with no statement.
+        let waiter = self.sync_wait.subscribe(trace);
+        let outcomes = self.repo.check_and_enqueue_batch(enqueues).await?;
+        if outcomes.len() != expected {
+            return Err(DomainError::Internal(format!(
+                "the batch enqueue answered {} outcomes for {expected} events",
+                outcomes.len(),
+            )));
+        }
+        // Only admitted events are enqueued under the trace, so only they are
+        // waited on; an all-duplicate batch admits none (no traced batch is
+        // enqueued) and is answered `200` at once (feature 0001 §5.2
+        // "Outcome").
+        let admitted = outcomes
+            .iter()
+            .filter(|outcome| **outcome == ProducerIdempotencyOutcome::Accept)
+            .count();
+        if admitted == 0 {
+            return Ok(SyncPublishAck::Duplicate);
+        }
+
+        Ok(if waiter.stored(wait).await {
+            SyncPublishAck::Stored
+        } else {
+            SyncPublishAck::TimedOut
+        })
+    }
+
+    fn max_sync_wait(&self) -> std::time::Duration {
+        self.sync_wait_max
     }
 
     async fn register_producer(
@@ -620,6 +867,11 @@ where
         ctx: &SecurityContext,
         input: ProducerRegistrationInput,
     ) -> Result<ProducerRegistration, DomainError> {
+        // Validated before the registration is written, on every path in (REST
+        // and the in-process broker): this `client_agent` is the one that
+        // persists, into a column documented as printable ASCII within 256
+        // bytes.
+        event_broker_sdk::validate::client_agent(&input.client_agent)?;
         self.repo
             .register(
                 ctx.subject_id(),
@@ -683,7 +935,9 @@ where
                 resource: producer_id.to_string(),
             });
         }
-        self.repo.reset(producer_id, &scope).await
+        self.repo.reset(producer_id, &scope).await?;
+        audit::emit_producer_chain_reset(ctx, producer_id, &scope);
+        Ok(())
     }
 
     async fn list_topics(
@@ -696,37 +950,54 @@ where
         // convention and to keep a denial expressible; the specification
         // manager it reads from is the ctx-less Tier-1 boundary (it also
         // serves ctx-less retention/refresh workers).
-        Ok(self.spec_manager.list_topics().await)
+        self.spec_manager.list_topics().await
     }
 
     async fn list_topic_segments(
         &self,
-        ctx: &SecurityContext,
+        _ctx: &SecurityContext,
         topic_id: &GtsInstanceId,
         partition: i32,
     ) -> Result<crate::domain::model::TopicSegmentManifest, DomainError> {
-        let topic =
-            self.spec_manager
-                .get_topic(topic_id)
-                .await
-                .ok_or_else(|| DomainError::NotFound {
-                    code: ErrorCode::TopicNotFound,
-                    message: format!("topic '{topic_id}' is not registered"),
-                    resource: topic_id.to_string(),
-                })?;
+        let topic = self
+            .spec_manager
+            .get_topic(topic_id)
+            .await?
+            .ok_or_else(|| DomainError::NotFound {
+                code: ErrorCode::TopicNotFound,
+                message: format!("topic '{topic_id}' is not registered"),
+                resource: topic_id.to_string(),
+            })?;
+        // Checked here rather than left to the backend: a backend reports an
+        // unknown partition as not found, while a partition the topic does not
+        // have is a malformed request.
+        let partitions = *topic.settings.partitions().value();
+        if !(0..partitions).contains(&partition) {
+            return Err(DomainError::Validation {
+                code: ErrorCode::InvalidPartition,
+                message: format!("partition must be in [0, {partitions}) for this topic"),
+            });
+        }
         let backend = self.backend_resolver.resolve(&topic);
-        let segments = backend
+        let at = event_broker_sdk::backend::TopicPartition::new(
+            topic.id.clone(),
+            event_broker_sdk::backend::Partition::new(partition.cast_unsigned()),
+        );
+        let segments = match backend
             .query(
-                ctx,
-                topic.id.as_ref(),
-                partition.cast_unsigned(),
+                &at,
                 event_broker_sdk::models::PartitionRange {
                     start_offset: None,
                     end_offset: None,
                     limit: u32::MAX,
                 },
             )
-            .await?;
+            .await
+        {
+            // Nothing provisioned yet: the partition holds nothing.
+            Err(event_broker_sdk::backend::BackendError::NotProvisioned { .. }) => Vec::new(),
+            segments => segments?,
+        };
         let Some(segment) = segments.into_iter().next() else {
             return Ok(crate::domain::model::TopicSegmentManifest {
                 topic: topic.id,
@@ -735,11 +1006,7 @@ where
                 end_sequence: Sequence::assigned(0),
                 start_time: None,
                 end_time: None,
-                segments: vec![serde_json::json!({
-                    "start_sequence": 0,
-                    "end_sequence": 0,
-                    "event_count": 0,
-                })],
+                segments: vec![],
             });
         };
         Ok(crate::domain::model::TopicSegmentManifest {
@@ -759,21 +1026,16 @@ where
     ) -> Result<Vec<EventType>, DomainError> {
         // Same rationale as `list_topics`: event types are global resources,
         // read from the ctx-less Tier-1 specification manager.
-        Ok(self.spec_manager.list_event_types().await)
+        self.spec_manager.list_event_types().await
     }
 }
 
-/// The partition a resolved key belongs to.
-///
-/// Murmur3 (32-bit, x86 variant) with a zero seed, masked to strip the sign bit
-/// so the modulo operates on a non-negative value, then reduced by the topic's
-/// partition count. The mask is what keeps a signed remainder out of the
-/// answer. Hashed the same way the SDK does
-/// (`event-broker-sdk/src/mock/partitioning.rs`), so a producer computing a
-/// local hint and the broker deciding authoritatively cannot disagree.
-fn partition_for(key: &str, partition_count: u32) -> i32 {
-    let count = partition_count.max(1);
-    ((toolkit_stable_hash::murmur3_x86_32(key.as_bytes(), 0) & 0x7FFF_FFFF) % count).cast_signed()
+/// The request index of the first event whose `id` an earlier event of the
+/// batch already carries (feature 0001 §5.2 R13): the repeat is named, not the
+/// event it repeats.
+fn first_repeated_event_id(requests: &[PublishRequest]) -> Option<usize> {
+    let mut seen = std::collections::HashSet::with_capacity(requests.len());
+    requests.iter().position(|request| !seen.insert(request.id))
 }
 
 /// `event_type.allowed_subject_types` pattern grammar (`DESIGN.md` §3.1) via

@@ -1,4 +1,3 @@
-// Created: 2026-09-17 by Virtuozzo International GmbH
 //! The search service: one page of declarations, its matching overrides, and
 //! the attribution of every hit to the field that matched.
 //!
@@ -10,6 +9,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use toolkit_macros::domain_model;
 
 use toolkit_db::secure::DBRunner;
 use toolkit_odata::PageInfo;
@@ -25,6 +25,7 @@ use crate::domain::value::StoredValue;
 
 /// One result: a declaration and the field that matched; for a value match,
 /// the stored row it was found in.
+#[domain_model]
 #[derive(Debug, Clone)]
 pub struct Hit {
     /// The setting.
@@ -39,6 +40,7 @@ pub struct Hit {
 }
 
 /// A page of hits: the settings the page holds, expanded into their hits.
+#[domain_model]
 #[derive(Debug, Clone)]
 pub struct SearchPage {
     /// In key order; a setting's own hit before its override hits, those in
@@ -46,9 +48,13 @@ pub struct SearchPage {
     pub hits: Vec<Hit>,
     /// The cursors of the underlying page of settings.
     pub page_info: PageInfo,
+    /// How many settings match in all — settings, not hits: the walk pages
+    /// settings, and a setting's hits travel with it.
+    pub total_count: u64,
 }
 
 /// The service.
+#[domain_model]
 pub struct SearchService<R: SearchRepository> {
     repo: R,
 }
@@ -168,12 +174,13 @@ impl<R: SearchRepository> SearchService<R> {
         Ok(SearchPage {
             hits,
             page_info: page.page_info,
+            total_count: page.total_count,
         })
     }
 }
 
 /// The field a declaration-level hit is attributed to: the first that contains
-/// the needle, in the order a client is told about them — key, description,
+/// the needle, in the order a client is told about them — key, display name, description,
 /// category name, Schema Default. `None` when none does, which is the case
 /// for a declaration on the page only because an override matched.
 ///
@@ -189,6 +196,13 @@ pub fn declaration_match(
     // @cpt-begin:cpt-cf-settings-service-algo-search-discoverability-attribution:p2:inst-sd-attr-1
     if needle.matches(&declaration.key) {
         return Some(MatchedField::Key);
+    }
+    if declaration
+        .display_name
+        .as_deref()
+        .is_some_and(|d| needle.matches(d))
+    {
+        return Some(MatchedField::DisplayName);
     }
     if declaration
         .description

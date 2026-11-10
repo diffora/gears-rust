@@ -1,4 +1,3 @@
-// Created: 2026-08-13 by Virtuozzo International GmbH
 //! Which categories an administrator may see.
 //!
 //! The policy decision point returns more than allow or deny — it returns
@@ -27,6 +26,7 @@
 //! undomained categories, which every scoped caller sees anyway, until the
 //! policy is fixed. Only the *absence* of a domain constraint means unrestricted.
 
+use toolkit_macros::domain_model;
 use toolkit_security::{AccessScope, ScopeFilter, ScopeValue};
 
 /// The `AccessScope` property carrying an administrative-domain restriction.
@@ -36,6 +36,7 @@ use toolkit_security::{AccessScope, ScopeFilter, ScopeValue};
 pub const DOMAIN_PROPERTY: &str = "domain_affinity";
 
 /// The domains a caller may see, or unrestricted.
+#[domain_model]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DomainVisibility {
     /// No domain restriction — every category is visible.

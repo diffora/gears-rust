@@ -104,7 +104,6 @@ pub struct ReadSnapshot {
     /// Every price of the entries the items name, as stored: a binding renders its row.
     pub rows: BTreeMap<Uuid, price::Model>,
     pub defaults: TenantDefaults,
-    pub rounding: String,
     pub dimensions: BTreeMap<Uuid, Option<String>>,
     pub resolved: Vec<ItemResolution>,
     pub versions: BTreeMap<Uuid, SkuVersion>,
@@ -121,6 +120,13 @@ pub struct LocalGeneration {
     book: price_book::Model,
     dimensions: Vec<crate::infra::storage::entity::dimension_key::Model>,
     settings: serde_json::Value,
+}
+
+impl LocalGeneration {
+    /// The revision's book as the snapshot read it (D-524 judges its window at a new sale).
+    pub(crate) fn book(&self) -> &price_book::Model {
+        &self.book
+    }
 }
 
 pub async fn load_price(
@@ -150,6 +156,13 @@ pub async fn load_price(
     let book = book_repo::find(tx, &children, tenant, entry.book_id)
         .await?
         .ok_or_else(|| corrupt(format!("entry {} has no book", entry.id)))?;
+    // Served as stored, so it is read as the in-process read reads it: money and fee in canonical
+    // text, a currency spec in range that names the book's currency; anything else is corrupt.
+    price_repo::in_book(
+        &row,
+        price_book_entry_repo::model_of(&entry)?,
+        &book.currency,
+    )?;
     Ok(PriceSnapshot { row, entry, book })
     // @cpt-end:cpt-cf-bss-pricing-flow-read-contract-events:p1:inst-read-contract-events-flow-5
 }
@@ -246,8 +259,8 @@ pub async fn read_stored_at(
         let model = price_book_entry_repo::model_of(&e)?;
         let domain = of_entry
             .iter()
-            .map(|p| price_repo::to_domain(p, model))
-            .collect::<Result<Vec<_>, _>>()?;
+            .map(|p| price_repo::in_book(p, model, &book.currency))
+            .collect::<Result<Vec<_>, RepoError>>()?;
         prices.extend(of_entry.into_iter().map(|p| (p.id, p)));
         let values = e
             .dimension_key
@@ -315,7 +328,6 @@ pub async fn read_stored_at(
             default_tax_category: settings.default_tax_category,
             invoice_line_templates,
         },
-        rounding: settings.default_rounding,
         dimensions,
         resolved: Vec::new(),
         versions: BTreeMap::new(),
@@ -466,7 +478,7 @@ async fn snapshot(
     item: Option<Uuid>,
     date: Date,
 ) -> Result<ReadSnapshot, CanonicalError> {
-    support::transaction_door(&state.db.db(), move |tx| {
+    support::transaction_door_read(&state.db.db(), move |tx| {
         let scope = scope.clone();
         Box::pin(async move {
             read_stored_at(

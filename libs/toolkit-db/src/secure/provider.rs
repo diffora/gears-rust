@@ -1,6 +1,6 @@
 use sea_orm::{ColumnTrait, Condition, EntityTrait, ExprTrait, sea_query::Expr};
 
-use crate::secure::{AccessScope, ScopableEntity, ScopeProperties};
+use crate::secure::{AccessScope, ScopableEntity};
 use toolkit_security::pep_properties;
 
 /// Provides tenant filtering logic for scoped queries.
@@ -55,7 +55,7 @@ impl TenantFilterProvider for SimpleTenantFilter {
         }
 
         // Entity has no tenant column but tenant IDs requested → deny all
-        let Some(tcol) = E::tenant_col() else {
+        let Some(tcol) = E::SCOPE.tenant() else {
             return Some(Condition::all().add(Expr::value(false)));
         };
 

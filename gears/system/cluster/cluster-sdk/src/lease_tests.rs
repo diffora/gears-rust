@@ -140,14 +140,23 @@ async fn the_clock_follows_virtual_time() {
     // The virtual clock is the one built to track `tokio::time::advance`; the
     // production `LeaseClock::new()` is the pure wall clock and deliberately does
     // not move under a paused runtime (that is the H3 fix).
+    //
+    // The wall anchor is sampled before `before`, so real wall time spent between
+    // those reads reduces the observed delta. Bracket both with wall reads and
+    // forgive exactly that window, so a clock that under-reports the advance still
+    // fails.
+    let wall = LeaseClock::new();
+    let sampled_from = wall.now_millis();
     let clock = LeaseClock::virtual_clock();
     let before = clock.now_millis();
+    let sampled_until = wall.now_millis();
     tokio::time::advance(Duration::from_secs(30)).await;
     let after = clock.now_millis();
+    let sampling_window = sampled_until.saturating_sub(sampled_from);
     assert!(
-        after >= before + 30_000,
-        "advancing virtual time by 30s must move the lease clock at least as far \
-         ({before} -> {after})"
+        after.saturating_sub(before) >= 30_000_u64.saturating_sub(sampling_window),
+        "advancing virtual time by 30s must move the lease clock at least as far, \
+         less the {sampling_window}ms sampling window ({before} -> {after})"
     );
 }
 
@@ -167,13 +176,29 @@ async fn a_lease_lapses_when_virtual_time_passes_its_deadline() {
 async fn two_clocks_anchored_together_agree_across_an_advance() {
     // The property the cross-handle renew test rests on: a lease written through
     // one backend handle is evaluated identically by another.
+    //
+    // The clocks can only differ by the real wall time between their two anchor
+    // samples, which a preempted thread can stretch past a millisecond, or (once
+    // real time has caught up with the virtual offset and both read the wall) by
+    // the wall time between their two reads. Bracket the anchors and the reads with
+    // wall reads so the bound is exact rather than a fixed guess.
+    let wall = LeaseClock::new();
+    let anchored_from = wall.now_millis();
     let first = LeaseClock::virtual_clock();
     let second = LeaseClock::virtual_clock();
+    let anchored_until = wall.now_millis();
     tokio::time::advance(Duration::from_mins(1)).await;
-    let drift = first.now_millis().abs_diff(second.now_millis());
+    let read_from = wall.now_millis();
+    let first_now = first.now_millis();
+    let second_now = second.now_millis();
+    let read_until = wall.now_millis();
+    let drift = first_now.abs_diff(second_now);
+    let anchor_window = anchored_until.saturating_sub(anchored_from);
+    let read_window = read_until.saturating_sub(read_from);
     assert!(
-        drift <= 1,
-        "clocks anchored together must agree, drift {drift}ms"
+        drift <= anchor_window.saturating_add(read_window),
+        "clocks anchored together must agree up to the anchor and read windows, \
+         drift {drift}ms > anchor window {anchor_window}ms + read window {read_window}ms"
     );
 }
 
@@ -275,9 +300,11 @@ async fn the_production_clock_ignores_virtual_time_but_the_test_clock_tracks_it(
     const WALL_CLOCK_TOLERANCE_MS: u64 = 1_000;
 
     let system = LeaseClock::new();
+    let sampled_from = system.now_millis();
     let test = LeaseClock::virtual_clock();
     let system_before = system.now_millis();
     let test_before = test.now_millis();
+    let sampled_until = system.now_millis();
 
     tokio::time::advance(Duration::from_hours(1)).await; // one hour of virtual time
 
@@ -292,12 +319,12 @@ async fn the_production_clock_ignores_virtual_time_but_the_test_clock_tracks_it(
 
     // The injected virtual clock still fast-forwards, so TTL scenarios keep lapsing.
     // Its wall anchor is sampled before `test_before`, so real wall time spent between
-    // those reads reduces the observed delta; use the same bound accepted above.
+    // those reads reduces the observed delta; forgive exactly that bracketed window.
     let test_after = test.now_millis();
+    let sampling_window = sampled_until.saturating_sub(sampled_from);
     assert!(
-        test_after.saturating_sub(test_before)
-            >= 3_600_000_u64.saturating_sub(WALL_CLOCK_TOLERANCE_MS),
-        "the injected virtual clock must still track `advance` ({test_before} -> \
-         {test_after})"
+        test_after.saturating_sub(test_before) >= 3_600_000_u64.saturating_sub(sampling_window),
+        "the injected virtual clock must still track `advance`, less the \
+         {sampling_window}ms sampling window ({test_before} -> {test_after})"
     );
 }

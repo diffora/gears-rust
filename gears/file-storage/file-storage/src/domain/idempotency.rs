@@ -1,14 +1,11 @@
 //! Domain types for upload idempotency.
-//!
-//! @cpt-cf-file-storage-fr-upload-idempotency
 
 use toolkit_macros::domain_model;
 use uuid::Uuid;
 
 use crate::infra::content::hash;
 
-/// The stored response for an idempotency key lookup.
-/// Returned to a retrying caller unchanged.
+/// The stored response for an idempotency key, returned unchanged to a retrying caller.
 #[domain_model]
 #[derive(Debug, Clone)]
 pub struct IdempotencyRecord {
@@ -23,33 +20,20 @@ pub struct IdempotencyRecord {
     /// JSON-serialized `UploadTicketDto` body.
     pub response_body: String,
     pub response_etag: String,
-    /// SHA-256 over [`compute_request_hash`]'s canonicalized encoding of the
-    /// request that created this record. A replay recomputes this hash from
-    /// the current request and rejects a mismatch as `Conflict` (P2
-    /// remediation 2.1) — see `FileService::create_file`.
+    /// SHA-256 over [`compute_request_hash`]'s encoding of the creating request. A replay
+    /// recomputes it and rejects a mismatch as `Conflict` (see `FileService::create_file`).
     pub request_hash: Vec<u8>,
 }
 
-/// Canonicalize and hash the identity-relevant fields of a `POST /files`
-/// request, for idempotency-replay body-match verification (P2 remediation
-/// 2.1).
+/// Canonicalize and hash the identity-relevant fields of a `POST /files` request, for
+/// idempotency-replay body-match verification.
 ///
-/// Every field is length-prefixed (a 4-byte little-endian length followed by
-/// its bytes) before being fed to the hasher. `hash::sha256_parts` merely
-/// concatenates its inputs with no delimiter between them, so a naive
-/// `sha256_parts(&[name.as_bytes(), gts.as_bytes()])` would hash
-/// `(name="ab", gts="c")` and `(name="a", gts="bc")` identically, letting a
-/// caller dodge the mismatch check by shifting bytes across adjacent fields.
-/// Length-prefixing removes that ambiguity without changing
-/// `sha256_parts`/`sha256` semantics for their other call site
-/// (`domain::etag::content_etag`, which only ever hashes fixed-width UUID
-/// bytes plus a constant prefix — no ambiguity there, and changing the
-/// helper's semantics would alter already-issued `ETags` for no benefit).
+/// Every field is length-prefixed (4-byte little-endian): `hash::sha256_parts` concatenates
+/// without delimiters, so `(name="ab", gts="c")` and `(name="a", gts="bc")` would otherwise
+/// collide. The helper itself is left unchanged because `content_etag` also uses it and
+/// altering it would change already-issued `ETags`.
 ///
-/// `custom_metadata` is sorted by key before hashing so two textually-
-/// identical-but-reordered requests hash identically — the wire order of a
-/// JSON object's keys is not guaranteed stable across two otherwise-equal
-/// requests.
+/// `custom_metadata` is sorted by key so wire key order does not affect the hash.
 #[must_use]
 pub fn compute_request_hash(
     owner_kind: &str,
@@ -75,9 +59,8 @@ pub fn compute_request_hash(
     hash::sha256(&buf)
 }
 
-/// Append `bytes` to `buf`, preceded by its length as 4 little-endian bytes —
-/// an unambiguous field delimiter so no two distinct field sequences can ever
-/// serialize to the same buffer (see [`compute_request_hash`]).
+/// Append `bytes` to `buf`, preceded by its length as 4 little-endian bytes (an
+/// unambiguous delimiter; see [`compute_request_hash`]).
 fn push_field(buf: &mut Vec<u8>, bytes: &[u8]) {
     #[allow(clippy::cast_possible_truncation)]
     buf.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
@@ -88,58 +71,72 @@ fn push_field(buf: &mut Vec<u8>, bytes: &[u8]) {
 mod tests {
     use super::*;
 
-    #[test]
-    fn compute_request_hash_is_deterministic() {
-        let meta = vec![
-            ("a".to_owned(), "1".to_owned()),
-            ("b".to_owned(), "2".to_owned()),
-        ];
-        let h1 = compute_request_hash("user", Uuid::nil(), "n", "gts", "mime", &meta);
-        let h2 = compute_request_hash("user", Uuid::nil(), "n", "gts", "mime", &meta);
-        assert_eq!(h1, h2);
-        assert_eq!(h1.len(), 32, "SHA-256 digest must be 32 bytes");
+    fn meta(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect()
     }
 
     #[test]
     fn compute_request_hash_is_order_independent_for_metadata() {
-        let meta_a = vec![
-            ("a".to_owned(), "1".to_owned()),
-            ("b".to_owned(), "2".to_owned()),
-        ];
-        let meta_b = vec![
-            ("b".to_owned(), "2".to_owned()),
-            ("a".to_owned(), "1".to_owned()),
-        ];
-        let h_a = compute_request_hash("user", Uuid::nil(), "n", "gts", "mime", &meta_a);
-        let h_b = compute_request_hash("user", Uuid::nil(), "n", "gts", "mime", &meta_b);
-        assert_eq!(h_a, h_b, "metadata order must not affect the hash");
+        let hash = |m: &[(String, String)]| {
+            compute_request_hash("user", Uuid::nil(), "n", "gts", "mime", m)
+        };
+        let ab = meta(&[("a", "1"), ("b", "2")]);
+        let ba = meta(&[("b", "2"), ("a", "1")]);
+        assert_eq!(hash(&ab), hash(&ab), "the hash must be deterministic");
+        assert_eq!(
+            hash(&ab),
+            hash(&ba),
+            "metadata order must not affect the hash"
+        );
     }
 
     #[test]
-    fn compute_request_hash_does_not_collide_across_field_boundaries() {
-        // (name="ab", gts="c") must not hash the same as (name="a", gts="bc") —
-        // proves the length-prefix delimiter, not naive concatenation, is in
-        // effect.
-        let h1 = compute_request_hash("user", Uuid::nil(), "ab", "c", "mime", &[]);
-        let h2 = compute_request_hash("user", Uuid::nil(), "a", "bc", "mime", &[]);
-        assert_ne!(h1, h2, "field-boundary shift must not collide");
-    }
-
-    #[test]
-    fn compute_request_hash_differs_on_owner_id() {
-        let owner_a = Uuid::from_u128(1);
-        let owner_b = Uuid::from_u128(2);
-        let h_a = compute_request_hash("user", owner_a, "n", "gts", "mime", &[]);
-        let h_b = compute_request_hash("user", owner_b, "n", "gts", "mime", &[]);
-        assert_ne!(h_a, h_b, "owner_id must be covered by the hash");
-    }
-
-    #[test]
-    fn compute_request_hash_differs_on_metadata_value() {
-        let meta_a = vec![("k".to_owned(), "v1".to_owned())];
-        let meta_b = vec![("k".to_owned(), "v2".to_owned())];
-        let h_a = compute_request_hash("user", Uuid::nil(), "n", "gts", "mime", &meta_a);
-        let h_b = compute_request_hash("user", Uuid::nil(), "n", "gts", "mime", &meta_b);
-        assert_ne!(h_a, h_b, "metadata values must be covered by the hash");
+    fn compute_request_hash_covers_every_field_without_boundary_collisions() {
+        let u = Uuid::from_u128;
+        // (name, hash of a variant); every variant must differ from `base`.
+        let base = compute_request_hash("user", u(1), "n", "gts", "mime", &meta(&[("k", "v1")]));
+        for (name, variant) in [
+            (
+                "owner_id",
+                compute_request_hash("user", u(2), "n", "gts", "mime", &meta(&[("k", "v1")])),
+            ),
+            (
+                "owner_kind",
+                compute_request_hash("tenant", u(1), "n", "gts", "mime", &meta(&[("k", "v1")])),
+            ),
+            (
+                "name",
+                compute_request_hash("user", u(1), "n2", "gts", "mime", &meta(&[("k", "v1")])),
+            ),
+            (
+                "gts_file_type",
+                compute_request_hash("user", u(1), "n", "gts2", "mime", &meta(&[("k", "v1")])),
+            ),
+            (
+                "mime_type",
+                compute_request_hash("user", u(1), "n", "gts", "mime2", &meta(&[("k", "v1")])),
+            ),
+            (
+                "metadata key",
+                compute_request_hash("user", u(1), "n", "gts", "mime", &meta(&[("k2", "v1")])),
+            ),
+            (
+                "metadata value",
+                compute_request_hash("user", u(1), "n", "gts", "mime", &meta(&[("k", "v2")])),
+            ),
+            (
+                "field boundary shift",
+                compute_request_hash("user", u(1), "n", "gts", "mime", &meta(&[("kv", "1")])),
+            ),
+            (
+                "name/gts boundary shift",
+                compute_request_hash("user", u(1), "ng", "ts", "mime", &meta(&[("k", "v1")])),
+            ),
+        ] {
+            assert_ne!(base, variant, "{name} must be covered by the hash");
+        }
     }
 }

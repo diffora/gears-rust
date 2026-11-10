@@ -1,4 +1,3 @@
-// Created: 2026-08-13 by Virtuozzo International GmbH
 //! The category repository contract.
 //!
 //! Declared in the domain and implemented in `infra`, so the service depends on
@@ -14,16 +13,19 @@
 
 use async_trait::async_trait;
 use toolkit_db::secure::DBRunner;
+use toolkit_macros::domain_model;
 use toolkit_security::AccessScope;
 use uuid::Uuid;
 
-use toolkit_odata::{ODataQuery, Page};
+use toolkit_odata::ODataQuery;
 
 use super::CategoryKey;
 use super::visibility::DomainVisibility;
 use crate::domain::error::DomainError;
+use crate::domain::odata::Listing;
 
 /// A category as the domain sees it.
+#[domain_model]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Category {
     /// Surrogate identity, stable across a rename.
@@ -54,6 +56,7 @@ pub struct Category {
 /// place would re-key each of them with no cascade and no tombstone
 /// (DESIGN.md "Stale keys resolve as `NotFound`"). Making the field unreachable
 /// from the update path is what keeps that from being one typo away.
+#[domain_model]
 #[derive(Debug, Clone)]
 pub struct CategoryPatch {
     /// Display name; `None` leaves it.
@@ -70,6 +73,7 @@ pub struct CategoryPatch {
 
 /// What a partial update does to one nullable field: three cases, since an
 /// omitted field and an explicit `null` mean different things on the wire.
+#[domain_model]
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum Patch<T> {
     /// Not on the wire: the field keeps its value.
@@ -104,6 +108,7 @@ impl<'de, T: serde::Deserialize<'de>> serde::Deserialize<'de> for Patch<T> {
 /// Separate from [`Category`] because a caller cannot set `id` or `etag`: both
 /// are the service's to assign, and accepting them would let a client claim an
 /// identity or forge a precondition.
+#[domain_model]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CategoryDraft {
     /// The stable slug.
@@ -200,7 +205,10 @@ pub trait CategoryRepository: Send + Sync {
     /// scope, never to the returned page: filtering afterwards yields short
     /// pages and a cursor that skips rows the caller was entitled to.
     ///
-    /// Ordered by `sort_order` then `name` so the cursor is deterministic.
+    /// Ordered by `sort_order` then `name` unless the caller sent an
+    /// `$orderby`, in which case that order applies with `name` appended as the
+    /// tiebreaker, so the cursor is deterministic either way. The listing
+    /// carries the size of the whole filtered set.
     ///
     /// # Errors
     /// [`DomainError::Validation`] when the query references an unmapped field
@@ -211,7 +219,7 @@ pub trait CategoryRepository: Send + Sync {
         scope: &AccessScope,
         visibility: &DomainVisibility,
         query: &ODataQuery,
-    ) -> Result<Page<Category>, DomainError>;
+    ) -> Result<Listing<Category>, DomainError>;
 
     /// Whether any declaration still references this category.
     ///

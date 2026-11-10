@@ -1,6 +1,7 @@
 //! Custom-metadata queries and the atomic patch operation.
 
 use time::OffsetDateTime;
+use toolkit_db::secure::TxConfig;
 use toolkit_security::AccessScope;
 use uuid::Uuid;
 
@@ -9,36 +10,26 @@ use file_storage_sdk::CustomMetadataPatch;
 
 use crate::domain::audit::AuditEntry;
 use crate::domain::error::DomainError;
-use crate::infra::storage::db::db_err;
+use crate::domain::error_convert::db_err;
 use crate::infra::storage::store::Store;
 
 impl Store {
-    // ── custom metadata ──────────────────────────────────────────────────────
-
-    /// List all custom-metadata entries for a file, ordered by key.
+    /// List custom-metadata entries of a file, ordered by key.
     pub async fn list_metadata(
         &self,
         file_id: Uuid,
     ) -> Result<Vec<CustomMetadataEntry>, DomainError> {
-        let conn = self.db.conn().map_err(db_err)?;
+        let conn = self.db.conn().map_err(DomainError::from)?;
         self.repos
             .metadata
             .list(&conn, &AccessScope::allow_all(), file_id)
             .await
     }
 
-    // ── atomic multi-step operations ─────────────────────────────────────────
-
-    /// Bump `meta_version` and apply a JSON-merge patch, in a single
-    /// transaction (DESIGN §3.7 metadata CAS). An audit row is written in the
-    /// same transaction on a successful patch.
+    /// Bump `meta_version` and apply a JSON-merge patch in a single transaction,
+    /// writing the audit row in the same transaction.
     ///
-    /// Returns `false` when `expected_meta_version` does not match the current
-    /// row (caller maps to PreconditionFailed with "metadata revision changed
-    /// concurrently"; REST maps that canonical error to HTTP 400).
-    ///
-    /// @cpt-cf-file-storage-fr-audit-trail
-    /// @cpt-cf-file-storage-nfr-audit-completeness
+    /// Returns `false` when `expected_meta_version` does not match the current row.
     pub async fn patch_metadata_atomic(
         &self,
         scope: &AccessScope,
@@ -54,7 +45,13 @@ impl Store {
         let patch_scope = scope.clone();
         self.db
             .db()
-            .transaction_ref_mapped(move |tx| {
+            .transaction_with_retry(TxConfig::default(), db_err, move |tx| {
+                let files = files.clone();
+                let metadata = metadata.clone();
+                let audit_repo = audit_repo.clone();
+                let patch_scope = patch_scope.clone();
+                let patch = patch.clone();
+                let audit = audit.clone();
                 Box::pin(async move {
                     let bumped = files
                         .touch_meta(tx, &patch_scope, file_id, expected_meta_version, now)
@@ -76,7 +73,6 @@ impl Store {
                             }
                         }
                     }
-                    // @cpt-cf-file-storage-nfr-audit-completeness
                     audit_repo.insert(tx, &audit).await?;
                     Ok::<bool, DomainError>(true)
                 })

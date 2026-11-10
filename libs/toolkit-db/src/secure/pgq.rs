@@ -11,7 +11,7 @@
 //! # What the declaration guarantees
 //!
 //! * **Every element exposes its scope columns as properties.** Derived from
-//!   [`ScopeProperties::scope_columns`], not from a list the caller repeats, so
+//!   [`EntityScope::scope_columns`](crate::secure::EntityScope::scope_columns), not from a list the caller repeats, so
 //!   the precondition for Policy 2 cannot be forgotten.
 //! * **One label per element table.** Sharing a label across tables is legal
 //!   SQL/PGQ and unsafe here: security is decided per entity, so a shared label
@@ -42,11 +42,8 @@ use sea_orm::{Condition, EntityTrait, FromQueryResult, QueryTrait, StatementBuil
 use toolkit_sea_orm_pgq::{EdgeTable, EndpointRef, PropertyGraph as GraphDdl, VertexTable};
 
 use crate::secure::cond::{ColumnAddress, SiblingSupport, build_scope_predicate};
-use crate::secure::entity_traits::checked_table;
 use crate::secure::select::{Scoped, SecureSelect};
-use crate::secure::{
-    AccessScope, DBRunner, DBRunnerInternal, ScopableEntity, ScopeError, ScopeProperties,
-};
+use crate::secure::{AccessScope, DBRunner, DBRunnerInternal, ScopableEntity, ScopeError};
 
 /// A property graph the platform declares.
 ///
@@ -159,9 +156,7 @@ impl GraphDeclaration {
         // entity that resolves no scope column compiles to exactly the same
         // predicate under a real scope as a legitimate deny-all does, so by the
         // time there is a `Condition` the two are indistinguishable.
-        // Read the table, not the list: emptiness is a const fact, and building
-        // a Vec to ask about it would allocate for something the compiler knows.
-        if checked_table::<J>().is_empty() {
+        if J::SCOPE.scope_columns().next().is_none() {
             return Err(ScopeError::Invalid(
                 "a property-graph element must resolve at least one scope column; \
                  an element that resolves none would traverse as a silent deny-all",
@@ -180,7 +175,7 @@ impl GraphDeclaration {
         // column. The key is there so an endpoint reference can resolve; the
         // scope columns are there so a pattern can be scoped at all.
         let mut properties: Vec<String> = key.iter().map(|c| (*c).to_owned()).collect();
-        for column in J::scope_columns() {
+        for column in J::SCOPE.scope_columns() {
             let name = sea_orm::IdenStatic::as_str(&column).to_owned();
             if !properties.contains(&name) {
                 properties.push(name);
@@ -569,8 +564,7 @@ impl<G: PropertyGraph> PathBuilder<G> {
         J: ScopableEntity + EntityTrait,
         J::Column: sea_orm::ColumnTrait + Copy,
     {
-        // Per element, per query: the const answers without allocating.
-        if checked_table::<J>().is_empty() {
+        if J::SCOPE.scope_columns().next().is_none() {
             return Err(ScopeError::Invalid(
                 "a graph element must resolve at least one scope column; \
                  an element that resolves none would traverse as a silent deny-all",
@@ -641,7 +635,7 @@ impl<G: PropertyGraph> PathBuilder<G> {
             match constraint
                 .filters()
                 .iter()
-                .find(|filter| J::resolve_property(filter.property()).is_none())
+                .find(|filter| J::SCOPE.resolve_property(filter.property()).is_none())
             {
                 // Every filter of this constraint resolves: the scope is
                 // servable on this element.

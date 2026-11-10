@@ -1,13 +1,14 @@
-//! Control-plane route registration via `OperationBuilder`
-//! (`cpt-cf-file-storage-fr-rest-api`). This surface is JSON-only and never
-//! carries file content — bytes move over signed URLs against the sidecar.
+//! Control-plane route registration via `OperationBuilder`. JSON-only: file bytes
+//! move over signed URLs against the sidecar.
 
 use std::sync::Arc;
 
 use axum::Router;
 use http::StatusCode;
 use toolkit::api::OpenApiRegistry;
-use toolkit::api::operation_builder::{LicenseFeature, OperationBuilder};
+use toolkit::api::operation_builder::{
+    AuthState, HandlerSlot, LicenseFeature, LicenseState, OperationBuilder,
+};
 use toolkit_gts::gts_id;
 
 use super::dto;
@@ -30,6 +31,45 @@ impl AsRef<str> for License {
 
 impl LicenseFeature for License {}
 
+/// Description of a cursor-paginated listing; `order` is its canonical order.
+fn listing_description(order: &str) -> String {
+    format!(
+        "Keyset pagination in either direction: `limit` and the \
+         opaque `cursor` from the previous page's `page_info.next_cursor` or \
+         `page_info.prev_cursor`. The response carries `next_cursor` and `prev_cursor`. Canonical order is \
+         `{order}` -- see docs/api.md. `$top` and `$skiptoken` are synonyms of \
+         `limit` and `cursor`; `$filter`, `$orderby`, `$select` and every other `$` parameter are \
+         rejected with 400."
+    )
+}
+
+/// The page parameters every listing declares; the `OData` extractor also binds their
+/// `$top`/`$skiptoken` spellings.
+trait PageParams {
+    fn page_params(self) -> Self;
+}
+
+impl<H, R, S, A, L> PageParams for OperationBuilder<H, R, S, A, L>
+where
+    H: HandlerSlot<S>,
+    A: AuthState,
+    L: LicenseState,
+{
+    fn page_params(self) -> Self {
+        self.query_param_typed(
+            "limit",
+            false,
+            "Page size, capped at the configured maximum; alias `$top`",
+            "integer",
+        )
+        .query_param(
+            "cursor",
+            false,
+            "Opaque continuation token from the previous page; alias `$skiptoken`",
+        )
+    }
+}
+
 /// Register all file-storage control-plane routes and attach the services.
 #[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
 pub(crate) fn register_routes(
@@ -40,17 +80,9 @@ pub(crate) fn register_routes(
     policy_service: Arc<PolicyService>,
     finalize_auth: Arc<handlers::FinalizeAuth>,
 ) -> Router {
-    // ── Data-plane finalize (s2s, token-authenticated) ──────────────────────
-    // This endpoint is NOT authenticated via the end-user JWT middleware; the
-    // signed upload token is the sole authorization.
-    //
-    // Registered as `.anonymous()` so the api-gateway's route-policy does NOT
-    // require a user JWT for this path (the fs-token carries the authorization).
-    // The Verifier extension is added to the whole router at the bottom.
-    //
-    // P2 0.1 remaining: `finalize_auth` layers an optional interim
-    // gear-local shared-secret second factor on top of the fs-token for
-    // both routes below (see `handlers::FinalizeAuth`'s doc comment).
+    // s2s finalize/report-part: `.anonymous()` so the gateway does not require a user
+    // JWT; the signed fs-token plus the internal credential (`handlers::FinalizeAuth`)
+    // are the authorization.
     let verifier: Arc<Verifier> = Arc::new(service.verifier());
     router = OperationBuilder::post(format!(
         "{BASE}/files/{{file_id}}/versions/{{version_id}}/finalize"
@@ -61,7 +93,7 @@ pub(crate) fn register_routes(
     .description(
         "Called by the sidecar after a successful PUT to mark the version `available`. \
          Authorized by the signed upload token (fs-token) \u{2014} no user JWT required. \
-         Requires internal credential (x-fs-internal-token) when configured (P2 0.1).",
+         Requires the internal credential (x-fs-internal-token).",
     )
     .tag(API_TAG)
     .path_param("file_id", "File UUID")
@@ -71,13 +103,10 @@ pub(crate) fn register_routes(
     .error_403(openapi)
     .error_404(openapi)
     .error_500(openapi)
+    // 503 + `Retry-After`: transient backend fault while checking the stored object.
+    .error_503(openapi)
     .register(router, openapi);
 
-    // ── Data-plane report-part (s2s, token-authenticated) ───────────────────
-    // Same trust model as finalize above: the signed `multipart_part` token is
-    // the sole authorization, no user JWT required (P2 0.2 group B — the
-    // "report part" callback that closes the structural gap where nothing
-    // ever populated `multipart_upload_parts` in a real deployment).
     router = OperationBuilder::post(format!(
         "{BASE}/files/{{file_id}}/versions/{{version_id}}/multipart/{{upload_id}}/parts/{{part_number}}/report"
     ))
@@ -88,7 +117,7 @@ pub(crate) fn register_routes(
         "Called by the sidecar after a successful part write to record the part's backend \
          ETag, hash, and size so `complete` can assemble from real reported parts. \
          Authorized by the signed upload token (fs-token) \u{2014} no user JWT required. \
-         Requires internal credential (x-fs-internal-token) when configured (P2 0.1).",
+         Requires the internal credential (x-fs-internal-token).",
     )
     .tag(API_TAG)
     .path_param("file_id", "File UUID")
@@ -102,12 +131,14 @@ pub(crate) fn register_routes(
     .error_500(openapi)
     .register(router, openapi);
 
-    // POST /files — create + presign upload
     router = OperationBuilder::post(format!("{BASE}/files"))
         .operation_id("file_storage.create_file")
         .authenticated()
         .require_license_features::<License>([])
-        .summary("Create a file and presign its first content upload")
+        .summary(
+            "Create a file and presign its first content upload \
+             (single-part URL, or the multipart parts plan with the `multipart` block)",
+        )
         .tag(API_TAG)
         .json_request::<dto::CreateFileReq>(openapi, "File metadata")
         .handler(handlers::create_file)
@@ -115,10 +146,14 @@ pub(crate) fn register_routes(
         .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
+        // 409: an idempotency key was reused with a different request body.
+        .error_409(openapi)
         .error_500(openapi)
+        // 503 + `Retry-After`: transient backend fault in `initiate_multipart` (plans with
+        // >=2 parts only; the single-part path never touches the backend).
+        .error_503(openapi)
         .register(router, openapi);
 
-    // POST /files/{id}/versions — presign a new version
     router = OperationBuilder::post(format!("{BASE}/files/{{id}}/versions"))
         .operation_id("file_storage.presign_version")
         .authenticated()
@@ -134,7 +169,6 @@ pub(crate) fn register_routes(
         .error_500(openapi)
         .register(router, openapi);
 
-    // POST /files/{id}/bind — bind/rebind content pointer (If-Match)
     router = OperationBuilder::post(format!("{BASE}/files/{{id}}/bind"))
         .operation_id("file_storage.bind")
         .authenticated()
@@ -151,15 +185,12 @@ pub(crate) fn register_routes(
         .error_404(openapi)
         // 409: the target version's upload is not finalized yet.
         .error_409(openapi)
-        // 400: the If-Match / CAS precondition failed (or is required and absent).
-        // `FailedPrecondition` collapses to 400 by house convention
-        // (toolkit-canonical-errors has no 412 variant; see AM's
-        // `failed_precondition` → 400 mapping for precedent).
+        // 400: If-Match / CAS precondition failed or is absent (`FailedPrecondition`
+        // maps to 400; there is no 412 canonical variant).
         .error_400(openapi)
         .error_500(openapi)
         .register(router, openapi);
 
-    // GET /files/{id}/download-url — issue a signed download URL
     router = OperationBuilder::get(format!("{BASE}/files/{{id}}/download-url"))
         .operation_id("file_storage.download_url")
         .authenticated()
@@ -176,25 +207,34 @@ pub(crate) fn register_routes(
         .error_500(openapi)
         .register(router, openapi);
 
-    // GET /files/{id}/versions — list versions
     router = OperationBuilder::get(format!("{BASE}/files/{{id}}/versions"))
         .operation_id("file_storage.list_versions")
         .authenticated()
         .require_license_features::<License>([])
-        .summary("List all versions of a file")
+        .summary("List a file's versions, newest first (cursor pagination)")
+        .description(format!(
+            "{} Each `multipart-composite-sha256` version carries its `manifest`; a page may \
+             return fewer than `limit` items (with the cursor in the paging direction still \
+             set) when the ADR-0006 manifest-byte budget truncates it -- see docs/api.md.",
+            listing_description("created_at desc, version_id desc")
+        ))
         .tag(API_TAG)
         .path_param("id", "File UUID")
-        .query_param_typed("limit", false, "Page size", "integer")
-        .query_param_typed("offset", false, "Offset", "integer")
+        .page_params()
         .handler(handlers::list_versions)
-        .json_response_with_schema::<dto::VersionDtoList>(openapi, StatusCode::OK, "Versions")
+        .json_response_with_schema::<toolkit_odata::Page<dto::VersionDto>>(
+            openapi,
+            StatusCode::OK,
+            "Versions",
+        )
+        // 400: bad cursor, unsupported query parameter or option, or `limit=0`.
+        .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
         .error_404(openapi)
         .error_500(openapi)
         .register(router, openapi);
 
-    // DELETE /files/{id}/versions/{version_id} — delete a version
     router = OperationBuilder::delete(format!("{BASE}/files/{{id}}/versions/{{version_id}}"))
         .operation_id("file_storage.delete_version")
         .authenticated()
@@ -263,48 +303,56 @@ pub(crate) fn register_routes(
         .error_401(openapi)
         .error_403(openapi)
         .error_404(openapi)
-        // 400: If-Match absent or does not match the current content ETag.
-        // `FailedPrecondition` collapses to 400 by house convention
-        // (toolkit-canonical-errors has no 412 variant; see AM's
-        // `failed_precondition` → 400 mapping for precedent).
+        // 400: If-Match absent or mismatched (see `bind`).
         .error_400(openapi)
         .error_500(openapi)
         .register(router, openapi);
 
-    // GET /files — list (mandatory owner filter, offset pagination)
+    // GET /files — list (mandatory owner filter, cursor pagination)
     router = OperationBuilder::get(format!("{BASE}/files"))
         .operation_id("file_storage.list_files")
         .authenticated()
         .require_license_features::<License>([])
-        .summary("List files for an owner (owner_kind + owner_id required)")
+        .summary("List files for an owner (owner_kind + owner_id required, cursor pagination)")
+        .description(listing_description("created_at desc, file_id desc"))
         .tag(API_TAG)
         .query_param("owner_kind", true, "'user' or 'app'")
         .query_param("owner_id", true, "Owner UUID")
-        .query_param_typed("limit", false, "Page size", "integer")
-        .query_param_typed("offset", false, "Offset", "integer")
+        .page_params()
         .handler(handlers::list_files)
-        .json_response_with_schema::<dto::FileDtoList>(openapi, StatusCode::OK, "Files")
+        .json_response_with_schema::<toolkit_odata::Page<dto::FileDto>>(
+            openapi,
+            StatusCode::OK,
+            "Files",
+        )
+        // 400: bad cursor, unsupported query parameter or option, `limit=0`, or invalid `owner_kind`.
         .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
         .error_500(openapi)
         .register(router, openapi);
 
-    // GET /storages — backend discovery
     router = OperationBuilder::get(format!("{BASE}/storages"))
         .operation_id("file_storage.list_storages")
         .authenticated()
         .require_license_features::<License>([])
-        .summary("List configured storage backends and capabilities")
+        .summary("List configured storage backends and capabilities (cursor pagination)")
+        .description(listing_description("id asc"))
         .tag(API_TAG)
+        .page_params()
         .handler(handlers::list_storages)
-        .json_response_with_schema::<dto::StorageDtoList>(openapi, StatusCode::OK, "Backends")
+        .json_response_with_schema::<toolkit_odata::Page<dto::StorageDto>>(
+            openapi,
+            StatusCode::OK,
+            "Backends",
+        )
+        // 400: bad cursor, unsupported query parameter or option, or `limit=0`.
+        .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
         .error_500(openapi)
         .register(router, openapi);
 
-    // GET /storages/{id} — one backend
     router = OperationBuilder::get(format!("{BASE}/storages/{{id}}"))
         .operation_id("file_storage.get_storage")
         .authenticated()
@@ -320,9 +368,6 @@ pub(crate) fn register_routes(
         .error_500(openapi)
         .register(router, openapi);
 
-    // ── Policy endpoints (P2-M1) — cpt-cf-file-storage-usecase-configure-policy
-
-    // GET /policy — fetch own policy for a scope
     router = OperationBuilder::get(format!("{BASE}/policy"))
         .operation_id("file_storage.get_policy")
         .authenticated()
@@ -347,7 +392,6 @@ pub(crate) fn register_routes(
         .error_500(openapi)
         .register(router, openapi);
 
-    // PUT /policy — upsert policy for a scope
     router = OperationBuilder::put(format!("{BASE}/policy"))
         .operation_id("file_storage.set_policy")
         .authenticated()
@@ -363,7 +407,6 @@ pub(crate) fn register_routes(
         .error_500(openapi)
         .register(router, openapi);
 
-    // GET /policy/effective — compute effective policy
     router = OperationBuilder::get(format!("{BASE}/policy/effective"))
         .operation_id("file_storage.get_effective_policy")
         .authenticated()
@@ -386,25 +429,27 @@ pub(crate) fn register_routes(
         .error_500(openapi)
         .register(router, openapi);
 
-    // GET /retention-rules — list retention rules
     router = OperationBuilder::get(format!("{BASE}/retention-rules"))
         .operation_id("file_storage.list_retention_rules")
         .authenticated()
         .require_license_features::<License>([])
-        .summary("List all retention rules for the caller's tenant")
+        .summary("List retention rules for the caller's tenant")
+        .description(listing_description("created_at desc, rule_id desc"))
         .tag(API_TAG)
+        .page_params()
         .handler(handlers::list_retention_rules)
-        .json_response_with_schema::<dto::RetentionRuleDtoList>(
+        .json_response_with_schema::<toolkit_odata::Page<dto::RetentionRuleDto>>(
             openapi,
             StatusCode::OK,
             "Retention rules",
         )
+        // 400: bad cursor, unsupported query parameter or option, or `limit=0`.
+        .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
         .error_500(openapi)
         .register(router, openapi);
 
-    // POST /retention-rules — create a retention rule
     router = OperationBuilder::post(format!("{BASE}/retention-rules"))
         .operation_id("file_storage.create_retention_rule")
         .authenticated()
@@ -424,7 +469,6 @@ pub(crate) fn register_routes(
         .error_500(openapi)
         .register(router, openapi);
 
-    // DELETE /retention-rules/{rule_id} — delete a retention rule
     router = OperationBuilder::delete(format!("{BASE}/retention-rules/{{rule_id}}"))
         .operation_id("file_storage.delete_retention_rule")
         .authenticated()
@@ -440,9 +484,6 @@ pub(crate) fn register_routes(
         .error_500(openapi)
         .register(router, openapi);
 
-    // ── Multipart upload (P2-M3) ─────────────────────────────────────────────────
-
-    // POST /files/{id}/multipart — initiate multipart session (server-authoritative plan)
     router = OperationBuilder::post(format!("{BASE}/files/{{id}}/multipart"))
         .operation_id("file_storage.initiate_multipart")
         .authenticated()
@@ -467,25 +508,29 @@ pub(crate) fn register_routes(
         .error_403(openapi)
         .error_404(openapi)
         .error_500(openapi)
+        // 503 + `Retry-After`: transient backend fault in `initiate_multipart`.
+        .error_503(openapi)
         .register(router, openapi);
 
-    // NOTE: The control-plane PUT .../parts/{part_number} byte route is intentionally
-    // absent — bytes flow exclusively to the sidecar via the per-part signed URLs
-    // returned by the initiate response (ADR-0003 "no bytes through the control
-    // plane"; multipart-coordinator FEATURE §8 migration).
+    // No control-plane part-byte route by design: bytes go to the sidecar via the
+    // per-part signed URLs (ADR-0003).
 
-    // POST /files/{id}/multipart/{upload_id}/complete — finalize
     router = OperationBuilder::post(format!(
         "{BASE}/files/{{id}}/multipart/{{upload_id}}/complete"
     ))
     .operation_id("file_storage.complete_multipart")
     .authenticated()
     .require_license_features::<License>([])
-    .summary("Finalize a multipart upload (assemble all parts)")
+    .summary("Finalize a multipart upload (assemble all parts; idempotent)")
     .description(
-        "Returns the bound version id, size, and ADR-0006 composite hash/manifest (item \
-         3.3). Optional If-Match carries the current content ETag; `*`/absent is \
-         unconditional, a mismatch is a 400.",
+        "Returns the version id, size, ADR-0006 hash (composite root + manifest for plans \
+         of two or more parts; plain whole-sha256 with no manifest for a one-part plan), \
+         and the bind outcome (`bind_state`: bound/conflict/manual \u{2014} auto-bind sessions \
+         bind here, in the same transaction as the finalize). Optional If-Match carries \
+         the current content ETag; `*`/absent is unconditional, a mismatch is a 400. \
+         Idempotent: a retry of an already-completed session replays the stored result; \
+         while another caller holds the completion lease the response is `202 completing` \
+         (poll by re-issuing the same call).",
     )
     .tag(API_TAG)
     .path_param("id", "File UUID")
@@ -494,21 +539,25 @@ pub(crate) fn register_routes(
     .json_response_with_schema::<dto::MultipartCompleteDto>(
         openapi,
         StatusCode::OK,
-        "Completed \u{2014} version id, size, composite hash, manifest",
+        "Completed \u{2014} version id, size, composite hash, manifest, bind outcome",
+    )
+    .json_response_with_schema::<dto::MultipartCompletingDto>(
+        openapi,
+        StatusCode::ACCEPTED,
+        "Another caller is completing \u{2014} poll by re-issuing the same complete",
     )
     .error_401(openapi)
     .error_403(openapi)
     .error_404(openapi)
-    // 409 also covers `MultipartPartsMissing` (unreported parts) and the
-    // residual assembled-size mismatch guard.
+    // 409 also covers `MultipartPartsMissing` and the assembled-size mismatch guard.
     .error_409(openapi)
-    // 400: the If-Match precondition failed. `FailedPrecondition` collapses
-    // to 400 by house convention (mirrors `bind`'s route above).
+    // 400: If-Match precondition failed (see `bind`).
     .error_400(openapi)
     .error_500(openapi)
+    // 503 + `Retry-After`: transient backend fault while assembling the object.
+    .error_503(openapi)
     .register(router, openapi);
 
-    // GET /files/{id}/multipart/{upload_id} — introspect/resume (item 3.4)
     router = OperationBuilder::get(format!("{BASE}/files/{{id}}/multipart/{{upload_id}}"))
         .operation_id("file_storage.introspect_multipart")
         .authenticated()
@@ -535,7 +584,6 @@ pub(crate) fn register_routes(
         .error_500(openapi)
         .register(router, openapi);
 
-    // DELETE /files/{id}/multipart/{upload_id} — abort
     router = OperationBuilder::delete(format!("{BASE}/files/{{id}}/multipart/{{upload_id}}"))
         .operation_id("file_storage.abort_multipart")
         .authenticated()
@@ -551,11 +599,10 @@ pub(crate) fn register_routes(
         .error_404(openapi)
         .error_409(openapi)
         .error_500(openapi)
+        // 503 + `Retry-After`: transient backend fault while aborting the backend upload.
+        .error_503(openapi)
         .register(router, openapi);
 
-    // ── Backend migration (P2-M4) ─────────────────────────────────────────────
-
-    // POST /files/{id}/migrate — backend migration
     router = OperationBuilder::post(format!("{BASE}/files/{{id}}/migrate"))
         .operation_id("file_storage.migrate_backend")
         .authenticated()
@@ -576,11 +623,10 @@ pub(crate) fn register_routes(
         .error_404(openapi)
         .error_409(openapi)
         .error_500(openapi)
+        // 503 + `Retry-After`: transient backend fault while copying the content.
+        .error_503(openapi)
         .register(router, openapi);
 
-    // ── Ownership transfer (P2-M5) ─────────────────────────────────────────────
-
-    // POST /files/{id}/transfer — transfer ownership
     router = OperationBuilder::post(format!("{BASE}/files/{{id}}/transfer"))
         .operation_id("file_storage.transfer_ownership")
         .authenticated()
@@ -609,3 +655,7 @@ pub(crate) fn register_routes(
         .layer(axum::Extension(multipart_service))
         .layer(axum::Extension(service))
 }
+
+#[cfg(test)]
+#[path = "routes_tests.rs"]
+mod routes_tests;

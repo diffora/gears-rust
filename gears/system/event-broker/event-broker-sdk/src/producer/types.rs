@@ -37,6 +37,7 @@ impl ProducerIdentity {
         self
     }
 
+    /// Rejects an identity whose `source` is blank.
     pub(crate) fn validate(&self) -> Result<(), crate::error::EventBrokerError> {
         if self.source.trim().is_empty() {
             return Err(crate::error::EventBrokerError::InvalidProducerOptions {
@@ -89,6 +90,7 @@ impl DirectDeduplication {
         Self::Reuse { mode, producer_id }
     }
 
+    /// Rejects option combinations the broker does not support (for example a stateless mode that registers a producer).
     pub(crate) fn validate(&self) -> Result<(), crate::error::EventBrokerError> {
         match *self {
             Self::Stateless => Ok(()),
@@ -123,14 +125,10 @@ impl DbDeduplication {
 
     #[must_use]
     pub fn managed(mode: ProducerMode) -> ManagedDeduplicationBuilder {
-        ManagedDeduplicationBuilder {
-            mode,
-            key: None,
-            on_missing: MissingProducerRegistration::Fail,
-            on_unknown: UnknownProducerRegistration::Fail,
-        }
+        ManagedDeduplicationBuilder { mode, key: None }
     }
 
+    /// The producer mode this deduplication setting implies (`Stateless` when unmanaged).
     #[cfg(feature = "outbox")]
     pub(crate) fn mode(&self) -> ProducerMode {
         match self {
@@ -143,18 +141,16 @@ impl DbDeduplication {
 #[cfg(feature = "db")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManagedDeduplication {
+    /// Producer mode the broker enforces for this producer.
     pub(crate) mode: ProducerMode,
+    /// Stable producer key the registration is stored under.
     pub(crate) key: String,
-    pub(crate) on_missing: MissingProducerRegistration,
-    pub(crate) on_unknown: UnknownProducerRegistration,
 }
 
 #[cfg(feature = "db")]
 pub struct ManagedDeduplicationBuilder {
     mode: ProducerMode,
     key: Option<String>,
-    on_missing: MissingProducerRegistration,
-    on_unknown: UnknownProducerRegistration,
 }
 
 #[cfg(feature = "db")]
@@ -165,18 +161,14 @@ impl ManagedDeduplicationBuilder {
         self
     }
 
-    #[must_use]
-    pub fn on_missing(mut self, policy: MissingProducerRegistration) -> Self {
-        self.on_missing = policy;
-        self
-    }
-
-    #[must_use]
-    pub fn on_unknown(mut self, policy: UnknownProducerRegistration) -> Self {
-        self.on_unknown = policy;
-        self
-    }
-
+    /// Builds the managed deduplication setting.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidProducerOptions`](crate::error::EventBrokerError::InvalidProducerOptions)
+    /// on the first failing check, in this order: a `Stateless` mode, a
+    /// missing key, a blank key, a key with leading or trailing whitespace,
+    /// and a key longer than the registration row holds.
     pub fn build(self) -> Result<DbDeduplication, crate::error::EventBrokerError> {
         if self.mode == ProducerMode::Stateless {
             return Err(crate::error::EventBrokerError::InvalidProducerOptions {
@@ -194,34 +186,31 @@ impl ManagedDeduplicationBuilder {
                 detail: "managed producer registration key must not be empty".to_owned(),
             });
         }
+        // MySQL's PAD SPACE collation equates names that differ only in
+        // trailing spaces; edge whitespace is refused on every engine so all
+        // engines agree on which names collide.
+        if key != key.trim() {
+            return Err(crate::error::EventBrokerError::InvalidProducerOptions {
+                detail:
+                    "managed producer registration key must not have leading or trailing whitespace"
+                        .to_owned(),
+            });
+        }
+        if key.len() > super::registration::MAX_NAME_LEN {
+            return Err(crate::error::EventBrokerError::InvalidProducerOptions {
+                detail: format!(
+                    "managed producer registration key must be at most {} bytes",
+                    super::registration::MAX_NAME_LEN
+                ),
+            });
+        }
         Ok(DbDeduplication::Managed(ManagedDeduplication {
             mode: self.mode,
             key,
-            on_missing: self.on_missing,
-            on_unknown: self.on_unknown,
         }))
     }
 }
 
-#[cfg(feature = "db")]
-impl From<ManagedDeduplicationBuilder> for DbDeduplication {
-    fn from(builder: ManagedDeduplicationBuilder) -> Self {
-        builder
-            .build()
-            .expect("managed producer deduplication must be complete")
-    }
-}
-
-#[cfg(feature = "db")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MissingProducerRegistration {
-    Fail,
-    RegisterNew,
-}
-
-#[cfg(feature = "db")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UnknownProducerRegistration {
-    Fail,
-    RegisterNew,
-}
+#[cfg(all(test, feature = "db"))]
+#[path = "types_tests.rs"]
+mod tests;

@@ -8,6 +8,7 @@
 //! always naming a partition.
 
 use std::sync::Arc;
+use toolkit::domain_model;
 
 use crate::domain::model::Sequence;
 use crate::domain::streaming::frames::Position;
@@ -19,6 +20,7 @@ use crate::domain::streaming::source::PartitionKey;
 /// Both frontiers are reported because they diverge exactly when a filter
 /// rejects events, and that divergence is the whole reason a progress frame
 /// exists.
+#[domain_model]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BatchOutcome {
     delivered_through: Sequence,
@@ -67,6 +69,7 @@ impl BatchOutcome {
     }
 }
 
+#[domain_model]
 pub struct BatchOutcomeBuilder {
     delivered_through: Sequence,
     examined_through: Sequence,
@@ -102,6 +105,7 @@ impl BatchOutcomeBuilder {
 }
 
 /// One partition a session holds.
+#[domain_model]
 pub struct PartitionSlot {
     key: PartitionKey,
     /// Events examined and not delivered since this partition last reported a
@@ -191,6 +195,7 @@ impl PartitionSlot {
 }
 
 /// Every partition one session is reading.
+#[domain_model]
 pub struct ReadSet {
     slots: Vec<PartitionSlot>,
     /// Where the next rotation begins, so no partition is permanently first.
@@ -239,8 +244,8 @@ impl ReadSet {
             slot.last_examined = slot.last_examined.max(outcome.examined_through());
             // Counted as the filter rejected them, not derived afterwards from
             // the two frontiers: their difference is a distance in sequence
-            // space, and a partition's sequences are assigned contiguously but
-            // not populated contiguously, so that distance is not a number of
+            // space, and a partition's sequences may have gaps and are not
+            // populated contiguously, so that distance is not a number of
             // events at all.
             slot.undelivered = slot.undelivered.saturating_add(outcome.skipped());
             // Nothing is published to the reader: `read` advanced it to the
