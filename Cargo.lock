@@ -5260,6 +5260,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "cf-gears-toolkit-resilience"
+version = "0.1.0"
+dependencies = [
+ "cf-gears-toolkit-utils",
+ "opentelemetry",
+ "opentelemetry_sdk",
+ "parking_lot",
+ "pin-project-lite",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tower",
+ "tracing",
+]
+
+[[package]]
 name = "cf-gears-toolkit-sdk"
 version = "0.7.16"
 dependencies = [
