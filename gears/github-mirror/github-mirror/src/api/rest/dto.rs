@@ -885,6 +885,7 @@ pub struct WorkflowRunsPageDto {
 
 #[derive(Debug)]
 #[toolkit_macros::api_dto(response)]
+#[schema(as = GithubMirrorWorkflowDto)]
 pub struct WorkflowDto {
     pub id: i64,
     pub name: Option<String>,
@@ -901,6 +902,7 @@ impl From<Workflow> for WorkflowDto {
 
 #[derive(Debug)]
 #[toolkit_macros::api_dto(response)]
+#[schema(as = GithubMirrorWorkflowsPageDto)]
 pub struct WorkflowsPageDto {
     pub total_count: i64,
     pub workflows: Vec<WorkflowDto>,
@@ -916,6 +918,7 @@ pub struct ArtifactWorkflowRunDto {
 
 #[derive(Debug)]
 #[toolkit_macros::api_dto(response)]
+#[schema(as = GithubMirrorArtifactDto)]
 pub struct ArtifactDto {
     pub id: i64,
     pub name: String,
@@ -958,6 +961,7 @@ impl From<Artifact> for ArtifactDto {
 
 #[derive(Debug)]
 #[toolkit_macros::api_dto(response)]
+#[schema(as = GithubMirrorArtifactsPageDto)]
 pub struct ArtifactsPageDto {
     pub total_count: i64,
     pub artifacts: Vec<ArtifactDto>,
