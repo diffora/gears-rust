@@ -1,4 +1,4 @@
-"""Single-event publish scenarios (producer/single/1.01-1.06).
+"""Single-event publish scenarios (producer/single/1.01-1.09).
 
 Each test exercises one publish path:
 - 1.01: publish → 202, no body (async by default)
@@ -9,10 +9,14 @@ Each test exercises one publish path:
 - 1.04: rate limiting → 429 (xfail: rate limiting not configured in standalone)
 - 1.05: read-only ``partition`` field rejected → 400
 - 1.06: malformed ``Prefer: wait`` value → 400, nothing enqueued
+- 1.07: malformed ``trace_parent`` → 400
+- 1.08: event over the 60 KiB per-event limit → 413 ``event_too_large``
+- 1.09: partition key over 1024 bytes → 400 ``partition_key_too_long``
 """
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timezone
 
@@ -20,6 +24,8 @@ import httpx
 import pytest
 
 from .conftest import (
+    API_BASE,
+    EVENT_TYPE_KEYED,
     SKIP_LIMITS,
     EVENT_TYPE_STREAM,
     EVENT_TYPE_STRICT,
@@ -312,3 +318,130 @@ async def test_prefer_wait_malformed_returns_400(api):
     assert resp.json()["type"] == (
         "gts://gts.cf.core.errors.err.v1~cf.core.err.invalid_argument.v1~"
     )
+
+
+async def test_malformed_trace_parent_returns_400(api):
+    """scenario: producer/single/1.07-negative-invalid-trace-parent.md
+
+    A ``trace_parent`` that is not a W3C traceparent (here, uppercase hex) is
+    rejected with 400. The violation names the field and the rule, never the
+    value.
+    """
+    tenant_id = str(uuid.uuid4())
+    async with api() as client:
+        resp = await client.post(
+            "/events",
+            json={
+                **_base_event(tenant_id),
+                "trace_parent": "00-0AF7651916CD43DD8448EB211C80319C-B7AD6B7169203331-01",
+            },
+        )
+    assert resp.status_code == 400
+    body = resp.json()
+    assert body == {
+        "type": "gts://gts.cf.core.errors.err.v1~cf.core.err.invalid_argument.v1~",
+        "title": "Invalid Argument",
+        "status": 400,
+        "detail": "Request validation failed",
+        "instance": body["instance"],
+        "trace_id": TRACE_ID,
+        "context": {
+            "field_violations": [
+                {
+                    "field": "trace_parent",
+                    "description": (
+                        "must be a W3C traceparent: four lowercase hex groups"
+                        " of 2, 32, 16 and 2 digits joined by '-'"
+                    ),
+                    "reason": "invalid_event_field",
+                }
+            ],
+            "resource_type": "gts.cf.core.events.request.v1~",
+        },
+    }
+
+
+# The per-event limit and the partition-key cap, as `EventV1` states them.
+MAX_ENCODED_BYTES = 61_440
+MAX_PARTITION_KEY_BYTES = 1024
+
+
+def _sized_event(tenant_id: str, pad: int) -> dict:
+    """A stream event whose ``data.pad`` is ``pad`` bytes, at a fixed time, so its
+    encoding is what the broker measures."""
+    return {
+        **_base_event(tenant_id),
+        "occurred_at": "2026-11-09T10:00:00Z",
+        "data": {"pad": "x" * pad},
+    }
+
+
+def _encoded_len(event: dict) -> int:
+    """The event's size as the broker counts it: its compact JSON in the SDK's
+    ``EventV1`` form, an absent ``trace_parent`` or ``meta`` written as ``null``."""
+    counted = {**event, "trace_parent": event.get("trace_parent"), "meta": event.get("meta")}
+    return len(json.dumps(counted, separators=(",", ":"), ensure_ascii=False).encode())
+
+
+async def test_an_event_over_the_size_limit_returns_413(api):
+    """scenario: producer/single/1.08-negative-event-too-large.md
+
+    An event whose encoding is over 60 KiB is refused 413, naming its size and
+    the limit, never its content.
+    """
+    event = _sized_event(str(uuid.uuid4()), MAX_ENCODED_BYTES)
+    size = _encoded_len(event)
+    async with api() as client:
+        resp = await client.post("/events", json=event)
+    assert resp.status_code == 413
+    assert resp.json() == {
+        "type": "gts://gts.cf.core.errors.err.v1~cf.core.err.invalid_argument.v1~",
+        "title": "Invalid Argument",
+        "status": 413,
+        "detail": "Request validation failed",
+        "instance": f"{API_BASE}/events",
+        "trace_id": TRACE_ID,
+        "context": {
+            "field_violations": [
+                {
+                    "field": "events[0]",
+                    "description": f"{size} bytes encoded, over the limit of {MAX_ENCODED_BYTES}",
+                    "reason": "event_too_large",
+                }
+            ],
+            "resource_type": "gts.cf.core.events.request.v1~",
+        },
+    }
+
+
+async def test_a_partition_key_over_its_cap_returns_400(api):
+    """scenario: producer/single/1.09-negative-partition-key-too-long.md
+
+    An event whose partition key (``data.k`` on the keyed type) is over 1024
+    bytes is refused 400, naming the key's size and the cap, never the key.
+    """
+    event = {
+        **_base_event(str(uuid.uuid4()), EVENT_TYPE_KEYED),
+        "data": {"k": "k" * (MAX_PARTITION_KEY_BYTES + 1)},
+    }
+    async with api() as client:
+        resp = await client.post("/events", json=event)
+    assert resp.status_code == 400
+    assert resp.json() == {
+        "type": "gts://gts.cf.core.errors.err.v1~cf.core.err.invalid_argument.v1~",
+        "title": "Invalid Argument",
+        "status": 400,
+        "detail": "Request validation failed",
+        "instance": f"{API_BASE}/events",
+        "trace_id": TRACE_ID,
+        "context": {
+            "field_violations": [
+                {
+                    "field": "events[0].partition_key",
+                    "description": "1025 bytes, over the limit of 1024",
+                    "reason": "partition_key_too_long",
+                }
+            ],
+            "resource_type": "gts.cf.core.events.request.v1~",
+        },
+    }

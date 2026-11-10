@@ -9,8 +9,8 @@ use super::test_support::*;
 use super::*;
 use crate::domain::failure::FailureReason;
 use bss_orders_sdk::catalog::OrderState;
-use event_broker_sdk::TypedEvent;
 use serde_json::{Value, json};
+use toolkit_gts::GtsSchema;
 use toolkit_security::PlatformSecurityContext;
 use types_registry_sdk::testing_platform::MockTypesRegistry;
 use types_registry_sdk::{GtsIdPattern, ListEntitiesRequest, PlatformTypesRegistryApiExt};
@@ -157,11 +157,8 @@ fn typed_events_map_the_envelope_exactly() {
         OrderEvent::<OrderSubmitted>::TYPE_ID,
         "gts.cf.core.events.event.v1~cf.bss.orders.event.v1~cf.bss.orders.submitted.v1~"
     );
-    assert_eq!(OrderEvent::<OrderSubmitted>::SOURCE, "bss-orders");
-    assert_eq!(
-        OrderEvent::<OrderSubmitted>::SUBJECT_TYPE,
-        "gts.cf.bss.orders.order.v1~"
-    );
+    assert_eq!(SOURCE, "bss-orders");
+    assert_eq!(ORDER_SUBJECT_TYPE, "gts.cf.bss.orders.order.v1~");
     assert_eq!(event.subject(), "0b6f0c52-6b0e-4ad8-9f5d-0c2b0d6a1e9f");
     assert_eq!(
         event.tenant_id(),
@@ -683,4 +680,24 @@ fn closed_enumerations_and_evidence_use_registered_tokens() {
     let ordinary = serde_json::to_value(ordinary_evidence(0)).unwrap();
     assert!(ordinary.get("operator_attestation").is_none());
     assert_eq!(ordinary["no_active_subscription_remains"], json!(true));
+}
+
+/// A producer refusal keeps the SDK error as its source, so a caller walking the chain reaches
+/// the SDK error and whatever it keeps in turn.
+#[test]
+fn a_producer_refusal_keeps_the_sdk_error_as_its_source() {
+    use std::error::Error as _;
+
+    let refused = EventEnqueueError::Producer(EventBrokerError::Internal("probe".to_owned()));
+
+    let Some(source) = refused.source() else {
+        panic!("expected a source, got {refused:?}");
+    };
+    let Some(sdk) = source.downcast_ref::<EventBrokerError>() else {
+        panic!("expected an EventBrokerError source, got {source:?}");
+    };
+    assert_eq!(
+        (sdk.kind(), sdk.to_string().as_str()),
+        ("Internal", "internal: probe")
+    );
 }

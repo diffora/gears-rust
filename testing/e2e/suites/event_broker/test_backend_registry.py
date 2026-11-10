@@ -32,6 +32,7 @@ from .conftest import (
     SQLITE_BACKEND,
     SUBJECT_TYPE,
     TRACE_ID,
+    _await_log_line,
     _derived_event_type,
     _topic_instance,
     wait_provisioned,
@@ -281,11 +282,12 @@ def test_an_unreachable_backend_does_not_stop_the_start():
                     "type": "gts://gts.cf.core.errors.err.v1~cf.core.err.service_unavailable.v1~",
                     "title": "Service Unavailable",
                     "status": 503,
-                    "detail": f"topic '{AUDIT_TOPIC}' is not provisioned on its storage backend yet",
+                    "detail": "Service temporarily unavailable",
                     "instance": "/event-broker/v1/events",
                     "trace_id": TRACE_ID,
                     "context": {},
                 },
             )
+            _await_log_line(env, f"topic '{AUDIT_TOPIC}' is not provisioned on its storage backend yet")
     finally:
         _stop(proc)

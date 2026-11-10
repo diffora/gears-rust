@@ -139,6 +139,11 @@ pub fn register_ingest_routes(mut router: Router, openapi: &dyn OpenApiRegistry)
         )
         .problem_response(
             openapi,
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "EventTooLarge - the event's encoding is over the 60 KiB per-event limit.",
+        )
+        .problem_response(
+            openapi,
             StatusCode::UNPROCESSABLE_ENTITY,
             "SchemaViolation - the event `data` does not satisfy the event type's \
              `data_schema`.",
@@ -189,7 +194,8 @@ pub fn register_ingest_routes(mut router: Router, openapi: &dyn OpenApiRegistry)
             openapi,
             StatusCode::PAYLOAD_TOO_LARGE,
             "BatchTooLarge (more events than the configured max) or BatchPayloadTooLarge \
-             (total payload over the configured byte ceiling)",
+             (total payload over the configured byte ceiling), or EventTooLarge (an event's \
+             encoding over the 60 KiB per-event limit)",
         )
         .problem_response(
             openapi,

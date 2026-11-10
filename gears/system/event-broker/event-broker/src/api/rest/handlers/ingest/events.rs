@@ -104,10 +104,12 @@ fn parse_body<T: serde::de::DeserializeOwned>(body: &Bytes) -> Result<T, DomainE
 /// # Errors
 ///
 /// Returns the mapped `CanonicalError` for any `DomainError`
-/// `IngestService::publish_event` produces (an unauthorized event type or
-/// tenant, topic/event-type not found, payload validation, sequence
-/// violation, unknown producer), or `400` when the body carries a
-/// read-only/unknown field or `Prefer: wait` names a malformed value.
+/// `IngestService::publish_event` or `IngestService::publish_event_sync`
+/// produces (an event over the size limit, an unauthorized event type or
+/// tenant, topic/event-type not found, payload validation, a partition key
+/// over its cap, sequence violation, unknown producer), or `400` when the body
+/// carries a read-only/unknown field or a malformed `source`, `subject`,
+/// `trace_parent` or `type`, or `Prefer: wait` names a malformed value.
 pub async fn publish_event(
     Extension(ctx): Extension<SecurityContext>,
     Extension(state): Extension<HandlerState>,
@@ -144,11 +146,12 @@ pub async fn publish_event(
 ///
 /// Returns the mapped `CanonicalError` for any `DomainError`
 /// `IngestService::publish_batch` produces (an empty batch, a repeated event
-/// id, a malformed run, mixed topics, batch too large, an unauthorized event
-/// type or tenant, topic/event-type not found, unknown producer, payload
-/// validation, a sequence violation, or an unavailable store), or `400` when
-/// the body carries a read-only/unknown field or `Prefer: wait` names a
-/// malformed value.
+/// id, a malformed run, mixed topics, batch too large, an event over the size
+/// limit, an unauthorized event type or tenant, topic/event-type not found,
+/// unknown producer, payload validation, a partition key over its cap, a
+/// sequence violation, or an unavailable store), or `400` when the body carries
+/// a read-only/unknown field or a malformed `source`, `subject`, `trace_parent`
+/// or `type`, or `Prefer: wait` names a malformed value.
 pub async fn publish_batch(
     Extension(ctx): Extension<SecurityContext>,
     Extension(state): Extension<HandlerState>,

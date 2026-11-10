@@ -6,7 +6,8 @@ use event_broker_sdk::backend::{
     AppendRequest, Appended, Backend, BackendError, Dedup, Fence, FenceKey, FenceSeq, Flush, Head,
     KeyedEvent, LogClaim, LogId, Partition, Replacing, Retention, TopicPartition, TopicSpec, Wait,
 };
-use event_broker_sdk::{Event, GtsInstanceId, GtsTypeId, PartitionRange, Position, Sequence};
+use event_broker_sdk::models::Event;
+use event_broker_sdk::{GtsInstanceId, GtsTypeId, PartitionRange, Position, Sequence};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -38,7 +39,7 @@ fn event(id: u128, occurred_at: DateTime<Utc>) -> Event {
         tenant_id: Uuid::from_u128(100),
         source: "svc".to_owned(),
         subject: "s".to_owned(),
-        subject_type: GtsTypeId::new("gts.cf.core.events.subject.v1~acme.orders.x.order.v1~"),
+        subject_type: GtsTypeId::new("gts.acme.orders.x.order.v1~"),
         occurred_at,
         trace_parent: None,
         data: Some(serde_json::json!({ "n": 1 })),

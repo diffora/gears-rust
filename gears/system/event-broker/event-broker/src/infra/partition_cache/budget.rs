@@ -29,15 +29,16 @@ use super::runway::RunwayPolicy;
 /// every segment of one partition draws on the same population - a per-segment
 /// statistic would only halve the sample for no gain.
 ///
-/// Clamped to `1..=`[`Self::MAX`]. Events are capped at 64 KiB combined
-/// headers and payload (`docs/DESIGN.md`, "Constraints"), so a larger estimate
-/// describes an event that cannot exist. Clamping errs conservative and cannot
-/// make the allocator overcommit.
+/// Clamped to `1..=`[`Self::MAX`]. Events are capped at 60 KiB combined
+/// headers and payload (`docs/DESIGN.md`, "Constraints"), so an estimate above
+/// [`Self::MAX`] describes an event that cannot exist. Clamping errs
+/// conservative and cannot make the allocator overcommit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EstimatedBytesPerEvent(usize);
 
 impl EstimatedBytesPerEvent {
-    /// The per-event hard size limit: 64 KiB.
+    /// 64 KiB: a looser clamp above the 60 KiB per-event limit. A larger
+    /// estimate only makes the allocator more conservative, so the slack is safe.
     pub const MAX: usize = 65_536;
 
     /// What a partition with nothing resident is assumed to hold. The worst

@@ -1,6 +1,7 @@
 mod consumer {
     mod common;
     mod doubles;
+    mod fault_runs;
 
     mod batch_handler;
     mod builder;

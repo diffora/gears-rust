@@ -6,9 +6,10 @@
 //!
 //! `classifies_every_endpoint_to_the_correct_role` doubles as the "no
 //! instance registered" `503` case (task 3.4, spec "Forwarding error
-//! semantics") since nothing is registered against a fresh `ClientHub` -
-//! the `503` detail (which names the resolved role's service name) is what
-//! makes classification observable through real `forward()` behavior.
+//! semantics") since nothing is registered against a fresh `ClientHub`.
+//! Every dispatcher `503` carries the same generic body, so the resolved
+//! role's service name is read from the `gear` field of the warning
+//! `forward()` logs, which is what makes classification observable.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -59,7 +60,7 @@ fn build_router(state: Arc<DispatcherState>) -> Router {
 }
 
 /// Drives `method path` through `router` and returns the response body as
-/// text (for asserting on the `Problem` `detail`).
+/// text (for asserting on the `Problem` body).
 async fn response_text(router: Router, method: Method, path: &str) -> (StatusCode, String) {
     let request = Request::builder()
         .method(method)
@@ -81,6 +82,7 @@ async fn response_text(router: Router, method: Method, path: &str) -> (StatusCod
 }
 
 #[tokio::test]
+#[tracing_test::traced_test]
 async fn classifies_every_endpoint_to_the_correct_role() {
     // DESIGN.md:1354-1392's routing table: 5 Ingest + 11 Delivery + 3 Shared
     // (Shared forwards to Ingest - design.md D2). Expected role is the
@@ -141,7 +143,7 @@ async fn classifies_every_endpoint_to_the_correct_role() {
     let directory = crate::test_support::test_directory_client(&hub);
     let state = Arc::new(DispatcherState::new(directory).expect("dispatcher state"));
 
-    for (method, path, expected_role) in cases.iter().cloned() {
+    for (method, path, _) in cases.iter().cloned() {
         let router = build_router(Arc::clone(&state));
         let (status, body) = response_text(router, method.clone(), path).await;
         assert_eq!(
@@ -149,12 +151,41 @@ async fn classifies_every_endpoint_to_the_correct_role() {
             StatusCode::SERVICE_UNAVAILABLE,
             "{method} {path} - nothing is registered, expected 503; body: {body}"
         );
-        let expected_detail = format!("no event-broker-{expected_role} instance registered");
-        assert!(
-            body.contains(&expected_detail),
-            "{method} {path} expected detail to contain {expected_detail:?}, body was: {body}"
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&body).expect("a Problem body"),
+            serde_json::json!({
+                "type": "gts://gts.cf.core.errors.err.v1~cf.core.err.service_unavailable.v1~",
+                "title": "Service Unavailable",
+                "status": 503,
+                "detail": "Service temporarily unavailable",
+                "context": {},
+            }),
+            "{method} {path}"
         );
     }
+
+    // Copied out of the closure and asserted after it: `logs_assert` runs the
+    // closure under the capture's global lock, which a panic would poison for
+    // every other test of the binary.
+    let logged_gears = std::cell::RefCell::new(Vec::new());
+    logs_assert(|lines| {
+        *logged_gears.borrow_mut() = lines
+            .iter()
+            .filter(|line| line.contains("directory resolution failed"))
+            .map(|line| {
+                line.split_whitespace()
+                    .find(|word| word.starts_with("gear="))
+                    .unwrap_or("(no gear field)")
+                    .to_owned()
+            })
+            .collect::<Vec<_>>();
+        Ok(())
+    });
+    let expected_gears: Vec<String> = cases
+        .iter()
+        .map(|(_, _, role)| format!("gear=\"event-broker-{role}\""))
+        .collect();
+    assert_eq!(logged_gears.into_inner(), expected_gears);
 }
 
 #[tokio::test]
@@ -215,7 +246,7 @@ async fn random_selection_reaches_both_registered_instances() {
 
 #[tokio::test]
 #[tracing_test::traced_test]
-async fn returns_503_with_distinct_detail_when_resolved_instance_is_unreachable() {
+async fn returns_the_generic_503_and_logs_the_cause_when_resolved_instance_is_unreachable() {
     let (hub, _cluster) = crate::test_support::standalone_event_broker_cluster().await;
     let directory = crate::test_support::test_directory_client(&hub);
 
@@ -243,17 +274,23 @@ async fn returns_503_with_distinct_detail_when_resolved_instance_is_unreachable(
     let (status, body) = response_text(router, Method::GET, "/event-broker/v1/topics").await;
 
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "body: {body}");
-    assert!(
-        body.contains("resolved event-broker-ingest instance unreachable"),
-        "body: {body}"
-    );
-    assert!(
-        !body.contains("no event-broker-ingest instance registered"),
-        "must be the distinct unreachable detail, not the no-instance-registered one; body: {body}"
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&body).expect("a Problem body"),
+        serde_json::json!({
+            "type": "gts://gts.cf.core.errors.err.v1~cf.core.err.service_unavailable.v1~",
+            "title": "Service Unavailable",
+            "status": 503,
+            "detail": "Service temporarily unavailable",
+            "context": {},
+        })
     );
     assert!(
         logs_contain("forwarding to resolved instance failed"),
         "the connection failure must be logged before the 503 is returned"
+    );
+    assert!(
+        logs_contain("gear=\"event-broker-ingest\""),
+        "the log names the role whose instance was unreachable"
     );
 }
 
@@ -307,9 +344,15 @@ async fn returns_503_within_the_timeout_when_a_resolved_instance_accepts_but_nev
     let (status, body) =
         outcome.expect("a silent upstream must not hang the handler past the timeout");
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "body: {body}");
-    assert!(
-        body.contains("resolved event-broker-ingest instance unreachable"),
-        "body: {body}"
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&body).expect("a Problem body"),
+        serde_json::json!({
+            "type": "gts://gts.cf.core.errors.err.v1~cf.core.err.service_unavailable.v1~",
+            "title": "Service Unavailable",
+            "status": 503,
+            "detail": "Service temporarily unavailable",
+            "context": {},
+        })
     );
 }
 
@@ -486,9 +529,15 @@ async fn unresolvable_hostname_returns_503_without_panicking_and_logs_the_failur
     let (status, body) = response_text(router, Method::GET, "/event-broker/v1/topics").await;
 
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "body: {body}");
-    assert!(
-        body.contains("resolved event-broker-ingest instance unreachable"),
-        "body: {body}"
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&body).expect("a Problem body"),
+        serde_json::json!({
+            "type": "gts://gts.cf.core.errors.err.v1~cf.core.err.service_unavailable.v1~",
+            "title": "Service Unavailable",
+            "status": 503,
+            "detail": "Service temporarily unavailable",
+            "context": {},
+        })
     );
     assert!(
         logs_contain("forwarding to resolved instance failed"),
@@ -545,9 +594,15 @@ async fn https_advertised_endpoint_is_rejected_without_connecting() {
     let (status, body) = response_text(router, Method::GET, "/event-broker/v1/topics").await;
 
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "body: {body}");
-    assert!(
-        body.contains("resolved event-broker-ingest instance unreachable"),
-        "body: {body}"
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&body).expect("a Problem body"),
+        serde_json::json!({
+            "type": "gts://gts.cf.core.errors.err.v1~cf.core.err.service_unavailable.v1~",
+            "title": "Service Unavailable",
+            "status": 503,
+            "detail": "Service temporarily unavailable",
+            "context": {},
+        })
     );
     assert_eq!(
         hits.load(Ordering::SeqCst),
@@ -669,7 +724,7 @@ impl DirectoryClient for AlwaysErroringDirectory {
 
 #[tokio::test]
 #[tracing_test::traced_test]
-async fn directory_backend_failure_is_logged_and_differs_from_not_found() {
+async fn directory_backend_failure_answers_the_generic_503_and_logs_the_cause() {
     let state = Arc::new(
         DispatcherState::new(Arc::new(AlwaysErroringDirectory) as Arc<dyn DirectoryClient>)
             .expect("dispatcher state"),
@@ -678,15 +733,15 @@ async fn directory_backend_failure_is_logged_and_differs_from_not_found() {
     let (status, body) = response_text(router, Method::GET, "/event-broker/v1/topics").await;
 
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "body: {body}");
-    assert!(
-        body.contains("service discovery unavailable for event-broker-ingest instances"),
-        "a generic directory failure must not be conflated with the \"not found\" detail; \
-         body: {body}"
-    );
-    assert!(
-        !body.contains("no event-broker-ingest instance registered"),
-        "must be the distinct \"discovery unavailable\" detail, not the no-instance-registered \
-         one; body: {body}"
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&body).expect("a Problem body"),
+        serde_json::json!({
+            "type": "gts://gts.cf.core.errors.err.v1~cf.core.err.service_unavailable.v1~",
+            "title": "Service Unavailable",
+            "status": 503,
+            "detail": "Service temporarily unavailable",
+            "context": {},
+        })
     );
     assert!(
         logs_contain("directory backend timed out"),

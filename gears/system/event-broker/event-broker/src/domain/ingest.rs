@@ -16,6 +16,7 @@ use crate::domain::backend::BackendResolver;
 use crate::domain::error::{DomainError, ErrorCode};
 use crate::domain::idempotency::{ChainRun, ProducerIdempotencyOutcome};
 use crate::domain::producer_reset::ProducerResetScope;
+use event_broker_sdk::EventV1;
 use event_broker_sdk::models::EventType;
 
 use crate::domain::model::{Event, Meta};
@@ -43,6 +44,110 @@ pub struct PublishRequest {
     pub trace_parent: Option<String>,
     pub data: serde_json::Value,
     pub meta: Option<Meta>,
+}
+
+impl PublishRequest {
+    /// Rejects a `trace_parent` that is not a W3C traceparent, as the field violation
+    /// the SDK recovers as `InvalidEventField`.
+    pub(crate) fn check_trace_parent(trace_parent: &str) -> Result<(), DomainError> {
+        if event_broker_sdk::validate::is_trace_parent(trace_parent) {
+            return Ok(());
+        }
+        Err(DomainError::TextField {
+            field: "trace_parent",
+            detail: event_broker_sdk::validate::TRACE_PARENT_RULE.to_owned(),
+            reason: event_broker_sdk::error::reasons::INVALID_EVENT_FIELD,
+        })
+    }
+
+    /// The request's size as the per-event limit counts it: the bytes the SDK's
+    /// `EventV1::encoded_len` counts for the same event, or fewer, never more.
+    /// Parsing makes a `null` `data` of an absent one, a nil `meta.producer_id` of an
+    /// absent one and a `meta.sequence` of 0 of an absent one, so the request cannot
+    /// tell those apart. Each counts as the shorter of its two forms: `data` left out
+    /// (12 bytes fewer than the SDK's `"data":null` for a set `null`), the producer id
+    /// as `null` (34 fewer for a literal nil id) and the sequence as `0` (3 fewer for
+    /// an absent one).
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Internal`] when the request does not serialize, which no
+    /// `serde_json::Value` payload does: a broken internal invariant.
+    pub(crate) fn encoded_len(&self) -> Result<usize, DomainError> {
+        let encoded = EncodedEvent {
+            id: self.id,
+            r#type: &self.r#type,
+            tenant_id: self.tenant_id,
+            source: &self.source,
+            subject: &self.subject,
+            subject_type: &self.subject_type,
+            occurred_at: self.occurred_at,
+            trace_parent: self.trace_parent.as_deref(),
+            data: (!self.data.is_null()).then_some(&self.data),
+            meta: self.meta.as_ref().map(|meta| EncodedMeta {
+                version: meta.version,
+                producer_id: (!meta.producer_id.is_nil()).then_some(meta.producer_id),
+                previous: meta.previous,
+                sequence: meta.sequence,
+            }),
+        };
+        serde_json::to_vec(&encoded)
+            .map(|bytes| bytes.len())
+            .map_err(|err| {
+                // The class only: a serde message can quote the value.
+                DomainError::Internal(format!(
+                    "measure an event's encoding ({:?})",
+                    err.classify()
+                ))
+            })
+    }
+
+    /// Refuses a request over `EventV1::MAX_ENCODED_BYTES`, naming it as event
+    /// `index` of its request.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::EventTooLarge`] when it encodes to more; the error of
+    /// [`encoded_len`](Self::encoded_len).
+    pub(crate) fn check_size(&self, index: usize) -> Result<(), DomainError> {
+        let bytes = self.encoded_len()?;
+        if bytes > EventV1::MAX_ENCODED_BYTES {
+            return Err(DomainError::EventTooLarge {
+                index,
+                bytes,
+                max: EventV1::MAX_ENCODED_BYTES,
+            });
+        }
+        Ok(())
+    }
+}
+
+/// A [`PublishRequest`] in the shape the SDK's `EventV1` serializes to, borrowed, for
+/// [`PublishRequest::encoded_len`]: the same members, each value parsing cannot tell
+/// from an absent one in its shorter form.
+/// No server-stamped member: an `EventV1` on its way in has none, and skips them.
+#[derive(serde::Serialize)]
+struct EncodedEvent<'a> {
+    id: Uuid,
+    r#type: &'a GtsTypeId,
+    tenant_id: Uuid,
+    source: &'a str,
+    subject: &'a str,
+    subject_type: &'a GtsTypeId,
+    occurred_at: chrono::DateTime<chrono::Utc>,
+    trace_parent: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data: Option<&'a serde_json::Value>,
+    meta: Option<EncodedMeta>,
+}
+
+/// The `meta` of an [`EncodedEvent`], as the SDK's `EventMeta` serializes.
+#[derive(serde::Serialize)]
+struct EncodedMeta {
+    version: i32,
+    producer_id: Option<Uuid>,
+    previous: Option<i64>,
+    sequence: i64,
 }
 
 /// Outcome of admitting a batch, all-or-nothing (feature 0001 §5.2): some
@@ -438,10 +543,13 @@ where
     /// event and subject types, the topic and its provisioning, the producer,
     /// the payload schema; then the stamped event and its ingest partition.
     /// Writes nothing, so a batch prepares every event before enqueueing any.
+    /// `index` is the request's position in its batch (`0` for a single publish),
+    /// which a refused partition key names.
     async fn prepare_publish(
         &self,
         ctx: &SecurityContext,
         request: PublishRequest,
+        index: usize,
         stamp: OutboxStamp,
     ) -> Result<PreparedPublish, DomainError> {
         // Reject non-event types, then authorize before topic/schema validation
@@ -559,6 +667,18 @@ where
         // topic partition: it only places the event in the ingest outbox
         // partition of its key, so events of one key drain in publish order.
         let key = crate::domain::backend::partition_input(&request, &event_type.partition_key)?;
+        // The key is stored beside the event in the ingest outbox row, so its cap keeps
+        // the row within the outbox's limit (`EventV1::OUTBOX_RESERVE_BYTES`).
+        let key_bytes = EventV1::partition_key_len(&key).map_err(|err| {
+            DomainError::Internal(format!("measure a partition key: {}", err.kind()))
+        })?;
+        if key_bytes > EventV1::MAX_PARTITION_KEY_BYTES {
+            return Err(DomainError::PartitionKeyTooLong {
+                index,
+                bytes: key_bytes,
+                max: EventV1::MAX_PARTITION_KEY_BYTES,
+            });
+        }
         let ingest_partition =
             crate::domain::outbox::outbox_partition_for(&topic.id, &key, self.outbox_partitions);
 
@@ -664,6 +784,9 @@ where
                 max: self.batch.max_payload_bytes,
             });
         }
+        for (index, request) in requests.iter().enumerate() {
+            request.check_size(index)?;
+        }
 
         // A batch is atomic per topic, and a request names only its event
         // type, so homogeneity is decided by resolving each type to the topic
@@ -688,8 +811,9 @@ where
         // All-or-nothing: every event is validated before any is enqueued, and
         // the enqueue is one transaction that a chain violation rolls back.
         let mut enqueues = Vec::with_capacity(requests.len());
-        for request in requests {
-            let PreparedPublish { enqueue, .. } = self.prepare_publish(ctx, request, stamp).await?;
+        for (index, request) in requests.into_iter().enumerate() {
+            let PreparedPublish { enqueue, .. } =
+                self.prepare_publish(ctx, request, index, stamp).await?;
             enqueues.push(enqueue);
         }
         // Feature 0001 §5.2 R3: each run's own shape, before any chain state
@@ -715,8 +839,10 @@ where
         ctx: &SecurityContext,
         request: PublishRequest,
     ) -> Result<PublishAck, DomainError> {
+        // A single publish is a run of one, so a refusal names index 0.
+        request.check_size(0)?;
         let PreparedPublish { event, enqueue } = self
-            .prepare_publish(ctx, request, OutboxStamp::Async)
+            .prepare_publish(ctx, request, 0, OutboxStamp::Async)
             .await?;
 
         // `check_and_enqueue` is the one DB transaction spanning the
@@ -785,8 +911,10 @@ where
         // A fresh per-publish trace: the row is enqueued under it and the outbox
         // tells us once it is stored (feature 0007 §4.1).
         let trace = SyncTrace::new();
+        // A single publish is a run of one, so a refusal names index 0.
+        request.check_size(0)?;
         let PreparedPublish { event, enqueue } = self
-            .prepare_publish(ctx, request, OutboxStamp::Sync(trace))
+            .prepare_publish(ctx, request, 0, OutboxStamp::Sync(trace))
             .await?;
 
         // Subscribe before the enqueue commits, so the completion can never be

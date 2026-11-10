@@ -7,6 +7,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 mod plan_support;
 use bss_pricing::infra::{
+    events::PLAN_SUBJECT_TYPE,
     reference_ticker::Ticker,
     reference_work::Clock,
     storage::repo::{plan_repo, plan_revision_repo, price_book_entry_repo, price_repo},
@@ -713,6 +714,7 @@ async fn the_job_publishes_a_due_revision_on_its_date_once_naming_its_approver()
     assert_eq!(r2["approved_by_unit_id"], unit);
     let events = published_of(&f, rev2).await;
     assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0]["subject_type"], PLAN_SUBJECT_TYPE);
     let data = &events[0]["data"];
     assert_eq!(data["planId"], pro.plan.to_string());
     assert_eq!(data["revNo"], 2);

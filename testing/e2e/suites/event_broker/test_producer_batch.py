@@ -1,4 +1,4 @@
-"""Batch publish scenarios (producer/batch/1.01-1.09).
+"""Batch publish scenarios (producer/batch/1.01-1.12).
 
 - 1.01: batch of two events, same topic → 202
 - 1.02: batch mixing topics → 400 (the two pre-provisioned topics serve as
@@ -11,10 +11,13 @@
 - 1.08: run behind the committed chain head → 412
 - 1.09: resent batch of only duplicates → 200
 - 1.10: sync batch (Prefer: wait=N) → 201 once every admitted event is stored
+- 1.11: batch with an event over the 60 KiB per-event limit → 413 naming it
+- 1.12: batch with a partition key over 1024 bytes → 400 naming its event
 """
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timezone
 
@@ -22,6 +25,7 @@ import pytest
 
 from .conftest import (
     API_BASE,
+    EVENT_TYPE_KEYED,
     EVENT_TYPE_STREAM,
     EVENT_TYPE_LONGPOLL,
     EVENT_TYPE_STRICT,
@@ -137,11 +141,17 @@ async def test_batch_too_large_rejected_413(api):
         "type": "gts://gts.cf.core.errors.err.v1~cf.core.err.invalid_argument.v1~",
         "title": "Invalid Argument",
         "status": 413,
-        "detail": "batch too large: 101 events (max 100)",
+        "detail": "Request validation failed",
         "instance": f"{API_BASE}/events:batch",
         "trace_id": TRACE_ID,
         "context": {
-            "format": "batch too large: 101 events (max 100)",
+            "field_violations": [
+                {
+                    "field": "batch.count",
+                    "description": "batch too large: 101 events (max 100)",
+                    "reason": "batch_too_large",
+                }
+            ],
             "resource_type": "gts.cf.core.events.request.v1~",
         },
     }
@@ -453,4 +463,90 @@ async def test_batch_resent_after_a_lost_ack_answers_200_and_keeps_the_cursor(ap
         "producer_id": producer_id,
         "client_agent": "e2e-test/1.0",
         "topics": [{"topic": TOPIC_STREAM, "last_sequence": 12}],
+    }
+
+
+def _sized_event(tenant_id: str, pad: int) -> dict:
+    """A stream event whose ``data.pad`` is ``pad`` bytes, at a fixed time, so its
+    encoding is what the broker measures."""
+    return {
+        **_event(EVENT_TYPE_STREAM, tenant_id),
+        "occurred_at": "2026-11-09T10:00:00Z",
+        "data": {"pad": "x" * pad},
+    }
+
+
+def _encoded_len(event: dict) -> int:
+    """The event's size as the broker counts it: its compact JSON in the SDK's
+    ``EventV1`` form, an absent ``trace_parent`` or ``meta`` written as ``null``."""
+    counted = {**event, "trace_parent": event.get("trace_parent"), "meta": event.get("meta")}
+    return len(json.dumps(counted, separators=(",", ":"), ensure_ascii=False).encode())
+
+
+async def test_batch_with_an_event_over_the_size_limit_rejected_413(api):
+    """scenario: producer/batch/1.11-negative-batch-event-too-large.md
+
+    The batch's second event is over the 60 KiB per-event limit: the whole
+    batch is refused 413, naming that event.
+    """
+    tenant_id = str(uuid.uuid4())
+    over = _sized_event(tenant_id, 61_440)
+    size = _encoded_len(over)
+    async with api() as client:
+        resp = await client.post(
+            "/events:batch",
+            json={"events": [_sized_event(tenant_id, 10), over]},
+        )
+    assert resp.status_code == 413
+    assert resp.json() == {
+        "type": "gts://gts.cf.core.errors.err.v1~cf.core.err.invalid_argument.v1~",
+        "title": "Invalid Argument",
+        "status": 413,
+        "detail": "Request validation failed",
+        "instance": f"{API_BASE}/events:batch",
+        "trace_id": TRACE_ID,
+        "context": {
+            "field_violations": [
+                {
+                    "field": "events[1]",
+                    "description": f"{size} bytes encoded, over the limit of 61440",
+                    "reason": "event_too_large",
+                }
+            ],
+            "resource_type": "gts.cf.core.events.request.v1~",
+        },
+    }
+
+
+async def test_batch_with_a_partition_key_over_its_cap_rejected_400(api):
+    """scenario: producer/batch/1.12-negative-batch-partition-key-too-long.md
+
+    The batch's second event resolves a partition key over 1024 bytes: the
+    whole batch is refused 400, naming that event.
+    """
+    tenant_id = str(uuid.uuid4())
+    events = [
+        {**_event(EVENT_TYPE_KEYED, tenant_id), "data": {"k": "order-1"}},
+        {**_event(EVENT_TYPE_KEYED, tenant_id), "data": {"k": "k" * 1025}},
+    ]
+    async with api() as client:
+        resp = await client.post("/events:batch", json={"events": events})
+    assert resp.status_code == 400
+    assert resp.json() == {
+        "type": "gts://gts.cf.core.errors.err.v1~cf.core.err.invalid_argument.v1~",
+        "title": "Invalid Argument",
+        "status": 400,
+        "detail": "Request validation failed",
+        "instance": f"{API_BASE}/events:batch",
+        "trace_id": TRACE_ID,
+        "context": {
+            "field_violations": [
+                {
+                    "field": "events[1].partition_key",
+                    "description": "1025 bytes, over the limit of 1024",
+                    "reason": "partition_key_too_long",
+                }
+            ],
+            "resource_type": "gts.cf.core.events.request.v1~",
+        },
     }

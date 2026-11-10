@@ -19,7 +19,7 @@ fn event() -> Event {
         tenant_id: Uuid::from_u128(2),
         source: "src".to_owned(),
         subject: "sub".to_owned(),
-        subject_type: GtsTypeId::new("gts.acme.x.thing.v1~"),
+        subject_type: GtsTypeId::new("gts.acme.x.things.thing.v1~"),
         occurred_at: at(1_700_000_000),
         trace_parent: Some("00-tp".to_owned()),
         data: Some(serde_json::json!({ "a": 1 })),

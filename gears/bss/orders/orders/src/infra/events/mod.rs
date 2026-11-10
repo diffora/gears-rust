@@ -10,7 +10,7 @@
 //! The runner follows the Pricing precedent
 //! (`gears/bss/pricing/pricing/src/infra/events.rs`, D-455), without its interim holding queue:
 //! an [`EventSink`] exists only once the real producer is bound ([`super::broker`]).
-use event_broker_sdk::{EventBrokerError, ProducerOutbox};
+use event_broker_sdk::{EventBrokerError, OutboxProducer};
 use parking_lot::Mutex;
 use std::future::Future;
 use std::pin::Pin;
@@ -61,6 +61,8 @@ pub const ORDER_SUBJECT_TYPE: &str = crate::gts::permissions::labels::ORDER;
 pub const PARTITION_KEY: &str = "/subject";
 /// The toolkit outbox payload limit the fully serialized producer envelope must fit (§4.4).
 /// Toolkit keeps its constant crate-private; a test pins this value against its record builder.
+/// Only tests read it: the `data` bound derives from the SDK's per-event limit.
+#[cfg(test)]
 pub const MAX_ENVELOPE_BYTES: usize = 64 * 1024;
 /// Envelope members outside `data` (identifiers, type, topic, tenancy, producer metadata),
 /// reserved before admitting `data` (DESIGN §6 synthetic sizing: a 2 KiB envelope reserve).
@@ -85,11 +87,11 @@ impl RootTenant {
 /// The bound managed producer: the only way to enqueue an Orders event.
 #[derive(Clone)]
 pub struct EventSink {
-    outbox: ProducerOutbox,
+    outbox: OutboxProducer,
     root: RootTenant,
 }
 impl EventSink {
-    pub(in crate::infra) fn new(outbox: ProducerOutbox, root: RootTenant) -> Self {
+    pub(in crate::infra) fn new(outbox: OutboxProducer, root: RootTenant) -> Self {
         Self { outbox, root }
     }
     /// The platform-root tenant every enqueued envelope carries.
@@ -105,7 +107,7 @@ pub enum EventEnqueueError {
     /// The payload violates the event contract.
     #[error(transparent)]
     Contract(#[from] EventContractError),
-    #[error("Orders event data is {bytes} bytes; at most {max} fit the 64 KiB envelope")]
+    #[error("Orders event data is {bytes} bytes; at most {max} fit the event size limit")]
     /// The serialized `data` exceeds the envelope budget.
     TooLarge {
         /// Size of the serialized `data`.
@@ -127,17 +129,18 @@ pub enum EventEnqueueError {
     Serialize,
     /// The managed producer refused the enqueue.
     #[error("the Orders event producer refused the enqueue: {0}")]
-    Producer(EventBrokerError),
+    Producer(#[source] EventBrokerError),
     /// The attempt's work returned success after one of its enqueues failed. The runner
     /// refuses to commit it: order state never commits without its producer message.
     #[error("an Orders event enqueue failed in this transaction; it cannot commit")]
     EnqueueFailed,
 }
 
-/// The largest `data` encoding admitted before the SDK builds the envelope.
+/// The largest `data` encoding admitted before the SDK builds the envelope: the SDK's
+/// per-event limit less the reserve, so Orders never admits an event the SDK refuses.
 #[must_use]
 pub const fn max_data_bytes() -> usize {
-    MAX_ENVELOPE_BYTES - ENVELOPE_RESERVE_BYTES
+    event_broker_sdk::EventV1::MAX_ENCODED_BYTES - ENVELOPE_RESERVE_BYTES
 }
 
 /// Admit an encoded `data` length (§4.4: enforce 64 KiB on the envelope before commit).
@@ -288,6 +291,15 @@ impl TxEvents {
             }
             pending.enqueued = true;
         }
+        let subject = event.subject().into_owned();
+        let tenant_id = event.tenant_id();
+        let mut builder = event_broker_sdk::EventV1::builder(event)
+            .subject(subject)
+            .subject_type_id(event_broker_sdk::GtsTypeId::new(ORDER_SUBJECT_TYPE));
+        if let Some(tenant_id) = tenant_id {
+            builder = builder.tenant_id(tenant_id);
+        }
+        let event = builder.build().map_err(EventEnqueueError::Producer)?;
         let wake = self
             .sink
             .outbox

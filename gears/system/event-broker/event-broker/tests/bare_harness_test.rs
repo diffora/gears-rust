@@ -113,4 +113,21 @@ async fn registry_holding_seeds_only_the_broker_base_types() {
         .collect();
     topic_schemas.sort();
     assert_eq!(topic_schemas, vec![TopicV1::TYPE_ID.to_owned()]);
+
+    // No subject base: a subject type is any GTS type id, so the registry holds none.
+    let mut all_schemas: Vec<String> = registry
+        .list_type_schemas(&ctx, pattern("gts.*"))
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|schema| schema.type_id.as_ref().to_owned())
+        .collect();
+    all_schemas.sort();
+    assert_eq!(
+        all_schemas,
+        vec![
+            EventV1::<()>::TYPE_ID.to_owned(),
+            TopicV1::TYPE_ID.to_owned()
+        ]
+    );
 }
