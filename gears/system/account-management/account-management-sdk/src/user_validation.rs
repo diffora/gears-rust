@@ -6,7 +6,9 @@ use email_address::{EmailAddress, Options};
 
 use crate::{IdpNewUser, IdpUserAttribute, IdpUserPatch};
 
+/// Minimum username or supplied display/given/family name length in Unicode scalar values.
 pub const USER_TEXT_MIN_CHARS: usize = 1;
+/// Maximum username or supplied display/given/family name length in Unicode scalar values.
 pub const USER_TEXT_MAX_CHARS: usize = 255;
 // Existing AM command cap, not a new constraint on the published User v1 resource.
 const USER_INPUT_EMAIL_MAX_CHARS: usize = 255;

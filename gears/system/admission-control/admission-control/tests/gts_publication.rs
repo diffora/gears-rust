@@ -7,10 +7,13 @@ use std::sync::Arc;
 
 use admission_control::AdmissionControl;
 use admission_control_sdk::{ADMISSION_CONTROL_RESOURCE, AUDIT_TOPIC_ID, REFUSAL_EVENT_TYPE};
+use event_broker_sdk::gts::{EventV1, TopicV1};
+use gts::GtsSchema;
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
 use toolkit::Gear;
 use toolkit::gts_publication::{GtsPublicationCapability as _, PreparedGtsPublication};
+use toolkit_gts::PluginV1;
 use types_registry_sdk::GtsId;
 use types_registry_sdk::testing_platform::{Call, MockTypesRegistry};
 
@@ -53,6 +56,20 @@ fn manifest_contains_exactly_the_four_owned_sdk_declarations() {
 #[tokio::test]
 async fn init_after_publication_registers_the_client_without_publishing_again() {
     let registry = Arc::new(MockTypesRegistry::new());
+    // Supply platform prerequisites, leaving the gear's own declarations to publication.
+    for (id, schema) in [
+        (
+            PluginV1::<()>::TYPE_ID,
+            PluginV1::<()>::gts_schema_with_refs(),
+        ),
+        (
+            EventV1::<()>::TYPE_ID,
+            EventV1::<()>::gts_schema_with_refs(),
+        ),
+        (TopicV1::TYPE_ID, TopicV1::gts_schema_with_refs()),
+    ] {
+        registry.seed(id, schema);
+    }
     let hub = Arc::new(toolkit::ClientHub::new());
     registry.install(&hub);
     let manifest = Arc::new(

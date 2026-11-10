@@ -24,6 +24,7 @@
   - [Deprovision Idempotency](#deprovision-idempotency)
   - [Published User Projection Schema](#published-user-projection-schema)
   - [Authenticated Tenant-Scoped Invocation](#authenticated-tenant-scoped-invocation)
+  - [Fixed User Command Validation](#fixed-user-command-validation)
 - [6. Acceptance Criteria](#6-acceptance-criteria)
 - [7. Deliberate Omissions](#7-deliberate-omissions)
 

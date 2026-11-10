@@ -2,7 +2,9 @@
 
 use crate::{CreateTenantRequest, UpdateTenantRequest};
 
+/// Minimum tenant-name length in Unicode scalar values.
 pub const TENANT_NAME_MIN_CHARS: usize = 1;
+/// Maximum tenant-name length in Unicode scalar values.
 pub const TENANT_NAME_MAX_CHARS: usize = 255;
 
 /// Invalid tenant command name; diagnostics never include the supplied value.

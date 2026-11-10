@@ -5,6 +5,7 @@ use toolkit_gts::gts_type_schema_template;
 
 // The template must not register its fixed ID when a deployment configures
 // another ID or no root contract. The startup manifest owns publication.
+/// Platform-root tenant-type schema template with no parents or `IdP` provisioning.
 #[gts_type_schema_template(
     dir_path = "schemas",
     base = TenantTypeV1,

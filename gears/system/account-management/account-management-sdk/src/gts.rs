@@ -886,6 +886,7 @@ mod tenant_type_traits_tests {
     //! The builder requires explicit policy choices and preserves the wire contract.
 
     use super::TenantTypeTraitsV1;
+    use toolkit_gts::gts_id;
 
     #[test]
     fn explicit_root_policy_serializes_empty_parents_and_false() {
@@ -901,7 +902,7 @@ mod tenant_type_traits_tests {
 
     #[test]
     fn both_setter_orders_preserve_parent_ids_and_provisioning_policy() {
-        let parent = "gts.cf.core.am.tenant_type.v1~example.core.am.parent.v1~";
+        let parent = gts_id!("cf.core.am.tenant_type.v1~example.core.am.parent.v1~");
         let parents_first = TenantTypeTraitsV1::builder()
             .with_allowed_parent_types([parent])
             .with_idp_provisioning(true)

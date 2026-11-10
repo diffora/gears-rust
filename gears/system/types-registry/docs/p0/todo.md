@@ -2,10 +2,11 @@
 
 Plan: [`plan.md`](./plan.md) · Spec: [`SPEC.md`](./SPEC.md)
 
-**Status:** 37 of 52 executable tasks are complete (through T35, including T34a, plus T35b).
-**15 remain:** T35a and T36–T49. T35a's compiled API is implemented using the existing released GTS API; its standing verification remains open before T36.
+**Status (code audit, 2026-11-10):** SDK contracts/transports and the core migration in this branch are implemented. The `gts_publication(...)` macro, crate-local collectors and runtime publication barrier already exist; T37/T39 track their remaining verification/adoption obligations, not a new implementation.
 
-The database-backed SDK contracts, local and REST clients, AM request-context reads and the managed AM/IdP/resolver/policy/admission publication paths are implemented. T37/T39 and the implemented portions of T41/T42 still need their full acceptance and checkpoint verification. T32's final verification and the remaining Checkpoint 7A gates stay open.
+**Three SDK migration deliveries:** T38a — core gears in this branch (implemented); T38b — remaining system and non-BSS service gears; T38c — BSS. Each delivery includes reads, owned declarations, configured instances, startup integration and its tests. T38 removes legacy only after these deliveries; T42 removes global inventory only after ownership coverage. T41 owns the isolated remote AM proof. Task IDs are preserved for historical references; execution order is listed below rather than inferred from numbering.
+
+Checked implementation items mean the behavior exists in code, not that every release gate passed. Unchecked verification/checkpoints remain required. This replan inspected source and existing test cases; it did not rerun CI, backend or remote suites. T35a's standing checks are complete (fmt/Clippy confirmed by the user on 2026-11-10; gear tests recorded below). T32's final verification and Checkpoint 7A remain open. Historical test records below retain their original scope.
 
 **AM validation boundary (2026-11-10).** Fixed user fields and tenant names use SDK
 DTO validation; resource schemas remain published but are not projected for partial
@@ -13,7 +14,7 @@ command checks. Tenant names are checked after request normalization, and bootst
 checks its raw configured name plus opaque metadata size without an optional-registry
 bypass. Registry-backed tenant-type traits/root eligibility and native GTS validation
 of extensible public metadata remain. This supersedes the user/tenant-name schema-read
-policies recorded historically in T32/T34a; task counters and open checkpoint gates
+policies recorded historically in T32/T34a; open checkpoint gates
 are unchanged.
 
 Tenant migration evidence: SDK **108/108**; full AM + SDK nextest **1367/1367** across
@@ -35,19 +36,19 @@ SDK reads and managed declaration publication are separate migration steps:
 | AuthZ; static/TR plugins | Platform discovery and managed publication; binding after admission | Fleet/remote checkpoint verification |
 | Tenant resolver; static/single-tenant/RG plugins | Platform discovery and managed publication; binding after admission | Fleet/remote checkpoint verification |
 | Policy engine; admission control | New contracts and managed publication, including configured engine instance and refusal schema | Fleet/remote checkpoint verification |
-| Resource-group; oagw; quota-enforcement and storage; license-resolver/static-license; usage-collector and noop/ClickHouse/TimescaleDB plugins | Legacy registry call sites remain | SDK/startup migration (T38/T42) |
-| Event broker | Reads through `PlatformTypesRegistryApi`; SDK declarations still use global inventory | Managed declaration ownership/publication (T42) |
-| Cluster SDK | Declarations still use the global collector; no direct registry SDK calls | Managed declaration ownership/publication (T42) |
-| Domain BSS: ledger, orders, pricing, products, rate-provider (+ ECB/HTTP JSON source plugins) | Legacy reads and/or registration remain; rate-provider plugins use the SDK's shared registration helper | SDK/startup migration (T38/T42) |
-| Other service gears: construct; credstore (+ static plugin); mini-chat (+ static-audit/static-model-policy plugins); settings-service | Legacy runtime reads and/or registration remain | SDK/startup migration (T38/T42) |
+| Resource-group; oagw; quota-enforcement and storage; license-resolver/static-license; license-enforcement; usage-collector and noop/ClickHouse/TimescaleDB plugins | Legacy registry call sites remain | SDK + managed publication migration (T38b) |
+| Event broker | Reads through `PlatformTypesRegistryApi`; SDK declarations still use global inventory | Managed declaration ownership/publication (T38b) |
+| Cluster SDK | Declarations still use the global collector; no direct registry SDK calls | Managed declaration ownership/publication (T38b) |
+| Domain BSS: ledger, orders, pricing, products, rate-provider (+ ECB/HTTP JSON source plugins) | Legacy reads and/or registration remain; rate-provider plugins use the SDK's shared registration helper | SDK + managed publication migration (T38c) |
+| Other service gears: construct; credstore (+ static plugin); mini-chat (+ static-audit/static-model-policy plugins); settings-service | Legacy runtime reads and/or registration remain | SDK + managed publication migration (T38b) |
 
 The remaining-consumer rows name runtime call sites, not legacy test fixtures retained by migrated gears. AuthN/AuthZ/tenant discovery shares toolkit's bounded selection and outage classification; its timeout includes the single-flight lock wait and catalogue pages. Gear tests cover owned/configured manifests, initialization and client binding, caller-context propagation and domain handling of catalogue reads. Publication reconciliation, retries, deadlines and cancellation belong to the SDK and toolkit/runtime suites; single-flight locking, caching and the complete outage-category matrix belong to toolkit. Resolver tests check that their discovery budget and domain error mapping are wired correctly. These code changes do not close the fleet, remote-process or backend verification gates.
 
-OAGW E2E remains a transitional legacy composition: its profiles retain the registry database for migrated resolvers, while the SQLite profile publishes UUID-tail fixtures through `seed_legacy_registry_fixtures` after startup and waits for OAGW provisioning. Its provisioner still requires those UUID-tail identities. T38 must migrate the identity mapping, reader and fixtures together before deleting this setup; changing the SDK trait alone is insufficient. Mini-chat waits on `/cf/readyz`; harness regressions cover readiness gating and OAGW profile/setup behavior.
+OAGW E2E remains a transitional legacy composition: its profiles retain the registry database for migrated resolvers, while the SQLite profile publishes UUID-tail fixtures through `seed_legacy_registry_fixtures` after startup and waits for OAGW provisioning. Its provisioner still requires those UUID-tail identities. T38b must migrate the identity mapping, reader and fixtures together before deleting this setup; changing the SDK trait alone is insufficient. Mini-chat waits on `/cf/readyz`; harness regressions cover readiness gating and OAGW profile/setup behavior.
 
 Global inventory and the legacy API remain required. Existing embedded configurations still rely on that transitional inventory: `config/e2e-local.yaml`'s customer type depends on AM's tenant base, and `config/event-broker-standalone.yaml`'s configured event/topic documents depend on event-broker SDK bases. These configurations are not proof of a self-contained registry seed set or remote bootstrap. T40 must move such external-dependent setup to the owning application or explicit platform API setup before T42 removes global seeding; preserve their application scenarios.
 
-The dedicated remote AM executable/configuration pair/two-process suite is absent; T41/T43 retain the final process/isolation proof. T35a's compiled API is implemented; its remaining verification is tracked below. T35b's mock schema admission is complete. T36's new SDK cache, T44/T45's server-side publisher guard and T46–T49's journal are not implemented. No full-fleet or full-P0 completion is claimed.
+The dedicated remote AM executable/configuration pair/two-process suite is absent; T41/T43 retain the final process/isolation proof. T35a's compiled API and task-level verification are complete. T35b's mock schema admission is complete. T36's new SDK cache, T44/T45's server-side publisher guard and T46–T49's journal are not implemented. No full-fleet or full-P0 completion is claimed.
 
 **Recorded verification (2026-11-06).** Regression tests cover Firebase managed publication, rejection of deleted policy resource types and preservation of caller 401/403 refusals in mandatory AM tenant-type reads. AM/policy-engine library suites pass (964/216 tests), Firebase passes 38, the SDK with `rest-client` passes 346, and the toolkit publication/deployment and runtime-preparation suites pass 34 tests each. Inverting the policy lifecycle guard makes its regression fail again. The embedded example-server composition with static AuthN/AuthZ/TR/IdP, AM, resource-group and admission-control passed cold SQLite startup, platform REST schema readback, readiness, restart with unchanged schema metadata and graceful shutdown; its isolated copy of `e2e-local.yaml` adds a policy-engine database for the selected feature set. This is embedded smoke coverage, not the deferred two-process AM, full E2E or three-backend checkpoint proof.
 
@@ -55,11 +56,17 @@ The dedicated remote AM executable/configuration pair/two-process suite is absen
 
 **Configuration scope revision (2026-10-29):** In P0, all transitive admission dependencies of `cfg.entities` must lie within the registry-owned seed set: its control-plane types, the `toolkit-gts` base types and the other `cfg.entities`. Dependencies on another gear's declarations or on entities merely present in the database are unsupported, even if that gear is linked into an embedded host. All configured entities remain inline seeds; no deferred publication, remote dependency wait or readiness exception is introduced for them. T40 records/audits this restriction; T41 uses explicit API setup for deployment-specific test types after their gear-owned bases are admitted. Configuration auditing and enforcement remain T40 work.
 
-**Lifecycle plan:** Publication is not a lifecycle hook: the general `Gear::pre_init`/`post_init` hooks run per gear within its startup group and must not wait for a remote service. Gears publish with `gts_publication(...)`; the runtime publishes application gears’ GTS Type Schemas and Instances concurrently before any application `init` (the system group serves meanwhile), each gear binds its plugin clients in `init`; business availability stays as before (AM's bootstrap runs in `serve`; no business gate — future #5547/#5562). T41/T42 use the same capability for gear-owned configured entities and the remaining publishers; registry `cfg.entities` retain the inline exception. See [GTS publication by gears](../DESIGN.md#inventory-and-startup-reconciliation).
+**Lifecycle plan:** Publication is not a lifecycle hook: the general `Gear::pre_init`/`post_init` hooks run per gear within its startup group and must not wait for a remote service. Gears publish with `gts_publication(...)`; the runtime publishes application gears’ GTS Type Schemas and Instances concurrently before any application `init` (the system group serves meanwhile), each gear binds its plugin clients in `init`; business availability stays as before (AM's bootstrap runs in `serve`; no business gate — future #5547/#5562). T38a–T38c use the same capability for gear-owned configured entities and the remaining publishers; registry `cfg.entities` retain the inline exception. See [GTS publication by gears](../DESIGN.md#inventory-and-startup-reconciliation).
 
-- **Phase 7 — both clients, real local AM, every gear on the persistent registry:** SDK contracts/adapters, local ClientHub registration, the AM/IdP/TR migration and both REST transports are implemented (T29–T35, including T34a). Remaining work: payload-validation verification, SDK caching, grouped-runtime verification and the remaining-fleet/REST cutover (T35a–T38).
-- **Phase 8 — publication after wiring and out-of-process operation:** T39 → T40 → T41 → T42 → T43. Collectors, ownership and selection; Account Management after wiring and remotely (Checkpoint 8A); the remaining fleet and the end of the pull; the out-of-process run (Checkpoint 8).
-- **Phase 9 — mixed-version rollout (publisher-version guard):** T44 → T45. Final P0 deployment is gated by Checkpoints 9 and 10.
+### Remaining execution order
+
+1. T35a is complete; implement T36 cache. Verify existing T37 runtime and T39 collectors/macros; close Checkpoint 7A. Their implementation does not depend on T36.
+2. T38a records the core migration delivered in this branch. T40 closes configuration ownership/selection gaps; T38b migrates remaining system/service gears in small per-gear slices, with RG and OAGW host prerequisites first.
+3. T41 proves the real AM host remotely after the relevant T38b slices; Checkpoint 8A gates the final publication cleanup, not the already implemented core migration. T38c migrates BSS after its system prerequisites. T38b/T38c keep the transitional legacy API available to unmigrated consumers.
+4. T38 deletes legacy and promotes both REST planes with all remaining callers (Checkpoint 7). T42 completes declaration coverage and removes global inventory after T38b/T38c, T40 and Checkpoint 8A. T43 proves final OoP/HA deployment (Checkpoint 8).
+5. T44 → T45 adds and activates the publisher guard (Checkpoint 9); T46 → T47 → T48 → T49 adds the publication journal (Checkpoint 10).
+
+The three migration deliveries are intentionally umbrella tasks. Execute one gear/plugin family per focused slice, keep its tests with the migration, and record completion per slice; do not migrate an entire fleet in one implementation session.
 
 Standing bar for every task, on top of its own acceptance criteria: `make fmt`, `make clippy` and gear tests green, no regression in other gears, behaviour verified at runtime, docs updated. **The full `make ci` is a checkpoint gate, not a per-task one** — it ends in `dylint` and pulls in four container-backed targets, which is P13's whole point. Naming `make ci` per task is what made T1–T9 record it as *partial* every time. Checkpoints 7A, 7, 8A, 8 and 9 retain full CI/backend gates. The real AM remote target joins CI at T41; Checkpoint 7A claims local/SDK-contract coverage only (P31). Tasks are feature-sized like Phases 1–6: each lists the commits it lands as, and each commit clears the standing bar. Code organisation follows `docs/toolkit_unified_system/` — **not** `guidelines/DNA/languages/RUST.md`.
 
@@ -2299,7 +2306,7 @@ and quickstart, for the seven-route completeness check)
 
 ## Phase 7 — Both clients, real local AM, and every gear on the persistent registry
 
-Plans P26–P31 and P33. T28–T35, T34a and T35b are complete. The next SDK task is **T35a** verification. The remaining SDK sequence is **T35a → T36 → T37 → T38**; T32’s incomplete final verification and the remaining Checkpoint 7A gates stay open before the T38 cutover. T35a supplies the implemented compiled-payload wrapper; T35b has completed mock Type Schema admission before consumer cutover; existing task numbers stay unchanged.
+Plans P26–P31 and P33. T28–T35, T34a and T35b are complete. T35a is also complete; the next SDK implementation task is **T36**. Verify the existing T37 runtime alongside the remaining migration work before T38; T32’s incomplete final verification and the remaining Checkpoint 7A gates stay open before the T38 cutover. T35a supplies the implemented compiled-payload wrapper; T35b has completed mock Type Schema admission before consumer cutover; existing task numbers stay unchanged.
 
 - **Traits and local clients (T29, T30).** Both contracts, the platform and tenant extension helpers and both local clients land together, in one pull request.
 - **Embedded local handoff (T31).** All linked inventory and `cfg.entities` are admitted into the database before the new APIs are published in ClientHub. A new gear can reconcile in `init()` without waiting for REST, T37 or the fleet migration.
@@ -2919,10 +2926,11 @@ Hosts with managed publishers configure a registry database for embedded operati
 
 ---
 
-### - [ ] T35a: SDK payload validator over a resolved Type Schema
+### - [x] T35a: SDK payload validator over a resolved Type Schema
 
-**Status:** compiled API implemented; scoped checks below are green. Standing and checkpoint
-verification remain open; consumer migration is T38.
+**Status:** complete. Implementation and task-level checks passed; the user confirmed successful
+`make fmt` and Clippy runs on 2026-11-10. Wider checkpoint gates remain separate;
+remaining consumer migration belongs to T38b/T38c.
 
 **Description:** Add `TypeSchema::compile_payload_validator()` returning the native reusable
 `gts::PayloadValidator`. The bridge delegates to the released
@@ -2945,7 +2953,7 @@ not required. Registry reads replace QE's reference-closure resolution separatel
 - [x] Eight bridge tests cover minimal projection and reuse, each missing required field, non-object authored content, native abstract/error-source preservation, concrete leaves with inherited abstractness, null/unavailable resolved resources, native boolean schemas and selected-ID binding for inherited `/$id`. The GTS library owns the full validator-rule matrix
 - [x] SDK all-feature nextest: **357 passed**; all-target/all-feature `cargo check`; README doctests: **7 passed, 4 existing ignored**; `make fmt`; `make clippy GEAR=types-registry` (registry + SDK, all targets/features, warnings denied)
 - [x] `cargo nextest run --offline --locked -p cf-gears-types-registry -p cf-gears-types-registry-sdk`: **1657 passed** across 66 binaries, without the registry's `integration` feature. Inverting the authored abstractness comparison fails its bridge regression; the production file was restored byte-for-byte
-- [ ] Standing `make fmt`, `make clippy` and gear-test gates pass; targeted SDK results do not close workspace/checkpoint verification gates
+- [x] Standing `make fmt` and Clippy passed — user confirmation, 2026-11-10; gear tests passed as recorded above (1657 tests). Full CI/backend/checkpoint gates remain open separately; no new run is claimed by this update
 
 **Dependencies:** T29 and T30; existing released GTS compiled-payload API. **Files touched:**
 SDK `src/{lib,payload,payload_tests}.rs`, SDK README and P0 tracking docs. This is an additive
@@ -3019,14 +3027,16 @@ Rust API; REST contracts and dependency versions are unchanged.
 
 ---
 
-### - [ ] T37: System-group-first startup and concurrent application publication
+### - [ ] T37: Verify system-group-first startup and concurrent application publication
 
-**Description:** Replace lifecycle-hook publication with runtime preparation. The publication foundation implements this ordering; complete its verification before closing this task. Publication stays out of lifecycle hooks: this supersedes the previous plan to publish from a common `post_init` with generic supervision. The general `Gear::pre_init`/`post_init` hooks run per group and publish nothing.
+**Status:** implementation exists; remaining scope is verification, with fixes only if it exposes a defect. The unchecked readiness/refusal/panic/cancellation criterion below still needs explicit proof; in particular collector panic handling alone does not prove cleanup after an asynchronous publisher panic. Evidence: `libs/toolkit/src/runtime/host_runtime_preparation_tests.rs` covers pending publication, failure, cancellation, group ordering and early registry wiring; `libs/toolkit/src/gts_publication.rs` implements the shared preparation/deployment path.
+
+**Description:** Verify runtime preparation already used by the migrated core gears. The publication foundation implements this ordering; complete its verification before closing this task. Publication stays out of lifecycle hooks: this supersedes the previous plan to publish from a common `post_init` with generic supervision. The general `Gear::pre_init`/`post_init` hooks run per group and publish nothing.
 
 **Acceptance criteria:**
-- [ ] The system group initializes and serves before concurrent application publication; application migrations and client wiring precede publication, and every declared GTS Type Schema and Instance is admitted before any application `init`
+- [x] The system group initializes and serves before concurrent application publication; application migrations and client wiring precede publication, and every declared GTS Type Schema and Instance is admitted before any application `init`
 - [ ] Pending/unreachable registry keeps `application/preparation` and `/readyz` pending; refusal, panic and cancellation are observed and clean up preparation; the system group remains available while waiting
-- [ ] Plugins bind in `init` from declared instances after admission; deployment `publish-gts` publishes the same schemas and instances without initializing gears. Business bootstrap readiness remains separate (#5547/#5562)
+- [x] Plugins bind in `init` from declared instances after admission; deployment `publish-gts` publishes the same schemas and instances without initializing gears. Business bootstrap readiness remains separate (#5547/#5562)
 
 **Verification:**
 - [ ] `cargo test -p cf-gears-toolkit gts_publication` and `cargo test -p cf-gears-toolkit host_runtime` cover ordering, concurrent dependencies, failure and cancellation in embedded/OoP paths
@@ -3049,15 +3059,82 @@ Rust API; REST contracts and dependency versions are unchanged.
 
 ---
 
-### - [ ] T38: Remaining-fleet cutover and one REST version — delete legacy, keep e2e green
+### - [x] T38a: Core gears — SDK and managed publication in this branch
 
-**Description:** Audit remaining registry calls against the current grouped runtime: system startup, application migrations/client wiring, concurrent GTS publication, then application `init`/`post_init`/start. Recheck the already-migrated AM/resolver/policy/admission paths rather than restoring their earlier init-time registration. Resource-group still resolves the local legacy client; event-broker has platform reads but still needs owned declaration publication. Inspect oagw bootstrap and first plugin selection against this ordering before deleting the legacy store.
+**Status:** implementation delivered; wider verification remains in T32, Checkpoint 7A and T41. This consolidates existing T32/T34a/T35 and T41/T42 implementation evidence, not another migration.
 
-**The audit — the first commit.** Lifecycle requirements drive the cutover and Phase 8 rather than follow them (historical decision P23). It reads the existing fleet's startup.
+**Description:** Account Management + static/Keycloak IdP; AuthN + static/OIDC/Firebase; AuthZ + static/TR; tenant-resolver + static/single-tenant/RG plugins; policy-engine; admission-control use the new SDK and publish their owned declarations/configured instances before application init.
+
+**Acceptance criteria:**
+- [x] Runtime reads use the new platform/tenant contracts; AM request reads retain the caller's context. Legacy fixtures in tests do not imply a legacy runtime consumer.
+- [x] Owning gears declare local collectors/config-only entities through `gts_publication(...)`; plugins bind from admitted manifests in `init`, without init-time registration.
+- [x] Focused publication, binding and read regressions exist; source anchors are these groups' `src/gear.rs` (Keycloak: `src/module.rs`), their SDK collectors and the dated verification records above.
+
+**Verification:** Existing scoped results are recorded above. Re-run the affected gear/plugin package tests and all-target checks when closing Checkpoint 7A; T41 supplies real remote AM, production authentication and host isolation. No remote/fleet success is inferred from this checkbox.
+
+**Dependencies:** implemented T29–T35, T37/T39 publication foundation.
+**Files touched:** the six core groups under `gears/system/`, their SDKs, plugins and tests.
+**Estimated scope:** completed umbrella; any follow-up is a focused S/M slice.
+
+### - [ ] T38b: Remaining system and service gears — SDK and managed publication
+
+**Description:** Complete each remaining non-BSS consumer end to end while legacy remains available to other groups. Scope includes declarations-only owners, not just `TypesRegistryClient` matches.
+
+**Slices (each includes its plugins, tests and dependent fixtures):**
+- [ ] Resource-group, then OAGW host/startup closure; migrate OAGW UUID-tail provisioning identities and `seed_legacy_registry_fixtures` together with its reader
+- [ ] Quota-enforcement + storage plugin; consume materialized `resolved_schema`/`effective_traits`, retain catalogue checks and compile validators once at bootstrap (detailed requirements remain in T38)
+- [ ] License-resolver + static-license and license-enforcement; usage-collector + noop/ClickHouse/TimescaleDB
+- [ ] Event-broker declarations and cluster SDK ownership; event-broker's platform reads already exist. For system-group owners respect T37's prohibition on system publication capabilities: decide the supported seed/owner path before adding an attribute
+- [ ] Construct; credstore + static plugin; mini-chat + static-audit/static-model-policy; settings-service, including its manual inventory submissions
+- [ ] Audit all other `gears/` declaration owners and test-only consumers (including llm-gateway, model-registry and graph-storage fixtures); record migrated, no runtime dependency, or explicit ownership assignment with evidence
+
+**Acceptance criteria:**
+- [ ] Every slice records its registry calls, startup prerequisites and declaration ownership. Platform reads use `PlatformTypesRegistryApi`; caller reads use `TypesRegistryApi`; required materialized fields and paged discovery are explicit.
+- [ ] Each application publisher owns its collectors/configured instances, reconciles before init and binds after admission; remove registry implementation dependencies when the last startup dependency moves. Delayed/refused publication and restart/config changes have focused regressions.
+- [ ] Migrated runtime paths contain no legacy calls or remote registry waits in lifecycle hooks; supported service/e2e flows remain green. Test-only legacy fixtures are migrated or assigned explicitly to T38's final deletion audit.
+
+**Verification:** For each slice record exact affected Cargo package names, run `cargo test -p <package>` and `cargo check -p <package> --all-targets` for gear/SDK/plugins, and the existing focused service/e2e suites. QE's exact commands are retained in T38. Verify cold start, changed configuration and repeat publication using real admission; run the standing checks. No new harness when an existing suite covers the flow.
+
+**Dependencies:** T38a baseline; T35a/T36 and Checkpoint 7A before remaining-fleet acceptance; T40 ownership/configuration decisions. RG/OAGW slices precede T41; other slices need not wait for remote AM proof.
+**Files likely touched:** listed gear/SDK/plugin sources, owned declarations, tests and composition fixtures.
+**Estimated scope:** umbrella; one S/M gear or adapter slice per session, splitting large families into reader, publication and fixture commits that keep the host working.
+
+### - [ ] T38c: BSS gears — SDK and managed publication
+
+**Description:** Migrate `gears/bss` through the same complete path, after required system providers. Keep BSS business behavior and declaration ownership explicit.
+
+**Slices:**
+- [ ] Ledger (including its owned rate-provider plugin schema), then rate-provider and ECB/HTTP JSON plugins; replace the shared `registration.rs` startup helper with calling-gear publication
+- [ ] Products and pricing, including their registry-backed meter/validation and discovery flows
+- [ ] Orders + test-authz plugin and shared BSS test/application compositions
+
+**Acceptance criteria:**
+- [ ] Each family uses the appropriate new contract, projections and bounded discovery; no runtime `TypesRegistryClient` or init-time registration remains.
+- [ ] Owned declarations and configured instances use local collectors and managed publication; shared helpers forward the calling gear's publisher context. SDK dependency does not transfer declaration ownership.
+- [ ] Existing BSS behavior tests and startup/restart/configuration scenarios pass; cross-family references admit under concurrent publication, and refused publication prevents application init.
+
+**Verification:** Record package-specific `cargo test -p <package>` and `cargo check -p <package> --all-targets` commands for each migrated family and plugins; run its existing business/integration suites and the supported BSS application cold-start/restart flow. Audit `gears/bss` runtime and fixtures for legacy symbols before T38.
+
+**Dependencies:** T38a; T35a/T36, verified T37/T39 and required T38b system providers; T40 ownership rules. No dependency on legacy deletion.
+**Files likely touched:** `gears/bss/{ledger,rate-provider,products,pricing,orders}/`, plugin SDK helpers, tests and consuming application configurations.
+**Estimated scope:** umbrella; separate S/M per-family slices, preserving dependency order above.
+
+### Checkpoint — migration deliveries before legacy deletion
+- [ ] T38b and T38c slices have recorded verification; T38a's outstanding Checkpoint 7A checks pass
+- [ ] Runtime and fixture audit accounts for every remaining legacy reference; no migrated path depends on the old provider
+- [ ] Existing embedded application flows stay green; review the deletion inventory before T38. Remote AM remains an explicit T41/8A gate
+
+---
+
+### - [ ] T38: Final legacy cutover and one REST version — delete legacy, keep e2e green
+
+**Description:** Consolidate T38a–T38c registry-call audits against the current grouped runtime: system startup, application migrations/client wiring, concurrent GTS publication, then application `init`/`post_init`/start. Recheck the already-migrated AM/resolver/policy/admission paths rather than restoring their earlier init-time registration. At this replan, resource-group still resolves the local legacy client and event-broker still needs owned publication; T38b must close both before this deletion task starts. Inspect oagw bootstrap and first plugin selection against this ordering before deleting the legacy store.
+
+**The audit — before deletion.** Consolidate the per-slice startup/declaration audits from T38a–T38c and account for remaining test fixtures. Lifecycle requirements drive those migrations (historical decision P23); T41 uses T38b's host-prerequisite audit without waiting for this final cleanup.
 
 **The cutover.** Preserve and reverify T31's outbox → database seeding → local client-publication barrier; do not implement a second seeding path. T39 preserves global collection during migration; T42 narrows the seed set. Delete `switch_to_ready`, the `temporary`/`persistent` split, the registry's obsolete ready-mode validation body and the in-memory repository; reads use the database (D2, §8.2). Remove the temporary `SystemCapability::legacy_finalize_after_application_init` contract, its registry implementation, and the runtime's `run_legacy_finalization` wrapper and both call sites in the host and OoP application startup paths in this same cutover. Keep publication out of lifecycle hooks and preserve T37’s application preparation barrier. Keep T36's new SDK cache and delete only the old model-typed cache (P7, §8.3).
 
-Switch every remaining legacy consumer to the appropriate new contract atomically, deleting the old trait without a shim. Platform discovery/bootstrap uses `PlatformTypesRegistryApi`; request-path reads use `TypesRegistryApi` with the caller context. Use typed extension helpers and materialized fields. Startup publication uses `gts_publication(...)` before application `init`; request-time mutations use bounded reconciliation. Do not introduce new init-time registration as an intermediate step. T41/T42 complete the remaining lifecycle/remote verification and ownership coverage.
+T38a–T38c migrate consumers in separate deliveries. This task audits their completion and deletes the old trait without a shim; it does not repeat their SDK/publication migration. Platform discovery/bootstrap uses `PlatformTypesRegistryApi`; request-path reads use `TypesRegistryApi` with the caller context. Use typed extension helpers and materialized fields. Startup publication uses `gts_publication(...)` before application `init`; request-time mutations use bounded reconciliation. Do not introduce new init-time registration as an intermediate step. T41/T42 complete the remaining lifecycle/remote verification and ownership coverage.
 
 **QE migration note — consume resolved artifacts:** In `gears/system/quota-enforcement/quota-enforcement/src/infra/types_registry.rs`, `reference_closure`, `enqueue_chain` and `resolve` currently load parent/transitive `$ref` dependencies into a local `GtsStore` and recompute the resolved schema and traits. Replace this roughly 80-line block with reads of the new SDK's materialized `resolved_schema` and `effective_traits`, selecting `content` for the leaf's authored metadata, including abstractness. This is an expected simplification, not a net line-count target: projections, error handling and registration migration still need code. Keep QE's metric/scope membership, contract uniqueness and active-Quota compatibility checks, bounded registry calls, and process-local catalogue; the new SDK does not replace those responsibilities. T29/T30 supply the materialized reads; T35a supplies the payload-validation API review above.
 
@@ -3074,7 +3151,7 @@ Switch every remaining legacy consumer to the appropriate new contract atomicall
 - [ ] QE compiles selected payload validators once at catalogue bootstrap and reuses them without registry calls or schema compilation on ingress. Adopt T35a's wrapper only if it preserves this property; retain `CompiledContract` otherwise
 - [ ] T31's seeding/local-publication guarantees and tests still pass after legacy deletion: all linked inventory + `cfg.entities`, idempotent restart, no publisher stamp, worker before admission, all seeds settled before publication, batches within `limits.batch_candidates` with dependencies across batches converging under one deadline (T31 amendment). No per-gear filter is introduced; T42 later narrows the seed set
 - [ ] The legacy v1 routes T9a restored are deleted **together with** the repository they read — `POST /v1/entities` (`types_registry.register`), `GET /v1/entities/{gts_id}` (`types_registry.get`) and the in-memory `GET /v1/entities` list. A route left pointing at a deleted repository is the failure mode; T38 then promotes v2 onto those paths
-- [ ] **Every remaining legacy consumer moves onto the new SDK in this task**, mechanically; T31 supports new consumers; the complete T32 group is already migrated before this cutover. Record/recheck T32's API migration and ID/config audit rather than translating those crates again; keep their outstanding lifecycle calls on the Phase 8 audit. The remaining assignment is derived by grep and recorded
+- [ ] **Every runtime consumer has moved in T38a–T38c before deletion**; T31 supports new consumers; the complete T32 group is already migrated before this cutover. Record/recheck T32's API migration and ID/config audit rather than translating those crates again; keep their outstanding lifecycle calls on the Phase 8 audit. The remaining assignment is derived by grep and recorded
 - [ ] Consumers declare the new SDK contracts they actually use. Managed publishers receive registry-client wiring before application `init`; remove `deps = [types_registry]` with the last init-time registry dependency, without reintroducing a direct local-only lookup. Audit remaining reads separately from declaration publication
 - [ ] Remaining legacy read sites move mechanically using T29's typed extension helpers, context arguments and materialized fields. Plural reads gain the `batch_` prefix and handle `Result<HashMap<_, Option<_>>, CanonicalError>`: absence is `None`, a failed batch is an error, never silently dropped (`settings-service/src/domain/declaration/service.rs`). T32/T34a have delivered AM's checker and other readers; recheck them without repeating that migration. Typed IDs and explicit projections apply everywhere; no consumer reconstructs effective artifacts locally (D3)
 - [ ] Every remaining legacy startup `register(...)` site moves to owned declaration/configured-entity publication through `gts_publication(...)`; runtime/request-time writes use bounded `reconcile_entities_and_await` through the appropriate client. A bare creation is insufficient on restart/configuration drift; permitted settings-service type changes update under normal admission rules. Recheck the migrated root/IdP/TR/policy/admission paths. Handle every outcome and each gear's own publisher; no `Pending` is success and nothing sends publisher metadata before T44. `rate-provider-sdk`'s shared registration helper moves with its callers
@@ -3139,7 +3216,7 @@ The e2e surface includes the legacy v1 suite `testing/e2e/suites/types_registry/
 - [ ] `make e2e-local` — full suite green, including `account_management` and `types_registry`; `make e2e-docker`
 - [ ] Manual: a rejected candidate surfaces its reason through the polled operation, not as an opaque failure
 
-**Dependencies:** T37 (Checkpoint 7A), T31, T32, T35 and T36 **Files likely touched:** The remaining SDK consumers and legacy deletion paths listed above; `libs/toolkit/src/contracts.rs`, `libs/toolkit/src/runtime/{host_runtime,host_runtime_preparation_tests}.rs`, TR gear/REST handlers/DTOs/routes, tenant/platform client path constants, API/contract tests, shared e2e polling and all remaining legacy callers, QUICKSTART and CHANGELOG **Scope:** L delivery split into S/M commits; legacy removal, both-plane v2-to-v1 promotion and caller migration merge atomically. No intermediate red e2e window
+**Dependencies:** T38a–T38c and their migration checkpoint, T37 (Checkpoint 7A), T31, T32, T35 and T36 **Files likely touched:** The remaining SDK consumers and legacy deletion paths listed above; `libs/toolkit/src/contracts.rs`, `libs/toolkit/src/runtime/{host_runtime,host_runtime_preparation_tests}.rs`, TR gear/REST handlers/DTOs/routes, tenant/platform client path constants, API/contract tests, shared e2e polling and all remaining legacy callers, QUICKSTART and CHANGELOG **Scope:** L delivery split into S/M commits; legacy removal, both-plane v2-to-v1 promotion and caller migration merge atomically. No intermediate red e2e window
 
 ---
 
@@ -3162,28 +3239,28 @@ Runs **T39 → T40 → T41 → T42 → T43**. The SDK does not change; startup d
 
 **Current status:** Crate-local collectors, descriptor generation and compiler fixtures are implemented in the publication foundation. Managed crates use the transitional `toolkit_gts::local` macros; root macros still serve global inventory. Workspace-wide declaration migration and final verification remain open. The release/LTO fixture is ignored by default and needs an explicit run.
 
-**Description:** Complete crate-local collector adoption and gear publication ownership (D16). `declare_gts_inventory!()` defines `crate::__toolkit_gts_inventory`, its local entry types, `inventory::collect!` and plain-data `gts_declarations()`. The `toolkit_gts::local` variants of `#[gts_type_schema]`, `gts_instance!` and `gts_instance_raw!` submit to that collector and, until T42, also to the global registry for transitional seeding. The facade retains `inventory` but permits a later local switch to `linkme` (P23). The gear attribute connects collectors to T37's application preparation.
+**Description:** Verify the implemented collector/macro foundation (D16). Per-gear adoption belongs to T38a–T38c; T42 owns final canonical macro cleanup and workspace coverage. `declare_gts_inventory!()` defines `crate::__toolkit_gts_inventory`, its local entry types, `inventory::collect!` and plain-data `gts_declarations()`. The `toolkit_gts::local` variants of `#[gts_type_schema]`, `gts_instance!` and `gts_instance_raw!` submit to that collector and, until T42, also to the global registry for transitional seeding. The facade retains `inventory` but permits a later local switch to `linkme` (P23). The gear attribute connects collectors to T37's application preparation.
 
-Commits inside the task: (1) the collector macro; (2) declaring crates in mechanical slices; (3) the `gts_publication(…)` attribute; (4) independent collector compile/release-LTO checks.
+Implementation exists in `libs/toolkit-gts/src/local.rs`, `libs/toolkit-gts-macros/src/lib.rs` and `libs/toolkit-macros/src/gts_publication.rs`; independent fixtures live in `libs/toolkit-gts-macros/tests/`. Remaining work is the verification below and tracking adoption through T38b/T38c/T42.
 
 **Acceptance criteria — collectors:**
-- [ ] `declare_gts_inventory!()` exists; a declaring crate without it fails to compile with a message naming the macro
-- [ ] The entry type is a **newtype defined in the declaring crate**, not an alias of a shared `toolkit-gts` type — an alias would share one registry and lose the gts-rust #130 isolation
-- [ ] `gts_declarations()` returns std types only — no `toolkit-gts` or `gts` type crosses a crate boundary. Its output is sorted by identifier; two entries with one identifier and different content are a diagnosed conflict naming the crate, identical duplicates collapse
-- [ ] `#[cfg]`-gated declarations gate their submission, not only their struct
-- [ ] `crate_path` resolution still distinguishes `toolkit-gts` itself from integration targets (`toolkit-gts-macros/src/lib.rs:118`). Generic-schema restrictions are unchanged
-- [ ] Every crate in the workspace that declares GTS entities calls `declare_gts_inventory!()`, including test, example and doctest crates
-- [ ] Manual `inventory::submit!` of `toolkit_gts::Inventory*` is replaced by the new entry API: `settings-service-sdk` (`src/gts.rs:48`, `src/catalogue.rs:109`)
-- [ ] `toolkit_gts::gts_declarations()` returns the base types (`PluginV1`, `AuthzPermissionV1`) for types-registry to seed
-- [ ] The global registry is still populated (transition) and carries a comment naming T42 as its removal
-- [ ] The two macro families are explicitly transitional: new managed declarations use `toolkit_gts::local::{gts_type_schema, gts_instance, gts_instance_raw}` until T42 promotes those semantics to the canonical root macros and removes the global-only implementations
+- [x] `declare_gts_inventory!()` exists; a declaring crate without it fails to compile with a message naming the macro
+- [x] The entry type is a **newtype defined in the declaring crate**, not an alias of a shared `toolkit-gts` type — an alias would share one registry and lose the gts-rust #130 isolation
+- [x] `gts_declarations()` returns sorted std-only `(String, String)` pairs. `DeclarationMerge` merges collectors, collapses equal duplicates and diagnoses conflicting content with its origins; deduplication is at manifest merge, not inside the raw collector
+- [x] `#[cfg]`-gated declarations gate their submission, not only their struct
+- [x] `crate_path` resolution still distinguishes `toolkit-gts` itself from integration targets (`toolkit-gts-macros/src/lib.rs:118`). Generic-schema restrictions are unchanged
+- [ ] Adoption gate (T38b/T38c/T42): every crate in the workspace that declares GTS entities calls `declare_gts_inventory!()`, including test, example and doctest crates
+- [ ] T38b settings-service slice: manual `inventory::submit!` of `toolkit_gts::Inventory*` is replaced by the new entry API: `settings-service-sdk` (`src/gts.rs:48`, `src/catalogue.rs:109`)
+- [ ] T42 base-type adoption: `toolkit_gts::gts_declarations()` returns the base types (`PluginV1`, `AuthzPermissionV1`) for types-registry to seed
+- [x] The global registry is still populated (transition) and carries a comment naming T42 as its removal
+- [x] The two macro families are explicitly transitional: new managed declarations use `toolkit_gts::local::{gts_type_schema, gts_instance, gts_instance_raw}` until T42 promotes those semantics to the canonical root macros and removes the global-only implementations
 
 **Acceptance criteria — the gear's `gts_publication` attribute:**
-- [ ] `#[toolkit::gear(…, gts_publication(crates = [crate, some_sdk], publisher = path::to::publish))]` is accepted. The owner is the gear; the crates are only the units of collection
-- [ ] The macro emits static ownership metadata (gear name, listed crates) that T42's coverage check reads
-- [ ] The macro emits the publication descriptor/capability and registry wiring; `GtsManifest` combines crate declarations and config-only entities, using the gear's name and version expanded in its own crate. Runtime preparation awaits admission before application init
-- [ ] Generated descriptors compose with handwritten init without a second lifecycle hook; plugin binding receives the declared instances exactly once, after admission
-- [ ] A gear without `gts_publication(…)` is unchanged; a listed crate that does not call `declare_gts_inventory!()` fails to compile
+- [x] `#[toolkit::gear(…, gts_publication(crates = [crate, some_sdk], publisher = path::to::publish))]` is accepted. The owner is the gear; the crates are only the units of collection
+- [ ] T42 coverage API: export independently enumerable ownership metadata (gear name and canonical package names of listed crates). The current descriptor contains the gear and declaration callback; that alone does not establish the required static ownership inventory
+- [x] The macro emits the publication descriptor/capability and registry wiring; `GtsManifest` combines crate declarations and config-only entities, using the gear's name and version expanded in its own crate. Runtime preparation awaits admission before application init
+- [x] Generated descriptors compose with handwritten init without a second lifecycle hook; plugin binding receives the declared instances exactly once, after admission
+- [x] A gear without `gts_publication(…)` is unchanged; a listed crate that does not call `declare_gts_inventory!()` fails to compile
 
 **Verification:**
 - [ ] `cargo test --workspace`
@@ -3193,7 +3270,7 @@ Commits inside the task: (1) the collector macro; (2) declaring crates in mechan
 - [ ] Independent macro/collector compiler fixtures prove crate boundaries and declaration isolation, including release+LTO and distinct provider/consumer declaration sets. Wire them into the existing macro-test CI venue
 - [ ] `make gts-docs`, `tools/gts-analyze` unaffected
 
-**Dependencies:** T37 runtime contract; collectors and compiler fixtures are implemented independently of T38. T38 is not a prerequisite for additive collectors; global inventory removal remains T42. Independent compiler fixtures require no remote-application harness **Files likely touched:** `libs/toolkit-gts/src/lib.rs`, `libs/toolkit-gts-macros/src/lib.rs`, `libs/toolkit-macros/` (the attribute), `lib.rs` of every declaring crate, `gears/settings-service/settings-service-sdk/src/{gts,catalogue}.rs`, the collector compiler fixtures **Scope:** L — four commits as listed; the declaring-crate line lands in mechanical slices
+**Dependencies:** T29/T35 adapter contracts and the implemented T37 runtime contract; verify T37/T39 together, with no cyclic implementation prerequisite. Collectors and compiler fixtures are implemented independently of T38. T38 is not a prerequisite for additive collectors; global inventory removal remains T42. Independent compiler fixtures require no remote-application harness **Files likely touched:** `libs/toolkit-gts/src/lib.rs`, `libs/toolkit-gts-macros/src/lib.rs`, `libs/toolkit-macros/` (the attribute), `lib.rs` of every declaring crate, `gears/settings-service/settings-service-sdk/src/{gts,catalogue}.rs`, the collector compiler fixtures **Scope:** L — four commits as listed; the declaring-crate line lands in mechanical slices
 
 ---
 
@@ -3224,7 +3301,7 @@ Commits inside the task: (1) the collector macro; (2) declaring crates in mechan
 - [ ] Configuration audit identifies no dependency outside the registry-owned seed set in the supported P0 compositions; remote AM tests register their child type through the platform API after AM's base admission
 - [ ] Toolkit test — two instances of one contract and vendor, the worse-priority one visible first: no cached selection until both are visible, then the better one; an absent instance of another vendor does not delay it
 
-**Dependencies:** T39 **Files likely touched:** `docs/p0/{SPEC,plan,todo}.md`, `TR/src/gear.rs`, `TR/src/domain/seeding.rs`, `TR/tests/seeding_test.rs`, `libs/toolkit/src/plugins/mod.rs` and its tests, real AM deployment configuration **Scope:** M — the decision record/configuration audit and selector rule; no deferred configuration publisher
+**Dependencies:** implemented T39 collector/macro foundation; workspace adoption is tracked in T38b/T38c and does not block the ownership decisions here. **Files likely touched:** `docs/p0/{SPEC,plan,todo}.md`, `TR/src/gear.rs`, `TR/src/domain/seeding.rs`, `TR/tests/seeding_test.rs`, `libs/toolkit/src/plugins/mod.rs` and its tests, real AM deployment configuration **Scope:** M — the decision record/configuration audit and selector rule; no deferred configuration publisher
 
 ---
 
@@ -3237,17 +3314,17 @@ Commits inside the task: (1) the collector macro; (2) declaring crates in mechan
 **Description:** Reverify the implemented AM/IdP lifecycle and complete the real remote composition. Runtime preparation already publishes AM declarations, the configured root type and tenant-resolver instance before application `init`; both IdP writers use the same publication path. AM obtains the wired tenant/platform clients in `init`, constructs services and binds its admitted TR instance; the bootstrap saga runs in `serve`. Do not restore init-time publication or repeat T32's SDK translation. Use real AM; static IdP's development echo behavior is not a production IdP guarantee.
 
 **Acceptance criteria:**
-- [ ] AM publishes its owned crates, configured root type and optional tenant-resolver instance through `gts_publication(...)` under its own context before application init
-- [ ] AM's `init` validates its configuration and the existing root binding, obtains already-wired tenant/platform clients from `ClientHub`, and constructs registry-dependent services without sending registry requests or waiting for remote endpoint resolution. `gts_publication(...)` and `#[toolkit::consumes]` wire the real clients before application init — no mock, legacy fallback or half-initialized public service. AM's `deps` and production dependencies no longer name the registry implementation
+- [x] AM publishes its owned crates, configured root type and optional tenant-resolver instance through `gts_publication(...)` under its own context before application init
+- [x] AM's `init` validates its configuration and the existing root binding, obtains already-wired tenant/platform clients from `ClientHub`, and constructs registry-dependent services without sending registry requests or waiting for remote endpoint resolution. `gts_publication(...)` and `#[toolkit::consumes]` wire the real clients before application init — no mock, legacy fallback or half-initialized public service. AM's `deps` and production dependencies no longer name the registry implementation
 - [ ] **Two failure classes stay distinct.** Once publication is admitted and AM `init` runs, the stored root's `tenant_type_uuid` is checked against the configured root type using AM's own database; a mismatch stays lifecycle-fatal, independent of `bootstrap.strict`. A terminal registry refusal or publication-budget expiry happens before application `init`: AM never initializes or runs bootstrap, preparation records the gear/identifier/reason, stops started gears and returns an error for supervisor restart. A delayed or unreachable registry retries only within the publication budget. Neither path relaxes type enforcement or treats a receipt as success
 - [ ] The bootstrap saga runs as supervised, cancellable work in `serve`, after application publication and local plugin binding; it waits for a required IdP within `idp_wait_timeout`, then creates or resumes the root. Publication holds the application preparation contribution to `/readyz`; a separate business-availability gate is deferred (#5547/#5562). Three outcomes stay distinct:
   - **publication pending** (registry unreachable, root type or IdP instance not yet admitted) — application preparation retries within the shared publication budget, with no application `init` or premature root creation. Recovery must occur before expiry; refusal or expiry leaves the application group unstarted, stops started gears and returns an error for supervisor restart. This is not a bootstrap saga failure and is not subject to `bootstrap.strict`;
   - **publication terminally refused or expired** — application preparation fails, AM never initializes and the saga does not start; started gears are stopped and an error is returned for supervisor restart. Superseded-live/deleted readiness remains T44/T45 work;
   - **saga failures after the prerequisites are met** (business, database or IdP errors) — keep today's `handle_bootstrap_failure` policy (`account-management/src/gear.rs`): `RootBindingMismatch` is lifecycle-fatal regardless of policy, any other failure is fatal under `strict = true` and logged-and-skipped under `strict = false`. `bootstrap.strict` also keeps governing configuration validation as today
-- [ ] Both static-idp-plugin and keycloak-idp-plugin publish config-built instances through `gts_publication(...)` and bind their real scoped backend in init after admission; configuration changes reconcile. Preserve backend behavior and verify Keycloak in its supported environment
+- [x] Both static-idp-plugin and keycloak-idp-plugin publish config-built instances through `gts_publication(...)` and bind their real scoped backend in init after admission; configuration changes reconcile. Preserve backend behavior and verify Keycloak in its supported environment
 - [ ] AM's lazy IdP selection uses T40's selector rule: it waits while the instance or its schema is delayed, and a rejected instance never reads as success
 - [ ] Resource Group's init-only `ResourceGroupTypeBootstrap` keeps its sealed, no-REST boundary: `register_user_group_types` → RG `TypeService` uses RG's own database and schema validation without the registry (`resource-group/src/gear.rs:97-180`), so it stays in AM's `init`, proved by a test; the unscoped handle is never kept past its seal in `register_rest` or exposed remotely
-- [ ] AM and both IdP plugins retain T32's API-migrated status and are now marked lifecycle-migrated in the audit, so T42 does not repeat either change. Drop `deps = [types_registry]` and the registry implementation-crate dependency together with the last init-time registry call; keep the SDK/resolving contract dependency
+- [x] AM and both IdP plugins retain T32's API-migrated status and are now marked lifecycle-migrated in the audit, so T42 does not repeat either change. Drop `deps = [types_registry]` and the registry implementation-crate dependency together with the last init-time registry call; keep the SDK/resolving contract dependency
 
 **Verification:**
 - [ ] AM tests: root-binding drift fails `init` under `strict = true` and `false`; a refused root type or expired publication budget prevents AM init/bootstrap and returns a preparation error under both policies; a delayed registry recovering within the budget holds application preparation until admission, then bootstrap runs and is checked separately; a business, database or IdP saga failure after the prerequisites are met is fatal under `strict = true` and skipped with a warning under `strict = false`, as today; cancellation during the wait; tenant-type checks and metadata after wiring
@@ -3258,7 +3335,7 @@ Commits inside the task: (1) the collector macro; (2) declaring crates in mechan
 
 **Host and remote stage — prerequisite closure, production authentication and real AM proof:**
 
-**Description:** Prove the migrated production AM application against a separately composed production registry application, using existing OoP tooling and real AM REST tests. Migrate its host prerequisites (authn-resolver, authz-resolver, resource-group, tenant-resolver and selected plugins) in T38's audited order, using production authentication. The migrated resolvers publish before application init and discover plugins lazily; resource-group still requires the local legacy registry. Reuse completed lifecycle work and migrate only the remaining audited host dependencies. T41 is the remote/production-auth adoption gate; real local AM REST adoption is delivered by T32; this stage owns all process/runtime scenarios for the real application.
+**Description:** Prove the migrated production AM application against a separately composed production registry application, using existing OoP tooling and real AM REST tests. Use its host prerequisites (authn-resolver, authz-resolver, resource-group, tenant-resolver and selected plugins) migrated in T38a/T38b's audited order, using production authentication. The migrated resolvers publish before application init and discover plugins lazily; resource-group still requires the local legacy registry. Reuse completed lifecycle work and migrate only the remaining audited host dependencies. T41 is the remote/production-auth adoption gate; real local AM REST adoption is delivered by T32; this stage owns all process/runtime scenarios for the real application.
 
 **Production authentication.** AM's gateway and the remote registry use `AuthNResolverBearerAuthenticator` over real authn-resolver, with its plugin published after wiring, with application-owned authentication; T35 proves only framework contracts through existing test hosts. Each host uses its own local AuthN client; there is no new remote AuthN transport. The registry host may link authentication declarations, but never AM/RG/TR declarations that would hide the application publishers. Its aggregate readiness waits for its authn schema/plugin admission; platform internal-token operations remain available independently. T43 rechecks that topology after the pull ends. Development auth does not satisfy this task.
 
@@ -3278,7 +3355,7 @@ Commits inside the task: (1) the collector macro; (2) declaring crates in mechan
 - [ ] Tests of each migrated prerequisite gear, including a delayed-prerequisite test per audit entry closed here
 - [ ] Gear tests on SQLite/PostgreSQL/MySQL; `make e2e-local`; reproducible commands and the production files used are recorded
 
-**Dependencies:** T40, T32; T38 supplies the full-fleet startup dependency audit **Files likely touched:** AM and both IdP publication/bootstrap lifecycle; selected authn/authz/RG/TR host prerequisites and dependent startup callers; the real AM OoP launcher and production host entries, real authentication configuration, AM REST scenarios and audit **Scope:** L feature: local publication/bootstrap, host dependency closure, then remote/production-auth proof. Split stages into S/M commits and preserve embedded boot after every implementation step
+**Dependencies:** T40, T32/T38a; T38b supplies the RG/OAGW host prerequisite slices and startup audit. Full T38 legacy deletion is not required for this isolated composition **Files likely touched:** AM and both IdP publication/bootstrap lifecycle; selected authn/authz/RG/TR host prerequisites and dependent startup callers; the real AM OoP launcher and production host entries, real authentication configuration, AM REST scenarios and audit **Scope:** L feature: local publication/bootstrap, host dependency closure, then remote/production-auth proof. Split stages into S/M commits and preserve embedded boot after every implementation step
 
 ---
 
@@ -3286,20 +3363,22 @@ Commits inside the task: (1) the collector macro; (2) declaring crates in mechan
 - [ ] Real AM and static-idp-plugin publish declarations and configured entities after wiring, bootstrap an Active root and create and read child tenants through the new registry, in the embedded host and with the registry in another process (T41)
 - [ ] Both start orders, delayed dependencies, a configuration change and restarts converge; type-invalid requests are refused; root-binding drift is fatal and a refused root type holds readiness; application preparation covers AM publication; business bootstrap availability remains separate (#5547/#5562)
 - [ ] The production authenticator path is exercised; RG's init-only bootstrap boundary and real authz enforcement are intact; embedded AM suites pass
-- [ ] `make ci` (including the real AM remote target from T41 onward), gear tests on three backends, `make e2e-local` green; human review before the fleet migrates. Final deployment waits for Checkpoint 9
+- [ ] `make ci` (including the real AM remote target from T41 onward), gear tests on three backends, `make e2e-local` green; human review before T42 removes global inventory. Final deployment waits for Checkpoint 9
 
 ---
 
-### - [ ] T42: Every remaining gear publishes after wiring; end of the pull
+### - [ ] T42: Publication ownership coverage and end of the global pull
 
 **Current status:** AM/IdP, AuthN (including Firebase), AuthZ, tenant-resolver plugins, policy-engine and admission-control listed in the status above already declare GTS Type Schemas and Instances with `gts_publication(...)`. Event-broker has platform reads, but no managed declaration publisher yet; resource-group remains legacy. Migrate only remaining publishers and remove global inventory last. Historical hook-based instructions below are superseded by T37: publication precedes application init; configured entities are declared through `gts_publication(entities = …)`.
+
+**Scope boundary:** T38a–T38c own all per-gear SDK and publication changes. The fleet criteria below are acceptance checks over those deliveries, not another migration pass. This task implements missing coverage tooling and the final global-to-local macro/seeding cleanup.
 
 **Description:** Build on the migrated AM/IdP/resolver/policy/admission groups and the remaining SDK cutover owned by T38. Complete declaration ownership and startup publication for every remaining declaring or registry-dependent gear (P22, P23), in the audited order. Reuse T41's host-prerequisite work; the final change ends the registry's process-wide pull.
 - **Declarations.** Each gear declares its owned crates with `gts_publication(crates = […])`; runtime preparation publishes their GTS Type Schemas and Instances under the gear’s context before application init.
 - **Explicit registrations.** Remaining startup registrations and configuration-built Instances use the same publication path. The static/single-tenant/RG TR plugins and static/Keycloak IdP plugins already publish before `init` and bind from admitted manifests; verify their coverage without repeating the migration
 - **Other startup calls.** Audit registry-dependent reads and bootstrap separately: remote prerequisites belong in serve or lazy first use, with readiness reflecting completion. Lifecycle hooks must not wait for remote services.
 
-Current remaining legacy runtime consumers: core (`gears/system/`) — `resource-group`, `usage-collector` (+ noop/ClickHouse/TimescaleDB plugins), `quota-enforcement` (+ storage plugin), `oagw`, `license-resolver` (+ static-license plugin); other gears — `bss/ledger`, `bss/orders` (+ test-authz plugin), `bss/pricing`, `bss/products`, `bss/rate-provider` (+ ECB/HTTP JSON plugins through its SDK's shared `registration.rs`), `construct`, `credstore` (+ static plugin), `mini-chat` (+ static-audit/static-model-policy plugins), `settings-service`. Event-broker's reads already use the new platform API, but its declarations and the cluster SDK still need owned publication. This reader inventory is not the complete declaration-owner audit: include every declaring crate below; `llm-gateway` and `model-registry` have no current runtime registry SDK calls and remain declaration/design audit entries.
+Current remaining legacy runtime consumers: core (`gears/system/`) — `resource-group`, `usage-collector` (+ noop/ClickHouse/TimescaleDB plugins), `quota-enforcement` (+ storage plugin), `oagw`, `license-resolver` (+ static-license plugin), `license-enforcement`; other gears — `bss/ledger`, `bss/orders` (+ test-authz plugin), `bss/pricing`, `bss/products`, `bss/rate-provider` (+ ECB/HTTP JSON plugins through its SDK's shared `registration.rs`), `construct`, `credstore` (+ static plugin), `mini-chat` (+ static-audit/static-model-policy plugins), `settings-service`. Event-broker's reads already use the new platform API, but its declarations and the cluster SDK still need owned publication. This reader inventory is not the complete declaration-owner audit: include every declaring crate below; `llm-gateway` and `model-registry` have no current runtime registry SDK calls and remain declaration/design audit entries.
 
 **Acceptance criteria — publication after wiring:**
 - [ ] Every gear with a startup registry call or GTS declarations is either lifecycle-migrated here or recorded as such by T41; that evidence is verified, not redone. T32's API-migrated status alone does not imply post-wiring completion: close remaining unselected TR/IdP lifecycle calls where applicable, without redoing their SDK translation
@@ -3338,7 +3417,7 @@ Current remaining legacy runtime consumers: core (`gears/system/`) — `resource
 - [ ] Compiler fixtures exercise all three canonical root macros across independent crates, renamed dependencies, conditional declarations and release/LTO. A crate missing `declare_gts_inventory!()` fails with the collector diagnostic; declarations from a linked foreign SDK never appear in another crate's collector. Source/API checks find no `local_gts_*` proc-macro exports, `toolkit_gts::local` macro imports or global collector modes; construction, schema generation and publication behavior are preserved
 - [ ] `make e2e-local` green
 
-**Dependencies:** T41 (Checkpoint 8A) **Files likely touched:** `gear.rs` and the types-registry call sites of each gear above, `libs/toolkit-gts/src/{lib,local}.rs`, `libs/toolkit-gts-macros/src/lib.rs`, declaration imports/compiler fixtures/tooling and their documentation, `TR/src/gear.rs`, `TR/src/domain/seeding.rs`, a coverage test per binary under `apps/` **Scope:** L — one commit per gear, never the whole set at once; the canonical-macro cutover and end of the pull are the last commit
+**Dependencies:** T38b/T38c publication adoption, T38 legacy deletion, T40, T41 (Checkpoint 8A) **Files likely touched:** `gear.rs` and the types-registry call sites of each gear above, `libs/toolkit-gts/src/{lib,local}.rs`, `libs/toolkit-gts-macros/src/lib.rs`, declaration imports/compiler fixtures/tooling and their documentation, `TR/src/gear.rs`, `TR/src/domain/seeding.rs`, a coverage test per binary under `apps/` **Scope:** L — one commit per gear, never the whole set at once; the canonical-macro cutover and end of the pull are the last commit
 
 ---
 
