@@ -1,5 +1,5 @@
 // Created: 2026-05-06 by Constructor Tech
-// Updated: 2026-11-05 by Constructor Tech
+// Updated: 2026-11-10 by Constructor Tech
 //! Provider-independent model types — enums, capability flags, the context
 //! window, cost, and performance characteristics.
 //!
@@ -229,6 +229,7 @@ pub enum ServiceTier {
     schemars::JsonSchema,
 )]
 #[serde(default)]
+#[non_exhaustive]
 pub struct ReasoningCapability {
     /// Accepts `reasoning.effort`.
     pub effort: bool,
@@ -256,6 +257,7 @@ pub struct ReasoningCapability {
     schemars::JsonSchema,
 )]
 #[serde(default)]
+#[non_exhaustive]
 pub struct WebSearchCapability {
     /// Whether web search is available.
     pub enabled: bool,
@@ -281,6 +283,7 @@ pub struct WebSearchCapability {
     schemars::JsonSchema,
 )]
 #[serde(default)]
+#[non_exhaustive]
 pub struct ToolsCapability {
     /// Accepts `tools` (function calling).
     pub enabled: bool,
@@ -310,6 +313,7 @@ pub struct ToolsCapability {
     schemars::JsonSchema,
 )]
 #[serde(default)]
+#[non_exhaustive]
 pub struct OutputCapability {
     /// Accepts `text.format = json_object`.
     pub json_mode: bool,
@@ -335,6 +339,7 @@ pub struct OutputCapability {
     schemars::JsonSchema,
 )]
 #[serde(default)]
+#[non_exhaustive]
 pub struct SamplingCapability {
     /// Accepts `temperature`.
     pub temperature: bool,
@@ -367,6 +372,7 @@ pub struct SamplingCapability {
     Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
 )]
 #[serde(default)]
+#[non_exhaustive]
 pub struct MediaCapability {
     /// Whether the capability is available.
     pub enabled: bool,
@@ -386,6 +392,7 @@ pub struct MediaCapability {
     Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
 )]
 #[serde(default)]
+#[non_exhaustive]
 pub struct ModelCapabilities {
     /// Supports image/vision input.
     pub vision: MediaCapability,
@@ -426,6 +433,7 @@ pub struct ModelCapabilities {
     Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
 )]
 #[serde(default)]
+#[non_exhaustive]
 pub struct DisabledMediaCapability {
     /// The whole capability is disabled.
     pub disabled: bool,
@@ -448,6 +456,7 @@ pub struct DisabledMediaCapability {
     schemars::JsonSchema,
 )]
 #[serde(default)]
+#[non_exhaustive]
 pub struct DisabledReasoningCapability {
     /// `reasoning.effort` is disabled.
     pub effort: bool,
@@ -475,6 +484,7 @@ pub struct DisabledReasoningCapability {
     schemars::JsonSchema,
 )]
 #[serde(default)]
+#[non_exhaustive]
 pub struct DisabledWebSearchCapability {
     /// The whole web-search capability is disabled.
     pub disabled: bool,
@@ -498,6 +508,7 @@ pub struct DisabledWebSearchCapability {
     schemars::JsonSchema,
 )]
 #[serde(default)]
+#[non_exhaustive]
 pub struct DisabledToolsCapability {
     /// The whole tool-calling capability is disabled.
     pub disabled: bool,
@@ -527,6 +538,7 @@ pub struct DisabledToolsCapability {
     schemars::JsonSchema,
 )]
 #[serde(default)]
+#[non_exhaustive]
 pub struct DisabledOutputCapability {
     /// JSON mode is disabled.
     pub json_mode: bool,
@@ -552,6 +564,7 @@ pub struct DisabledOutputCapability {
     schemars::JsonSchema,
 )]
 #[serde(default)]
+#[non_exhaustive]
 pub struct DisabledSamplingCapability {
     /// `temperature` is disabled.
     pub temperature: bool,
@@ -582,6 +595,7 @@ pub struct DisabledSamplingCapability {
     Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
 )]
 #[serde(default)]
+#[non_exhaustive]
 pub struct DisabledCapabilities {
     /// Image / vision input is disabled.
     pub vision: DisabledMediaCapability,
@@ -637,6 +651,7 @@ impl DisabledCapabilities {
     serde::Deserialize,
     schemars::JsonSchema,
 )]
+#[non_exhaustive]
 pub struct ContextWindow {
     pub max_input_tokens: u32,
     /// Maximum output tokens. `None` for embedding models that produce
@@ -644,6 +659,19 @@ pub struct ContextWindow {
     pub max_output_tokens: Option<u32>,
     /// Output vector dimensionality for embedding models.
     pub output_vector_size: Option<u32>,
+}
+
+impl ContextWindow {
+    /// A context window of `max_input_tokens` with no output limit or vector
+    /// size.
+    #[must_use]
+    pub fn new(max_input_tokens: u32) -> Self {
+        Self {
+            max_input_tokens,
+            max_output_tokens: None,
+            output_vector_size: None,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -662,6 +690,7 @@ pub struct ContextWindow {
     serde::Deserialize,
     schemars::JsonSchema,
 )]
+#[non_exhaustive]
 pub struct ModelPerformance {
     /// Expected response latency in milliseconds.
     pub response_latency_ms: Option<u32>,
@@ -691,6 +720,7 @@ pub struct ModelPerformance {
     schemars::JsonSchema,
 )]
 #[serde(default)]
+#[non_exhaustive]
 pub struct ModelCostV1 {
     /// Per 1,000,000 input tokens.
     #[serde(skip_serializing_if = "Option::is_none")]

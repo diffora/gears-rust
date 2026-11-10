@@ -1,5 +1,5 @@
 // Created: 2026-05-06 by Constructor Tech
-// Updated: 2026-11-09 by Constructor Tech
+// Updated: 2026-11-10 by Constructor Tech
 //! Transport-agnostic request types of the Model Registry SDK (DESIGN §3.3
 //! Request contents).
 //!
@@ -157,6 +157,7 @@ impl CreateProviderRequestV1Builder {
 /// `Some(None)` clears it, `Some(Some(v))` sets it.
 #[derive(Debug, Clone, Default, PartialEq)]
 #[allow(clippy::option_option)]
+#[non_exhaustive]
 pub struct UpdateProviderRequestV1 {
     /// When present, the update applies only if the stored `version` equals
     /// it; otherwise it fails with `OPTIMISTIC_LOCK_FAILURE` and nothing
@@ -185,6 +186,7 @@ pub struct UpdateProviderRequestV1 {
 /// `canonical_id` as `provider_slug::name`. Field semantics and limits are
 /// those of `ModelInfoV1`.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct CreateModelRequestV1 {
     /// Provider that serves the model. Must be owned by the acting tenant.
     pub provider_id: Uuid,
@@ -297,6 +299,7 @@ impl CreateModelRequestV1 {
 /// it.
 #[derive(Debug, Clone, Default, PartialEq)]
 #[allow(clippy::option_option)]
+#[non_exhaustive]
 pub struct UpdateModelRequestV1 {
     /// When present, the update applies only if the stored `version` equals
     /// it; otherwise it fails with `OPTIMISTIC_LOCK_FAILURE` and nothing

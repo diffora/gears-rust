@@ -1,5 +1,5 @@
 // Created: 2026-05-07 by Constructor Tech
-// Updated: 2026-10-26 by Constructor Tech
+// Updated: 2026-11-10 by Constructor Tech
 //! User-facing default inference parameters for a model.
 //!
 //! [`DefaultInferenceParametersV1`] mirrors the inference-knob subset of the
@@ -32,6 +32,7 @@ use crate::models::{ReasoningEffort, ServiceTier};
 #[derive(
     Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
 )]
+#[non_exhaustive]
 pub struct DefaultInferenceParametersV1 {
     /// Sampling temperature. No min/max constraints — provider ranges differ.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -81,6 +82,7 @@ pub struct DefaultInferenceParametersV1 {
 
 /// Response text format configuration.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[non_exhaustive]
 pub struct TextFormat {
     pub format: TextFormatKind,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -143,6 +145,7 @@ pub enum TextVerbosity {
 #[derive(
     Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
 )]
+#[non_exhaustive]
 pub struct ReasoningConfig {
     /// Reasoning effort level.
     #[serde(skip_serializing_if = "Option::is_none")]
