@@ -303,7 +303,7 @@ where
 /// be checked without a database.
 ///
 /// Only an entity that declares no scope column at all may be written this
-/// way.
+/// way: no dimension, the type column included, and no custom PEP property.
 ///
 /// # Errors
 ///
@@ -312,11 +312,7 @@ fn insert_from_select_allowed<E>() -> Result<(), ScopeError>
 where
     E: ScopableEntity + EntityTrait,
 {
-    if E::SCOPE.tenant().is_some()
-        || E::SCOPE.resource().is_some()
-        || E::SCOPE.owner().is_some()
-        || E::SCOPE.type_col().is_some()
-    {
+    if !E::SCOPE.has_no_columns() {
         return Err(ScopeError::Invalid(
             "insert-from-select is limited to entities without scope columns: \
              rows produced inside the database cannot be validated per row",
@@ -1405,6 +1401,50 @@ mod tests {
         pub enum Relation {}
 
         impl ActiveModelBehavior for ActiveModel {}
+    }
+
+    /// No named dimension, one custom PEP property: a column a scope can
+    /// still constrain.
+    mod pep_prop_entity {
+        use super::*;
+
+        #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, toolkit_db::secure::Scopable)]
+        #[sea_orm(table_name = "pep_prop_only_table")]
+        #[secure(
+            no_tenant,
+            no_resource,
+            no_owner,
+            no_type,
+            pep_prop(department_id = "department_id")
+        )]
+        pub struct Model {
+            #[sea_orm(primary_key, auto_increment = false)]
+            pub id: Uuid,
+            pub department_id: Uuid,
+        }
+
+        #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+        pub enum Relation {}
+
+        impl ActiveModelBehavior for ActiveModel {}
+    }
+
+    #[test]
+    fn insert_from_select_refuses_an_entity_scoped_only_by_a_pep_prop() {
+        use pep_prop_entity::Entity;
+
+        let scope = <Entity as ScopableEntity>::SCOPE;
+        assert!(
+            scope.tenant().is_none()
+                && scope.resource().is_none()
+                && scope.owner().is_none()
+                && scope.type_col().is_none(),
+            "premise: every named dimension is None"
+        );
+
+        let err = insert_from_select_allowed::<Entity>()
+            .expect_err("a pep_prop is a scope column like any other");
+        assert!(matches!(err, ScopeError::Invalid(_)), "got: {err:?}");
     }
 
     // Test entity without tenant_col (global entity)
