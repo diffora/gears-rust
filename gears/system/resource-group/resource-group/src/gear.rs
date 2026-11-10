@@ -38,10 +38,14 @@ pub type ConcreteTypeBootstrapService = RgTypeBootstrapService<TypeRepository>;
 /// Resource-group gear.
 ///
 /// `init` requires the legacy `TypesRegistryClient` for metadata validation.
-/// The host links the registry, whose system-gear init runs first without a
-/// `deps` edge; a missing registry fails boot. New-API migration remains T38.
+/// The `deps` edge links the registry into the host; its system-group startup
+/// makes the client available before this gear initializes.
 #[toolkit::consumes(contract = authz_resolver_sdk::AuthZResolverApi, from = "authz-resolver")]
-#[toolkit::gear(name = "resource-group", capabilities = [db, rest])]
+#[toolkit::gear(
+    name = "resource-group",
+    deps = [types_registry],
+    capabilities = [db, rest]
+)]
 #[allow(clippy::struct_field_names)]
 pub struct ResourceGroup {
     type_service: OnceLock<Arc<ConcreteTypeService>>,
