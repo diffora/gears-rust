@@ -29,11 +29,10 @@ const ORDER_EU_TYPE: &str =
     "gts.cf.core.events.event.v1~example.proj.shop.order.v1~example.proj.shop.order_eu.v1~";
 
 /// The base event's `data` member as `data_contract` composes it into the first
-/// branch of a payload contract.
+/// branch of a payload contract; spelled out so that changing the base surfaces
+/// as a failure here.
 fn base_data_member() -> serde_json::Value {
-    json!({
-        "type": ["object", "null"],
-    })
+    json!({ "type": ["object", "null"] })
 }
 
 // -- Fixture construction ------------------------------------------------------
@@ -242,7 +241,7 @@ async fn event_type_inherits_traits_from_an_ancestor() {
         EVENT_BASE,
         &json!({
             "topic": AUDIT_TOPIC,
-            "allowed_subject_types": ["gts.cf.core.events.subject.v1~example.proj.shop.order.v1~"],
+            "allowed_subject_types": ["gts.example.proj.shop.order.v1~"],
         }),
     );
     let schema = listed_event_type(
@@ -265,7 +264,7 @@ async fn event_type_inherits_traits_from_an_ancestor() {
             "partition_key": "/tenant_id",
             "description": null,
             "allowed_subject_types": [
-                "gts.cf.core.events.subject.v1~example.proj.shop.order.v1~",
+                "gts.example.proj.shop.order.v1~",
             ],
             // Neither level narrows `data`, so the base's own member is the whole
             // payload contract - reached through two levels of resolved nesting.

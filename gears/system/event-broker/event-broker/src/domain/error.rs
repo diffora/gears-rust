@@ -139,6 +139,27 @@ pub enum DomainError {
     #[error("batch payload too large: {bytes} bytes (max {max})")]
     BatchPayloadTooLarge { bytes: u64, max: u64 },
 
+    /// An event encoded to more than `EventV1::MAX_ENCODED_BYTES`, as the SDK counts
+    /// it. Same `413`/`InvalidArgument` treatment as
+    /// [`BatchTooLarge`](Self::BatchTooLarge). `index` is the event's request
+    /// position (`0` for a single publish); the sizes are derived numbers.
+    #[error("event too large: event {index} is {bytes} bytes encoded (max {max})")]
+    EventTooLarge {
+        index: usize,
+        bytes: usize,
+        max: usize,
+    },
+
+    /// An event's resolved partition key took more than
+    /// `EventV1::MAX_PARTITION_KEY_BYTES` - lifted to `400`. `index` is the event's
+    /// request position (`0` for a single publish). Carries no part of the key.
+    #[error("partition key too long: event {index} has {bytes} bytes (max {max})")]
+    PartitionKeyTooLong {
+        index: usize,
+        bytes: usize,
+        max: usize,
+    },
+
     /// Per-tenant/per-resource rate cap exceeded - lifted to `429` with a
     /// `Retry-After` header.
     #[error("{code}: {message}")]
@@ -148,12 +169,12 @@ pub enum DomainError {
         retry_after_secs: u32,
     },
 
-    /// Infrastructure failure reaching storage/cluster state - lifted to `503`.
-    /// `reason` is a stable, non-sensitive category label (the wire `503`
-    /// detail); the typed error rides in `source` for logs/`.source()` chaining
-    /// and is never serialized, so a raw driver/cluster message can't leak into
-    /// the response body. `source` is `None` for a failure with no underlying
-    /// error (e.g. a not-yet-started pipeline).
+    /// Infrastructure failure reaching storage/cluster state - lifted to `503`
+    /// with the generic body. `reason` (what failed, e.g. a topic not
+    /// provisioned yet) and the typed error in `source` go to the server-side
+    /// log and `.source()` chaining, never to the response body. `source` is
+    /// `None` for a failure with no underlying error (e.g. a not-yet-started
+    /// pipeline).
     #[error("storage backend unavailable: {reason}")]
     StorageUnavailable {
         reason: String,

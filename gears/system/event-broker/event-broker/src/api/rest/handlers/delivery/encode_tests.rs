@@ -48,7 +48,7 @@ fn event() -> Event {
         tenant_id: Uuid::nil(),
         source: "encode-tests".to_owned(),
         subject: "order-1".to_owned(),
-        subject_type: gts::GtsTypeId::new("gts.x.eb.order.v1~"),
+        subject_type: gts::GtsTypeId::new("gts.x.eb.encode.order.v1~"),
         occurred_at: at(),
         trace_parent: None,
         data: serde_json::json!({ "n": 1 }),

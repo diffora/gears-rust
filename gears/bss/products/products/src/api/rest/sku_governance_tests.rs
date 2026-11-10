@@ -1,6 +1,9 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 use crate::infra::{
-    broker::{ApprovalUnitDecided, ReferenceForceReleased, SkuChanged, SkuPublished},
+    broker::{
+        APPROVAL_UNIT_SUBJECT_TYPE, ApprovalUnitDecided, ReferenceForceReleased, SKU_SUBJECT_TYPE,
+        SkuChanged, SkuPublished, SkuRetired,
+    },
     storage::repo,
 };
 use crate::test_support::*;
@@ -9,9 +12,9 @@ use axum::{
     body::Body,
     http::{Method, Request, StatusCode},
 };
-use event_broker_sdk::TypedEvent;
 use serde_json::{Value, json};
 use std::sync::Arc;
+use toolkit_gts::GtsSchema;
 use toolkit_gts::gts_id;
 use toolkit_security::SecurityContext;
 use tower::ServiceExt;
@@ -441,6 +444,10 @@ async fn quorum_zero_publishes_at_submit_and_records_the_unit() {
         enqueued_event_count(&f.dsn, ApprovalUnitDecided::TYPE_ID).await,
         1
     );
+    assert_eq!(
+        enqueued_event_subject_type(&f.dsn, ApprovalUnitDecided::TYPE_ID).await,
+        APPROVAL_UNIT_SUBJECT_TYPE
+    );
 }
 #[tokio::test]
 async fn quorum_one_the_author_may_not_approve_and_an_independent_reviewer_publishes() {
@@ -635,6 +642,11 @@ async fn retire_is_refused_while_a_reservation_is_live_and_a_fenced_sku_refuses_
     assert_eq!(problem_code(&b), "SKU_FENCED");
     assert_eq!(f.vote(&u, "approve", 1).await.0, 200);
     assert_eq!(f.card().await["lifecycle"], "retired");
+    assert_eq!(enqueued_event_count(&f.dsn, SkuRetired::TYPE_ID).await, 1);
+    assert_eq!(
+        enqueued_event_subject_type(&f.dsn, SkuRetired::TYPE_ID).await,
+        SKU_SUBJECT_TYPE
+    );
 }
 #[tokio::test]
 async fn a_type_change_on_a_published_sku_is_frozen_by_a_confirmed_reference() {
@@ -759,6 +771,10 @@ async fn an_operator_release_needs_force_and_a_reason_and_is_evented() {
     assert_eq!(
         enqueued_event_count(&f.dsn, ReferenceForceReleased::TYPE_ID).await,
         1
+    );
+    assert_eq!(
+        enqueued_event_subject_type(&f.dsn, ReferenceForceReleased::TYPE_ID).await,
+        SKU_SUBJECT_TYPE
     );
 }
 #[tokio::test]

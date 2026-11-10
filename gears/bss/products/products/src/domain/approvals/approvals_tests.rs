@@ -2,7 +2,7 @@
 use super::{change::SkuChange, publish::SkuPublish, retire::SkuRetire};
 use crate::{
     infra::{
-        broker::{EventSink, SkuChanged, SkuPublished, SkuRetired},
+        broker::{EventSink, SKU_SUBJECT_TYPE, SkuChanged, SkuPublished, SkuRetired},
         events,
         storage::repo,
     },
@@ -10,9 +10,9 @@ use crate::{
 };
 use bss_approval::{ApprovalError, ApprovalSubject, Engine, Policy, Store, SubmitRequest};
 use bss_products_sdk::models::{Lifecycle, SkuContent, SkuType};
-use event_broker_sdk::TypedEvent;
 use std::sync::Arc;
 use toolkit_db::{Db, DbTx};
+use toolkit_gts::GtsSchema;
 use uuid::Uuid;
 
 async fn in_tx<T: Send + 'static>(
@@ -160,6 +160,10 @@ async fn subjects_publish_change_refuse_corrupt_reference_and_withdraw() {
     assert_eq!(got.published_version, 1);
     assert_eq!(enqueued_event_count(&dsn, SkuPublished::TYPE_ID).await, 1);
     assert_eq!(
+        enqueued_event_subject_type(&dsn, SkuPublished::TYPE_ID).await,
+        SKU_SUBJECT_TYPE
+    );
+    assert_eq!(
         repo::versions(&conn, &scope, tenant, id)
             .await
             .unwrap()
@@ -222,6 +226,10 @@ async fn subjects_publish_change_refuse_corrupt_reference_and_withdraw() {
     assert_eq!(
         enqueued_event_envelope(&dsn, SkuChanged::TYPE_ID).await["changed"],
         serde_json::json!(["gl_code"])
+    );
+    assert_eq!(
+        enqueued_event_subject_type(&dsn, SkuChanged::TYPE_ID).await,
+        SKU_SUBJECT_TYPE
     );
     // Submit on the requested date, then decide using tomorrow's clock.
     let requested = utc(2026, 10, 1, 9, 0, 0);

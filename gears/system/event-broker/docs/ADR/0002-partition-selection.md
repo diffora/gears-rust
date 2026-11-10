@@ -149,6 +149,8 @@ A producer's own partitions (for example its outbox partitions), ingest's outbox
 
 The partition key is ASCII per [ADR-0003 § Event Field Encoding](0003-event-schema.md#event-field-encoding-ascii-only). The broker rejects publishes with non-ASCII bytes in the resolved value with `400 InvalidEventFieldEncoding` before the event is enqueued.
 
+The resolved value is at most 1024 bytes in its JSON string form, since the ingest outbox row stores it beside the event; a longer one is rejected `400` with reason `partition_key_too_long` before the event is enqueued (DESIGN `cpt-cf-evbk-constraint-event-size`).
+
 ### Consequences
 
 - Good, because the routing contract is **one decision per event type**, shared by every producer and visible to every consumer of it. No publisher can change the ordering another publisher's consumers depend on.

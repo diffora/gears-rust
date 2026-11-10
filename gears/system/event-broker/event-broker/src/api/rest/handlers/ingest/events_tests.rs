@@ -20,7 +20,7 @@ use uuid::Uuid;
 use crate::domain::error::{DomainError, ErrorCode};
 use crate::domain::ingest::{ProducerMode, ProducerRegistrationInput, PublishRequest};
 use crate::test_support::{
-    DenyingAuthZ, EventBrokerHarness, Json, NeverStoringBackend, StaticTypesRegistry,
+    DenyingAuthZ, EventBrokerHarness, Json, NeverStoringBackend, StaticTypesRegistry, mapping_lines,
 };
 
 /// Registers a producer via the real `IngestService::register_producer`
@@ -1052,6 +1052,7 @@ async fn a_single_publish_412_names_index_zero_its_producer_and_the_committed_he
 /// answered `503`, retryable, and the same publish succeeds once the topic is
 /// provisioned (feature 0006 §4.2).
 #[tokio::test]
+#[tracing_test::traced_test]
 async fn publish_to_a_topic_not_provisioned_returns_503_then_202_once_provisioned() {
     let harness = EventBrokerHarness::builder()
         .with_type_registry(StaticTypesRegistry::of(json!([
@@ -1088,10 +1089,24 @@ async fn publish_to_a_topic_not_provisioned_returns_503_then_202_once_provisione
             "type": "gts://gts.cf.core.errors.err.v1~cf.core.err.service_unavailable.v1~",
             "title": "Service Unavailable",
             "status": 503,
-            "detail": "topic 'gts.cf.core.events.topic.v1~x.eb.t1.topic.v1' is not provisioned on its storage backend yet",
+            "detail": "Service temporarily unavailable",
             "instance": "/event-broker/v1/events",
             "context": {},
         })
+    );
+    let logged = std::cell::RefCell::new(Vec::new());
+    logs_assert(|lines| {
+        *logged.borrow_mut() = mapping_lines(lines);
+        Ok(())
+    });
+    assert_eq!(
+        logged.into_inner(),
+        vec![
+            "WARN answering 503 with the generic body error=storage backend unavailable: \
+             topic 'gts.cf.core.events.topic.v1~x.eb.t1.topic.v1' is not provisioned on its \
+             storage backend yet"
+                .to_owned()
+        ]
     );
 
     harness.provision_topics().await;
@@ -1107,6 +1122,7 @@ async fn publish_to_a_topic_not_provisioned_returns_503_then_202_once_provisione
 /// An unreadable spec cache says nothing about whether the type is registered,
 /// so the publish is answered `503`, retryable, not `404 EventTypeNotFound`.
 #[tokio::test]
+#[tracing_test::traced_test]
 async fn a_publish_during_a_spec_cache_fault_answers_503() {
     let harness = EventBrokerHarness::builder()
         .with_type_registry(StaticTypesRegistry::of(json!([
@@ -1143,10 +1159,24 @@ async fn a_publish_during_a_spec_cache_fault_answers_503() {
             "type": "gts://gts.cf.core.errors.err.v1~cf.core.err.service_unavailable.v1~",
             "title": "Service Unavailable",
             "status": 503,
-            "detail": "database scope resolution failed",
+            "detail": "Service temporarily unavailable",
             "instance": "/event-broker/v1/events",
             "context": {},
         })
+    );
+    let logged = std::cell::RefCell::new(Vec::new());
+    logs_assert(|lines| {
+        *logged.borrow_mut() = mapping_lines(lines);
+        Ok(())
+    });
+    assert_eq!(
+        logged.into_inner(),
+        vec![
+            "WARN answering 503 with the generic body error=storage backend unavailable: \
+             database scope resolution failed: database error: Query Error: error returned \
+             from database: (code: 1) no such table: event_broker_spec_cache"
+                .to_owned()
+        ]
     );
     assert_eq!(harness.outbox_bodies().await, 0);
     assert_eq!(
@@ -1159,6 +1189,7 @@ async fn a_publish_during_a_spec_cache_fault_answers_503() {
 /// provisioned, so the publish is answered `503`, retryable, and nothing is
 /// enqueued.
 #[tokio::test]
+#[tracing_test::traced_test]
 async fn a_publish_during_a_topic_binding_fault_answers_503() {
     let harness = EventBrokerHarness::builder()
         .with_type_registry(StaticTypesRegistry::of(json!([
@@ -1197,10 +1228,24 @@ async fn a_publish_during_a_topic_binding_fault_answers_503() {
             "type": "gts://gts.cf.core.errors.err.v1~cf.core.err.service_unavailable.v1~",
             "title": "Service Unavailable",
             "status": 503,
-            "detail": "database scope resolution failed",
+            "detail": "Service temporarily unavailable",
             "instance": "/event-broker/v1/events",
             "context": {},
         })
+    );
+    let logged = std::cell::RefCell::new(Vec::new());
+    logs_assert(|lines| {
+        *logged.borrow_mut() = mapping_lines(lines);
+        Ok(())
+    });
+    assert_eq!(
+        logged.into_inner(),
+        vec![
+            "WARN answering 503 with the generic body error=storage backend unavailable: \
+             database scope resolution failed: database error: Query Error: error returned \
+             from database: (code: 1) no such table: event_broker__topic_binding"
+                .to_owned()
+        ]
     );
     assert_eq!(harness.outbox_bodies().await, 0);
     assert_eq!(
@@ -1212,6 +1257,7 @@ async fn a_publish_during_a_topic_binding_fault_answers_503() {
 /// A batch resolves each event's topic through its type, so the same fault
 /// answers `503` there too.
 #[tokio::test]
+#[tracing_test::traced_test]
 async fn a_batch_publish_during_a_spec_cache_fault_answers_503() {
     let harness = EventBrokerHarness::builder()
         .with_type_registry(StaticTypesRegistry::of(json!([
@@ -1261,10 +1307,24 @@ async fn a_batch_publish_during_a_spec_cache_fault_answers_503() {
             "type": "gts://gts.cf.core.errors.err.v1~cf.core.err.service_unavailable.v1~",
             "title": "Service Unavailable",
             "status": 503,
-            "detail": "database scope resolution failed",
+            "detail": "Service temporarily unavailable",
             "instance": "/event-broker/v1/events:batch",
             "context": {},
         })
+    );
+    let logged = std::cell::RefCell::new(Vec::new());
+    logs_assert(|lines| {
+        *logged.borrow_mut() = mapping_lines(lines);
+        Ok(())
+    });
+    assert_eq!(
+        logged.into_inner(),
+        vec![
+            "WARN answering 503 with the generic body error=storage backend unavailable: \
+             database scope resolution failed: database error: Query Error: error returned \
+             from database: (code: 1) no such table: event_broker_spec_cache"
+                .to_owned()
+        ]
     );
     assert_eq!(harness.outbox_bodies().await, 0);
     assert_eq!(
@@ -1509,10 +1569,14 @@ async fn publish_batch_too_large_returns_413() {
             "type": "gts://gts.cf.core.errors.err.v1~cf.core.err.invalid_argument.v1~",
             "title": "Invalid Argument",
             "status": 413,
-            "detail": "batch too large: 101 events (max 100)",
+            "detail": "Request validation failed",
             "instance": "/event-broker/v1/events:batch",
             "context": {
-                "format": "batch too large: 101 events (max 100)",
+                "field_violations": [{
+                    "field": "batch.count",
+                    "description": "batch too large: 101 events (max 100)",
+                    "reason": "batch_too_large",
+                }],
                 "resource_type": "gts.cf.core.events.request.v1~",
             },
         })
@@ -2477,6 +2541,169 @@ async fn a_resend_overlapping_the_head_skips_the_duplicate_prefix() {
 }
 
 #[tokio::test]
+async fn a_resend_at_the_head_with_another_previous_answers_200_and_stores_nothing() {
+    let harness = run_rules_harness().await;
+    let producer_id = register_test_producer(&harness).await;
+    let tenant_id = Uuid::from_u128(0x7e7a_1901);
+    let first_id = Uuid::from_u128(0xe000_1908);
+
+    // The chain's head is 8 before the resend.
+    harness
+        .api_v1()
+        .post_events()
+        .with_body(Json(&json!({
+            "id": first_id,
+            "type": "gts.cf.core.events.event.v1~x.eb.t1.foo.v1~",
+            "tenant_id": tenant_id,
+            "source": "order-service",
+            "subject": "order-head-previous",
+            "subject_type": "gts.x.eb.t1.subject.v1~",
+            "occurred_at": "2026-05-29T10:10:00Z",
+            "meta": { "version": 1, "producer_id": producer_id, "previous": 7, "sequence": 8 },
+        })))
+        .send()
+        .await
+        .assert_status(202);
+
+    // `sequence == last` makes it a duplicate; its `previous` is not read.
+    let resend = harness
+        .api_v1()
+        .post_events()
+        .with_body(Json(&json!({
+            "id": Uuid::from_u128(0xe000_1918),
+            "type": "gts.cf.core.events.event.v1~x.eb.t1.foo.v1~",
+            "tenant_id": tenant_id,
+            "source": "order-service",
+            "subject": "order-head-previous",
+            "subject_type": "gts.x.eb.t1.subject.v1~",
+            "occurred_at": "2026-05-29T10:10:01Z",
+            "meta": { "version": 1, "producer_id": producer_id, "previous": 3, "sequence": 8 },
+        })))
+        .send()
+        .await;
+
+    resend.assert_status(200);
+    assert_eq!(resend.text(), "", "200 OK must carry no body");
+    let cursors = harness
+        .api_v1()
+        .get_producer_cursors(&producer_id.to_string())
+        .send()
+        .await;
+    cursors.assert_status(200);
+    assert_eq!(
+        cursors.json(),
+        json!({
+            "producer_id": producer_id,
+            "client_agent": "test-agent",
+            "topics": [{
+                "topic": "gts.cf.core.events.topic.v1~x.eb.t1.topic.v1",
+                "last_sequence": 8,
+            }],
+        })
+    );
+    let sentinel = publish_sentinel(&harness, Uuid::from_u128(0x5e7_1901), tenant_id).await;
+    assert_eq!(
+        stored_ids_through(
+            &harness,
+            "gts.cf.core.events.topic.v1~x.eb.t1.topic.v1",
+            sentinel
+        )
+        .await,
+        vec![first_id, sentinel],
+        "the resend is not stored"
+    );
+}
+
+#[tokio::test]
+async fn a_batch_led_by_a_head_resend_with_another_previous_stores_only_the_rest() {
+    let harness = run_rules_harness().await;
+    let producer_id = register_test_producer(&harness).await;
+    let tenant_id = Uuid::from_u128(0x7e7a_2001);
+    let first_id = Uuid::from_u128(0xe000_2008);
+    let ninth_id = Uuid::from_u128(0xe000_2009);
+
+    // The chain's head is 8 before the batch.
+    harness
+        .api_v1()
+        .post_events()
+        .with_body(Json(&json!({
+            "id": first_id,
+            "type": "gts.cf.core.events.event.v1~x.eb.t1.foo.v1~",
+            "tenant_id": tenant_id,
+            "source": "order-service",
+            "subject": "order-head-previous",
+            "subject_type": "gts.x.eb.t1.subject.v1~",
+            "occurred_at": "2026-05-29T10:10:00Z",
+            "meta": { "version": 1, "producer_id": producer_id, "previous": 7, "sequence": 8 },
+        })))
+        .send()
+        .await
+        .assert_status(202);
+
+    // `e[0].sequence == last`: event 0 is a duplicate prefix whatever its
+    // `previous`, and event 1 advances.
+    let resp = harness
+        .api_v1()
+        .post_events_batch()
+        .with_body(Json(&json!({
+            "events": [
+                {
+                    "id": Uuid::from_u128(0xe000_2018),
+                    "type": "gts.cf.core.events.event.v1~x.eb.t1.foo.v1~",
+                    "tenant_id": tenant_id,
+                    "source": "order-service",
+                    "subject": "order-head-previous",
+                    "subject_type": "gts.x.eb.t1.subject.v1~",
+                    "occurred_at": "2026-05-29T10:10:01Z",
+                    "meta": { "version": 1, "producer_id": producer_id, "previous": 3, "sequence": 8 },
+                },
+                {
+                    "id": ninth_id,
+                    "type": "gts.cf.core.events.event.v1~x.eb.t1.foo.v1~",
+                    "tenant_id": tenant_id,
+                    "source": "order-service",
+                    "subject": "order-head-previous",
+                    "subject_type": "gts.x.eb.t1.subject.v1~",
+                    "occurred_at": "2026-05-29T10:10:02Z",
+                    "meta": { "version": 1, "producer_id": producer_id, "previous": 8, "sequence": 9 },
+                },
+            ],
+        })))
+        .send()
+        .await;
+
+    resp.assert_status(202);
+    assert_eq!(resp.text(), "", "202 Accepted must carry no body");
+    let cursors = harness
+        .api_v1()
+        .get_producer_cursors(&producer_id.to_string())
+        .send()
+        .await;
+    cursors.assert_status(200);
+    assert_eq!(
+        cursors.json(),
+        json!({
+            "producer_id": producer_id,
+            "client_agent": "test-agent",
+            "topics": [{
+                "topic": "gts.cf.core.events.topic.v1~x.eb.t1.topic.v1",
+                "last_sequence": 9,
+            }],
+        })
+    );
+    assert_eq!(
+        stored_ids_through(
+            &harness,
+            "gts.cf.core.events.topic.v1~x.eb.t1.topic.v1",
+            ninth_id
+        )
+        .await,
+        vec![first_id, ninth_id],
+        "only the event past the head is newly stored"
+    );
+}
+
+#[tokio::test]
 async fn a_monotonic_run_skips_its_leading_duplicates() {
     let harness = run_rules_harness().await;
     let producer_id = harness
@@ -3393,6 +3620,266 @@ async fn publish_event_instance_shaped_type_returns_400() {
     );
 }
 
+// -- trace_parent format (scenario producer/single/1.07) --
+
+#[tokio::test]
+async fn a_publish_with_a_malformed_trace_parent_is_rejected_and_stores_nothing() {
+    let harness = run_rules_harness().await;
+    let tenant_id = Uuid::from_u128(0x7e7a_1201);
+
+    let resp = harness
+        .api_v1()
+        .post_events()
+        .with_body(Json(&json!({
+            "id": Uuid::from_u128(0xe000_1201),
+            "type": "gts.cf.core.events.event.v1~x.eb.t1.foo.v1~",
+            "tenant_id": tenant_id,
+            "source": "order-service",
+            "subject": "order-42",
+            "subject_type": "gts.x.eb.t1.subject.v1~",
+            "occurred_at": "2026-05-29T10:10:00Z",
+            "trace_parent": "00-0AF7651916CD43DD8448EB211C80319C-B7AD6B7169203331-01",
+        })))
+        .send()
+        .await;
+
+    resp.assert_status(400);
+    assert_eq!(
+        resp.json(),
+        json!({
+            "type": "gts://gts.cf.core.errors.err.v1~cf.core.err.invalid_argument.v1~",
+            "title": "Invalid Argument",
+            "status": 400,
+            "detail": "Request validation failed",
+            "instance": "/event-broker/v1/events",
+            "context": {
+                "field_violations": [{
+                    "field": "trace_parent",
+                    "description": "must be a W3C traceparent: four lowercase hex groups of 2, 32, 16 and 2 digits joined by '-'",
+                    "reason": "invalid_event_field",
+                }],
+                "resource_type": "gts.cf.core.events.request.v1~",
+            },
+        })
+    );
+
+    let sentinel = publish_sentinel(&harness, Uuid::from_u128(0x5e7_1201), tenant_id).await;
+    assert_eq!(
+        stored_ids_through(
+            &harness,
+            "gts.cf.core.events.topic.v1~x.eb.t1.topic.v1",
+            sentinel
+        )
+        .await,
+        vec![sentinel],
+        "a rejected publish stores nothing"
+    );
+}
+
+#[tokio::test]
+async fn a_batch_with_one_malformed_trace_parent_is_rejected_whole() {
+    let harness = run_rules_harness().await;
+    let tenant_id = Uuid::from_u128(0x7e7a_1202);
+
+    let resp = harness
+        .api_v1()
+        .post_events_batch()
+        .with_body(Json(&json!({
+            "events": [
+                {
+                    "id": Uuid::from_u128(0xe000_1202),
+                    "type": "gts.cf.core.events.event.v1~x.eb.t1.foo.v1~",
+                    "tenant_id": tenant_id,
+                    "source": "order-service",
+                    "subject": "order-42",
+                    "subject_type": "gts.x.eb.t1.subject.v1~",
+                    "occurred_at": "2026-05-29T10:10:00Z",
+                },
+                {
+                    "id": Uuid::from_u128(0xe000_1203),
+                    "type": "gts.cf.core.events.event.v1~x.eb.t1.foo.v1~",
+                    "tenant_id": tenant_id,
+                    "source": "order-service",
+                    "subject": "order-42",
+                    "subject_type": "gts.x.eb.t1.subject.v1~",
+                    "occurred_at": "2026-05-29T10:10:01Z",
+                    "trace_parent": "00-0af7-b7ad6b7169203331-01",
+                },
+            ],
+        })))
+        .send()
+        .await;
+
+    resp.assert_status(400);
+    assert_eq!(
+        resp.json(),
+        json!({
+            "type": "gts://gts.cf.core.errors.err.v1~cf.core.err.invalid_argument.v1~",
+            "title": "Invalid Argument",
+            "status": 400,
+            "detail": "Request validation failed",
+            "instance": "/event-broker/v1/events:batch",
+            "context": {
+                "field_violations": [{
+                    "field": "trace_parent",
+                    "description": "must be a W3C traceparent: four lowercase hex groups of 2, 32, 16 and 2 digits joined by '-'",
+                    "reason": "invalid_event_field",
+                }],
+                "resource_type": "gts.cf.core.events.request.v1~",
+            },
+        })
+    );
+
+    let sentinel = publish_sentinel(&harness, Uuid::from_u128(0x5e7_1202), tenant_id).await;
+    assert_eq!(
+        stored_ids_through(
+            &harness,
+            "gts.cf.core.events.topic.v1~x.eb.t1.topic.v1",
+            sentinel
+        )
+        .await,
+        vec![sentinel],
+        "the valid first event of the rejected batch must not be stored"
+    );
+}
+
+/// The type is well-formed but unregistered, which alone answers `404`: the
+/// envelope's format is checked before the type is looked up.
+#[tokio::test]
+async fn a_malformed_trace_parent_is_rejected_before_the_type_is_looked_up() {
+    let harness = run_rules_harness().await;
+    let tenant_id = Uuid::from_u128(0x7e7a_1203);
+
+    let resp = harness
+        .api_v1()
+        .post_events()
+        .with_body(Json(&json!({
+            "id": Uuid::from_u128(0xe000_1204),
+            "type": "gts.cf.core.events.event.v1~x.eb.t1.unregistered.v1~",
+            "tenant_id": tenant_id,
+            "source": "order-service",
+            "subject": "order-42",
+            "subject_type": "gts.x.eb.t1.subject.v1~",
+            "occurred_at": "2026-05-29T10:10:00Z",
+            "trace_parent": "00-0AF7651916CD43DD8448EB211C80319C-B7AD6B7169203331-01",
+        })))
+        .send()
+        .await;
+
+    resp.assert_status(400);
+    assert_eq!(
+        resp.json(),
+        json!({
+            "type": "gts://gts.cf.core.errors.err.v1~cf.core.err.invalid_argument.v1~",
+            "title": "Invalid Argument",
+            "status": 400,
+            "detail": "Request validation failed",
+            "instance": "/event-broker/v1/events",
+            "context": {
+                "field_violations": [{
+                    "field": "trace_parent",
+                    "description": "must be a W3C traceparent: four lowercase hex groups of 2, 32, 16 and 2 digits joined by '-'",
+                    "reason": "invalid_event_field",
+                }],
+                "resource_type": "gts.cf.core.events.request.v1~",
+            },
+        })
+    );
+
+    let sentinel = publish_sentinel(&harness, Uuid::from_u128(0x5e7_1203), tenant_id).await;
+    assert_eq!(
+        stored_ids_through(
+            &harness,
+            "gts.cf.core.events.topic.v1~x.eb.t1.topic.v1",
+            sentinel
+        )
+        .await,
+        vec![sentinel],
+        "a rejected publish stores nothing"
+    );
+}
+
+#[tokio::test]
+async fn a_well_formed_trace_parent_is_accepted() {
+    let harness = run_rules_harness().await;
+    let event_id = Uuid::from_u128(0xe000_1205);
+    let tenant_id = Uuid::from_u128(0x7e7a_1204);
+
+    let resp = harness
+        .api_v1()
+        .post_events()
+        .with_body(Json(&json!({
+            "id": event_id,
+            "type": "gts.cf.core.events.event.v1~x.eb.t1.foo.v1~",
+            "tenant_id": tenant_id,
+            "source": "order-service",
+            "subject": "order-42",
+            "subject_type": "gts.x.eb.t1.subject.v1~",
+            "occurred_at": "2026-05-29T10:10:00Z",
+            "trace_parent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+            "data": { "order_id": "order-42" },
+        })))
+        .send()
+        .await;
+
+    resp.assert_status(202);
+    assert_eq!(resp.text(), "", "202 Accepted carries no body");
+    assert_eq!(
+        stored_ids_through(
+            &harness,
+            "gts.cf.core.events.topic.v1~x.eb.t1.topic.v1",
+            event_id
+        )
+        .await,
+        vec![event_id]
+    );
+    let stored = harness
+        .backend()
+        .read(
+            &event_broker_sdk::backend::TopicPartition::new(
+                event_broker_sdk::GtsInstanceId::try_new(
+                    "gts.cf.core.events.topic.v1~x.eb.t1.topic.v1",
+                )
+                .expect("a valid topic id"),
+                event_broker_sdk::backend::Partition::new(0),
+            ),
+            event_broker_sdk::Sequence::NONE,
+            10,
+            event_broker_sdk::backend::Wait::No,
+        )
+        .await
+        .expect("read the stored events");
+    let [event] = stored.as_slice() else {
+        panic!("expected exactly one stored event, got {stored:?}");
+    };
+    // The SDK `Event` has no `PartialEq`, so the publisher-set fields compare
+    // one by one; the broker stamps the rest.
+    assert_eq!(
+        (
+            event.id,
+            event.type_id.as_ref(),
+            event.tenant_id,
+            event.source.as_str(),
+            event.subject.as_str(),
+            event.subject_type.as_ref(),
+            event.occurred_at.to_rfc3339(),
+            event.trace_parent.as_deref(),
+            &event.data,
+        ),
+        (
+            event_id,
+            "gts.cf.core.events.event.v1~x.eb.t1.foo.v1~",
+            tenant_id,
+            "order-service",
+            "order-42",
+            "gts.x.eb.t1.subject.v1~",
+            "2026-05-29T10:10:00+00:00".to_owned(),
+            Some("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"),
+            &Some(json!({ "order_id": "order-42" })),
+        )
+    );
+}
+
 /// The other side of the same contract: the identifier every committed scenario
 /// writes - a derived event type, trailing `~` and all - is accepted.
 #[tokio::test]
@@ -3954,4 +4441,379 @@ async fn tenant_scoped_produce_denial_has_no_persistence_side_effects() {
         .await
         .unwrap();
     assert!(events.is_empty(), "denial must not persist an event");
+}
+
+/// Two types on one topic: `foo` partitions on the tenant, `keyed` on `/data/k`.
+/// One ingest outbox partition, so a sentinel published last drains behind every
+/// event written before it.
+async fn size_harness() -> EventBrokerHarness {
+    EventBrokerHarness::builder()
+        .with_outbox_partitions(
+            crate::domain::outbox::OutboxPartitions::new(1).expect("a power of 2 within 64"),
+        )
+        .with_type_registry(StaticTypesRegistry::of(json!([
+            { "id": "gts.cf.core.events.topic.v1~x.eb.t1.topic.v1", "partitions": 1 },
+            {
+                "id": "gts.cf.core.events.event.v1~x.eb.t1.foo.v1~",
+                "topic": "gts.cf.core.events.topic.v1~x.eb.t1.topic.v1",
+                "allowed_subject_types": ["gts.x.eb.t1.subject.v1~"],
+            },
+            {
+                "id": "gts.cf.core.events.event.v1~x.eb.t1.keyed.v1~",
+                "topic": "gts.cf.core.events.topic.v1~x.eb.t1.topic.v1",
+                "data_schema": {
+                    "type": "object",
+                    "properties": { "k": { "type": "string" } },
+                },
+                "allowed_subject_types": ["gts.x.eb.t1.subject.v1~"],
+                "partition_key": "/data/k",
+            },
+        ])))
+        .build()
+        .await
+}
+
+/// A `foo` event whose `data.pad` is sized so the event encodes to exactly `bytes`.
+fn foo_event_of(id: u128, bytes: usize) -> serde_json::Value {
+    let mut body = json!({
+        "id": Uuid::from_u128(id),
+        "type": "gts.cf.core.events.event.v1~x.eb.t1.foo.v1~",
+        "tenant_id": Uuid::from_u128(0x7e7a_2001),
+        "source": "order-service",
+        "subject": "order-1",
+        "subject_type": "gts.x.eb.t1.subject.v1~",
+        "occurred_at": "2026-11-09T10:00:00Z",
+        "data": { "pad": "" },
+    });
+    let event: event_broker_sdk::EventV1 =
+        serde_json::from_value(body.clone()).expect("the SDK reads the body");
+    let unpadded = event.encoded_len().expect("the event measures");
+    body["data"]["pad"] = json!("x".repeat(bytes - unpadded));
+    body
+}
+
+/// A `keyed` event whose partition key is `key`.
+fn keyed_event(id: u128, key: &str) -> serde_json::Value {
+    json!({
+        "id": Uuid::from_u128(id),
+        "type": "gts.cf.core.events.event.v1~x.eb.t1.keyed.v1~",
+        "tenant_id": Uuid::from_u128(0x7e7a_2001),
+        "source": "order-service",
+        "subject": "order-1",
+        "subject_type": "gts.x.eb.t1.subject.v1~",
+        "occurred_at": "2026-11-09T10:00:00Z",
+        "data": { "k": key },
+    })
+}
+
+/// How many events the topic holds, written or drained: an accepted event's body
+/// stays in the outbox until the event is on the backend, so a count of 0 means
+/// nothing was written. An event between its append and its body's removal counts
+/// twice, so a positive count is read through a sentinel instead.
+async fn written_events(harness: &EventBrokerHarness) -> usize {
+    use event_broker_sdk::backend::{Partition, TopicPartition, Wait};
+
+    let at = TopicPartition::new(
+        toolkit_gts::GtsInstanceId::try_new("gts.cf.core.events.topic.v1~x.eb.t1.topic.v1")
+            .expect("a valid topic id"),
+        Partition::new(0),
+    );
+    let bodies = usize::try_from(harness.outbox_bodies().await).expect("a count");
+    let stored = harness
+        .backend()
+        .read(&at, crate::domain::model::Sequence::NONE, 1024, Wait::No)
+        .await
+        .expect("read the stored events")
+        .len();
+    bodies + stored
+}
+
+#[tokio::test]
+async fn an_event_at_the_size_limit_is_accepted_and_one_byte_over_answers_413() {
+    let harness = size_harness().await;
+
+    let at_limit = harness
+        .api_v1()
+        .post_events()
+        .with_body(Json(&foo_event_of(0xe000_2001, 61_440)))
+        .send()
+        .await;
+    let over = harness
+        .api_v1()
+        .post_events()
+        .with_body(Json(&foo_event_of(0xe000_2002, 61_441)))
+        .send()
+        .await;
+
+    at_limit.assert_status(202);
+    over.assert_status(413);
+    assert_eq!(
+        over.json(),
+        json!({
+            "type": "gts://gts.cf.core.errors.err.v1~cf.core.err.invalid_argument.v1~",
+            "title": "Invalid Argument",
+            "status": 413,
+            "detail": "Request validation failed",
+            "instance": "/event-broker/v1/events",
+            "context": {
+                "field_violations": [{
+                    "field": "events[0]",
+                    "description": "61441 bytes encoded, over the limit of 61440",
+                    "reason": "event_too_large",
+                }],
+                "resource_type": "gts.cf.core.events.request.v1~",
+            },
+        })
+    );
+    let sentinel = publish_sentinel(
+        &harness,
+        Uuid::from_u128(0x5e7_2001),
+        Uuid::from_u128(0x7e7a_2001),
+    )
+    .await;
+    assert_eq!(
+        stored_ids_through(
+            &harness,
+            "gts.cf.core.events.topic.v1~x.eb.t1.topic.v1",
+            sentinel
+        )
+        .await,
+        vec![Uuid::from_u128(0xe000_2001), sentinel],
+        "only the event at the limit, then the sentinel"
+    );
+}
+
+#[tokio::test]
+async fn a_batch_with_an_event_over_the_size_limit_answers_413_naming_it_and_writes_nothing() {
+    let harness = size_harness().await;
+
+    let resp = harness
+        .api_v1()
+        .post_events_batch()
+        .with_body(Json(&json!({
+            "events": [
+                foo_event_of(0xe000_2011, 61_440),
+                foo_event_of(0xe000_2012, 61_441),
+            ],
+        })))
+        .send()
+        .await;
+
+    resp.assert_status(413);
+    assert_eq!(
+        resp.json(),
+        json!({
+            "type": "gts://gts.cf.core.errors.err.v1~cf.core.err.invalid_argument.v1~",
+            "title": "Invalid Argument",
+            "status": 413,
+            "detail": "Request validation failed",
+            "instance": "/event-broker/v1/events:batch",
+            "context": {
+                "field_violations": [{
+                    "field": "events[1]",
+                    "description": "61441 bytes encoded, over the limit of 61440",
+                    "reason": "event_too_large",
+                }],
+                "resource_type": "gts.cf.core.events.request.v1~",
+            },
+        })
+    );
+    assert_eq!(written_events(&harness).await, 0);
+}
+
+#[tokio::test]
+async fn a_partition_key_at_its_cap_is_accepted_and_one_byte_over_answers_400() {
+    let harness = size_harness().await;
+
+    let at_cap = harness
+        .api_v1()
+        .post_events()
+        .with_body(Json(&keyed_event(0xe000_2021, &"k".repeat(1024))))
+        .send()
+        .await;
+    // Each quote is escaped, so 513 of them are 1026 bytes as the row stores them.
+    let over = harness
+        .api_v1()
+        .post_events()
+        .with_body(Json(&keyed_event(0xe000_2022, &"\"".repeat(513))))
+        .send()
+        .await;
+
+    at_cap.assert_status(202);
+    over.assert_status(400);
+    assert_eq!(
+        over.json(),
+        json!({
+            "type": "gts://gts.cf.core.errors.err.v1~cf.core.err.invalid_argument.v1~",
+            "title": "Invalid Argument",
+            "status": 400,
+            "detail": "Request validation failed",
+            "instance": "/event-broker/v1/events",
+            "context": {
+                "field_violations": [{
+                    "field": "events[0].partition_key",
+                    "description": "1026 bytes, over the limit of 1024",
+                    "reason": "partition_key_too_long",
+                }],
+                "resource_type": "gts.cf.core.events.request.v1~",
+            },
+        })
+    );
+    let sentinel = publish_sentinel(
+        &harness,
+        Uuid::from_u128(0x5e7_2021),
+        Uuid::from_u128(0x7e7a_2001),
+    )
+    .await;
+    assert_eq!(
+        stored_ids_through(
+            &harness,
+            "gts.cf.core.events.topic.v1~x.eb.t1.topic.v1",
+            sentinel
+        )
+        .await,
+        vec![Uuid::from_u128(0xe000_2021), sentinel],
+        "only the event at the cap, then the sentinel"
+    );
+}
+
+#[tokio::test]
+async fn a_batch_with_a_partition_key_over_its_cap_answers_400_naming_it_and_writes_nothing() {
+    let harness = size_harness().await;
+
+    let resp = harness
+        .api_v1()
+        .post_events_batch()
+        .with_body(Json(&json!({
+            "events": [
+                keyed_event(0xe000_2031, "order-1"),
+                keyed_event(0xe000_2032, &"k".repeat(1025)),
+            ],
+        })))
+        .send()
+        .await;
+
+    resp.assert_status(400);
+    assert_eq!(
+        resp.json(),
+        json!({
+            "type": "gts://gts.cf.core.errors.err.v1~cf.core.err.invalid_argument.v1~",
+            "title": "Invalid Argument",
+            "status": 400,
+            "detail": "Request validation failed",
+            "instance": "/event-broker/v1/events:batch",
+            "context": {
+                "field_violations": [{
+                    "field": "events[1].partition_key",
+                    "description": "1025 bytes, over the limit of 1024",
+                    "reason": "partition_key_too_long",
+                }],
+                "resource_type": "gts.cf.core.events.request.v1~",
+            },
+        })
+    );
+    assert_eq!(written_events(&harness).await, 0);
+}
+
+/// `Prefer: wait` takes the synchronous path, which holds an event to the same per-event
+/// limit and partition-key cap as the default path, single and batch: each refusal is
+/// answered before anything is written.
+#[tokio::test]
+async fn a_synchronous_publish_over_a_size_limit_is_refused_and_writes_nothing() {
+    let harness = size_harness().await;
+    let prefer = || {
+        (
+            axum::http::header::HeaderName::from_static("prefer"),
+            axum::http::HeaderValue::from_static("wait=5"),
+        )
+    };
+
+    let (name, value) = prefer();
+    let single = harness
+        .api_v1()
+        .post_events()
+        .with_header(name, value)
+        .with_body(Json(&foo_event_of(0xe000_2041, 61_441)))
+        .send()
+        .await;
+    let (name, value) = prefer();
+    let batch = harness
+        .api_v1()
+        .post_events_batch()
+        .with_header(name, value)
+        .with_body(Json(&json!({
+            "events": [
+                foo_event_of(0xe000_2042, 61_440),
+                foo_event_of(0xe000_2043, 61_441),
+            ],
+        })))
+        .send()
+        .await;
+    let (name, value) = prefer();
+    let keyed = harness
+        .api_v1()
+        .post_events()
+        .with_header(name, value)
+        .with_body(Json(&keyed_event(0xe000_2044, &"k".repeat(1025))))
+        .send()
+        .await;
+
+    single.assert_status(413);
+    assert_eq!(
+        single.json(),
+        json!({
+            "type": "gts://gts.cf.core.errors.err.v1~cf.core.err.invalid_argument.v1~",
+            "title": "Invalid Argument",
+            "status": 413,
+            "detail": "Request validation failed",
+            "instance": "/event-broker/v1/events",
+            "context": {
+                "field_violations": [{
+                    "field": "events[0]",
+                    "description": "61441 bytes encoded, over the limit of 61440",
+                    "reason": "event_too_large",
+                }],
+                "resource_type": "gts.cf.core.events.request.v1~",
+            },
+        })
+    );
+    batch.assert_status(413);
+    assert_eq!(
+        batch.json(),
+        json!({
+            "type": "gts://gts.cf.core.errors.err.v1~cf.core.err.invalid_argument.v1~",
+            "title": "Invalid Argument",
+            "status": 413,
+            "detail": "Request validation failed",
+            "instance": "/event-broker/v1/events:batch",
+            "context": {
+                "field_violations": [{
+                    "field": "events[1]",
+                    "description": "61441 bytes encoded, over the limit of 61440",
+                    "reason": "event_too_large",
+                }],
+                "resource_type": "gts.cf.core.events.request.v1~",
+            },
+        })
+    );
+    keyed.assert_status(400);
+    assert_eq!(
+        keyed.json(),
+        json!({
+            "type": "gts://gts.cf.core.errors.err.v1~cf.core.err.invalid_argument.v1~",
+            "title": "Invalid Argument",
+            "status": 400,
+            "detail": "Request validation failed",
+            "instance": "/event-broker/v1/events",
+            "context": {
+                "field_violations": [{
+                    "field": "events[0].partition_key",
+                    "description": "1025 bytes, over the limit of 1024",
+                    "reason": "partition_key_too_long",
+                }],
+                "resource_type": "gts.cf.core.events.request.v1~",
+            },
+        })
+    );
+    assert_eq!(written_events(&harness).await, 0);
 }

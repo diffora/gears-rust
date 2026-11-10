@@ -404,9 +404,9 @@ async fn producer_chain_sequence_resubmission_is_deduped_not_double_persisted() 
         &body,
     )
     .await;
-    // Body in the message: `StorageUnavailable` has several sources that all
-    // render as 503 (the ingest pipeline not yet wired, a scope error, a DB
-    // failure), and a bare status tells a future reader which one it was.
+    // Body in the message: a failure shows the whole Problem. A 503 carries
+    // the generic detail whatever its source (the ingest pipeline not yet
+    // wired, a scope error, a DB failure); the server log names which.
     let first_status = first.status();
     let first_text = first.text().await.expect("first body");
     assert_eq!(first_status, 202, "body: {first_text}");

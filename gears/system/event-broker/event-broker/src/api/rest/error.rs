@@ -134,6 +134,31 @@ fn conflict(code: ErrorCode, message: String, resource: String) -> CanonicalErro
     }
 }
 
+/// An error and every `source()` below it, joined as `outer: inner: ..`, for
+/// a server-side log line (the fields' own formatter may print only the
+/// outermost `Display`). A source whose text ends the text of the link above it
+/// is skipped: sea-orm's and sqlx's database errors print their cause as
+/// `"<prefix>: {0}"`.
+struct SourceChain<'a>(&'a (dyn std::error::Error + 'static));
+
+impl std::fmt::Display for SourceChain<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut printed = self.0.to_string();
+        let mut above = printed.clone();
+        let mut source = self.0.source();
+        while let Some(err) = source {
+            let text = err.to_string();
+            if !above.ends_with(&text) {
+                printed.push_str(": ");
+                printed.push_str(&text);
+            }
+            above = text;
+            source = err.source();
+        }
+        f.write_str(&printed)
+    }
+}
+
 impl From<DomainError> for CanonicalError {
     fn from(err: DomainError) -> Self {
         match err {
@@ -255,11 +280,13 @@ impl From<DomainError> for CanonicalError {
                 )
                 .create(),
 
+            // The fields and the reason are the ones the SDK reads its `BatchTooLarge`
+            // back by.
             DomainError::BatchTooLarge { count, max } => {
                 let message = format!("batch too large: {count} events (max {max})");
                 // `docs/openapi.yaml` documents this as a literal `413`.
                 EventBrokerResourceError::invalid_argument()
-                    .with_format(message)
+                    .with_field_violation("batch.count", message, reasons::BATCH_TOO_LARGE)
                     .with_override(Http::status_code(413))
                     .create()
             }
@@ -268,8 +295,32 @@ impl From<DomainError> for CanonicalError {
                 let message = format!("batch payload too large: {bytes} bytes (max {max})");
                 // `docs/openapi.yaml` documents this as a literal `413`.
                 EventBrokerResourceError::invalid_argument()
-                    .with_format(message)
+                    .with_field_violation("batch.bytes", message, reasons::BATCH_TOO_LARGE)
                     .with_override(Http::status_code(413))
+                    .create()
+            }
+
+            // The description ends with the size and the limit, which the SDK reads
+            // back; it carries nothing of the event.
+            DomainError::EventTooLarge { index, bytes, max } => {
+                // `docs/openapi.yaml` documents this as a literal `413`.
+                EventBrokerResourceError::invalid_argument()
+                    .with_field_violation(
+                        format!("events[{index}]"),
+                        format!("{bytes} bytes encoded, over the limit of {max}"),
+                        reasons::EVENT_TOO_LARGE,
+                    )
+                    .with_override(Http::status_code(413))
+                    .create()
+            }
+
+            DomainError::PartitionKeyTooLong { index, bytes, max } => {
+                EventBrokerResourceError::invalid_argument()
+                    .with_field_violation(
+                        format!("events[{index}].partition_key"),
+                        format!("{bytes} bytes, over the limit of {max}"),
+                        reasons::PARTITION_KEY_TOO_LONG,
+                    )
                     .create()
             }
 
@@ -282,17 +333,32 @@ impl From<DomainError> for CanonicalError {
                 .with_quota_violation_retry_after_seconds(u64::from(retry_after_secs))
                 .create(),
 
-            DomainError::StorageUnavailable { reason, .. } => CanonicalError::service_unavailable()
-                .with_detail(reason)
-                .create(),
+            // A 5xx body names no cause: the backend kind, a topic id or a
+            // driver message is for the operator. It is logged here, which the
+            // REST and the in-process `LocalBroker` paths both pass, and the
+            // wire carries the category's generic detail.
+            fault @ DomainError::StorageUnavailable { .. } => {
+                tracing::warn!(
+                    error = %SourceChain(&fault),
+                    "answering 503 with the generic body"
+                );
+                CanonicalError::service_unavailable().create()
+            }
 
-            DomainError::Internal(detail) => CanonicalError::internal(detail).create(),
+            DomainError::Internal(detail) => {
+                tracing::error!(error = %detail, "answering 500 with the generic body");
+                CanonicalError::internal(detail).create()
+            }
             DomainError::Unimplemented(detail) => {
                 ConsumerGroupResourceError::unimplemented(detail).create()
             }
         }
     }
 }
+
+#[cfg(test)]
+#[path = "error_tests.rs"]
+mod error_tests;
 
 /// Round-trip guard for the six `#[resource_error(gts_id!(...))]` literals
 /// above against `event-broker-sdk::gts`'s constants - the proc-macro cannot

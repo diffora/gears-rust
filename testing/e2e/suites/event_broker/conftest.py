@@ -25,6 +25,7 @@ import asyncio
 import json
 import os
 import tempfile
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -33,7 +34,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from lib.orchestrator import GearTestEnv
+from lib.orchestrator import GearTestEnv, _log_path
 from lib.sidecars import KafkaSidecar, MariaDbSidecar, MySqlSidecar, PostgresSidecar
 
 # ── Constants ─────────────────────────────────────────────────────────────
@@ -152,6 +153,12 @@ EVENT_TYPE_PROGRESS = "gts.cf.core.events.event.v1~cf.e2e.event_broker.progress.
 PROGRESS_DRIFT_THRESHOLD = 500
 PROGRESS_MIN_INTERVAL_S = 1
 
+# Keyed topic: its event type partitions on `/data/k`, a member a publisher sets,
+# so a test can send a partition key over the broker's 1024-byte cap.
+TOPIC_KEYED = "gts.cf.core.events.topic.v1~cf.e2e.event_broker.keyed.v1"
+EVENT_TYPE_KEYED = "gts.cf.core.events.event.v1~cf.e2e.event_broker.keyed.v1~"
+KEYED_POINTER = "/data/k"
+
 # Shared xfail marker for tests that require real auth enforcement.
 # The standalone config sets ``auth_disabled: true``; these tests document the
 # expected behaviour and will pass once a multi-tenant config is wired.
@@ -181,6 +188,7 @@ _TOPIC_PARTITIONS = {
     TOPIC_SLOW_PUBLISH: 1,
     TOPIC_BYTES: 1,
     TOPIC_PROGRESS: 1,
+    TOPIC_KEYED: 1,
 }
 
 # Topics bounded tighter than the default retention: their `retention` block.
@@ -202,6 +210,20 @@ def group_seek_positions(entries) -> dict:
             {"partition": e["partition"], "value": e["value"]}
         )
     return out
+
+
+def _await_log_line(env: GearTestEnv, text: str, offset: int = 0) -> None:
+    """Waits for `text` in the server log written after byte `offset`: a 503
+    body names no cause, so the log line is what tells which one fired."""
+    deadline = time.monotonic() + 10
+    while True:
+        with open(_log_path(env), encoding="utf-8", errors="replace") as fh:
+            fh.seek(offset)
+            log = fh.read()
+        if text in log:
+            return
+        assert time.monotonic() < deadline, f"{text!r} not in the server log: {log[-2000:]}"
+        time.sleep(0.2)
 
 
 def _topic_instance(topic_id: str) -> dict:
@@ -230,6 +252,36 @@ def _derived_event_type(type_id: str, topic_id: str) -> dict:
         "allOf": [
             {"$ref": "gts://gts.cf.core.events.event.v1~"},
             {"type": "object", "properties": {"data": {"type": ["object", "null"]}}},
+        ],
+    }
+
+
+def _keyed_event_type(type_id: str, topic_id: str) -> dict:
+    """An event type partitioned on ``data.k`` (``KEYED_POINTER``).
+
+    Registration admits a pointer only to a member the schema declares, so its
+    ``data`` declares ``k`` as a string; that is narrower than the base.
+    """
+    return {
+        "$id": f"gts://{type_id}",
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "x-gts-traits": {
+            "topic": topic_id,
+            "allowed_subject_types": [SUBJECT_TYPE],
+            "partition_key": KEYED_POINTER,
+        },
+        "type": "object",
+        "allOf": [
+            {"$ref": "gts://gts.cf.core.events.event.v1~"},
+            {
+                "type": "object",
+                "properties": {
+                    "data": {
+                        "type": ["object", "null"],
+                        "properties": {"k": {"type": "string"}},
+                    }
+                },
+            },
         ],
     }
 
@@ -291,6 +343,8 @@ _EXTRA_ENTITIES = [
     _derived_event_type(EVENT_TYPE_BYTES, TOPIC_BYTES),
     _topic_instance(TOPIC_PROGRESS),
     _derived_event_type(EVENT_TYPE_PROGRESS, TOPIC_PROGRESS),
+    _topic_instance(TOPIC_KEYED),
+    _keyed_event_type(EVENT_TYPE_KEYED, TOPIC_KEYED),
 ]
 
 _TEMP_HOME = tempfile.mkdtemp(prefix="cf-gears-e2e-event-broker-")
@@ -575,6 +629,7 @@ _TOPIC_EVENT_TYPES = {
     TOPIC_SLOW_PUBLISH: EVENT_TYPE_SLOW_PUBLISH,
     TOPIC_BYTES: EVENT_TYPE_BYTES,
     TOPIC_PROGRESS: EVENT_TYPE_PROGRESS,
+    TOPIC_KEYED: EVENT_TYPE_KEYED,
 }
 
 

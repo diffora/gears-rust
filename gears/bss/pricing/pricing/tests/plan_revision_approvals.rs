@@ -6,6 +6,7 @@
 //! `published_rev`; descriptors and reference columns are never fingerprinted content (D-408).
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 mod plan_support;
+use bss_pricing::infra::events::PLAN_SUBJECT_TYPE;
 use bss_pricing::infra::storage::repo::{
     approval_repo, plan_item_repo, price_book_entry_repo, price_repo,
 };
@@ -252,6 +253,7 @@ async fn a_green_revision_submits_under_its_key_and_quorum_zero_publishes_it_at_
     assert_eq!((s, &replay), (201, &receipt), "the key replays its answer");
     let published = outbox_events(&f.dsn, PUBLISHED).await;
     assert_eq!(published.len(), 1, "{published:?}");
+    assert_eq!(published[0]["subject_type"], PLAN_SUBJECT_TYPE);
     let data = &published[0]["data"];
     assert_eq!(data["tenantId"], f.ctx.subject_tenant_id().to_string());
     assert_eq!(data["planId"], g.plan.to_string());
@@ -809,15 +811,13 @@ async fn descriptors_and_reference_columns_never_refresh_a_pending_unit() {
 
 #[test]
 fn plan_revision_published_is_a_typed_event_about_the_plan() {
-    use bss_pricing::infra::events::{PLAN_SUBJECT_TYPE, PlanRevisionPublished};
-    use event_broker_sdk::TypedEvent;
+    use bss_pricing::infra::events::{
+        BrokerEvent, PLAN_SUBJECT_TYPE, PlanRevisionPublished, SOURCE,
+    };
+    use toolkit_gts::GtsSchema;
     assert_eq!(PlanRevisionPublished::TYPE_ID, PUBLISHED);
-    assert_eq!(
-        PLAN_SUBJECT_TYPE,
-        "gts.cf.core.events.subject.v1~cf.bss.pricing.plan.v1~"
-    );
-    assert_eq!(PlanRevisionPublished::SUBJECT_TYPE, PLAN_SUBJECT_TYPE);
-    assert_eq!(PlanRevisionPublished::SOURCE, "bss-pricing");
+    assert_eq!(PLAN_SUBJECT_TYPE, "gts.cf.bss.pricing.plan.v1~");
+    assert_eq!(SOURCE, "bss-pricing");
     let plan = Uuid::new_v4();
     let event = PlanRevisionPublished {
         tenant_id: Uuid::new_v4(),

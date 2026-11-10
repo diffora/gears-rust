@@ -35,7 +35,9 @@ use uuid::Uuid;
 use crate::domain::model::{ConsumerGroup, ConsumerGroupKind};
 use crate::domain::repo::{ConsumerGroupRepo, CursorRepo};
 use crate::domain::streaming::lease::StreamLeases;
-use crate::test_support::{DenyingAuthZ, EventBrokerHarness, Json, StaticTypesRegistry};
+use crate::test_support::{
+    DenyingAuthZ, EventBrokerHarness, Json, StaticTypesRegistry, mapping_lines,
+};
 
 // -- JOIN validation matrix --
 
@@ -433,6 +435,7 @@ async fn join_unregistered_topic_returns_404() {
 /// A topic lookup that cannot be read is not an unregistered topic: the JOIN
 /// is answered `503`, retryable, and leaves no subscription behind.
 #[tokio::test]
+#[tracing_test::traced_test]
 async fn a_join_during_a_spec_cache_fault_answers_503() {
     const TENANT: Uuid = Uuid::from_u128(0x7e7a_0503);
     let harness = EventBrokerHarness::builder()
@@ -469,10 +472,24 @@ async fn a_join_during_a_spec_cache_fault_answers_503() {
             "type": "gts://gts.cf.core.errors.err.v1~cf.core.err.service_unavailable.v1~",
             "title": "Service Unavailable",
             "status": 503,
-            "detail": "database scope resolution failed",
+            "detail": "Service temporarily unavailable",
             "instance": "/event-broker/v1/subscriptions",
             "context": {},
         })
+    );
+    let logged = std::cell::RefCell::new(Vec::new());
+    logs_assert(|lines| {
+        *logged.borrow_mut() = mapping_lines(lines);
+        Ok(())
+    });
+    assert_eq!(
+        logged.into_inner(),
+        vec![
+            "WARN answering 503 with the generic body error=storage backend unavailable: \
+             database scope resolution failed: database error: Query Error: error returned \
+             from database: (code: 1) no such table: event_broker_spec_cache"
+                .to_owned()
+        ]
     );
     let listed = harness.api_v1().get_subscriptions().send().await;
     listed.assert_status(200);

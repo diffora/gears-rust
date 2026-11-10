@@ -35,8 +35,9 @@ impl DeliveryRouter {
 /// `.layer(Extension(...))` in `module.rs`.
 ///
 /// # Errors
-/// Returns `CanonicalError::ServiceUnavailable` when no delivery instance is
-/// registered, or when the resolved instance is unreachable (design.md D10).
+/// Returns `CanonicalError::ServiceUnavailable`, with the generic body, when no
+/// delivery instance is registered or the resolved instance is unreachable;
+/// which one is in the `warn` line `forward` logs.
 pub async fn handle(
     Extension(state): Extension<Arc<DispatcherState>>,
     req: Request,
