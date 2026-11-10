@@ -28,6 +28,7 @@ oagw = ["dep:api_egress"]
 oagw-embedded = ["oagw", "api_egress/cluster", "dep:cluster", "grpc-hub"]
 credstore = ["dep:credstore"]
 graph-storage = ["dep:graph-storage"]
+construct = ["dep:construct", "graph-storage"]
 settings-service = ["dep:settings_service", "credstore"]
 # Demo contributor: sample declarations registered through the SDK at init.
 # FIPS-140-3: use the AWS-LC FIPS-validated crypto module for all cryptographic operations
@@ -137,6 +138,9 @@ anyhow = { workspace = true }
 tokio = { workspace = true }
 clap = { workspace = true }
 serde_json = { workspace = true }
+
+# Optional construct gear
+construct = { package = "cf-gears-construct", path = "../../gears/construct/construct", optional = true }
 
 # Optional mini-chat gear
 mini-chat = { package = "cf-gears-mini-chat", path = "../../gears/mini-chat/mini-chat", optional = true }
