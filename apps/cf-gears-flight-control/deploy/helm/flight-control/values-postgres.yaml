@@ -1,0 +1,26 @@
+# Override file for an existing PostgreSQL server/database/user.
+# Create Secret flight-control-postgres with key password before installation.
+extraEnv:
+  - name: TYPES_REGISTRY_DB_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: flight-control-postgres
+        key: password
+
+config:
+  data:
+    database:
+      servers:
+        postgres:
+          engine: "postgres"
+          host: "postgres.default.svc.cluster.local"
+          port: 5432
+          user: "flight_control"
+          password: "${TYPES_REGISTRY_DB_PASSWORD}"
+    gears:
+      types-registry:
+        database:
+          server: "postgres"
+          dbname: "flight_control"
+          # Remove the SQLite-only field inherited from values.yaml.
+          file: null

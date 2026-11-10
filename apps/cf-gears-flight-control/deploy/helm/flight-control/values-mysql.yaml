@@ -1,0 +1,27 @@
+# Override file for an existing MySQL or MariaDB server/database/user.
+# Create Secret flight-control-mysql with key password before installation.
+# MariaDB uses the same engine and driver; set host to the MariaDB service.
+extraEnv:
+  - name: TYPES_REGISTRY_DB_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: flight-control-mysql
+        key: password
+
+config:
+  data:
+    database:
+      servers:
+        mysql:
+          engine: "mysql"
+          host: "mysql.default.svc.cluster.local"
+          port: 3306
+          user: "flight_control"
+          password: "${TYPES_REGISTRY_DB_PASSWORD}"
+    gears:
+      types-registry:
+        database:
+          server: "mysql"
+          dbname: "flight_control"
+          # Remove the SQLite-only field inherited from values.yaml.
+          file: null
