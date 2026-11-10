@@ -3052,29 +3052,10 @@ impl Service {
         name: &str,
         window: PageWindow,
     ) -> Result<(Page<Artifact>, u64), DomainError> {
-        let scope = self
-            .policy_enforcer
-            .access_scope_with(
-                ctx,
-                &ARTIFACT_RESOURCE,
-                actions::LIST,
-                None,
-                &AccessRequest::new()
-                    .resource_property(pep_properties::OWNER_TENANT_ID, ctx.subject_tenant_id()),
-            )
+        let (scope, repo_id) = self
+            .mirrored_repository(ctx, &ARTIFACT_RESOURCE, owner, name)
             .await?;
-
-        let full_name = repo_full_name(owner, name)?;
-        let repository = self
-            .repo
-            .find_by_full_name(&scope, &full_name)
-            .await?
-            .ok_or(DomainError::NotFound)?;
-
-        let (items, total) = self
-            .artifacts
-            .page_by_repo(&scope, repository.id, window)
-            .await?;
+        let (items, total) = self.artifacts.page_by_repo(&scope, repo_id, window).await?;
 
         Ok((
             Page::new(
