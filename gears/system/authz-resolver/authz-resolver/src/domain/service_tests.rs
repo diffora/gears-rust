@@ -252,10 +252,11 @@ async fn registry_failures_are_outages_only_when_retryable() {
 // what an infrastructure failure becomes — is observed where a gear sees it.
 
 mod pep {
+    use std::sync::Mutex;
+
     use authz_resolver_sdk::constraints::{Constraint, InPredicate, Predicate};
     use authz_resolver_sdk::models::{DenyReason, EvaluationResponseContext};
     use authz_resolver_sdk::pep::{AccessRequest, EnforcerError, PolicyEnforcer, ResourceType};
-    use parking_lot::Mutex;
     use toolkit_security::{SecurityContext, pep_properties};
     use uuid::Uuid;
 
@@ -283,7 +284,7 @@ mod pep {
             &self,
             request: EvaluationRequest,
         ) -> Result<EvaluationResponse, AuthZResolverError> {
-            *self.seen.lock() = Some(request);
+            *self.seen.lock().expect("request lock poisoned") = Some(request);
             Ok(self.response.clone())
         }
     }
@@ -348,7 +349,12 @@ mod pep {
         }
 
         // The plugin was asked the PEP's own request, unchanged by the resolver.
-        let seen = plugin.seen.lock().clone().expect("plugin evaluated");
+        let seen = plugin
+            .seen
+            .lock()
+            .expect("request lock poisoned")
+            .clone()
+            .expect("plugin evaluated");
         assert_eq!(seen.subject.id, SUBJECT);
         assert_eq!(seen.action.name, "get");
         assert_eq!(seen.resource.id, Some(ROW));

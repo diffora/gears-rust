@@ -1882,7 +1882,6 @@ dependencies = [
  "cf-gears-toolkit-security",
  "cf-gears-types-registry-sdk",
  "inventory",
- "parking_lot",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
