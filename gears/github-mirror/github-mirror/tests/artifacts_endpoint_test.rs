@@ -36,7 +36,13 @@ fn repo_record() -> RepoRecord {
     }
 }
 
-fn artifact_record(id: i64, name: &str, created_at: &str, run: Option<i64>) -> ArtifactRecord {
+fn artifact_record(
+    id: i64,
+    name: &str,
+    created_at: &str,
+    expires_at: &str,
+    run: Option<i64>,
+) -> ArtifactRecord {
     ArtifactRecord {
         id,
         repo_id: REPO_ID,
@@ -48,7 +54,7 @@ fn artifact_record(id: i64, name: &str, created_at: &str, run: Option<i64>) -> A
         head_sha: run.map(|_| "abc".to_owned()),
         created_at: Some(created_at.to_owned()),
         updated_at: Some(created_at.to_owned()),
-        expires_at: Some("2026-11-20T00:00:00Z".to_owned()),
+        expires_at: Some(expires_at.to_owned()),
     }
 }
 
@@ -84,8 +90,20 @@ async fn service_with_artifacts(ctx: &SecurityContext) -> Arc<ConcreteService> {
                 workflow_runs: Vec::new(),
                 deployments: Vec::new(),
                 artifacts: vec![
-                    artifact_record(1, "coverage", "2026-08-18T00:00:00Z", Some(81)),
-                    artifact_record(2, "binaries", "2026-08-20T00:00:00Z", None),
+                    artifact_record(
+                        1,
+                        "coverage",
+                        "2026-08-18T00:00:00Z",
+                        "2026-08-25T00:00:00Z",
+                        Some(81),
+                    ),
+                    artifact_record(
+                        2,
+                        "binaries",
+                        "2026-08-20T00:00:00Z",
+                        "2099-01-01T00:00:00Z",
+                        None,
+                    ),
                 ],
             },
         )
@@ -110,8 +128,10 @@ async fn artifacts_are_listed_newest_first_in_githubs_shape() {
     assert_eq!(json["total_count"], 2);
     let artifacts = json["artifacts"].as_array().expect("artifacts");
     assert_eq!(artifacts[0]["name"], "binaries");
+    assert_eq!(artifacts[0]["expired"], false);
     assert!(artifacts[0]["workflow_run"].is_null());
     assert_eq!(artifacts[1]["name"], "coverage");
+    assert_eq!(artifacts[1]["expired"], true);
     assert_eq!(artifacts[1]["size_in_bytes"], 1024);
     assert_eq!(artifacts[1]["workflow_run"]["id"], 81);
     assert_eq!(artifacts[1]["workflow_run"]["head_branch"], "main");

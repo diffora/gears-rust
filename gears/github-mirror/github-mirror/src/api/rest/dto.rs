@@ -925,13 +925,20 @@ pub struct ArtifactDto {
     pub workflow_run: Option<ArtifactWorkflowRunDto>,
 }
 
+fn artifact_expired(expired: bool, expires_at: Option<&str>) -> bool {
+    expired
+        || expires_at
+            .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+            .is_some_and(|at| at <= chrono::Utc::now())
+}
+
 impl From<Artifact> for ArtifactDto {
     fn from(a: Artifact) -> Self {
         Self {
             id: a.id,
             name: a.name,
             size_in_bytes: a.size_in_bytes,
-            expired: a.expired,
+            expired: artifact_expired(a.expired, a.expires_at.as_deref()),
             created_at: a.created_at,
             updated_at: a.updated_at,
             expires_at: a.expires_at,
