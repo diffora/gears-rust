@@ -68,7 +68,7 @@ use fred::types::Builder;
 use fred::types::config::Config;
 use redis_cluster_plugin::{RedisClusterConfig, RedisLockConfig};
 use serde_json::json;
-use testcontainers::core::ContainerPort;
+use testcontainers::core::{ContainerPort, Mount};
 use testcontainers::runners::AsyncRunner;
 use testcontainers::{ContainerAsync, ImageExt};
 use testcontainers_modules::redis::{REDIS_PORT, Redis};
@@ -290,7 +290,16 @@ pub async fn start(recipe: &RedisRecipe) -> (ContainerAsync<Redis>, String) {
         if let Some(tag) = recipe.tag {
             request = request.with_tag(tag);
         }
-        let request = request.with_cmd(recipe.command());
+        // `/data` (the image's working directory, where the AOF lives) on
+        // tmpfs: `appendfsync always` still fsyncs every write and the server
+        // still reports `always` to the durability preflight, but the fsync no
+        // longer waits on the runner's disk. On a loaded CI runner that wait
+        // reached hundreds of milliseconds per write and lapsed the 200 ms
+        // leases the lock conformance scenarios hold. No fixture restarts its
+        // container, so nothing relies on the AOF surviving one.
+        let request = request
+            .with_cmd(recipe.command())
+            .with_mount(Mount::tmpfs_mount("/data"));
         let container = match request.start().await {
             Ok(container) => container,
             Err(error) => {
