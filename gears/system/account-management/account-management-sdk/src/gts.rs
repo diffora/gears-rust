@@ -368,7 +368,6 @@ pub struct ConversionRequestV1 {
 // we want here.
 // `transparent` so the schema is just the inner string + the extension
 // (no wrapper title) and the value serialises as a bare string.
-#[allow(dead_code)]
 #[derive(serde::Serialize, JsonSchema)]
 #[serde(transparent)]
 #[schemars(transparent, extend("x-gts-type-ref" = gts_id!("cf.core.am.tenant_type.v1~")))]
@@ -377,13 +376,100 @@ pub struct TenantTypeRef(pub String);
 #[allow(clippy::doc_markdown)]
 #[derive(JsonSchema, serde::Serialize, GtsTraitsSchema)]
 #[serde(deny_unknown_fields)]
-pub struct TenantTypeTraits {
+pub struct TenantTypeTraitsV1 {
     /// GTS type identifiers of tenant types allowed as parent. Empty array means no parent tenant type is allowed, so a tenant of this type cannot be created under any parent; it does not restrict which types may list this type as their parent. The root tenant type has allowed_parent_types: [] by convention.
     #[serde(default)]
-    pub allowed_parent_types: Vec<TenantTypeRef>,
+    allowed_parent_types: Vec<TenantTypeRef>,
     /// Whether tenants of this type typically require dedicated IdP-side resources. Account Management still calls IdpPluginClient::provision_tenant and deprovision_tenant; provider implementations may use this trait to decide whether to create resources or complete as a no-op.
     #[serde(default)]
-    pub idp_provisioning: bool,
+    idp_provisioning: bool,
+}
+
+impl TenantTypeTraitsV1 {
+    /// Start a builder requiring explicit parent types and provisioning policy.
+    ///
+    /// Both setters may be called in either order. Empty parents and `false` are
+    /// valid explicit choices; schema defaults for JSON-authored declarations
+    /// remain unchanged. All trait values are serialized, including defaults.
+    ///
+    /// Incomplete policy declarations cannot be built:
+    ///
+    /// ```compile_fail
+    /// use account_management_sdk::gts::TenantTypeTraitsV1;
+    /// let _ = TenantTypeTraitsV1::builder().build();
+    /// ```
+    ///
+    /// ```compile_fail
+    /// use account_management_sdk::gts::TenantTypeTraitsV1;
+    /// let _ = TenantTypeTraitsV1::builder()
+    ///     .with_allowed_parent_types(Vec::<String>::new())
+    ///     .build();
+    /// ```
+    ///
+    /// ```compile_fail
+    /// use account_management_sdk::gts::TenantTypeTraitsV1;
+    /// let _ = TenantTypeTraitsV1::builder()
+    ///     .with_idp_provisioning(false)
+    ///     .build();
+    /// ```
+    #[must_use]
+    pub const fn builder() -> TenantTypeTraitsV1Builder {
+        TenantTypeTraitsV1Builder {
+            allowed_parent_types: (),
+            idp_provisioning: (),
+        }
+    }
+}
+
+/// Builds [`TenantTypeTraitsV1`] after both policy setters have been called.
+///
+/// Each type parameter holds its value or `()` while the choice is missing.
+pub struct TenantTypeTraitsV1Builder<P = (), I = ()> {
+    allowed_parent_types: P,
+    idp_provisioning: I,
+}
+
+impl<P, I> TenantTypeTraitsV1Builder<P, I> {
+    /// Set allowed parent type IDs (required); an empty list allows no parents.
+    ///
+    /// Values are preserved verbatim. Registry admission validates their GTS
+    /// identifiers and tenant-type ancestry.
+    #[must_use]
+    pub fn with_allowed_parent_types(
+        self,
+        types: impl IntoIterator<Item = impl Into<String>>,
+    ) -> TenantTypeTraitsV1Builder<Vec<TenantTypeRef>, I> {
+        TenantTypeTraitsV1Builder {
+            allowed_parent_types: types
+                .into_iter()
+                .map(|id| TenantTypeRef(id.into()))
+                .collect(),
+            idp_provisioning: self.idp_provisioning,
+        }
+    }
+
+    /// Set the provisioning policy explicitly, including when it is `false`.
+    #[must_use]
+    pub fn with_idp_provisioning(
+        self,
+        idp_provisioning: bool,
+    ) -> TenantTypeTraitsV1Builder<P, bool> {
+        TenantTypeTraitsV1Builder {
+            allowed_parent_types: self.allowed_parent_types,
+            idp_provisioning,
+        }
+    }
+}
+
+impl TenantTypeTraitsV1Builder<Vec<TenantTypeRef>, bool> {
+    /// Build the traits once both policy choices have been supplied.
+    #[must_use]
+    pub fn build(self) -> TenantTypeTraitsV1 {
+        TenantTypeTraitsV1 {
+            allowed_parent_types: self.allowed_parent_types,
+            idp_provisioning: self.idp_provisioning,
+        }
+    }
 }
 
 /// Base tenant-type envelope (abstract): closed root, open `payload` container
@@ -399,22 +485,25 @@ pub struct TenantTypeTraits {
     type_id = gts_id!("cf.core.am.tenant_type.v1~"),
     description = "Base tenant type schema for Account Management. Derived tenant type schemas resolve behavioral traits via x-gts-traits. Traits configure system behavior for processing tenants of each type - they are not part of the tenant instance data model.",
     properties = "id,payload",
-    traits_schema = inline(TenantTypeTraits),
+    traits_schema = inline(TenantTypeTraitsV1),
     // Inline-only `x-gts-traits` defaults (not in docs/schemas). gts's
     // OP#13 `validate_entity_traits` rejects an `x-gts-traits-schema` with
     // no values in the chain — even for abstract types — so the abstract
     // base MUST carry defaults or types-registry ready-commit fails and the
     // server cannot boot. Mirrors the trait-schema `default`s; guarded by
     // `sync_tests::tenant_type_envelope_trait_contract_matches_docs`.
-    traits = serde_json::json!({ "allowed_parent_types": [], "idp_provisioning": false }),
+    traits = TenantTypeTraitsV1::builder()
+        .with_allowed_parent_types(Vec::<String>::new())
+        .with_idp_provisioning(false)
+        .build(),
     gts_abstract = true
 )]
 #[schemars(extend("required" = ["payload"]))]
-pub struct TenantTypeEnvelopeV1<P> {
+pub struct TenantTypeV1<P> {
     /// Inert: present only to satisfy the gts-macros base-struct contract. Not required.
     pub id: gts::GtsInstanceId,
     /// The open container (§4.4.1). Generic like `BaseEventV1<P>` in
-    /// `gts-macros-cli`: a derived Rust struct declared `base = TenantTypeEnvelopeV1`
+    /// `gts-macros-cli`: a derived Rust struct declared `base = TenantTypeV1`
     /// is substituted here and the chain type-checks end to end. The emitted schema
     /// is `{"type": "object"}` whatever `P` is, so JSON-authored derived types
     /// compose against it too.
@@ -444,7 +533,7 @@ pub enum MetadataInheritancePolicy {
 
 // Behavioural traits for `gts.cf.core.am.tenant_metadata.v1~` — emitted
 // as the envelope's `x-gts-traits-schema` (plain `//`; see
-// `TenantTypeTraits`).
+// `TenantTypeTraitsV1`).
 #[allow(clippy::doc_markdown)]
 #[derive(JsonSchema, serde::Serialize, GtsTraitsSchema)]
 #[serde(deny_unknown_fields)]
@@ -455,7 +544,7 @@ pub struct TenantMetadataTraits {
 }
 
 /// Base tenant-metadata envelope (abstract): same shape as
-/// [`TenantTypeEnvelopeV1`], and unlike it this one has validated instances — a
+/// [`TenantTypeV1`], and unlike it this one has validated instances — a
 /// stored metadata value is checked against its derived schema.
 /// `MetadataSchemaRegistry::validate_value` composes the envelope around AM's
 /// stored payload, so the REST contract is unchanged.
@@ -466,7 +555,7 @@ pub struct TenantMetadataTraits {
     description = "Base tenant metadata schema for Account Management. Derived metadata schemas resolve behavioral traits via x-gts-traits. Traits configure how MetadataService treats entries of each schema - they are not part of the metadata payload.",
     properties = "id,payload",
     traits_schema = inline(TenantMetadataTraits),
-    // Inline-only `x-gts-traits` default — see `TenantTypeEnvelopeV1` for
+    // Inline-only `x-gts-traits` default — see `TenantTypeV1` for
     // the OP#13 rationale. Guarded by
     // `sync_tests::tenant_metadata_envelope_trait_contract_matches_docs`.
     traits = serde_json::json!({ "inheritance_policy": "override_only" }),
@@ -678,7 +767,7 @@ mod sync_tests {
     use gts::{GtsSchema, X_GTS_TYPE_REF};
     use serde_json::Value;
 
-    use super::{TenantMetadataEnvelopeV1, TenantTypeEnvelopeV1};
+    use super::{TenantMetadataEnvelopeV1, TenantTypeV1};
 
     fn read_disk_schema(file_name: &str) -> Value {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -755,15 +844,15 @@ mod sync_tests {
     fn tenant_type_envelope_trait_contract_matches_docs() {
         // `()` is the empty container: this asserts the *envelope's* contract, which
         // is the same whatever a derived type puts in the slot.
-        let generated = TenantTypeEnvelopeV1::<()>::gts_schema_with_refs();
+        let generated = TenantTypeV1::<()>::gts_schema_with_refs();
         let disk = read_disk_schema("tenant_type.v1.schema.json");
         assert_trait_contract(
             &generated,
             &disk,
-            TenantTypeEnvelopeV1::<()>::TYPE_ID,
+            TenantTypeV1::<()>::TYPE_ID,
             &serde_json::json!({ "allowed_parent_types": [], "idp_provisioning": false }),
         );
-        assert_data_shape(&generated, &disk, TenantTypeEnvelopeV1::<()>::TYPE_ID);
+        assert_data_shape(&generated, &disk, TenantTypeV1::<()>::TYPE_ID);
         // `type_id` and the `allowed_parent_types` `x-gts-type-ref` are separate
         // attribute literals (Rust attributes can't reference a const), so
         // guard that they agree: the ref must equal this envelope's TYPE_ID
@@ -773,7 +862,7 @@ mod sync_tests {
         ));
         assert_eq!(
             xref.and_then(Value::as_str),
-            Some(TenantTypeEnvelopeV1::<()>::TYPE_ID),
+            Some(TenantTypeV1::<()>::TYPE_ID),
             "allowed_parent_types x-gts-type-ref literal must match the envelope's type_id literal",
         );
     }
@@ -789,5 +878,43 @@ mod sync_tests {
             &serde_json::json!({ "inheritance_policy": "override_only" }),
         );
         assert_data_shape(&generated, &disk, TenantMetadataEnvelopeV1::<()>::TYPE_ID);
+    }
+}
+
+#[cfg(test)]
+mod tenant_type_traits_tests {
+    //! The builder requires explicit policy choices and preserves the wire contract.
+
+    use super::TenantTypeTraitsV1;
+
+    #[test]
+    fn explicit_root_policy_serializes_empty_parents_and_false() {
+        let traits = TenantTypeTraitsV1::builder()
+            .with_allowed_parent_types(Vec::<String>::new())
+            .with_idp_provisioning(false)
+            .build();
+        assert_eq!(
+            serde_json::to_value(traits).expect("traits"),
+            serde_json::json!({"allowed_parent_types": [], "idp_provisioning": false})
+        );
+    }
+
+    #[test]
+    fn both_setter_orders_preserve_parent_ids_and_provisioning_policy() {
+        let parent = "gts.cf.core.am.tenant_type.v1~example.core.am.parent.v1~";
+        let parents_first = TenantTypeTraitsV1::builder()
+            .with_allowed_parent_types([parent])
+            .with_idp_provisioning(true)
+            .build();
+        let provisioning_first = TenantTypeTraitsV1::builder()
+            .with_idp_provisioning(true)
+            .with_allowed_parent_types(vec![parent.to_owned()])
+            .build();
+        for traits in [parents_first, provisioning_first] {
+            assert_eq!(
+                serde_json::to_value(traits).expect("traits"),
+                serde_json::json!({"allowed_parent_types": [parent], "idp_provisioning": true})
+            );
+        }
     }
 }

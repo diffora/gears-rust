@@ -5,15 +5,17 @@
 //!
 //! Thin wrappers around the upstream `gts-macros` crate. Each wrapper
 //! delegates the full GTS construction / validation to its upstream
-//! counterpart and adds exactly one extra emission: an `inventory::submit!`
-//! block that registers the GTS Type Schema or Instance into the process-wide
-//! `toolkit-gts` collectors. Every other concern — id validation, prefix
+//! counterpart. Declaration macros additionally submit inventory entries to
+//! the process-wide `toolkit-gts` collectors; the schema-template macro only
+//! generates the schema. Every other concern — id validation, prefix
 //! const-asserts, `id`-field rewriting, `pub static` binding emission —
 //! belongs to upstream.
 //!
 //! - **`#[gts_type_schema(...)]`** — attribute macro applied to a struct.
 //!   Forwards all attrs verbatim to `gts_macros::struct_to_gts_schema` and
 //!   submits an `InventoryTypeSchema` entry (Type Schema record).
+//! - **`#[gts_type_schema_template(...)]`** — schema generation only, without
+//!   inventory registration or a crate collector requirement.
 //! - **`gts_instance! { ... }`** — typed Instance. Forwards verbatim to
 //!   `gts_macros::gts_instance!` and submits an `InventoryInstance`.
 //! - **`gts_instance_raw! { ... }`** — raw-JSON Instance. Forwards verbatim
@@ -241,6 +243,28 @@ pub fn gts_type_schema(attr: TokenStream, item: TokenStream) -> TokenStream {
         Ok(tokens) => tokens.into(),
         Err(e) => e.to_compile_error().into(),
     }
+}
+
+/// Generate a GTS schema template without registering any declaration.
+///
+/// Forwards all attributes and the struct to upstream `struct_to_gts_schema`.
+/// The generated `GtsSchema` implementation and schema accessors are the same
+/// as for [`gts_type_schema`], but no inventory entry or declaration provenance
+/// is emitted and no crate collector is required. The type ID remains a
+/// compile-time literal; callers own any configured metadata and publication.
+#[proc_macro_attribute]
+pub fn gts_type_schema_template(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let crate_path = match resolve_crate_path() {
+        Ok(path) => path,
+        Err(error) => return error.to_compile_error().into(),
+    };
+    let attr: TokenStream2 = attr.into();
+    let item: TokenStream2 = item.into();
+    quote! {
+        #[#crate_path::__private::upstream_struct_to_gts_schema(#attr)]
+        #item
+    }
+    .into()
 }
 
 /// [`gts_type_schema`] that also submits into the declaring crate's collector.

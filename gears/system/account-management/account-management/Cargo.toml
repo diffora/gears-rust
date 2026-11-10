@@ -54,6 +54,8 @@ tenant-resolver = { workspace = true }
 # Both registry APIs are consumed: local, or resolving REST clients to a remote registry.
 types-registry-sdk = { workspace = true, features = ["rest-client"] }
 gts = { workspace = true }
+# Schema reflection for the configured root-type template.
+schemars = { workspace = true }
 
 uuid = { workspace = true, features = ["v4", "serde"] }
 time = { workspace = true }
