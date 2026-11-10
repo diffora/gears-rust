@@ -161,7 +161,7 @@ def pytest_collection_modifyitems(items):
 
     Session setup keeps its own bounds and its own diagnostics: READY_TIMEOUT
     (60s) and DOCKER_TIMEOUT (120s) in `lib/sidecars.py`, `health_timeout`
-    (15s) in the orchestrator. Those report *what* stalled; a pytest-timeout
+    (SERVER_STARTUP_TIMEOUT_SECS in `lib/budgets.py`) in the orchestrator. Those report *what* stalled; a pytest-timeout
     kill mid-setup only dumps stacks.
 
     An explicit @pytest.mark.timeout on a test wins — that is how the

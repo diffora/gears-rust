@@ -504,7 +504,6 @@ def gear_test_env() -> GearTestEnv:
         config_patch=_patch_config,
         port=SERVER_PORT,
         health_path="/readyz",
-        health_timeout=30,
         env={"RUST_LOG": os.environ.get("RUST_LOG", "info,event_broker=debug")},
         sidecars=backend_sidecars(),
         log_suffix="event-broker",

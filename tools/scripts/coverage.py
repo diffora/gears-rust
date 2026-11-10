@@ -21,6 +21,7 @@ import yaml
 
 # Import prereq gear for environment validation
 from lib.prereq import check_environment_ready
+from lib.e2e_budgets import SERVER_STARTUP_TIMEOUT_SECS
 from lib.platform import (
     e2e_env_overrides,
     find_binary,
@@ -146,7 +147,9 @@ def ensure_coverage_disk_space():
     sys.exit(1)
 
 
-def wait_for_health(base_url, timeout_secs=30, log_path: Optional[Path] = None):
+def wait_for_health(
+    base_url, timeout_secs=SERVER_STARTUP_TIMEOUT_SECS, log_path: Optional[Path] = None,
+):
     """Wait for the server to be healthy.
 
     Tries both /healthz and /health. On timeout, prints tail of server logs
@@ -941,7 +944,12 @@ def collect_e2e_local_coverage(
     try:
         # Wait for server to be ready (TCP first, then HTTP health)
         wait_for_tcp("127.0.0.1", desired_port, timeout_secs=30, log_path=log_file)
-        wait_for_health(base_url, timeout_secs=90, log_path=log_file)
+        # 90 s predates the shared budget; kept so this path does not get less time.
+        wait_for_health(
+            base_url,
+            timeout_secs=max(90, SERVER_STARTUP_TIMEOUT_SECS),
+            log_path=log_file,
+        )
 
         # Run e2e tests
         pytest_result = run_e2e_tests(base_url, test_filter)
@@ -1209,7 +1217,7 @@ def cmd_coverage_combined(args):
     try:
         # Wait for server to be ready
         wait_for_tcp("127.0.0.1", port, timeout_secs=30, log_path=log_file)
-        wait_for_health(base_url, timeout_secs=60, log_path=log_file)
+        wait_for_health(base_url, log_path=log_file)
 
         # Run E2E tests
         pytest_result = run_e2e_tests(base_url, e2e_target)

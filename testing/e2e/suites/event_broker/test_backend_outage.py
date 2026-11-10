@@ -117,7 +117,6 @@ async def test_a_server_started_with_its_backend_down_serves_once_it_is_up(test_
             config_patch=lambda text, _env: _patch(text, home_dir, [sidecar]),
             port=OUTAGE_PORT,
             health_path="/healthz",
-            health_timeout=60,
             log_suffix="event-broker-outage",
         )
         config_path = _prepare_config(env)
@@ -259,7 +258,6 @@ async def test_sync_publish_times_out_to_202_when_the_backend_is_down(test_env):
             config_patch=lambda text, _env: _patch(text, home_dir, [sidecar]),
             port=OUTAGE_PORT,
             health_path="/healthz",
-            health_timeout=60,
             log_suffix="event-broker-outage-sync",
         )
         config_path = _prepare_config(env)
