@@ -35,7 +35,7 @@
 //!   that does not exist yet — decision 21, and a platform-PRD question.
 //!
 //! **The cost, stated rather than buried**: the ADR-0004 static override
-//! (`gears.<owner>.config.consumer_wiring.<dep>`) therefore does not reach
+//! (`gears.<owner>.clients.consumes.<dep>`) therefore does not reach
 //! cluster, and §4.5 names that override as the current mechanism for a
 //! directory-less Kubernetes deployment. For cluster, DNS convention *is* that
 //! mechanism — which is the intended end state and needs no directory, so nothing
@@ -44,9 +44,9 @@
 //! there is no cluster-side endpoint key, in any form.
 //!
 //! **Only the *endpoint* half is inert, though — the key is still read, and it
-//! silently drops a readiness gate.** The phase's `consumer_wiring` read
+//! silently drops a readiness gate.** The phase's `clients.consumes` read
 //! (`host_runtime.rs`) does not consult `known_gears`, so a
-//! `gears.cluster-sdk.config.consumer_wiring.cluster` value is picked up even
+//! `gears.cluster-sdk.clients.consumes.cluster` value is picked up even
 //! though `owner_gear: "cluster-sdk"` names no registered gear. The phase then
 //! takes its `is_static` branch and calls `dep_checker.mark_resolved("cluster")`
 //! **with no probe**, while `wire` below still builds its own DNS-derived
@@ -278,7 +278,7 @@ fn wire(
     // and reads none of the tuning knobs — `connect_lazy` builds the channel from
     // SDK constants — so we take ownership of just the platform-plane credential
     // source and forward it to `RemoteClusterClient::connect_lazy`. Anything else
-    // set under `consumer_wiring.cluster` has no effect (see the module docs and
+    // set under `clients.consumes.cluster` has no effect (see the module docs and
     // the `ConsumerWiring` docs). `None` attaches nothing.
     let internal_token_provider = tuning.internal_token_provider;
     // 1. Local wins, and `try_get_local` is the right probe: it ignores anything
@@ -310,7 +310,7 @@ toolkit::inventory::submit! {
     ConsumerRegistration {
         // Neither name is a free choice, and the first one is a known mismatch
         // with the framework's model. `owner_gear` is meant to be the consuming
-        // gear's registry name, so that `gears.<owner>.config.consumer_wiring.*`
+        // gear's registry name, so that `gears.<owner>.clients.consumes.*`
         // resolves - but this registration is submitted by an *SDK*, once per
         // process, on behalf of however many consumer gears link it. There is no
         // single owner to name. The framework logs a `warn!` when `owner_gear` is

@@ -141,7 +141,7 @@ same base trait.
 A base trait may carry both projections. They generate independent clients
 (`PaymentApiRestClient`, `PaymentApiGrpcClient`), both implement the base trait,
 and `#[toolkit::provides(transports = [local, rest, grpc])]` selects one at
-runtime from `client_wiring`. The `api-contracts` example ships all three.
+runtime from `clients.provides`. The `api-contracts` example ships all three.
 
 ### Known asymmetries with the REST projection
 

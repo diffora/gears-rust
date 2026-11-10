@@ -774,7 +774,7 @@ impl HostRuntime {
         // `owner_gear` is set by `#[toolkit::consumes]` to the gear's declared
         // `#[toolkit::gear(name = ...)]`, falling back to the kebab-case of the
         // struct ident when that attribute is absent. It is used as the config key
-        // `gears.<owner_gear>.config.consumer_wiring.<dep>` and as the owner of the
+        // `gears.<owner_gear>.clients.consumes.<dep>` and as the owner of the
         // hub view the proxy is wired into. If it does not match any registered
         // gear name, the proxy is wired process-wide and that config key silently
         // resolves to nothing, so warn.
@@ -797,7 +797,7 @@ impl HostRuntime {
                     owner = reg.owner_gear,
                     dep = reg.dep_gear,
                     "proxy-wiring: consumer's owner gear name does not match any registered gear; \
-                     the `gears.{}.config.consumer_wiring.{}` static override will never resolve. \
+                     the `gears.{}.clients.consumes.{}` static override will never resolve. \
                      Ensure the consumer's `#[toolkit::gear(name = ...)]` matches its registered name.",
                     reg.owner_gear,
                     reg.dep_gear,
@@ -812,7 +812,7 @@ impl HostRuntime {
         let mut resolved_now: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
         let mut remote_deps: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
         for reg in regs {
-            // Read the consumer's `consumer_wiring.<dep>` entry (if any) and
+            // Read the consumer's `clients.consumes.<dep>` entry (if any) and
             // split it into an optional static-endpoint override and the
             // per-deployment `ClientTuning` (timeout/retry/pool/concurrency).
             let (endpoint_override, mut tuning) =
@@ -2373,38 +2373,17 @@ impl HostRuntime {
     }
 }
 
-/// Read `gears.<owner>.config.consumer_wiring.<dep>` as a [`ConsumerWiring`].
+/// Read the [`ConsumerWiring`] for `owner`'s client of `dep` from
+/// `gears.<owner>.clients` ([`crate::clients_config::consumer_wiring`]).
 ///
 /// `Ok(None)` when absent (the dep keeps discovery). A *present* entry that cannot
-/// be deserialized is an `Err` that aborts proxy-wiring — the same fail-at-boot
-/// contract the provider side uses for `client_wiring` ([`crate::wiring::read_wiring`]).
+/// be read is an `Err` that aborts proxy-wiring, as on the provider side.
 fn read_consumer_wiring(
     cfg: &dyn ConfigProvider,
     owner_gear: &str,
     dep_gear: &str,
 ) -> Result<Option<toolkit_contract::wiring::ConsumerWiring>, anyhow::Error> {
-    let Some(value) = cfg
-        .get_gear_config(owner_gear)
-        .and_then(|c| c.get("config"))
-        .and_then(|c| c.get("consumer_wiring"))
-        .and_then(|c| c.get(dep_gear))
-    else {
-        return Ok(None);
-    };
-    // A bare string is the legacy static-endpoint shape; the raw serde error
-    // ("invalid type: string") would not hint at the fix, so name the object form.
-    if let Some(s) = value.as_str() {
-        anyhow::bail!(
-            "gear `{owner_gear}`: `consumer_wiring.{dep_gear}` is a bare string; the \
-             static-endpoint override now lives on the object form — write it as \
-             `{{ \"endpoint\": \"{s}\" }}`"
-        );
-    }
-    serde_json::from_value::<toolkit_contract::wiring::ConsumerWiring>(value.clone())
-        .map(Some)
-        .map_err(|e| {
-            anyhow::anyhow!("gear `{owner_gear}`: invalid consumer_wiring.{dep_gear}: {e}")
-        })
+    crate::clients_config::consumer_wiring(cfg, owner_gear, dep_gear)
 }
 
 #[cfg(test)]
@@ -2615,27 +2594,27 @@ mod tests {
         }
     }
 
-    /// Extract just the static-endpoint override from a `consumer_wiring` entry.
+    /// Extract just the static-endpoint override from a `clients.consumes` entry.
     fn endpoint_override(cfg: &dyn ConfigProvider, owner: &str, dep: &str) -> Option<String> {
         super::read_consumer_wiring(cfg, owner, dep)
-            .expect("consumer_wiring must not error for a valid/absent endpoint")
+            .expect("clients.consumes must not error for a valid/absent endpoint")
             .and_then(|w| w.into_parts().0)
     }
 
     #[test]
-    fn static_endpoint_override_reads_nested_consumer_wiring_key() {
+    fn static_endpoint_override_reads_the_clients_consumes_entry() {
         let mut map = std::collections::HashMap::new();
         map.insert(
             "orders".to_owned(),
             serde_json::json!({
-                "config": {
-                    "consumer_wiring": { "billing": { "endpoint": "http://localhost:8081" } }
+                "clients": {
+                    "consumes": { "billing": { "endpoint": "http://localhost:8081" } }
                 }
             }),
         );
         let cfg = MapCfg(map);
 
-        // Present override is read from `config.consumer_wiring.<dep>.endpoint`.
+        // Present override is read from `clients.consumes.<dep>.endpoint`.
         assert_eq!(
             endpoint_override(&cfg, "orders", "billing").as_deref(),
             Some("http://localhost:8081")
@@ -2654,8 +2633,8 @@ mod tests {
     #[test]
     fn consumer_wiring_object_form_yields_endpoint_and_tuning() {
         let cfg = OrdersCfg(serde_json::json!({
-            "config": {
-                "consumer_wiring": {
+            "clients": {
+                "consumes": {
                     "billing": {
                         "endpoint": "http://billing:8080",
                         "timeout": "5s",
@@ -2680,8 +2659,8 @@ mod tests {
     #[test]
     fn consumer_wiring_object_without_endpoint_keeps_discovery() {
         let cfg = OrdersCfg(serde_json::json!({
-            "config": {
-                "consumer_wiring": { "billing": { "max_concurrent_requests": 1 } }
+            "clients": {
+                "consumes": { "billing": { "max_concurrent_requests": 1 } }
             }
         }));
 
@@ -2694,7 +2673,7 @@ mod tests {
     }
 
     /// A present-but-unparseable entry (wrong shape or wrong-typed tuning) is a
-    /// boot error, matching the provider side's `client_wiring` — not a silent
+    /// boot error, matching the provider side's `clients.provides` — not a silent
     /// downgrade to discovery.
     #[test]
     fn consumer_wiring_malformed_entry_is_an_error() {
@@ -2711,7 +2690,7 @@ mod tests {
         ];
         for entry in malformed {
             let cfg = OrdersCfg(serde_json::json!({
-                "config": { "consumer_wiring": { "billing": entry.clone() } }
+                "clients": { "consumes": { "billing": entry.clone() } }
             }));
             assert!(
                 super::read_consumer_wiring(&cfg, "orders", "billing").is_err(),
@@ -2720,29 +2699,13 @@ mod tests {
         }
     }
 
-    /// A legacy bare-string value is a hard error whose message names the object
-    /// form (a migration hint, not an opaque serde "invalid type" error).
-    #[test]
-    fn consumer_wiring_legacy_bare_string_is_an_error_naming_the_object_form() {
-        let cfg = OrdersCfg(serde_json::json!({
-            "config": { "consumer_wiring": { "billing": "http://localhost:8081" } }
-        }));
-        let err = super::read_consumer_wiring(&cfg, "orders", "billing")
-            .expect_err("a bare-string value is the legacy shape -> hard error")
-            .to_string();
-        assert!(
-            err.contains("endpoint"),
-            "the error must point the operator at the `{{ endpoint: ... }}` object form, got: {err}"
-        );
-    }
-
     /// A present-but-invalid `endpoint` is surfaced as an error, not downgraded to
     /// discovery — the operator asked for a specific endpoint that can't be honoured.
     #[test]
     fn consumer_wiring_invalid_endpoint_is_an_error() {
         for bad in ["", "billing", "/path/only"] {
             let cfg = OrdersCfg(serde_json::json!({
-                "config": { "consumer_wiring": { "billing": { "endpoint": bad } } }
+                "clients": { "consumes": { "billing": { "endpoint": bad } } }
             }));
             assert!(
                 super::read_consumer_wiring(&cfg, "orders", "billing").is_err(),
@@ -2804,8 +2767,8 @@ mod tests {
         map.insert(
             "orders".to_owned(),
             serde_json::json!({
-                "config": {
-                    "consumer_wiring": {
+                "clients": {
+                    "consumes": {
                         "billing": {
                             "endpoint": "http://localhost:8081",
                             "max_concurrent_requests": 7
@@ -2913,8 +2876,8 @@ mod tests {
         map.insert(
             "orders".to_owned(),
             serde_json::json!({
-                "config": {
-                    "consumer_wiring": { "billing": { "max_concurrent_requests": 4343 } }
+                "clients": {
+                    "consumes": { "billing": { "max_concurrent_requests": 4343 } }
                 }
             }),
         );
@@ -2966,8 +2929,8 @@ mod tests {
         map.insert(
             "orders".to_owned(),
             serde_json::json!({
-                "config": {
-                    "consumer_wiring": { "billing": { "max_concurrent_requests": 4242 } }
+                "clients": {
+                    "consumes": { "billing": { "max_concurrent_requests": 4242 } }
                 }
             }),
         );
@@ -3008,8 +2971,8 @@ mod tests {
         map.insert(
             "orders".to_owned(),
             serde_json::json!({
-                "config": {
-                    "consumer_wiring": {
+                "clients": {
+                    "consumes": {
                         "billing": { "endpoint": "", "max_concurrent_requests": 4444 }
                     }
                 }
@@ -3046,8 +3009,8 @@ mod tests {
         map.insert(
             "api-contracts-consumer".to_owned(),
             serde_json::json!({
-                "config": {
-                    "consumer_wiring": {
+                "clients": {
+                    "consumes": {
                         "api-contracts": { "endpoint": "http://localhost:9099" }
                     }
                 }
@@ -3136,17 +3099,17 @@ mod tests {
     }
 
     /// Issue #5686: two gears consuming one contract each get a proxy built
-    /// from their own `consumer_wiring`, whichever wires first.
+    /// from their own `clients.consumes` entry, whichever wires first.
     #[tokio::test]
     async fn each_consumer_gets_a_proxy_with_its_own_wiring() {
         let config = serde_json::json!({
-            "a": { "config": { "consumer_wiring": { "shipping": {
+            "a": { "clients": { "consumes": { "shipping": {
                 "endpoint": "http://shipping-for-a:8080",
                 "timeout": "1s",
                 "retry": { "max_attempts": 2 },
                 "require_tls": false
             } } } },
-            "b": { "config": { "consumer_wiring": { "shipping": {
+            "b": { "clients": { "consumes": { "shipping": {
                 "endpoint": "http://shipping-for-b:8080",
                 "timeout": "10s",
                 "retry": { "max_attempts": 5 },
@@ -3211,7 +3174,7 @@ mod tests {
     #[tokio::test]
     async fn a_static_consumer_does_not_resolve_a_dep_another_consumer_discovers() {
         let config = serde_json::json!({
-            "a": { "config": { "consumer_wiring": { "shipping": {
+            "a": { "clients": { "consumes": { "shipping": {
                 "endpoint": "http://shipping:8080"
             } } } }
         });
@@ -3236,7 +3199,7 @@ mod tests {
     #[tokio::test]
     async fn a_mixed_dep_resolves_once_the_provider_is_advertised() {
         let config = serde_json::json!({
-            "a": { "config": { "consumer_wiring": { "shipping": {
+            "a": { "clients": { "consumes": { "shipping": {
                 "endpoint": "http://shipping:8080"
             } } } }
         });
@@ -3285,7 +3248,7 @@ mod tests {
     /// Both consumers on static endpoints: resolved at wiring time.
     #[tokio::test]
     async fn static_consumers_resolve_the_dep() {
-        let entry = serde_json::json!({ "config": { "consumer_wiring": { "shipping": {
+        let entry = serde_json::json!({ "clients": { "consumes": { "shipping": {
             "endpoint": "http://shipping:8080"
         } } } });
         let runtime = shipping_runtime(serde_json::json!({ "a": entry, "b": entry }));

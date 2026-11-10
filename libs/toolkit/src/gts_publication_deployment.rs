@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
-use toolkit_contract::wiring::{ClientTuning, ConsumerWiring};
+use toolkit_contract::wiring::ClientTuning;
 
 use super::{
     GtsPublicationDescriptor, GtsPublicationError, PreparedGtsPublication, check_ownership,
@@ -95,38 +95,41 @@ impl fmt::Display for GtsDeploymentReport {
 }
 
 /// Override the endpoint; retain each publisher's configured transport settings.
+/// The job's credential replaces the publisher's, and a TLS requirement of the
+/// job holds for every publisher: a publisher's wiring can add one, not drop it.
 fn publisher_tunings(
     descriptors: &[&GtsPublicationDescriptor],
     config: &dyn ConfigProvider,
-    defaults: &ClientTuning,
+    job: &ClientTuning,
     endpoint: &http::Uri,
 ) -> anyhow::Result<Vec<ClientTuning>> {
+    let https = endpoint.scheme_str() == Some("https");
+    anyhow::ensure!(
+        job.require_tls != Some(true) || https,
+        "the publication job requires TLS, but registry endpoint is not https"
+    );
     descriptors
         .iter()
         .map(|descriptor| {
-            let value = config
-                .get_gear_config(descriptor.gear)
-                .and_then(|gear| gear.get("config"))
-                .and_then(|config| config.get("consumer_wiring"))
-                .and_then(|wiring| wiring.get(descriptor.provider));
-            let tuning = if let Some(value) = value {
-                let wiring: ConsumerWiring =
-                    serde_json::from_value(value.clone()).map_err(|error| {
-                        anyhow::anyhow!(
-                            "gear `{}`: invalid consumer_wiring.{}: {error}",
-                            descriptor.gear,
-                            descriptor.provider
-                        )
-                    })?;
+            let wiring = crate::clients_config::consumer_wiring(
+                config,
+                descriptor.gear,
+                descriptor.provider,
+            )?;
+            let mut tuning = if let Some(wiring) = wiring {
                 wiring
                     .tuning
-                    .with_internal_token_provider(defaults.internal_token_provider.clone())
+                    .with_internal_token_provider(job.internal_token_provider.clone())
             } else {
-                defaults.clone()
+                job.clone()
             };
+            if job.require_tls == Some(true) {
+                tuning.require_tls = Some(true);
+            }
             anyhow::ensure!(
-                tuning.require_tls != Some(true) || endpoint.scheme_str() == Some("https"),
-                "gear `{}`: consumer_wiring.{} requires TLS, but registry endpoint is not https",
+                tuning.require_tls != Some(true) || https,
+                "gears.{}.clients (consumes.{} over defaults) requires TLS, but registry \
+                 endpoint is not https",
                 descriptor.gear,
                 descriptor.provider
             );
