@@ -18,6 +18,8 @@ from typing import Any, Callable, Protocol, runtime_checkable
 
 import pytest
 
+from lib.budgets import SERVER_STARTUP_TIMEOUT_SECS
+
 
 # ── Defaults ──────────────────────────────────────────────────────────────
 
@@ -53,7 +55,7 @@ class GearTestEnv:
     port: int = 8086
     # Tests need completed preparation; lifecycle scenarios can opt into /healthz.
     health_path: str = "/readyz"
-    health_timeout: int = 15
+    health_timeout: int = SERVER_STARTUP_TIMEOUT_SECS
     env: dict[str, str] = field(default_factory=dict)
 
     # Sidecars

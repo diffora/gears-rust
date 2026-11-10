@@ -92,7 +92,6 @@ def _env(home_dir: str, backends: str, suffix: str) -> GearTestEnv:
         config_patch=lambda text, _env: _patch(text, home_dir, backends),
         port=REGISTRY_PORT,
         health_path="/readyz",
-        health_timeout=60,
         log_suffix=f"event-broker-registry-{suffix}",
     )
 
