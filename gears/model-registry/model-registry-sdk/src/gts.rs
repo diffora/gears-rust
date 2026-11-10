@@ -52,6 +52,6 @@ mod tests {
         for resource in [Resource::Provider, Resource::Model] {
             assert_eq!(Resource::from_wire(resource.as_wire()), Some(resource));
         }
-        assert_eq!(Resource::from_wire("gts.cf.other.thing.v1~"), None);
+        assert_eq!(Resource::from_wire(gts_id!("cf.other.pkg.thing.v1~")), None);
     }
 }

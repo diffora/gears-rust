@@ -233,6 +233,7 @@ pub(crate) mod test_support {
 mod tests {
     use super::test_support::sample_model;
     use super::*;
+    use toolkit_gts::gts_id;
 
     #[test]
     fn model_round_trips_through_json_with_design_wire_names() {
@@ -251,7 +252,7 @@ mod tests {
         assert_eq!(json["info"]["secret_ref"], "platform-openai-key");
         assert_eq!(
             json["info"]["gts_type"],
-            "gts.cf.genai.model.provider.v1~cf.genai._.openai.v1~"
+            gts_id!("cf.genai.model.provider.v1~cf.genai._.openai.v1~")
         );
         assert_eq!(
             json["info"]["provider_settings"]["oagw_alias"],
