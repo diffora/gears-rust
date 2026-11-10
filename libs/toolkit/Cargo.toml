@@ -1,6 +1,6 @@
 [package]
 name = "cf-gears-toolkit"
-version = "0.12.0"
+version = "0.12.1"
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
@@ -17,6 +17,11 @@ name = "toolkit"
 
 [lints]
 workspace = true
+
+# `toolkit-http` is never named in code: the `fips` feature enables it only to
+# forward `toolkit-http/fips`.
+[package.metadata.cargo-shear]
+ignored = ["toolkit-http"]
 
 [features]
 # Enable the runner and the runtime integration by default.

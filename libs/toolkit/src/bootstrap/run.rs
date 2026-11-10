@@ -206,7 +206,8 @@ pub async fn run_migrate(config: AppConfig) -> Result<()> {
 pub struct PublishGtsOptions {
     /// Base URI of the remote registry, e.g. `https://registry:8443`.
     pub registry_endpoint: String,
-    /// The overall deadline for every publication.
+    /// The overall deadline for every publication; at most
+    /// [`MAX_PUBLICATION_BUDGET`](crate::gts_publication::MAX_PUBLICATION_BUDGET) (10 minutes).
     pub deadline: std::time::Duration,
 }
 
@@ -251,6 +252,11 @@ async fn publish_gts(
     options: &PublishGtsOptions,
     cancel: &CancellationToken,
 ) -> Result<()> {
+    // Reject an over-long deadline before touching the registry or the credential.
+    crate::gts_publication::check_publication_budget("--timeout", options.deadline)?;
+    // Match startup validation without running gear lifecycle hooks.
+    let registry = crate::registry::GearRegistry::discover_and_build()?;
+    validate_deployment_configuration(&registry, config)?;
     let internal_auth = platform_credential(config)?;
     let (_, provider) = super::oop::build_platform_credentials(internal_auth, cancel).await?;
     let provider = provider.ok_or_else(|| {
@@ -274,6 +280,16 @@ async fn publish_gts(
     )
     .await?;
     publication_result(&report)
+}
+
+fn validate_deployment_configuration(
+    registry: &crate::registry::GearRegistry,
+    config: &dyn crate::config::ConfigProvider,
+) -> Result<()> {
+    for entry in registry.gears() {
+        entry.validate_gts_publication_config(config)?;
+    }
+    Ok(())
 }
 
 /// The platform credential `publish-gts` sends: `oop_http.internal_auth`.
@@ -472,6 +488,54 @@ pub fn init_procedure(config: &AppConfig) -> Result<()> {
 mod publish_gts_tests {
     use super::*;
     use crate::gts_publication::deployment::{GtsDeploymentOutcome, GtsDeploymentReport};
+
+    #[test]
+    fn deployment_rejects_publication_options_on_a_nonpublishing_gear() {
+        struct PlainGear;
+        #[async_trait::async_trait]
+        impl crate::Gear for PlainGear {
+            async fn init(&self, _ctx: &crate::GearCtx) -> Result<()> {
+                panic!("deployment validation must not initialize gears")
+            }
+        }
+
+        let mut builder = crate::registry::RegistryBuilder::default();
+        builder.register_core_with_meta("plain-gear", &[], Arc::new(PlainGear));
+        let registry = builder.build_topo_sorted().unwrap();
+        let mut config = AppConfig::default();
+        validate_deployment_configuration(&registry, &config).unwrap();
+        config.gears.insert(
+            "plain-gear".to_owned(),
+            serde_json::json!({"config": {"gts_publication": {"timeout": "1s"}}}),
+        );
+        let error = validate_deployment_configuration(&registry, &config).unwrap_err();
+        assert!(error.to_string().contains("plain-gear"), "{error}");
+        assert!(error.to_string().contains("gts_publication"), "{error}");
+    }
+
+    /// `publish-gts --timeout` above 10 minutes is refused first, before the
+    /// registry, the credential or the network; no clamping.
+    #[tokio::test]
+    async fn publish_gts_rejects_a_deadline_above_ten_minutes_first() {
+        let over =
+            crate::gts_publication::MAX_PUBLICATION_BUDGET + std::time::Duration::from_secs(1);
+        let err = publish_gts(
+            &AppConfig::default(),
+            &PublishGtsOptions {
+                registry_endpoint: "https://registry.example:8443".to_owned(),
+                deadline: over,
+            },
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap_err();
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("--timeout")
+                && message.contains("too large to be a publication budget"),
+            "{message}"
+        );
+    }
 
     #[test]
     fn publish_gts_needs_the_platform_credential() {

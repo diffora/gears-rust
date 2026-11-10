@@ -101,6 +101,71 @@ fn ingest_and_delivery_are_checked_too() {
     }
 }
 
+/// A valid single-backend deployment in `mode`, with the synchronous-publish
+/// cap set to `max_wait_secs`.
+fn config_with_publish_wait(mode: &str, max_wait_secs: u32) -> EventBrokerConfig {
+    serde_json::from_value(json!({
+        "mode": mode,
+        "publish": { "max_wait_secs": max_wait_secs },
+        "backends": { "main": { "type": MEMORY_BACKEND } },
+        "backend_routing": { TOPIC_TYPE: "main" },
+    }))
+    .expect("test configuration deserializes")
+}
+
+/// B2: every ingest-serving mode refuses a synchronous-publish hold above the
+/// cap, so a publish cannot be made to hold its response head past the
+/// api-gateway deadline (which would answer `504` after the event committed).
+#[test]
+fn an_ingest_mode_refuses_a_publish_wait_above_the_cap() {
+    for (mode_str, mode) in [
+        ("standalone", DeploymentMode::Standalone),
+        ("cluster_ingest", DeploymentMode::ClusterIngest),
+    ] {
+        let cfg = config_with_publish_wait(mode_str, super::MAX_PUBLISH_WAIT_SECS + 1);
+
+        assert_eq!(
+            check(&cfg, mode).err(),
+            Some(Error::PublishMaxWaitTooLarge {
+                secs: super::MAX_PUBLISH_WAIT_SECS + 1,
+                max: super::MAX_PUBLISH_WAIT_SECS,
+            }),
+            "{mode_str}"
+        );
+    }
+}
+
+/// The cap itself, and a zero wait (every sync publish answered `202` at once),
+/// are within bounds in every ingest-serving mode.
+#[test]
+fn an_ingest_mode_accepts_the_publish_wait_cap_and_zero() {
+    for (mode_str, mode) in [
+        ("standalone", DeploymentMode::Standalone),
+        ("cluster_ingest", DeploymentMode::ClusterIngest),
+    ] {
+        for wait in [super::MAX_PUBLISH_WAIT_SECS, 0] {
+            let cfg = config_with_publish_wait(mode_str, wait);
+            assert!(
+                check(&cfg, mode).is_ok(),
+                "{mode_str}: wait={wait} is within bounds"
+            );
+        }
+    }
+}
+
+/// The cap binds the ingest-serving modes only: `cluster_delivery` never
+/// enqueues, so it carries the `publish` section without being subject to the
+/// rule.
+#[test]
+fn a_non_ingest_mode_is_not_subject_to_the_publish_wait_cap() {
+    let cfg = config_with_publish_wait("cluster_delivery", super::MAX_PUBLISH_WAIT_SECS * 100);
+
+    assert!(
+        check(&cfg, DeploymentMode::ClusterDelivery).is_ok(),
+        "a non-ingest role is unrestricted"
+    );
+}
+
 /// A dispatcher holds no registry: it carries the sections without being
 /// subject to their rules.
 #[test]

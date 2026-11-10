@@ -5,13 +5,24 @@ pub mod routes;
 pub mod types;
 
 #[cfg(test)]
+mod admin_facts_routes_test;
+#[cfg(test)]
 mod error_test;
 
 #[cfg(test)]
 mod dto_test;
 
 #[cfg(test)]
+mod profile_routes_test;
+
+#[cfg(test)]
 mod routes_test;
 
 #[cfg(test)]
+mod review_queue_routes_test;
+
+#[cfg(test)]
 mod settings_routes_test;
+
+#[cfg(test)]
+mod subject_control_routes_test;

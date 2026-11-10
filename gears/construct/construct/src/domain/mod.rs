@@ -9,26 +9,46 @@
 /// The database provider every domain service is built on.
 pub(crate) type DbProvider = toolkit_db::DBProvider<toolkit_db::DbError>;
 
+pub mod admin_facts;
 pub mod admission;
 pub mod error;
 pub mod local_client;
 pub mod model_client;
+pub mod one_step;
+pub mod pagination;
 pub mod plan;
 pub mod planner;
 pub mod profile;
+pub mod profile_read;
+pub mod profile_writes;
 pub mod record_intake;
 pub mod refusal;
+pub mod review_queue;
 pub mod sensitive_data;
 pub mod settings_scope;
+pub mod subject_access;
+pub mod subject_control;
 pub mod subject_settings;
 
 #[cfg(test)]
+mod admin_facts_test;
+#[cfg(test)]
 mod admission_test;
+#[cfg(test)]
+mod local_client_test;
+#[cfg(test)]
+mod pagination_test;
 #[cfg(test)]
 mod plan_test;
 #[cfg(test)]
+mod profile_read_test;
+#[cfg(test)]
 mod record_intake_test;
 #[cfg(test)]
+mod review_queue_test;
+#[cfg(test)]
 mod sensitive_data_test;
+#[cfg(test)]
+mod subject_control_test;
 #[cfg(test)]
 mod subject_settings_test;
