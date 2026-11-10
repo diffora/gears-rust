@@ -933,16 +933,18 @@ neither invent one nor fall back to platform after a tenant error.
 
 Platform handles publication, reconciliation, init, bootstrap and retention/reaper.
 Named exceptions are process-wide cached IdP selection, AM's hierarchy resolver
-(called anonymously by `tr-authz-plugin`, #1597) and bootstrap's root-name check.
+(called anonymously by `tr-authz-plugin`, #1597).
 P0's local tenant client ignores context (T30); T35 REST forwards its bearer.
 P29's T32 record remains historical.
 
-**User command validation update (2026-11-10).** AM's fixed user create/patch fields now
-validate locally through SDK DTO methods, without User resource-schema reads or runtime
-schema projection. The mandatory tenant-type read still uses the original caller context.
-Extensible tenant metadata continues to read authored content plus the materialized schema
-and use the SDK's native GTS payload compiler; tenant-name registry reads retain their
-existing caller/platform policy. The User v1 resource declaration remains published.
+**Fixed AM command validation (2026-11-10).** User create/patch fields and tenant
+names validate locally through SDK DTO methods, without User/Tenant resource-schema
+reads or runtime schema projection. Request tenant names are trimmed before their
+1–255 Unicode-scalar check; bootstrap checks and persists its raw configured name.
+The mandatory tenant-type reads retain the original caller context on request paths,
+and bootstrap still performs platform root-type preflight. Extensible tenant metadata
+reads authored content plus the materialized schema and uses the SDK's native GTS
+payload compiler. User v1 and Tenant v1 resource declarations remain published.
 
 **Production authentication topology (P30).** Production registry and AM applications choose their AuthN composition independently of the registry gear. When using authn-resolver, each host links it with its selected authentication plugin and uses the local `AuthNResolverClient`; that SDK currently has no remote contract/adapter. A new AuthN RPC transport is not part of this registry effort. The production remote AM proof excludes AM/RG/TR declarations from the registry host, while allowing the linked authn declarations. Aggregate readiness waits for authn schema/plugin admission and tenant reads fail closed before it; platform internal-token admission remains independent and permits that publication. T43 reruns this topology after the process-global inventory pull is removed.
 

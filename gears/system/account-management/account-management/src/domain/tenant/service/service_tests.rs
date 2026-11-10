@@ -741,41 +741,175 @@ async fn unsuspend_tenant_rejects_provisioning_as_not_found() {
 }
 
 #[tokio::test]
-async fn update_tenant_accepts_oversized_name_when_gts_schema_unregistered() {
-    // The synchronous `validate_tenant_name` was deleted in favour
-    // of `domain::gts_validation::validate_tenant_name_via_gts`,
-    // which mirrors the resource-group `validate_metadata_via_gts`
-    // posture: when the registry has no `gts.cf.core.am.tenant.v1~`
-    // schema registered, validation short-circuits to `Ok(())` and
-    // the database `CHECK (length(name) BETWEEN 1 AND 255)`
-    // constraint declared by `m0001` becomes the authoritative
-    // gate. The unit-level fake repo does NOT enforce DB CHECK
-    // constraints, so this test pins the documented no-op
-    // behaviour for the unregistered-schema path. The
-    // schema-registered rejection path is exercised by the
-    // integration suite, which boots the real Types Registry with
-    // the AM schemas loaded.
+async fn update_tenant_rejects_oversized_name_even_when_unchanged_without_resource_schema() {
     let root = Uuid::from_u128(0x100);
     let repo = Arc::new(FakeTenantRepo::with_root(root));
-    let svc = make_service(repo, FakeOutcome::Ok);
-    let info = svc
+    let name = "x".repeat(256);
+    // A legacy row must not bypass the command bound via a same-name no-op.
+    repo.state
+        .lock()
+        .expect("lock")
+        .tenants
+        .get_mut(&root)
+        .expect("root")
+        .name = name.clone();
+    let before = repo.find_by_id_unchecked(root).expect("root");
+    let svc = make_service(repo.clone(), FakeOutcome::Ok);
+    let err = svc
         .update_tenant(
             &ctx_for(root),
             root,
-            UpdateTenantRequest::new().with_name("x".repeat(256)),
+            UpdateTenantRequest::new().with_name(name),
         )
         .await
-        .expect("rename succeeds without registered schema; DB CHECK is the prod fence");
-    assert_eq!(info.name.chars().count(), 256);
+        .expect_err("fixed bound applies even without a resource schema");
+    assert!(matches!(err, DomainError::Validation { .. }));
+    let after = repo.find_by_id_unchecked(root).expect("root");
+    assert_eq!(after.name, before.name);
+    assert_eq!(after.updated_at, before.updated_at);
+}
+
+#[tokio::test]
+async fn tenant_name_bounds_and_normalization_are_independent_of_resource_schema() {
+    use types_registry_sdk::testing_platform::MockTypesRegistry;
+    for resource in [
+        None,
+        Some(serde_json::Value::Null),
+        Some(serde_json::json!({
+            "type": "object", "properties": {"name": {"type": "string", "maxLength": 1}}
+        })),
+    ] {
+        let root = Uuid::from_u128(0x100);
+        let child = Uuid::from_u128(0x200);
+        let repo = Arc::new(FakeTenantRepo::with_root(root));
+        let type_uuid = gts::GtsId::try_new(CUSTOMER_TENANT_TYPE_ID)
+            .expect("type")
+            .to_uuid();
+        repo.state
+            .lock()
+            .expect("lock")
+            .tenants
+            .get_mut(&root)
+            .expect("root")
+            .tenant_type_uuid = type_uuid;
+        let registry = Arc::new(MockTypesRegistry::new());
+        registry.seed(
+            CUSTOMER_TENANT_TYPE_ID,
+            serde_json::json!({"type": "object"}),
+        );
+        if let Some(resource) = resource {
+            registry.seed(gts_id!("cf.core.am.tenant.v1~"), resource);
+        }
+        let idp = Arc::new(FakeIdpProvisioner::new(FakeOutcome::Ok));
+        let svc = TenantService::new(
+            repo.clone(),
+            idp.clone(),
+            Arc::new(InertResourceOwnershipChecker),
+            crate::domain::tenant_type::inert_tenant_type_checker(),
+            mock_enforcer(),
+            AccountManagementConfig::default(),
+        )
+        .with_registry(registry);
+        let mut input = child_input(child, root);
+        input.name = "\u{44f}".repeat(256);
+        let err = svc
+            .create_tenant(&ctx_for(root), input)
+            .await
+            .expect_err("256 scalars rejected");
+        assert!(matches!(err, DomainError::Validation { .. }));
+        assert!(repo.find_by_id_unchecked(child).is_none());
+        assert_eq!(idp.provision_call_count(), 0);
+
+        let name = "\u{44f}".repeat(255);
+        let mut input = child_input(child, root);
+        input.name = format!(" {name} ");
+        let created = svc
+            .create_tenant(&ctx_for(root), input)
+            .await
+            .expect("trim before bounds");
+        assert_eq!(created.name, name);
+        let name = "\u{e9}".repeat(255);
+        let updated = svc
+            .update_tenant(
+                &ctx_for(root),
+                child,
+                UpdateTenantRequest::new().with_name(format!(" {name} ")),
+            )
+            .await
+            .expect("trim patch before bounds");
+        assert_eq!(updated.name, name);
+        let before = repo.find_by_id_unchecked(child).expect("child");
+        let err = svc
+            .update_tenant(
+                &ctx_for(root),
+                child,
+                UpdateTenantRequest::new().with_name("x".repeat(256)),
+            )
+            .await
+            .expect_err("invalid rename");
+        assert!(matches!(err, DomainError::Validation { .. }));
+        let after = repo.find_by_id_unchecked(child).expect("child");
+        assert_eq!(after.name, before.name);
+        assert_eq!(after.updated_at, before.updated_at);
+    }
+}
+
+#[tokio::test]
+async fn invalid_names_do_not_bypass_authorization_or_row_guards() {
+    let root = Uuid::from_u128(0x100);
+    let child = Uuid::from_u128(0x200);
+    let repo = Arc::new(FakeTenantRepo::with_root(root));
+    let idp = Arc::new(FakeIdpProvisioner::new(FakeOutcome::Ok));
+    let svc = TenantService::new(
+        repo.clone(),
+        idp.clone(),
+        Arc::new(InertResourceOwnershipChecker),
+        crate::domain::tenant_type::inert_tenant_type_checker(),
+        crate::domain::tenant::test_support::deny_all_enforcer(),
+        AccountManagementConfig::default(),
+    );
+    let mut input = child_input(child, root);
+    input.name = "x".repeat(256);
+    assert!(matches!(
+        svc.create_tenant(&ctx_for(root), input).await,
+        Err(DomainError::CrossTenantDenied { .. })
+    ));
+    assert!(matches!(
+        svc.update_tenant(
+            &ctx_for(root),
+            root,
+            UpdateTenantRequest::new().with_name("x".repeat(256))
+        )
+        .await,
+        Err(DomainError::CrossTenantDenied { .. })
+    ));
+    let svc = make_service(repo.clone(), FakeOutcome::Ok);
+    // Missing and internal provisioning rows must still surface as NotFound.
+    for provisioning in [false, true] {
+        if provisioning {
+            let mut row = repo.find_by_id_unchecked(root).expect("root");
+            row.id = child;
+            row.parent_id = Some(root);
+            row.status = TenantStatus::Provisioning;
+            repo.insert_tenant_raw(row);
+        }
+        let err = svc
+            .update_tenant(
+                &ctx_for(root),
+                child,
+                UpdateTenantRequest::new().with_name("x".repeat(256)),
+            )
+            .await
+            .expect_err("row guard precedes name validation");
+        assert!(matches!(err, DomainError::NotFound { .. }));
+    }
+    assert_eq!(idp.provision_call_count(), 0);
 }
 
 // ---- Tenant name whitespace policy -----------------------------
 //
-// An all-whitespace name passes the schema's `minLength: 1` and the
-// DB `CHECK (length(name) BETWEEN 1 AND 255)`, so the AM-side
-// trim + empty check in `verify_tenant_name` is the only gate.
-// `ConstantTypeRegistry` reports the tenant schema as unregistered,
-// which pins that the rule holds without the GTS schema.
+// The service trims and rejects whitespace-only names before applying
+// the fixed SDK bounds, independently of the resource catalogue.
 
 #[tokio::test]
 async fn create_tenant_rejects_all_whitespace_name_before_any_side_effect() {
@@ -989,11 +1123,13 @@ async fn create_tenant_rejects_inactive_parent() {
         state.tenants.get_mut(&root).expect("root").status = TenantStatus::Suspended;
     }
     let svc = make_service(repo, FakeOutcome::Ok);
+    let mut input = child_input(Uuid::from_u128(0x700), root);
+    input.name = "x".repeat(256);
     let err = svc
-        .create_tenant(&ctx_for(root), child_input(Uuid::from_u128(0x700), root))
+        .create_tenant(&ctx_for(root), input)
         .await
         .expect_err("suspended parent rejects");
-    assert_eq!(err.code(), "validation");
+    assert!(matches!(err, DomainError::Validation { detail } if detail.contains("not active")));
 }
 
 // =================================================================
@@ -3895,7 +4031,7 @@ async fn update_tenant_outside_caller_subtree_returns_not_found() {
     let child = Uuid::from_u128(0x501);
     let (svc, _repo) = make_cross_subtree_svc(root, child).await;
 
-    let patch = account_management_sdk::UpdateTenantRequest::new().with_name("renamed");
+    let patch = account_management_sdk::UpdateTenantRequest::new().with_name("x".repeat(256));
     let err = svc
         .update_tenant(&ctx_for(root), root, patch)
         .await
@@ -4394,9 +4530,8 @@ async fn mandatory_tenant_type_read_preserves_caller_refusals_before_tenant_prov
         let child = Uuid::from_u128(0x200);
         let repo = Arc::new(FakeTenantRepo::with_root(root));
         let registry = Arc::new(MockTypesRegistry::new());
-        // The first read is the optional tenant-name schema. Refuse only
-        // the mandatory parent-context read that follows it.
-        registry.inject(Fault::on(Call::BatchGet).nth(2).fail(refusal));
+        // The first read resolves the mandatory parent IdP context.
+        registry.inject(Fault::on(Call::BatchGet).fail(refusal));
         let idp = Arc::new(FakeIdpProvisioner::new(FakeOutcome::Ok));
         let service = TenantService::new(
             repo,
@@ -4415,7 +4550,7 @@ async fn mandatory_tenant_type_read_preserves_caller_refusals_before_tenant_prov
 
         assert_eq!(at_the_boundary(error).1, Some(status));
         assert_eq!(idp.provision_call_count(), 0);
-        assert_eq!(registry.calls(Call::BatchGet), 2);
+        assert_eq!(registry.calls(Call::BatchGet), 1);
         assert_eq!(registry.platform_calls(Call::BatchGet), 0);
     }
 }
@@ -4889,7 +5024,7 @@ mod caller_provenance {
     }
 
     /// Two callers drive every public tenant flow through one shared
-    /// service: each registry read — the name check, the parent's `IdP`
+    /// service: each registry read — the parent's `IdP`
     /// context, the type check and every `tenant_type` lowering — is
     /// made for exactly the caller of the flow, and none reaches the
     /// platform API, which the spy refuses.
@@ -4935,10 +5070,9 @@ mod caller_provenance {
             svc.unsuspend_tenant(&ctx, child).await.expect("unsuspend");
             svc.delete_tenant(&ctx, child).await.expect("delete");
 
-            // name check + parent context + activation lowering, get,
-            // list children, list descendants, name check + lowering,
-            // suspend, unsuspend, delete.
-            assert_eq!(spy.callers().len(), 11, "every flow read the registry");
+            // Parent context + activation lowering, get, list children,
+            // list descendants, update lowering, suspend, unsuspend, delete.
+            assert_eq!(spy.callers().len(), 9, "every flow read the registry");
             assert_only_caller(&spy.callers(), &ctx);
             assert_only_caller(
                 &checker

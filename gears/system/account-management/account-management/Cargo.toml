@@ -71,7 +71,6 @@ arc-swap = { workspace = true }
 async-trait = { workspace = true }
 fnv = { workspace = true }
 futures = { workspace = true }
-jsonschema = { workspace = true }
 parking_lot = { workspace = true }
 
 sea-orm = { workspace = true }

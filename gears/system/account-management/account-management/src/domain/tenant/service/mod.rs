@@ -188,7 +188,7 @@ pub struct TenantService<R: TenantRepo> {
     /// incompatible parent / child type pairings before any tenants /
     /// closure rows are written.
     tenant_type_checker: Arc<dyn TenantTypeChecker + Send + Sync>,
-    /// Request registry for type hydration, tenant-name checks and parent `IdP` context
+    /// Request registry for type hydration and parent `IdP` context
     /// (P33). Single returns use `resolve_type_id`; `list_children` batches with
     /// `resolve_type_ids`. Tests may omit it, leaving `Tenant.tenant_type` as `None`.
     /// Reads hit the database until the SDK cache (T36).
@@ -712,7 +712,7 @@ impl<R: TenantRepo> TenantService<R> {
     pub async fn create_tenant(
         &self,
         ctx: &SecurityContext,
-        input: CreateTenantRequest,
+        mut input: CreateTenantRequest,
     ) -> Result<Tenant, DomainError> {
         // PEP gate (DESIGN §4.2). resource_id=None — child not committed
         // yet; ownership PEP keys on parent_id.
@@ -760,27 +760,13 @@ impl<R: TenantRepo> TenantService<R> {
             });
         }
 
-        // Validate the caller-supplied tenant name through the
-        // published `gts.cf.core.am.tenant.v1~` schema. Mirrors the
-        // resource-group `validate_metadata_via_gts` posture: when the
-        // registry has the schema the JSON-Schema bounds (`minLength`,
-        // `maxLength`) gate the call; when the schema is not yet
-        // registered the helper short-circuits to `Ok(())` and the DB
-        // `CHECK (length(name) BETWEEN 1 AND 255)` constraint serves
-        // as the last-line guard. Tests that pin a deterministic
-        // rejection inject a registry that has the schema registered.
-        //
-        // Runs AFTER the local parent precondition so a missing or
-        // inactive parent fails fast on the local read instead of
-        // burning a Types Registry round-trip first.
-        //
-        // Trim first: an all-whitespace name passes both `minLength: 1`
-        // and the DB CHECK, so the AM-side rule is the only gate.
-        let name = verify_tenant_name("create_tenant", input.name)?;
-        if let Some(reader) = self.types_registry_reader(CallerOrigin::Request(ctx)) {
-            crate::domain::gts_validation::validate_tenant_name_via_gts(name.as_str(), reader)
-                .await?;
-        }
+        // Normalize the owned name, then check the fixed DTO contract before
+        // any write or IdP call. Opaque provisioning metadata is not cloned.
+        input.name = verify_tenant_name("create_tenant", input.name)?.into_inner();
+        input.validate().map_err(|error| DomainError::Validation {
+            detail: format!("create_tenant: {error}"),
+        })?;
+        let name = input.name;
         // No AM-side schema validation of `input.provisioning_metadata`:
         // the IdP plugin owns that shape end-to-end per the
         // IdP-metadata isolation contract. A misshaped payload
@@ -1735,7 +1721,7 @@ impl<R: TenantRepo> TenantService<R> {
     /// - [`DomainError::CrossTenantDenied`] when the PDP denies the
     ///   caller access to the target tenant.
     /// - [`DomainError::Validation`] when the patch is empty, the new
-    ///   name is empty or all-whitespace, or it fails GTS validation.
+    ///   name is empty/all-whitespace or exceeds the fixed DTO bounds.
     ///   A valid name is persisted trimmed.
     /// - [`DomainError::Conflict`] when the target tenant is in
     ///   `Deleted` status (read-only during retention).
@@ -1761,12 +1747,8 @@ impl<R: TenantRepo> TenantService<R> {
         let scope = self
             .authorize(ctx, pep::actions::UPDATE, id, Some(id))
             .await?;
-        // Load the current row BEFORE any GTS round-trip so an
-        // idempotent same-name PATCH (or a PATCH against a missing
-        // tenant) reaches the no-op / `NotFound` path without paying a
-        // registry call. A naive ordering that hit GTS first would
-        // turn every registry blip into a `503` for PATCH requests
-        // that would otherwise be 200 no-ops or 404s.
+        // Authorize and load the row before input validation so missing or
+        // out-of-scope tenants preserve their existing error channel.
         let current =
             self.repo
                 .find_by_id(&scope, id)
@@ -1787,32 +1769,16 @@ impl<R: TenantRepo> TenantService<R> {
                 resource: id.to_string(),
             });
         }
-        // Schema validation runs AFTER `authorize` AND `find_by_id`
-        // so a registry outage / malformed-schema response surfaces
-        // only to already-authorized callers acting on a real row —
-        // an out-of-scope caller still gets `403 CrossTenantDenied`,
-        // a missing-row caller still gets `404 NotFound`, instead of
-        // `503` leaking registry health through the error channel.
-        // Mirrors the ordering in `create_tenant`. Skipped when the
-        // patched name is identical to the current name (idempotent
-        // PATCH — no shape change, no need to validate).
-        //
-        // Trim BEFORE the same-name comparison so `" acme "` against a
-        // stored `"acme"` is the idempotent no-op it means, and reject
-        // an all-whitespace rename exactly as `create_tenant` does.
-        let new_name = patch
+        // Normalize before checking bounds, including same-name requests from
+        // legacy rows. The repo still owns valid no-op detection.
+        patch.name = patch
             .name
             .take()
-            .map(|name| verify_tenant_name("update_tenant", name))
+            .map(|name| verify_tenant_name("update_tenant", name).map(TenantName::into_inner))
             .transpose()?;
-        if let Some(ref new_name) = new_name
-            && new_name.as_str() != current.name
-            && let Some(reader) = self.types_registry_reader(CallerOrigin::Request(ctx))
-        {
-            crate::domain::gts_validation::validate_tenant_name_via_gts(new_name.as_str(), reader)
-                .await?;
-        }
-        patch.name = new_name.map(TenantName::into_inner);
+        patch.validate().map_err(|error| DomainError::Validation {
+            detail: format!("update_tenant: {error}"),
+        })?;
         let updated = self.repo.update_tenant_mutable(&scope, id, &patch).await?;
 
         // Suppress the lifecycle event log on an idempotent no-op.

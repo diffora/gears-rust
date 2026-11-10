@@ -50,6 +50,10 @@ pub mod precondition;
 pub mod quota;
 pub mod reason;
 pub mod tenant;
+mod tenant_validation;
+pub use tenant_validation::{TenantInputValidationError, validate_tenant_name};
+#[cfg(test)]
+mod tenant_validation_tests;
 mod user_validation;
 pub use user_validation::UserInputValidationError;
 

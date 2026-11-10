@@ -5,8 +5,7 @@
 //! exercise the saga's classify / IdP-wait / finalize / compensate
 //! branches without touching the DB or the network. Tests that need a
 //! registry use [`StubTypesRegistry`] below: a `MockTypesRegistry`
-//! holding the platform root tenant type and the tenant projection
-//! schema, the two Type Schemas bootstrap reads.
+//! holding the inventory and platform root tenant type used by type preflight.
 //!
 //! `tokio::time::pause()` is used wherever the saga's wait/backoff
 //! envelope would otherwise stall the test on real wall-clock sleeps.
@@ -32,7 +31,6 @@ use toolkit_gts::gts_id;
 use uuid::Uuid;
 
 const ROOT_ID_RAW: u128 = 0x100;
-const TENANT_SCHEMA: &str = gts_id!("cf.core.am.tenant.v1~");
 const TENANT_TYPE_UUID_RAW: u128 = 0xAA;
 const ROOT_TENANT_TYPE: &str = gts_id!("cf.core.am.tenant_type.v1~cf.core.am.platform.v1~");
 
@@ -604,60 +602,64 @@ async fn run_returns_active_root_on_clean_noroot_path() {
 }
 
 #[tokio::test]
-async fn run_rejects_root_name_violating_tenant_v1_schema_via_gts() {
-    // Pin the validate-before-insert fence in
-    // `insert_root_provisioning`: a configured `root_name` that
-    // violates the published `gts.cf.core.am.tenant.v1~` schema
-    // (>255 chars per the canned stub schema, mirroring the live
-    // bounds) MUST fail saga step 1 with `Validation` BEFORE any
-    // `tenants` row is written. Mirror site for
-    // `TenantService::create_tenant`'s GTS-name gate — without this
-    // fence the only guard for `root_name` would be the DB CHECK
-    // constraint, which leaks the bounds duplication the GTS-runtime
-    // validation pattern was introduced to eliminate.
+async fn run_rejects_oversized_raw_root_name_before_side_effects() {
     let repo = Arc::new(FakeTenantRepo::new());
-    let repo_for_assert = Arc::clone(&repo);
     let idp = Arc::new(FakeIdpProvisioner::new(FakeOutcome::Ok));
     let mut cfg = bootstrap_cfg();
-    cfg.root_name = "x".repeat(256);
-    let svc = BootstrapService::new(
-        repo,
-        idp.clone() as Arc<dyn IdpPluginClient>,
-        cfg,
-        root_type_cfg(),
-    )
-    .with_types_registry(StubTypesRegistry::arc());
-
+    // Bootstrap persists the raw config; unlike create/update it must not trim.
+    cfg.root_name = format!(" {} ", "x".repeat(254));
+    let svc = BootstrapService::new(repo.clone(), idp.clone(), cfg, root_type_cfg())
+        .with_types_registry(StubTypesRegistry::arc());
     let err = svc
         .run()
         .await
-        .expect_err("oversized root_name MUST fail GTS validation in insert step");
+        .expect_err("raw configured name exceeds 255 scalars");
+    assert!(matches!(err, DomainError::Validation { detail } if detail.contains("name")));
+    assert!(repo.find_by_id_unchecked(root_id()).is_none());
+    assert_eq!(idp.provision_call_count(), 0);
+}
 
-    match &err {
-        DomainError::Validation { detail } => {
-            assert!(
-                detail.contains("name") && detail.contains(TENANT_SCHEMA),
-                "Validation must name the offending field and schema, got: {detail}"
-            );
-        }
-        other => panic!("expected DomainError::Validation, got {other:?}"),
-    }
-
-    // Repo state contract: validation runs BEFORE `insert_provisioning`,
-    // so no `tenants` row materializes on the failure path.
-    assert!(
-        repo_for_assert.find_by_id_unchecked(root_id()).is_none(),
-        "GTS validation MUST gate the insert; no row may land in repo"
-    );
-
-    // IdP contract: `provision_tenant` is a saga-step-2 call that
-    // only runs after a successful step-1 insert. A validation
-    // failure at step 1 must not advance to step 2.
+#[tokio::test]
+async fn run_preserves_valid_raw_padded_root_name() {
+    let repo = Arc::new(FakeTenantRepo::new());
+    let idp = Arc::new(FakeIdpProvisioner::new(FakeOutcome::Ok));
+    let mut cfg = bootstrap_cfg();
+    let name = format!(" {} ", "\u{44f}".repeat(253));
+    cfg.root_name = name.clone();
+    let svc = BootstrapService::new(repo.clone(), idp, cfg, root_type_cfg())
+        .with_types_registry(StubTypesRegistry::arc());
+    svc.run().await.expect("255 raw scalars");
     assert_eq!(
-        idp.provision_call_count(),
-        0,
-        "name-validation failure at step 1 MUST NOT advance to provision_tenant"
+        repo.find_by_id_unchecked(root_id()).expect("root").name,
+        name
     );
+}
+
+#[tokio::test]
+async fn local_root_config_validation_has_no_optional_registry_bypass() {
+    for (name, metadata) in [
+        ("x".repeat(256), None),
+        (
+            "root".to_owned(),
+            Some(serde_json::json!("x".repeat(
+                crate::domain::tenant::service::MAX_IDP_METADATA_BYTES + 1
+            ))),
+        ),
+    ] {
+        let mut cfg = bootstrap_cfg();
+        cfg.root_name = name;
+        cfg.root_tenant_metadata = metadata;
+        let svc = BootstrapService::new(
+            Arc::new(FakeTenantRepo::new()),
+            Arc::new(FakeIdpProvisioner::new(FakeOutcome::Ok)),
+            cfg,
+            root_type_cfg(),
+        );
+        let err = svc
+            .preflight_root_config()
+            .expect_err("local checks run without a registry");
+        assert!(matches!(err, DomainError::Validation { .. }));
+    }
 }
 
 // ---------------------------------------------------------------------

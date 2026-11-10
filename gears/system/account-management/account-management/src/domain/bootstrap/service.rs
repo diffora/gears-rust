@@ -113,7 +113,7 @@ enum BootstrapState {
     InitialClassify,
 
     /// Initial-`NoRoot` bridge: run `preflight_root_tenant_type` +
-    /// `preflight_root_gts_config` once before entering the loop.
+    /// `preflight_root_config` once before entering the loop.
     /// Skipped on the `ProvisioningRootResume` path — the peer is
     /// performing those checks.
     InitialPreflight,
@@ -566,9 +566,8 @@ impl<R: TenantRepo> BootstrapService<R> {
         if let Err(e) = self.preflight_root_tenant_type(ctx.deadline).await {
             return BootstrapState::Terminal(Err(e));
         }
-        // Registry-backed config validation for `root_name` /
-        // `root_tenant_metadata`.
-        if let Err(e) = self.preflight_root_gts_config(ctx.deadline).await {
+        // Local root-name and opaque metadata-size checks.
+        if let Err(e) = self.preflight_root_config() {
             return BootstrapState::Terminal(Err(e));
         }
         BootstrapState::LoopClassify
@@ -664,7 +663,7 @@ impl<R: TenantRepo> BootstrapService<R> {
         if let Err(e) = self.preflight_root_tenant_type(ctx.deadline).await {
             return BootstrapState::Terminal(Err(e));
         }
-        if let Err(e) = self.preflight_root_gts_config(ctx.deadline).await {
+        if let Err(e) = self.preflight_root_config() {
             return BootstrapState::Terminal(Err(e));
         }
         ctx.pending_takeover_precheck = false;
@@ -1015,60 +1014,15 @@ impl<R: TenantRepo> BootstrapService<R> {
     // @cpt-end:cpt-cf-account-management-dod-platform-bootstrap-idempotency:p1:inst-dod-bootstrap-idempotency-classify
     // @cpt-end:cpt-cf-account-management-algo-platform-bootstrap-idempotency-detection:p1:inst-algo-idem-classify-root
 
-    /// Registry-backed validation of the operator-configured root
-    /// tenant metadata. Runs in the preflight phase (BEFORE the
-    /// saga loop opens its first `provision_tenant` call) so a bad
-    /// `root_name` or `root_tenant_metadata` fails fast as
-    /// `Validation` instead of burning the full `idp_wait_timeout`
-    /// budget on retries.
-    ///
-    /// Mirrors the call sites in `TenantService::create_tenant` (and
-    /// the `cf-resource-group::validate_metadata_via_gts` posture):
-    /// when the registry has the schema the JSON-Schema bounds
-    /// (`minLength`, `maxLength`) gate the call; when the schema is
-    /// not yet registered the helper short-circuits to `Ok(())` and
-    /// the DB `CHECK (length(name) BETWEEN 1 AND 255)` constraint
-    /// serves as the last-line guard for `root_name`. Without these
-    /// checks running at preflight, a misconfigured `root_name`
-    /// would land in `tenants.name` after passing only the
-    /// trim-non-empty check in [`BootstrapConfig::validate`].
-    ///
-    /// # Deadline contract
-    ///
-    /// Both calls are live registry calls — a stalled types-registry
-    /// would otherwise hang the bootstrap saga past
-    /// `idp_wait_timeout`. Each await is wrapped in
-    /// `tokio::time::timeout_at(deadline, …)` so the saga's
-    /// deadline-bound contract (already enforced for
-    /// `preflight_root_tenant_type` and `provision_tenant`) extends
-    /// to these too. A timeout maps to `service_unavailable` and the
-    /// bootstrap retry loop handles it the same way as a transient
-    /// registry error.
-    async fn preflight_root_gts_config(&self, deadline: Instant) -> Result<(), DomainError> {
-        let Some(registry) = self.types_registry.as_ref() else {
-            return Ok(());
-        };
-        // A platform read: the saga runs for no request, and the root
-        // name is AM configuration, not a caller's input (P33).
-        match tokio::time::timeout_at(
-            deadline,
-            crate::domain::gts_validation::validate_tenant_name_via_gts(
-                &self.cfg.root_name,
-                crate::domain::types_registry_reader::TypesRegistryReader::Platform(
-                    registry.as_ref(),
-                ),
-            ),
-        )
-        .await
-        {
-            Ok(Ok(())) => {}
-            Ok(Err(err)) => return Err(err),
-            Err(_elapsed) => {
-                return Err(DomainError::service_unavailable(
-                    "bootstrap: validate_tenant_name_via_gts timed out against types-registry",
-                ));
+    /// Validate local root config before insert/provisioning, independently of
+    /// registry availability. The raw name is persisted unchanged, so it must
+    /// satisfy the SDK bounds without request-name normalization.
+    fn preflight_root_config(&self) -> Result<(), DomainError> {
+        account_management_sdk::validate_tenant_name(&self.cfg.root_name).map_err(|error| {
+            DomainError::Validation {
+                detail: format!("bootstrap.root_name: {error}"),
             }
-        }
+        })?;
         // No plugin-input metadata shape validation here: the IdP
         // plugin owns its own `provisioning_metadata` shape end-to-
         // end (AM treats the value as opaque per the IdP-metadata
@@ -1096,8 +1050,8 @@ impl<R: TenantRepo> BootstrapService<R> {
         &self,
         scope: &AccessScope,
     ) -> Result<TenantModel, DomainError> {
-        // GTS-config validation runs in the preflight phase
-        // (`preflight_root_gts_config`) so a bad `root_name` /
+        // Local config validation runs in the preflight phase
+        // (`preflight_root_config`) so a bad `root_name` /
         // `root_tenant_metadata` fails BEFORE the first
         // `provision_tenant` call. By the time we reach this method
         // the configured values have already been gated.

@@ -70,10 +70,8 @@ fn classify_check_violation_yields_validation_400() {
     // String-based detection of a Postgres CHECK violation surfaced
     // through `RuntimeErr::Internal`. Without this classification the
     // failure would fall to the unclassified arm → `Internal` (HTTP
-    // 500); the regression guard pins HTTP 400 + `Validation` so a
-    // degraded-mode short-circuit in `validate_tenant_name_via_gts`
-    // (schema not yet registered → `Ok(())`) still produces a
-    // client-actionable error when the DB-side CHECK fires.
+    // 500); the regression guard pins HTTP 400 + `Validation` for
+    // DB-side CHECK constraints as a final storage-integrity fence.
     let db_err = DbErr::Exec(RuntimeErr::Internal(
         "new row for relation \"tenants\" violates check constraint \"ck_tenants_root_depth\""
             .into(),

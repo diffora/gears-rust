@@ -7,6 +7,23 @@ Plan: [`plan.md`](./plan.md) · Spec: [`SPEC.md`](./SPEC.md)
 
 The database-backed SDK contracts, local and REST clients, AM request-context reads and the managed AM/IdP/resolver/policy/admission publication paths are implemented. T37/T39 and the implemented portions of T41/T42 still need their full acceptance and checkpoint verification. T32's final verification and the remaining Checkpoint 7A gates stay open.
 
+**AM validation boundary (2026-11-10).** Fixed user fields and tenant names use SDK
+DTO validation; resource schemas remain published but are not projected for partial
+command checks. Tenant names are checked after request normalization, and bootstrap
+checks its raw configured name plus opaque metadata size without an optional-registry
+bypass. Registry-backed tenant-type traits/root eligibility and native GTS validation
+of extensible public metadata remain. This supersedes the user/tenant-name schema-read
+policies recorded historically in T32/T34a; task counters and open checkpoint gates
+are unchanged.
+
+Tenant migration evidence: SDK **108/108**; full AM + SDK nextest **1367/1367** across
+32 binaries (`--offline --locked`, default features, no skips); both packages'
+all-target/all-feature Clippy with warnings denied; `make fmt`. The new service
+regressions failed against the old schema path, and a temporary byte-count mutation
+was killed by the Unicode boundary test before restoring the production source.
+Parallel read-only Codex review approved the API, implementation and test slices.
+This is scoped AM validation evidence, not a full workspace or P0 checkpoint run.
+
 ### Current migration coverage
 
 SDK reads and managed declaration publication are separate migration steps:
@@ -2912,8 +2929,8 @@ verification remain open; consumer migration is T38.
 `gts::ResolvedType::compile_payload_validator` already available in the locked GTS version;
 no dependency/spec migration is needed. It uses the materialized `resolved_schema` and the
 selected leaf's authored `content` for abstractness, with no new store, resolution or cache.
-Consumer migration remains T38; AM's create/patch projections and gear-specific payload
-envelopes remain with consumers.
+Remaining consumer migration is T38. AM fixed command fields now use local SDK DTO
+validation; extensible metadata uses this compiler with its existing payload envelope.
 
 **QE consumer note (T38):** QE can retain `CompiledContract` and reuse the returned validator
 compiled once at catalogue bootstrap. A one-shot helper that recompiles on every request is

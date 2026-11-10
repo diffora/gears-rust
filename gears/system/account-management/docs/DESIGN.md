@@ -316,6 +316,18 @@ Legacy system integration is handled through the pluggable IdP provider contract
 | TenantMetadata | Extensible metadata entry scoped to a tenant, validated against a GTS-registered schema. | `account-management-sdk` models |
 | ConversionRequest | Durable record of a dual-consent mode conversion for a single tenant. Captures `target_mode`, `initiator_side`, the five-valued status (`pending` / `approved` / `cancelled` / `rejected` / `expired`), approval window, resolver identities, and soft-delete tombstone. At most one `pending` row per tenant (partial unique index). | `account-management-sdk` models |
 
+**Fixed tenant input validation.** `CreateTenantRequest::validate` and
+`UpdateTenantRequest::validate` enforce the shared SDK name bound of 1–255 Unicode
+scalars. The service trims request names and rejects all-whitespace values before
+validating; every supplied update name is checked, including same-name requests.
+Bootstrap uses the same bound on its raw `root_name`, which is persisted unchanged,
+plus the existing configuration non-whitespace check. Both paths enforce the opaque
+IdP metadata size cap before side effects. These checks do not read or extract fields
+from the Tenant resource schema. The existing Tenant v1 declaration stays published
+with its name bounds and PEP identity; it is not the complete SQL row contract.
+Tenant-type pairing/root eligibility still use registry traits, and extensible public
+`tenant_metadata` values still use the SDK's native compiled GTS payload validator.
+
 **Relationships**:
 - Tenant → Tenant: Self-referential parent-child (via `parent_id`). A tenant has zero or one parent and zero or more children. The root tenant has `parent_id = NULL`.
 - Tenant → TenantClosureEntry: Each SDK-visible tenant participates in closure rows as both ancestor and descendant; every SDK-visible tenant has a self-row `(id, id)`. Closure rows are lifecycle-bound to the descendant — the self-row and strict-ancestor rows are inserted on the `provisioning → active` transition (one row per step up the `parent_id` chain), and all rows where the tenant appears as descendant are removed on hard-delete. Provisioning tenants have no closure rows at all.

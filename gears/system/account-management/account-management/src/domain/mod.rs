@@ -20,7 +20,6 @@ pub(crate) mod authz;
 pub mod bootstrap;
 pub mod conversion;
 pub mod error;
-pub mod gts_validation;
 pub mod idp;
 pub mod integrity_check;
 pub mod metadata;

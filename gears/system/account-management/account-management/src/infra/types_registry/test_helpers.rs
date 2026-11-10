@@ -60,10 +60,8 @@ pub fn at_the_boundary(err: crate::domain::error::DomainError) -> (&'static str,
     )
 }
 
-/// A registry holding what platform bootstrap reads: the linked inventory
-/// (the AM tenant-type envelope among it), the platform root tenant type
-/// with no allowed parents, and the AM tenant projection schema pinning
-/// `name` to `minLength: 1, maxLength: 255`.
+/// A registry holding the linked inventory and platform root tenant type
+/// with no allowed parents, as required by bootstrap's mandatory type preflight.
 pub fn bootstrap_registry() -> Arc<MockTypesRegistry> {
     let registry = Arc::new(MockTypesRegistry::new());
     registry.seed_inventory();
@@ -75,20 +73,6 @@ pub fn bootstrap_registry() -> Arc<MockTypesRegistry> {
             "type": "object",
             "allOf": [{ "$ref": gts_uri!("cf.core.am.tenant_type.v1~") }],
             "x-gts-traits": { "allowed_parent_types": [] },
-        }),
-    );
-    registry.seed(
-        gts_id!("cf.core.am.tenant.v1~"),
-        serde_json::json!({
-            "$id": gts_uri!("cf.core.am.tenant.v1~"),
-            "$schema": "http://json-schema.org/draft-07/schema#",
-            "type": "object",
-            "required": ["id", "name"],
-            "properties": {
-                "id": { "type": "string", "format": "uuid" },
-                "name": { "type": "string", "minLength": 1, "maxLength": 255 },
-                "parent_id": { "type": ["string", "null"], "format": "uuid" },
-            },
         }),
     );
     registry
@@ -183,7 +167,7 @@ impl types_registry_sdk::PlatformTypesRegistryApi for Tampered {
 
 /// Fixture for opaque tenant-type UUIDs: every UUID read returns the same typed
 /// schema with the requested UUID; identifier reads return `NotFound`. This leaves
-/// AM resource schemas absent and short-circuits their optional validation.
+/// AM resource schemas absent; fixed DTO validation is independent of them.
 pub struct ConstantTypeRegistry(pub &'static str);
 
 fn not_implemented() -> CanonicalError {

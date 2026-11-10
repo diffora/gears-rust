@@ -91,14 +91,16 @@ pub trait AccountManagementClient: Send + Sync + 'static {
     /// Create a child tenant under `input.parent_id`. Implements the
     /// three-step create-tenant saga (insert provisioning row -> `IdP`
     /// `provision_tenant` -> activation finalisation) with full
-    /// compensation on each branch failure.
+    /// compensation on each branch failure. Names are trimmed and checked via
+    /// [`CreateTenantRequest::validate`] before writes or provider calls; the
+    /// Tenant resource schema is not read for fixed command validation.
     ///
     /// # Errors
     ///
     /// * `PermissionDenied` (HTTP 403) -- caller is not authorized to
     ///   create a tenant under `parent_id`.
     /// * `InvalidArgument` (HTTP 400) -- parent missing / inactive,
-    ///   target type incompatible, depth ceiling exceeded.
+    ///   invalid normalized name, target type incompatible, depth ceiling exceeded.
     /// * `Unimplemented` (HTTP 501) -- the configured `IdP` plugin
     ///   reports the operation as unsupported.
     /// * `ServiceUnavailable` (HTTP 503) -- `IdP` transport failure;
@@ -178,7 +180,7 @@ pub trait AccountManagementClient: Send + Sync + 'static {
     ///
     /// * `PermissionDenied` / `NotFound` -- see [`Self::get_tenant`].
     /// * `InvalidArgument` (HTTP 400) -- empty patch, name validation
-    ///   failure, GTS schema rejection on a patched field.
+    ///   failure under [`UpdateTenantRequest::validate`] after trimming.
     /// * `FailedPrecondition` (HTTP 400) -- target tenant is in
     ///   `Deleted` status (read-only during retention).
     async fn update_tenant(

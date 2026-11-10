@@ -11,8 +11,8 @@ use toolkit_canonical_errors::CanonicalError;
 use toolkit_macros::domain_model;
 use toolkit_security::{PlatformSecurityContext, SecurityContext};
 use types_registry_sdk::{
-    GtsTypeId, PlatformTypesRegistryApi, PlatformTypesRegistryApiExt, ReadOptions, TypeSchema,
-    TypesRegistryApi, TypesRegistryApiExt,
+    GtsTypeId, PlatformTypesRegistryApi, PlatformTypesRegistryApiExt, TypesRegistryApi,
+    TypesRegistryApiExt,
 };
 use uuid::Uuid;
 
@@ -46,28 +46,6 @@ impl<'a> TypesRegistryReader<'a> {
         match self {
             Self::Caller { .. } => DomainError::caller_registry_failure(err, context),
             Self::Platform(_) => DomainError::platform_registry_failure(err, context),
-        }
-    }
-
-    /// See [`TypesRegistryApiExt::get_type_schema`].
-    ///
-    /// # Errors
-    /// The registry's.
-    pub async fn get_type_schema(
-        self,
-        type_id: &GtsTypeId,
-        options: ReadOptions,
-    ) -> Result<TypeSchema, CanonicalError> {
-        match self {
-            Self::Caller { api, ctx } => api.get_type_schema(ctx, type_id, options).await,
-            Self::Platform(api) => {
-                api.get_type_schema(
-                    &PlatformSecurityContext::outbound_marker(),
-                    type_id,
-                    options,
-                )
-                .await
-            }
         }
     }
 

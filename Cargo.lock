@@ -1678,7 +1678,6 @@ dependencies = [
  "http",
  "http-body-util",
  "inventory",
- "jsonschema 0.60.2",
  "opentelemetry",
  "opentelemetry_sdk",
  "parking_lot",

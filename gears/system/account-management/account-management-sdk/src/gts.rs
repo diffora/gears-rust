@@ -129,13 +129,11 @@ pub const USER_RG_TYPE_CODE: &str = gts_id!("cf.core.rg.type.v1~cf.core.am.user.
 //   * `gts.cf.core.am.user.v1~` -- resource metadata published via UserV1.
 //     Fixed user commands validate locally through the SDK DTO methods.
 //
-// Registered for RBAC authorizability (PEP target types), id-only bodies:
-//   * `tenant.v1~` -- registered via [`TenantV1`] below so RBAC can name it
-//     in a role `target_type`. Body is `id`-only (empty for authorization
-//     purposes), so `domain::gts_validation::validate_tenant_name_via_gts`
-//     stays effectively fail-open (no name constraints in this schema; the
-//     DB-level `CHECK (length(name) BETWEEN ...)` remains the backstop).
-//   * `conversion_request.v1~` -- registered via [`ConversionRequestV1`] below.
+// Registered for RBAC authorizability (PEP target types):
+//   * `tenant.v1~` -- registered via [`TenantV1`] with the existing id/name
+//     resource shape. Fixed tenant commands validate through SDK DTO methods.
+//   * `conversion_request.v1~` -- registered via [`ConversionRequestV1`] below,
+//     with an id-only body.
 //
 // Not on the registration list (no vendor-derived extensions planned):
 //   * `user_group.v1~` -- no consumer (the SDK constant was removed in
@@ -288,13 +286,9 @@ pub struct IdpPluginSpecV1;
 /// the type. The authorization tenant-scope binding comes from the impl
 /// crate's `ResourceType` (`OWNER_TENANT_ID`), not from this schema body.
 ///
-/// Declares `name` (beyond the contract-required `id`) because
-/// [`account-management::domain::gts_validation::validate_tenant_name_via_gts`]
-/// validates the tenant `name` against this schema's `properties.name` on
-/// every `create_tenant` — it is fail-closed, so a missing `name` property
-/// surfaces as Internal/500. Bounds mirror `docs/schemas/tenant.v1.schema.json`
-/// (and the DB `CHECK (length(name) BETWEEN 1 AND 255)`); guarded by
-/// `tenant_schema_constraints_tests`.
+/// The published resource retains its name bounds. Fixed command fields use
+/// SDK DTO validation independently of registry projections; shared constants
+/// keep the existing resource bounds aligned without rebuilding JSON Schema.
 #[gts_type_schema(
     dir_path = "schemas",
     type_id = gts_id!("cf.core.am.tenant.v1~"),
@@ -306,9 +300,11 @@ pub struct TenantV1 {
     /// Required by the `gts-macros` base-struct contract; inert for
     /// authorization (RBAC only needs the type id known to the registry).
     pub id: gts::GtsInstanceId,
-    /// Tenant display name. Validated by AM's fail-closed
-    /// `validate_tenant_name_via_gts` on `create_tenant`.
-    #[schemars(length(min = 1, max = 255))]
+    /// Tenant display name; the same fixed bounds apply to command DTOs.
+    #[schemars(length(
+        min = crate::tenant_validation::TENANT_NAME_MIN_CHARS,
+        max = crate::tenant_validation::TENANT_NAME_MAX_CHARS
+    ))]
     pub name: String,
 }
 
@@ -633,13 +629,8 @@ mod user_schema_constraints_tests {
 
 #[cfg(test)]
 mod tenant_schema_constraints_tests {
-    //! Drift guard: the macro-generated `TenantV1` schema (registered as
-    //! `gts.cf.core.am.tenant.v1~`) is the type
-    //! `account-management::domain::gts_validation::validate_tenant_name_via_gts`
-    //! validates the tenant `name` against. It MUST declare `name` with the
-    //! `minLength`/`maxLength` bounds from `docs/schemas/tenant.v1.schema.json`.
-    //! If `name` is absent, the fail-closed validator returns Internal/500 on
-    //! every `create_tenant` ("schema does not declare property `name`").
+    //! Drift guard: the published Tenant v1 resource keeps its existing name
+    //! bounds, shared with fixed command validation through SDK constants.
 
     use serde_json::Value;
 
