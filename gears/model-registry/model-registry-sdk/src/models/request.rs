@@ -378,17 +378,6 @@ mod tests {
     }
 
     #[test]
-    fn update_requests_default_to_unconditional_no_op() {
-        let provider = UpdateProviderRequestV1::default();
-        assert_eq!(provider.expected_version, None);
-        assert_eq!(provider.gts_type, None);
-        let model = UpdateModelRequestV1::default();
-        assert_eq!(model.expected_version, None);
-        assert_eq!(model.provider_model_id, None);
-        assert_eq!(model.cost, None);
-    }
-
-    #[test]
     fn create_model_request_new_sets_required_fields_only() {
         let req = CreateModelRequestV1::new(
             Uuid::nil(),

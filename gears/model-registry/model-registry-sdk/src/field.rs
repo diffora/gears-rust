@@ -32,6 +32,7 @@ pub const IF_MATCH_REQUIRED: &str = "IF_MATCH_REQUIRED";
 
 /// Typed view of the reason codes above.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum Reason {
     InvalidFormat,
     TooLarge,

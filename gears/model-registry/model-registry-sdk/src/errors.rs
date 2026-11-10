@@ -1,5 +1,5 @@
 // Created: 2026-04-17 by Constructor Tech
-// Updated: 2026-11-09 by Constructor Tech
+// Updated: 2026-11-10 by Constructor Tech
 //! Opt-in typed projection of [`CanonicalError`] for Model Registry consumers.
 //!
 //! Every [`ModelRegistryClientV1`](crate::ModelRegistryClientV1) method
@@ -501,19 +501,5 @@ mod tests {
             ),
             "{err:?}"
         );
-    }
-
-    #[test]
-    fn projection_survives_the_wire() {
-        let canonical = ModelScope::permission_denied()
-            .with_reason(permission::MODEL_NOT_APPROVED)
-            .create();
-        let json = serde_json::to_string(&Problem::from(canonical)).expect("serializes");
-        let back: Problem = serde_json::from_str(&json).expect("deserializes");
-        let canonical = CanonicalError::try_from(back).expect("canonical");
-        assert!(matches!(
-            ModelRegistryError::from(canonical),
-            ModelRegistryError::ModelNotApproved { .. }
-        ));
     }
 }

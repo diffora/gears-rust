@@ -8,6 +8,10 @@ use uuid::Uuid;
 
 use crate::models::{ApprovalState, ModelInfoV1, SharingMode};
 
+fn default_true() -> bool {
+    true
+}
+
 // ---------------------------------------------------------------------------
 // ProviderV1
 // ---------------------------------------------------------------------------
@@ -34,11 +38,14 @@ pub struct ProviderV1 {
     pub gts_type: gts::GtsTypeId,
     /// When false, no model of this provider can be evaluated by the owner
     /// or any inheriting tenant. Default true.
+    #[serde(default = "default_true")]
     pub enabled: bool,
     /// Default [`SharingMode::Tenant`].
+    #[serde(default)]
     pub sharing_mode: SharingMode,
     /// Whether the platform can manage the provider runtime itself.
     /// Informational. Default false.
+    #[serde(default)]
     pub managed: bool,
     /// Opaque provider metadata, stored and returned unchanged.
     pub metadata: Option<serde_json::Value>,
@@ -141,6 +148,7 @@ pub struct ModelV1 {
     pub canonical_id: String,
     /// Descendants see the model only when it is `Shared` and its provider
     /// is `Shared`. Default [`SharingMode::Tenant`].
+    #[serde(default)]
     pub sharing_mode: SharingMode,
     pub approval: ApprovalV1,
     pub info: ModelInfoV1,
@@ -345,6 +353,7 @@ pub(crate) mod test_support {
 mod tests {
     use super::test_support::sample_model;
     use super::*;
+    use crate::models::ContextWindow;
     use toolkit_gts::gts_id;
 
     #[test]
@@ -391,5 +400,107 @@ mod tests {
         let json = serde_json::to_value(&entry).expect("serializes");
         assert_eq!(json["inherited"], true);
         assert_eq!(json["model"]["canonical_id"], "openai::gpt-4o");
+    }
+
+    fn at() -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339("2026-11-10T12:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc)
+    }
+
+    fn sample_provider() -> ProviderV1 {
+        ProviderV1::new(
+            Uuid::from_u128(1),
+            Uuid::from_u128(2),
+            "openai",
+            "OpenAI",
+            gts::GtsTypeId::new(gts_id!("cf.genai.model.provider.v1~cf.genai._.openai.v1~")),
+            Uuid::from_u128(3),
+            at(),
+        )
+    }
+
+    #[test]
+    fn provider_new_applies_design_defaults() {
+        let p = sample_provider();
+        assert_eq!(p.id, Uuid::from_u128(1));
+        assert_eq!(p.tenant_id, Uuid::from_u128(2));
+        assert_eq!(p.slug, "openai");
+        assert_eq!(p.name, "OpenAI");
+        assert!(p.enabled);
+        assert_eq!(p.sharing_mode, SharingMode::Tenant);
+        assert!(!p.managed);
+        assert_eq!(p.metadata, None);
+        assert_eq!(p.version, 1);
+        assert_eq!((p.created_by, p.created_at), (Uuid::from_u128(3), at()));
+        assert_eq!((p.updated_by, p.updated_at), (p.created_by, p.created_at));
+    }
+
+    #[test]
+    fn model_new_applies_design_defaults() {
+        let info = ModelInfoV1::new(
+            gts::GtsTypeId::new(gts_id!("cf.genai.model.provider.v1~cf.genai._.openai.v1~")),
+            "gpt-4o",
+            "GPT-4o",
+            ContextWindow::new(128_000),
+        );
+        let m = ModelV1::new(
+            Uuid::from_u128(1),
+            Uuid::from_u128(2),
+            Uuid::from_u128(4),
+            "gpt-4o",
+            "openai::gpt-4o",
+            info.clone(),
+            Uuid::from_u128(3),
+            at(),
+        );
+        assert_eq!(m.provider_id, Uuid::from_u128(4));
+        assert_eq!(m.name, "gpt-4o");
+        assert_eq!(m.canonical_id, "openai::gpt-4o");
+        assert_eq!(m.sharing_mode, SharingMode::Tenant);
+        assert_eq!(
+            m.approval,
+            ApprovalV1::new(ApprovalState::Approved, Uuid::from_u128(3), at())
+        );
+        assert_eq!(m.info, info);
+        assert_eq!(m.version, 1);
+        assert_eq!((m.updated_by, m.updated_at), (m.created_by, m.created_at));
+    }
+
+    #[test]
+    fn entry_new_clears_every_flag() {
+        let p = ProviderEntryV1::new(sample_provider());
+        assert!(!p.inherited && !p.shadowed && !p.available_for_eval);
+        let m = ModelEntryV1::new(sample_model());
+        assert!(!m.inherited && !m.shadowed && !m.provider_enabled && !m.available_for_eval);
+    }
+
+    #[test]
+    fn provider_documented_defaults_apply_when_absent() {
+        let mut p = sample_provider();
+        p.enabled = false;
+        p.sharing_mode = SharingMode::Shared;
+        p.managed = true;
+        let mut json = serde_json::to_value(&p).expect("serializes");
+        let obj = json.as_object_mut().expect("object");
+        for key in ["enabled", "sharing_mode", "managed"] {
+            obj.remove(key);
+        }
+
+        let back: ProviderV1 = serde_json::from_value(json).expect("deserializes");
+        assert!(back.enabled);
+        assert_eq!(back.sharing_mode, SharingMode::Tenant);
+        assert!(!back.managed);
+    }
+
+    #[test]
+    fn model_sharing_mode_defaults_when_absent() {
+        let mut m = sample_model();
+        m.sharing_mode = SharingMode::Shared;
+        let mut json = serde_json::to_value(&m).expect("serializes");
+        json.as_object_mut().expect("object").remove("sharing_mode");
+
+        let back: ModelV1 = serde_json::from_value(json).expect("deserializes");
+        assert_eq!(back.sharing_mode, SharingMode::Tenant);
     }
 }

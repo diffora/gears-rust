@@ -748,6 +748,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn context_window_new_sets_only_max_input_tokens() {
+        let cw = ContextWindow::new(128_000);
+        assert_eq!(cw.max_input_tokens, 128_000);
+        assert_eq!(cw.max_output_tokens, None);
+        assert_eq!(cw.output_vector_size, None);
+    }
+
+    #[test]
     fn cost_defaults_to_all_absent_and_skips_absent_rates() {
         let cost: ModelCostV1 = serde_json::from_str("{}").unwrap();
         assert_eq!(cost, ModelCostV1::default());

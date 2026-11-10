@@ -18,6 +18,7 @@ pub const MODEL_RESOURCE_TYPE: &str = gts_id!("cf.genai.model_registry.model.v1~
 
 /// Typed view of the two resource types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum Resource {
     Provider,
     Model,

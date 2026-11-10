@@ -169,3 +169,52 @@ impl ProviderPluginCapabilities {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use model_registry_sdk::models::{ContextWindow, ModelInfoV1, ProviderTypeV1};
+    use tokio_util::sync::CancellationToken;
+    use toolkit_gts::gts_id;
+
+    use super::ProviderCallCtx;
+
+    #[derive(Debug)]
+    #[toolkit_gts::gts_type_schema(
+        dir_path = "schemas",
+        base = ProviderTypeV1,
+        type_id = gts_id!("cf.genai.model.provider.v1~cf.genai._.test.v1~"),
+        description = "Test provider settings",
+        properties = "oagw_alias"
+    )]
+    pub struct TestProviderSettingsV1 {
+        pub oagw_alias: String,
+    }
+
+    fn ctx(gts_type: &str) -> ProviderCallCtx {
+        let mut info = ModelInfoV1::new(
+            gts::GtsTypeId::new(gts_type),
+            "test-model",
+            "Test model",
+            ContextWindow::new(8_192),
+        );
+        info.provider_settings = serde_json::json!({ "oagw_alias": "test-upstream" });
+        ProviderCallCtx::new(info, "req-1", CancellationToken::new())
+    }
+
+    #[test]
+    fn provider_settings_narrows_to_the_plugin_type() {
+        let settings: TestProviderSettingsV1 =
+            ctx(gts_id!("cf.genai.model.provider.v1~cf.genai._.test.v1~"))
+                .provider_settings()
+                .expect("narrows");
+        assert_eq!(settings.oagw_alias, "test-upstream");
+    }
+
+    #[test]
+    fn provider_settings_rejects_another_provider_type() {
+        let err = ctx(gts_id!("cf.genai.model.provider.v1~cf.genai._.other.v1~"))
+            .provider_settings::<TestProviderSettingsV1>()
+            .expect_err("type mismatch");
+        assert!(matches!(err, gts::NarrowError::SchemaId { .. }), "{err}");
+    }
+}

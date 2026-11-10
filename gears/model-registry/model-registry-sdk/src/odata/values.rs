@@ -1,5 +1,5 @@
 // Created: 2026-08-06 by Constructor Tech
-// Updated: 2026-10-26 by Constructor Tech
+// Updated: 2026-11-10 by Constructor Tech
 //! [`IntoODataValue`] impls for the SDK's wire enums.
 //!
 //! The filter columns behind these fields are plain strings, so without these
@@ -26,5 +26,25 @@ impl IntoODataValue for SharingMode {
 impl IntoODataValue for ApprovalState {
     fn into_odata_value(self) -> Value {
         Value::String(self.as_str().to_owned())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use toolkit_odata::ast::Value;
+    use toolkit_odata::schema::IntoODataValue;
+
+    use crate::models::{ApprovalState, SharingMode};
+
+    #[test]
+    fn enums_become_their_wire_strings() {
+        assert!(matches!(
+            SharingMode::Shared.into_odata_value(),
+            Value::String(s) if s == "shared"
+        ));
+        assert!(matches!(
+            ApprovalState::Approved.into_odata_value(),
+            Value::String(s) if s == "approved"
+        ));
     }
 }
