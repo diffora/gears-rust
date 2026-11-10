@@ -65,11 +65,13 @@ toolkit-security = { workspace = true }
 toolkit-macros = { workspace = true }
 utoipa = { workspace = true }
 toolkit-gts = { workspace = true }
+# The `gts_instance!` expansion of the Orders topic names `::gts::GtsInstanceId`.
+gts = { workspace = true }
 toolkit-canonical-errors = { workspace = true }
 # The D-194 commercial service principal (Q13): `exchange_client_credentials` turns the configured
 # seller identity into the SecurityContext the gate presents to Pricing and Products. No workspace
 # entry exists; path form as mini-chat, settings-service and api-gateway declare it.
-authn-resolver-sdk = { package = "cf-gears-authn-resolver-sdk", version = "0.3.37", path = "../../../system/authn-resolver/authn-resolver-sdk" }
+authn-resolver-sdk = { package = "cf-gears-authn-resolver-sdk", version = "0.3.41", path = "../../../system/authn-resolver/authn-resolver-sdk" }
 # The `deps = [authn_resolver]` gear-macro edge re-exports `::authn_resolver`, so the gear crate
 # must be a direct dependency (init ordering, D-194; not used in code), as mini-chat and
 # api-gateway declare it.
@@ -103,5 +105,7 @@ tracing-test = { workspace = true, features = ["no-env-filter"] }
 trybuild = { workspace = true }
 tower = { workspace = true, features = ["util"] }
 toolkit-db = { workspace = true, features = ["sqlite"] }
+# The platform registry test double that seeds the link-time GTS inventory.
+types-registry-sdk = { workspace = true, features = ["test-util"] }
 test-containers = { workspace = true }
 testcontainers-modules = { workspace = true }

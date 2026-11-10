@@ -50,9 +50,9 @@ use crate::domain::delivery::{
 use crate::domain::error::DomainError;
 use crate::domain::id_parse::{parse_consumer_group_id, parse_topic_id, parse_type_id};
 use crate::domain::ingest::{
-    IngestService, ProducerCursors as DomainProducerCursors, ProducerMode as DomainProducerMode,
-    ProducerRegistrationInput, ProducerResetScope, ProducerTopicCursors, PublishAck,
-    PublishRequest,
+    BatchAck, IngestService, ProducerCursors as DomainProducerCursors,
+    ProducerMode as DomainProducerMode, ProducerRegistrationInput, ProducerTopicCursors,
+    PublishAck, PublishRequest, SyncPublishAck,
 };
 use crate::domain::model::{
     BarrierMode as DomainBarrierMode, ConsumerGroup as DomainConsumerGroup,
@@ -60,6 +60,7 @@ use crate::domain::model::{
     FilterSpec, Interest, Meta, Subscription as DomainSubscription,
     TenantTraversalDepth as DomainDepth, Topic as DomainTopic, TopicSegmentManifest,
 };
+use crate::domain::producer_reset::ProducerResetScope;
 use crate::domain::streaming::frames::{
     ControlCode as DomainControlCode, Frame, Position as DomainPosition,
 };
@@ -252,6 +253,17 @@ impl From<PublishAck> for IngestOutcome {
         match ack {
             PublishAck::Accepted(_) => IngestOutcome::Accepted,
             PublishAck::Duplicate(_) => IngestOutcome::Duplicate,
+        }
+    }
+}
+
+/// An all-duplicate batch stored nothing new, so it answers `Duplicate` the
+/// way REST answers `200`.
+impl From<BatchAck> for IngestOutcome {
+    fn from(ack: BatchAck) -> Self {
+        match ack {
+            BatchAck::Accepted => IngestOutcome::Accepted,
+            BatchAck::Duplicate => IngestOutcome::Duplicate,
         }
     }
 }
@@ -506,12 +518,28 @@ impl EventBrokerApi for LocalBroker {
         Ok(ack.into())
     }
 
-    // `publish_sync` is deliberately NOT overridden: ingest enqueues to the
-    // async outbox and exposes no persist-confirmation hook (the REST layer
-    // answers `501` for `Prefer: wait`), so the honest outcome is the default's
-    // `Accepted`/`Duplicate` - reporting `Persisted` would assert a durable
-    // write that has not necessarily completed. It inherits the trait default,
-    // which delegates to `publish`.
+    /// Holds until the backend stores the event or the broker's configured
+    /// `Prefer: wait=N` ceiling elapses, mirroring the REST `Prefer: wait`
+    /// path: `Persisted` once stored, `Accepted` on timeout (the event stays
+    /// enqueued), `Duplicate` for an idempotent resend. An in-process caller
+    /// sets no bound, so it asks to wait as long as the broker allows
+    /// (`Duration::MAX`, which the ingest service clamps to its cap).
+    async fn publish_sync(
+        &self,
+        ctx: &SecurityContext,
+        event: &Event,
+    ) -> Result<IngestOutcome, EventBrokerError> {
+        let ack = self
+            .ingest
+            .publish_event_sync(ctx, PublishRequest::try_from(event)?, Duration::MAX)
+            .await
+            .map_err(to_sdk_err)?;
+        Ok(match ack {
+            SyncPublishAck::Stored => IngestOutcome::Persisted,
+            SyncPublishAck::TimedOut => IngestOutcome::Accepted,
+            SyncPublishAck::Duplicate => IngestOutcome::Duplicate,
+        })
+    }
 
     async fn publish_batch(
         &self,
@@ -522,14 +550,12 @@ impl EventBrokerApi for LocalBroker {
             .iter()
             .map(PublishRequest::try_from)
             .collect::<Result<Vec<_>, _>>()?;
-        // All-or-nothing: any rejection is a `DomainError` for the whole batch;
-        // the per-event `BatchResult` is not surfaced on success (matching the
-        // REST contract), so an `Ok` is one `Accepted`.
-        self.ingest
+        let ack = self
+            .ingest
             .publish_batch(ctx, requests)
             .await
             .map_err(to_sdk_err)?;
-        Ok(IngestOutcome::Accepted)
+        Ok(ack.into())
     }
 
     async fn get_producer_cursors(

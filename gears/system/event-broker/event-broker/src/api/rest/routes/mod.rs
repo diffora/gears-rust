@@ -76,41 +76,80 @@ where
         )
 }
 
-/// Every one of #4346's 19 endpoints (`docs/openapi.yaml`) - registered here
-/// when `DeploymentMode::ingest_active()`/`delivery_active()`
-/// (`module.rs::register_rest`).
+/// The optional `Prefer: wait=N` request header (RFC 7240) both publish
+/// endpoints accept: hold the response until the backend stores the events or
+/// N seconds elapse, N capped by configuration. `Prefer: respond-async` names
+/// the default and is a no-op.
+fn prefer_wait_param() -> toolkit::api::operation_builder::ParamSpec {
+    toolkit::api::operation_builder::ParamSpec::header("Prefer").description(
+        "RFC 7240 preference selecting synchronous persistence. `wait=N` asks the broker to hold \
+         the response until the events are stored, N seconds capped by configuration; a bare \
+         `wait` uses the cap and a non-numeric value is rejected (400). `respond-async` is the \
+         default (no-op).",
+    )
+}
+
+/// The ingest role's endpoints of `docs/openapi.yaml`, registered when
+/// `DeploymentMode::ingest_active()` (`module.rs::register_rest`).
 ///
 /// `events:batch` is a deliberate static-segment action suffix (unlike
 /// `{id}:reset`/`{id}:seek`'s templated-segment workaround for a matchit
 /// routing limitation - see `action_suffix.rs`), not a naming convention
-/// violation - DE0801's kebab-case-only check doesn't yet have a carve-out
-/// for it.
+/// violation: DE0801's kebab-case-only check has no carve-out for it.
 #[allow(unknown_lints)]
 #[allow(de0801_api_endpoint_version)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one declarative builder chain per ingest route; the length is the route table"
+)]
 pub fn register_ingest_routes(mut router: Router, openapi: &dyn OpenApiRegistry) -> Router {
     router = OperationBuilder::post("/event-broker/v1/events")
         .operation_id("event_broker.publish_event")
         .summary("Publish a single event")
         .description(
             "Enqueue one event into the per-topic ingest outbox. Default response is 202 \
-             Accepted once durably enqueued; opt into synchronous backend persistence via the \
-             `Sync-Wait: true` header or `?wait=persisted` query parameter.",
+             Accepted once durably enqueued, 200 OK for an idempotent duplicate. With \
+             `Prefer: wait=N` (RFC 7240, N capped by configuration) the response is held until \
+             the backend stores the event: 201 Created once stored, 202 Accepted if N elapses \
+             first, 200 OK when the event is a duplicate.",
         )
         .tag(INGEST_API_TAG)
         .authenticated()
         .no_license_required()
-        .query_param(
-            "wait",
-            false,
-            "Set to \"persisted\" for synchronous backend persistence",
-        )
+        .param(prefer_wait_param())
         .json_request::<ingest_dto::PublishEventRequest>(openapi, "Event to publish")
         .handler(ingest_h::publish_event)
-        .json_response(
-            StatusCode::ACCEPTED,
-            "Accepted, durably enqueued in the outbox",
+        .no_content_response(
+            StatusCode::CREATED,
+            "Stored - `Prefer: wait=N` was satisfied: the backend has the event",
         )
-        .json_response(StatusCode::CREATED, "Persisted to backend (sync mode)")
+        .no_content_response(
+            StatusCode::ACCEPTED,
+            "Accepted, durably enqueued in the outbox (or `Prefer: wait=N` elapsed first)",
+        )
+        .no_content_response(
+            StatusCode::OK,
+            "Idempotent duplicate - the event is already durable; nothing is written",
+        )
+        .problem_response(
+            openapi,
+            StatusCode::PRECONDITION_FAILED,
+            "SequenceViolation - the event neither advances nor duplicates the producer \
+             chain's committed `last_sequence`.",
+        )
+        .problem_response(
+            openapi,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "SchemaViolation - the event `data` does not satisfy the event type's \
+             `data_schema`.",
+        )
+        .problem_response(
+            openapi,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "ServiceUnavailable, retryable - the topic is not yet provisioned, the broker's \
+             database or ingest pipeline is unavailable (including a producer-chain write \
+             that exhausted its contention retries), or no ingest instance is reachable.",
+        )
         .standard_errors(openapi)
         .register(router, openapi);
 
@@ -119,14 +158,53 @@ pub fn register_ingest_routes(mut router: Router, openapi: &dyn OpenApiRegistry)
         .summary("Publish a batch of events (atomic per topic)")
         .description(
             "Atomic per-topic batch of up to 100 events. All-or-nothing per topic; mixing \
-             topics in one batch is rejected.",
+             topics in one batch is rejected. `Prefer: wait=N` applies to the batch as a \
+             whole, with the status codes of a single publish.",
         )
         .tag(INGEST_API_TAG)
         .authenticated()
         .no_license_required()
+        .param(prefer_wait_param())
         .json_request::<ingest_dto::PublishBatchRequest>(openapi, "Batch of events to publish")
         .handler(ingest_h::publish_batch)
-        .json_response(StatusCode::ACCEPTED, "Accepted")
+        .no_content_response(
+            StatusCode::CREATED,
+            "Stored - `Prefer: wait=N` was satisfied: the backend has every event",
+        )
+        .no_content_response(
+            StatusCode::ACCEPTED,
+            "Accepted (or `Prefer: wait=N` elapsed first)",
+        )
+        .no_content_response(
+            StatusCode::OK,
+            "Every event of the batch is a duplicate; nothing is written",
+        )
+        .problem_response(
+            openapi,
+            StatusCode::PRECONDITION_FAILED,
+            "SequenceViolation - atomic batch rejection: a run neither advances nor \
+             duplicates its chain's committed `last_sequence`. Nothing is enqueued.",
+        )
+        .problem_response(
+            openapi,
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "BatchTooLarge (more events than the configured max) or BatchPayloadTooLarge \
+             (total payload over the configured byte ceiling)",
+        )
+        .problem_response(
+            openapi,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "SchemaViolation - an event's `data` does not satisfy its event type's \
+             `data_schema` (atomic batch rejection)",
+        )
+        .problem_response(
+            openapi,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "ServiceUnavailable, retryable - the batch's topic is not yet provisioned, the \
+             broker's database or ingest pipeline is unavailable (including a producer-chain \
+             write that exhausted its contention retries), or no ingest instance is \
+             reachable. Nothing is enqueued.",
+        )
         .standard_errors(openapi)
         .register(router, openapi);
 
@@ -152,10 +230,10 @@ pub fn register_ingest_routes(mut router: Router, openapi: &dyn OpenApiRegistry)
 
     router = OperationBuilder::get("/event-broker/v1/producers/{id}/cursors")
         .operation_id("event_broker.get_producer_cursors")
-        .summary("Read per-(topic, partition) last_sequence for a registered producer")
+        .summary("Read per-topic last_sequence for a registered producer")
         .description(
-            "Returns the broker's known last_sequence per (topic, partition), grouped by \
-             topic, for desync recovery. Principal-bound.",
+            "Returns the broker's known last_sequence per topic, for desync recovery. \
+             Principal-bound.",
         )
         .tag(PRODUCERS_TAG)
         .path_param("id", "Producer id (broker-minted UUID)")
@@ -249,6 +327,12 @@ pub fn register_ingest_routes(mut router: Router, openapi: &dyn OpenApiRegistry)
         openapi,
         StatusCode::OK,
         "Page of event types",
+    )
+    .problem_response(
+        openapi,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "ServiceUnavailable, retryable - the specification store is unavailable, or no ingest \
+         instance is reachable.",
     )
     .standard_errors(openapi)
     .register(router, openapi);
@@ -555,7 +639,7 @@ fn register_ingest_forwarding_routes(mut router: Router, openapi: &dyn OpenApiRe
 
     router = OperationBuilder::get("/event-broker/v1/producers/{id}/cursors")
         .operation_id("event_broker.dispatcher.get_producer_cursors")
-        .summary("Read per-(topic,partition) last_sequence for desync recovery")
+        .summary("Read per-topic last_sequence for desync recovery")
         .description(forwarded_to("ingest"))
         .tag(INGEST_TAG)
         .path_param("id", "Producer id")
@@ -902,3 +986,7 @@ pub fn test_router(
 #[cfg(test)]
 #[path = "routes_tests.rs"]
 mod routes_tests;
+
+#[cfg(test)]
+#[path = "ingest_routes_tests.rs"]
+mod ingest_routes_tests;
