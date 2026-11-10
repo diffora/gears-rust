@@ -486,7 +486,7 @@ The HTTP client (`cf-gears-toolkit-http`) exposes the following transport knobs 
 
 | Knob | Type | Effect |
 |---|---|---|
-| Transport security | `TransportSecurity` (`TlsOnly` \| `AllowInsecureHttp`); `HttpClientBuilder::deny_insecure_http()` | Whether cleartext `http://` is permitted. Defaults to `TlsOnly` under `--features fips`, `AllowInsecureHttp` otherwise. Selecting `AllowInsecureHttp` under FIPS makes `build()` return `HttpError::InsecureTransport`. |
+| Transport security | `TransportSecurity` (`TlsOnly` \| `AllowInsecureHttp`); `HttpClientBuilder::deny_insecure_http()` | Whether cleartext `http://` is permitted. Defaults to `TlsOnly` under `--features fips`, `AllowInsecureHttp` otherwise. Under FIPS, selecting `AllowInsecureHttp` is an explicit opt-in (e.g. plaintext to a loopback mTLS sidecar): `build()` accepts it and logs a warning on the `toolkit_http::security` target. FIPS 140-3 governs the crypto modules, not which connections are encrypted. |
 | Minimum TLS version | `TlsVersion` (`Tls12` \| `Tls13`) | `Tls12` advertises TLS 1.2 + 1.3 (rustls safe default); `Tls13` is TLS 1.3-only. Does not relax FIPS hardening. |
 | Mutual TLS identity | `ClientAuthConfig` | PEM cert-chain + private-key **file paths** (PKCS#8 / PKCS#1 / SEC1). Files are read lazily at build; no key bytes are held in the cloneable config. |
 | Trust roots | `TlsRootConfig` | Selects the certificate trust anchors (e.g. the native OS root store). |

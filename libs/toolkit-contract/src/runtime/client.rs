@@ -121,9 +121,10 @@ fn transport_builder(config: &ClientConfig) -> toolkit_http::HttpClientBuilder {
 /// are applied per call by the generated client, not on the transport. In
 /// particular `config.require_tls` selects the transport security mode: `false`
 /// (the default via
-/// [`ClientConfig::new`](crate::runtime::config::ClientConfig::new)) allows
-/// plaintext `http://`, preserving the platform's existing in-mesh
-/// service-to-service convention; `true`
+/// [`ClientConfig::new`](crate::runtime::config::ClientConfig::new), except in
+/// FIPS builds where the default is `true`) allows plaintext `http://`,
+/// preserving the platform's existing in-mesh service-to-service convention;
+/// `true`
 /// ([`ClientConfig::with_require_tls`](crate::runtime::config::ClientConfig::with_require_tls))
 /// switches to `toolkit_http::TransportSecurity::TlsOnly`, rejecting
 /// plaintext. This matters because the tenant bearer token is forwarded via
@@ -144,13 +145,16 @@ fn transport_builder(config: &ClientConfig) -> toolkit_http::HttpClientBuilder {
 /// opened either way, independent of any of this.
 ///
 /// # Errors
-/// Propagates [`toolkit_http::HttpError`] from the underlying builder (e.g. a
-/// TLS backend that cannot be constructed under FIPS).
+/// [`toolkit_http::HttpError::InvalidScheme`] when `config.require_tls` is set
+/// and `config.base_url` is not `https://`. Otherwise propagates
+/// [`toolkit_http::HttpError`] from the underlying builder (e.g. a TLS backend
+/// that cannot be constructed under FIPS).
 #[cfg(feature = "otel")]
 pub fn build_default_http_client(
     client_type: &str,
     config: &ClientConfig,
 ) -> Result<toolkit_http::HttpClient, toolkit_http::HttpError> {
+    reject_plaintext_if_tls_required(config)?;
     transport_builder(config)
         .with_otel()
         .with_metrics(client_type)
@@ -166,14 +170,33 @@ pub fn build_default_http_client(
 /// this crate's own `otel` feature.
 ///
 /// # Errors
-/// Propagates [`toolkit_http::HttpError`] from the underlying builder (e.g. a
-/// TLS backend that cannot be constructed under FIPS).
+/// [`toolkit_http::HttpError::InvalidScheme`] when `config.require_tls` is set
+/// and `config.base_url` is not `https://`. Otherwise propagates
+/// [`toolkit_http::HttpError`] from the underlying builder (e.g. a TLS backend
+/// that cannot be constructed under FIPS).
 #[cfg(not(feature = "otel"))]
 pub fn build_default_http_client(
     _client_type: &str,
     config: &ClientConfig,
 ) -> Result<toolkit_http::HttpClient, toolkit_http::HttpError> {
+    reject_plaintext_if_tls_required(config)?;
     transport_builder(config).with_otel().build()
+}
+
+/// Fail at construction, not on every call, when TLS is required but the
+/// endpoint is `http://`: the per-call `InvalidScheme` maps to a transient
+/// network error and would be retried.
+fn reject_plaintext_if_tls_required(config: &ClientConfig) -> Result<(), toolkit_http::HttpError> {
+    match config.tls_scheme_violation() {
+        Some(reason) => Err(toolkit_http::HttpError::InvalidScheme {
+            scheme: config
+                .base_url
+                .split_once("://")
+                .map_or_else(String::new, |(scheme, _)| scheme.to_owned()),
+            reason,
+        }),
+        None => Ok(()),
+    }
 }
 
 fn transport_security(require_tls: bool) -> toolkit_http::TransportSecurity {

@@ -42,7 +42,9 @@ pub struct ClientTuning {
 
     /// Reject plaintext `http://` endpoints.
     ///
-    /// Defaults to `false` (the in-mesh convention). Without this knob a
+    /// Defaults to `false` (the in-mesh convention), or `true` when
+    /// `toolkit-http/fips` is enabled; there `require_tls: false` is the
+    /// explicit opt-in to plaintext and logs a warning. Without this knob a
     /// discovery-resolved client always got the default, so a consumer talking
     /// to an endpoint outside a trusted boundary had no way to demand TLS —
     /// while forwarding a tenant bearer token over it.
@@ -254,6 +256,15 @@ impl ConsumerWiring {
 
 #[cfg(feature = "runtime-client")]
 impl ClientTuning {
+    /// `require_tls` with the default applied: an unset value is `false`, or
+    /// `true` when `toolkit-http/fips` is on. Use this instead of reading the
+    /// `Option` directly; [`Self::apply_to`] resolves it the same way.
+    #[must_use]
+    pub fn effective_require_tls(&self) -> bool {
+        self.require_tls
+            .unwrap_or_else(crate::runtime::config::default_require_tls)
+    }
+
     /// Apply tuning overrides onto a fresh [`ClientConfig`] built from `endpoint`.
     #[must_use]
     pub fn apply_to(&self, endpoint: impl Into<String>) -> crate::runtime::config::ClientConfig {

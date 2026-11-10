@@ -424,21 +424,24 @@ impl HttpClientBuilder {
     /// # Errors
     /// Returns an error if TLS initialization fails or configuration is invalid.
     ///
-    /// Under `--features fips`, returns [`HttpError::InsecureTransport`] when
-    /// `config.transport == TransportSecurity::AllowInsecureHttp`. FIPS builds
-    /// must use [`TransportSecurity::TlsOnly`] — there is no opt-out.
+    /// Under `--features fips`, `TransportSecurity::AllowInsecureHttp` is accepted
+    /// as an explicit opt-in (the default there is `TlsOnly`). The first such
+    /// build in the process logs a warning, because requests over `http://`
+    /// are not encrypted.
     pub fn build(self) -> Result<crate::HttpClient, HttpError> {
-        // Reject AllowInsecureHttp under --features fips before any TLS work.
-        // The check lives here (rather than in HttpClientConfig) so that
-        // constructing a config with AllowInsecureHttp is still cheap and
-        // infallible; only actually building a client fails closed.
         #[cfg(feature = "fips")]
         if self.config.transport == TransportSecurity::AllowInsecureHttp {
-            tracing::warn!(
-                target: "toolkit_http::security",
-                "rejecting AllowInsecureHttp under --features fips: returning HttpError::InsecureTransport"
-            );
-            return Err(HttpError::InsecureTransport);
+            // Once per process: some callers build a client per operation.
+            static WARNED: std::sync::Once = std::sync::Once::new();
+            WARNED.call_once(|| {
+                tracing::warn!(
+                    target: "toolkit_http::security",
+                    user_agent = %self.config.user_agent,
+                    allow_https_downgrade = self.config.redirect.allow_https_downgrade,
+                    "plaintext http:// explicitly enabled (AllowInsecureHttp) in a FIPS build: \
+                     requests over http:// are not encrypted (logged once per process)"
+                );
+            });
         }
 
         let timeout = self.config.request_timeout;
@@ -1087,8 +1090,6 @@ mod tests {
     /// which sets up ALPN to negotiate h2 or http/1.1 during TLS handshake.
     /// The hyper client uses `http2_only(false)` to allow both protocols.
     ///
-    /// The `AllowInsecureHttp` sub-cases are skipped under `--features fips`
-    /// because the FIPS guard in `build()` rejects insecure transport.
     #[tokio::test]
     async fn test_http2_enabled_for_all_configurations() {
         // Test WebPki with default transport (AllowInsecureHttp without fips, TlsOnly under fips)
@@ -1107,20 +1108,17 @@ mod tests {
             "WebPki + TlsOnly should build with HTTP/2 enabled"
         );
 
-        // Test Native roots with AllowInsecureHttp (non-fips only)
-        #[cfg(not(feature = "fips"))]
-        {
-            let config = HttpClientConfig {
-                tls_roots: TlsRootConfig::Native,
-                transport: TransportSecurity::AllowInsecureHttp,
-                ..Default::default()
-            };
-            let client = HttpClientBuilder::with_config(config).build();
-            assert!(
-                client.is_ok(),
-                "Native + AllowInsecureHttp should build with HTTP/2 enabled"
-            );
-        }
+        // Test Native roots with AllowInsecureHttp
+        let config = HttpClientConfig {
+            tls_roots: TlsRootConfig::Native,
+            transport: TransportSecurity::AllowInsecureHttp,
+            ..Default::default()
+        };
+        let client = HttpClientBuilder::with_config(config).build();
+        assert!(
+            client.is_ok(),
+            "Native + AllowInsecureHttp should build with HTTP/2 enabled"
+        );
 
         // Test Native roots with TlsOnly (HTTPS only)
         let config = HttpClientConfig {

@@ -77,6 +77,7 @@ opentelemetry = { workspace = true, optional = true }
 # HTTP/2 test server for the proxy tunnel tests.
 hyper = { workspace = true, features = ["server", "http2"] }
 httpmock = { workspace = true }
+tracing-subscriber = { workspace = true }
 rcgen = { workspace = true }
 tokio-rustls = { workspace = true }
 tempfile = { workspace = true }

@@ -634,6 +634,8 @@ jobs:
           cargo test -p cf-gears-toolkit-auth --features toolkit-security/fips --lib providers::jwks
           cargo test -p cf-gears-rustls-corecrypto-provider --features fips
           cargo test -p cf-gears-toolkit-http --features fips
+          cargo test -p cf-gears-toolkit-contract --features fips --lib runtime::config
+          cargo test -p cf-gears-toolkit-contract --features fips --test wiring_config
           cargo test -p cf-gears-toolkit-http-proxy --features fips --no-run
 
       # Windows: execute native CNG operations through internal test injection.
