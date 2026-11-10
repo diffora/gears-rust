@@ -1,8 +1,12 @@
 //! Standalone-mode event-broker binary (eb-single-process-implementation
-//! design.md D7): the real production `DeploymentMode::Standalone`
-//! deployable, not a test fixture. Mirrors `apps/cf-gears-example-server`'s
-//! CLI shape (`toolkit::bootstrap`), scoped to exactly the gears standalone
-//! mode needs.
+//! design.md D7): the real production `DeploymentMode::Standalone` deployable,
+//! not a test fixture. Mirrors `apps/cf-gears-example-server`'s CLI shape
+//! (`toolkit::bootstrap`), scoped to exactly the gears standalone mode needs.
+//!
+//! A separate crate from the `cf-gears-event-broker` library on purpose: a gear
+//! self-registers in every binary linking it, so keeping the `cluster`/
+//! `api-gateway`/`authn`/`authz`/`types-registry` composition here keeps the
+//! library gear-free.
 
 mod registered_gears;
 
