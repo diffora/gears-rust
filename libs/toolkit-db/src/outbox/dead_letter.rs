@@ -47,6 +47,7 @@ use super::store::OutboxStore;
 use super::tables::OutboxTables;
 use super::types::OutboxError;
 use crate::secure::SeaOrmRunner;
+use crate::tx_begin::SqliteBeginMode;
 
 /// Default row limit applied to `dead_letter_list` when no explicit limit is set.
 const DEFAULT_DEAD_LETTER_LIMIT: u32 = 100;
@@ -277,6 +278,7 @@ pub(super) async fn dead_letter_count(
 /// callers from claiming the same rows.
 pub(super) async fn dead_letter_replay(
     runner: SeaOrmRunner<'_>,
+    sqlite_begin: SqliteBeginMode,
     statements: &OutboxStatements,
     scope: &DeadLetterScope,
     timeout: Duration,
@@ -285,7 +287,11 @@ pub(super) async fn dead_letter_replay(
     let store = OutboxStore::new(statements);
 
     let txn = match &runner {
-        SeaOrmRunner::Conn(c) => c.begin().await?,
+        SeaOrmRunner::Conn(c) => crate::tx_begin::begin(c, None, None, sqlite_begin).await?,
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "a begin on a transaction is a savepoint, not a top-level transaction"
+        )]
         SeaOrmRunner::Tx(t) => t.begin().await?,
     };
 
@@ -381,6 +387,7 @@ pub(super) async fn dead_letter_reject(
 /// Uses `FOR UPDATE SKIP LOCKED` for concurrent safety.
 pub(super) async fn dead_letter_discard(
     runner: SeaOrmRunner<'_>,
+    sqlite_begin: SqliteBeginMode,
     statements: &OutboxStatements,
     scope: &DeadLetterScope,
 ) -> Result<u64, OutboxError> {
@@ -393,7 +400,11 @@ pub(super) async fn dead_letter_discard(
     let store = OutboxStore::new(statements);
 
     let txn = match &runner {
-        SeaOrmRunner::Conn(c) => c.begin().await?,
+        SeaOrmRunner::Conn(c) => crate::tx_begin::begin(c, None, None, sqlite_begin).await?,
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "a begin on a transaction is a savepoint, not a top-level transaction"
+        )]
         SeaOrmRunner::Tx(t) => t.begin().await?,
     };
 

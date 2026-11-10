@@ -766,7 +766,14 @@ async fn enqueue_tx_rollback_leaves_no_rows() {
 
     // Use sea_orm transaction directly to simulate rollback
     let conn = db.sea_internal();
-    let txn = sea_orm::TransactionTrait::begin(&conn).await.unwrap();
+    let txn = crate::tx_begin::begin(
+        &conn,
+        None,
+        None,
+        crate::tx_begin::SqliteBeginMode::Deferred,
+    )
+    .await
+    .unwrap();
     txn.execute_raw(Statement::from_sql_and_values(
         DbBackend::Sqlite,
         "INSERT INTO toolkit_outbox_body (payload, payload_type) VALUES ($1, $2)",
@@ -4086,6 +4093,97 @@ async fn dead_letter_cleanup_only_terminal() {
         .await
         .unwrap();
     assert_eq!(remaining, 1);
+}
+
+/// On a database with `transaction_mode=immediate`, dead-letter replay and discard begin
+/// `IMMEDIATE`. While another connection holds the write lock, each one waits in its `BEGIN`
+/// without reading anything, and gives up when `busy_timeout` runs out. Once the lock is
+/// released, each one completes. A deferred begin would read the dead letters at once and then
+/// fail its `UPDATE` with `SQLITE_BUSY`.
+///
+/// The lock stays held for the whole first attempt, so the outcome does not depend on timing:
+/// `SQLite` reports no point at which a connection starts to wait.
+#[tokio::test]
+async fn dead_letter_replay_and_discard_begin_immediate_on_an_immediate_database() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.sqlite3");
+    // The dead-letter statements that run, as SeaORM reports them once each has run.
+    let statements = Arc::new(Mutex::new(Vec::<String>::new()));
+    let recorded = Arc::clone(&statements);
+    let db = crate::connect_db_with_metric_callback(
+        &format!(
+            "sqlite://{}?mode=rwc&transaction_mode=immediate&busy_timeout=500",
+            path.display()
+        ),
+        ConnectOpts::default(),
+        move |info: &sea_orm::metric::Info<'_>| {
+            if info.statement.sql.contains("dead_letters") {
+                recorded.lock().unwrap().push(info.statement.sql.clone());
+            }
+        },
+    )
+    .await
+    .unwrap();
+    run_migrations_for_testing(&db, super::outbox_migrations())
+        .await
+        .unwrap();
+    let t = make_default_test_outbox().await;
+    t.outbox.register_queue(&db, "q", 1).await.unwrap();
+    create_dead_letters(&t, &db, "q", 0, &["a", "b"]).await;
+    let holder = connect_db(
+        &format!("sqlite://{}?mode=rwc", path.display()),
+        ConnectOpts::default(),
+    )
+    .await
+    .unwrap();
+    let hold_write_lock = || async {
+        crate::tx_begin::begin(
+            &holder.sea_internal(),
+            None,
+            None,
+            crate::tx_begin::SqliteBeginMode::Immediate,
+        )
+        .await
+        .unwrap()
+    };
+    let replay_one = || async {
+        t.outbox
+            .dead_letter_replay(
+                &db.conn().unwrap(),
+                &DeadLetterScope::default().limit(1),
+                Duration::from_mins(1),
+            )
+            .await
+    };
+    let discard_pending = || async {
+        t.outbox
+            .dead_letter_discard(&db.conn().unwrap(), &DeadLetterScope::default())
+            .await
+    };
+
+    let held = hold_write_lock().await;
+    statements.lock().unwrap().clear();
+    let behind_writer = replay_one().await;
+    assert_eq!(
+        *statements.lock().unwrap(),
+        Vec::<String>::new(),
+        "replay read the dead letters while another connection held the write lock"
+    );
+    assert!(behind_writer.is_err(), "{behind_writer:?}");
+    held.rollback().await.unwrap();
+    assert_eq!(replay_one().await.unwrap().len(), 1);
+
+    let held = hold_write_lock().await;
+    statements.lock().unwrap().clear();
+    let behind_writer = discard_pending().await;
+    assert_eq!(
+        *statements.lock().unwrap(),
+        Vec::<String>::new(),
+        "discard read the dead letters while another connection held the write lock"
+    );
+    assert!(behind_writer.is_err(), "{behind_writer:?}");
+    held.rollback().await.unwrap();
+    assert_eq!(discard_pending().await.unwrap(), 1);
 }
 
 #[tokio::test]

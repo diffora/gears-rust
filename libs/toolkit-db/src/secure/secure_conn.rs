@@ -51,9 +51,11 @@ use std::{future::Future, pin::Pin};
 
 use sea_orm::{
     AccessMode, ColumnTrait, DatabaseConnection, DatabaseTransaction, EntityTrait, ExprTrait,
-    IsolationLevel, QueryFilter, TransactionTrait, sea_query::Expr,
+    IsolationLevel, QueryFilter, sea_query::Expr,
 };
 use uuid::Uuid;
+
+use crate::tx_begin::SqliteBeginMode;
 
 use crate::secure::tx_error::{InfraError, TxError};
 
@@ -127,6 +129,22 @@ impl SecureConn {
     #[must_use]
     pub(crate) fn conn_internal(&self) -> &DatabaseConnection {
         &self.conn
+    }
+
+    /// Begin a top-level transaction through [`crate::tx_begin::begin`]. A `SecureConn` does not
+    /// know its database's `transaction_mode`, so on `SQLite` it begins deferred, as it always has.
+    async fn begin_top_level(
+        &self,
+        isolation: Option<IsolationLevel>,
+        access_mode: Option<AccessMode>,
+    ) -> Result<DatabaseTransaction, sea_orm::DbErr> {
+        crate::tx_begin::begin(
+            self.conn_internal(),
+            isolation,
+            access_mode,
+            SqliteBeginMode::Deferred,
+        )
+        .await
     }
 
     /// Return database engine identifier for tracing / logging.
@@ -500,7 +518,7 @@ impl SecureConn {
                 -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>
             + Send,
     {
-        let txn = match self.conn_internal().begin().await {
+        let txn = match self.begin_top_level(None, None).await {
             Ok(t) => t,
             Err(e) => return (self, Err(e.into())),
         };
@@ -565,7 +583,7 @@ impl SecureConn {
                 -> Pin<Box<dyn Future<Output = anyhow::Result<T>> + Send + 'a>>
             + Send,
     {
-        let txn = match self.conn_internal().begin().await {
+        let txn = match self.begin_top_level(None, None).await {
             Ok(t) => t,
             Err(e) => return (self, Err(e.into())),
         };
@@ -666,11 +684,7 @@ impl SecureConn {
         let isolation: Option<IsolationLevel> = cfg.isolation.map(Into::into);
         let access_mode: Option<AccessMode> = cfg.access_mode.map(Into::into);
 
-        let txn = match self
-            .conn_internal()
-            .begin_with_config(isolation, access_mode)
-            .await
-        {
+        let txn = match self.begin_top_level(isolation, access_mode).await {
             Ok(t) => t,
             Err(e) => return (self, Err(e.into())),
         };
@@ -745,7 +759,7 @@ impl SecureConn {
             ) -> Pin<Box<dyn Future<Output = Result<T, E>> + Send + 'a>>
             + Send,
     {
-        let txn = match self.conn_internal().begin().await {
+        let txn = match self.begin_top_level(None, None).await {
             Ok(t) => t,
             Err(e) => return (self, Err(TxError::Infra(InfraError::new(e.to_string())))),
         };

@@ -1,4 +1,28 @@
-//! Opening a [`crate::Db`] transaction, with the `SQLite` lock mode its database asks for.
+//! Opening a top-level transaction on a pool: safe to cancel, and in the `SQLite` lock mode
+//! the caller asks for ([`crate::Db`] asks for its database's `transaction_mode`).
+//!
+//! # Cancelling a `BEGIN`
+//!
+//! The sqlx driver counts a transaction only once the server has answered its `BEGIN`. A caller
+//! dropped while it waits for that answer (a request cancelled by a timeout or a client
+//! disconnect, an aborted worker) therefore leaves its connection inside a transaction that
+//! nothing rolls back. The pool takes the connection back as it is, and what runs on it next
+//! runs inside that transaction: an autocommit write is not committed (a later `ROLLBACK` on the
+//! connection discards it), and a transaction at a non-default isolation level fails to begin.
+//!
+//! [`begin`] runs the `BEGIN` in a task of its own, so it always finishes. The task runs in the
+//! caller's span and under the caller's subscriber, so the begin's events (sqlx's statement
+//! events among them) reach whatever subscriber the caller runs under. When the caller has
+//! gone, that task drops the finished transaction, which queues its `ROLLBACK` before the
+//! connection goes back to the pool. It logs at debug level that it rolled back, or the error
+//! when the `BEGIN` failed. Nested transactions are savepoints and need none of this.
+//!
+//! The task also waits for the pooled connection: `SeaORM` begins a transaction only on a
+//! connection it takes from the pool itself, and has no public way to begin on one the caller
+//! already holds. So a caller cancelled while it waits for a connection still takes one when its
+//! turn comes, for a `BEGIN` and a `ROLLBACK`. The pool's acquire timeout bounds that wait.
+//!
+//! # `SQLite` lock mode
 //!
 //! `SQLite` starts a plain `BEGIN` as a *deferred* transaction: it takes no lock
 //! until its first statement, and a read first makes it a read transaction.
@@ -10,8 +34,9 @@
 //! lock, and its caller reports a conflict that never happened.
 //!
 //! A database configured with `transaction_mode=immediate` (a gear's `params`,
-//! or a DSN query parameter given to `connect_db`) avoids that: [`begin`] starts each of its
-//! transactions that may write as `BEGIN IMMEDIATE`, which takes the write lock
+//! or a DSN query parameter given to `connect_db`) avoids that: with
+//! [`SqliteBeginMode::Immediate`], [`begin`] starts each transaction that may write as
+//! `BEGIN IMMEDIATE`, which takes the write lock
 //! up front and so waits for it under `busy_timeout`. A transaction declared
 //! read-only keeps the deferred `BEGIN`: it never writes, and an immediate one
 //! would queue it behind writers it does not conflict with. Nested
@@ -25,41 +50,94 @@
 //! See [Transactions — deferred, immediate, and exclusive](https://www.sqlite.org/lang_transaction.html#deferred_immediate_and_exclusive_transactions).
 
 use sea_orm::{
-    AccessMode, ConnectionTrait, DbBackend, DbErr, IsolationLevel, SqliteTransactionMode,
-    TransactionOptions, TransactionTrait,
+    AccessMode, DatabaseConnection, DatabaseTransaction, DbBackend, DbErr, IsolationLevel,
+    RuntimeErr, SqliteTransactionMode, TransactionOptions, TransactionTrait,
 };
+use tokio::sync::oneshot;
+use tracing::Instrument;
+use tracing::instrument::WithSubscriber;
 
-/// Begin a transaction on `conn`: `BEGIN IMMEDIATE` on `SQLite` when `immediate`
-/// and the transaction is not read-only, otherwise the backend's plain `BEGIN`.
-pub async fn begin<C>(
-    conn: &C,
+/// How a top-level transaction begins on `SQLite`. Other backends ignore it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SqliteBeginMode {
+    /// A plain `BEGIN`, which `SQLite` starts deferred.
+    Deferred,
+    /// `BEGIN IMMEDIATE` for a transaction that may write; a read-only one stays deferred. A
+    /// database configured with `transaction_mode=immediate` asks for this.
+    Immediate,
+}
+
+/// Begin a top-level transaction on `conn`: `BEGIN IMMEDIATE` on `SQLite` when `sqlite` is
+/// [`SqliteBeginMode::Immediate`] and the transaction is not read-only, otherwise the
+/// backend's plain `BEGIN`.
+///
+/// The `BEGIN` runs in its own task, so dropping the returned future never leaves a
+/// connection inside a transaction (see the module docs). A panic in that task is resumed here.
+pub async fn begin(
+    conn: &DatabaseConnection,
     isolation_level: Option<IsolationLevel>,
     access_mode: Option<AccessMode>,
-    immediate: bool,
-) -> Result<C::Transaction, DbErr>
-where
-    C: ConnectionTrait + TransactionTrait,
-{
-    conn.begin_with_options(TransactionOptions {
+    sqlite: SqliteBeginMode,
+) -> Result<DatabaseTransaction, DbErr> {
+    let options = TransactionOptions {
         isolation_level,
         access_mode,
-        sqlite_transaction_mode: sqlite_mode(conn.get_database_backend(), access_mode, immediate),
-    })
-    .await
+        sqlite_transaction_mode: sqlite_mode(conn.get_database_backend(), access_mode, sqlite),
+    };
+    let conn = conn.clone();
+    let (answer, answered) = oneshot::channel();
+    let task = tokio::spawn(
+        async move {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "the one top-level begin, run in this task so it always finishes"
+            )]
+            let begun = conn.begin_with_options(options).await;
+            match answer.send(begun) {
+                Ok(()) => {}
+                // The caller has gone. Dropping the transaction queues its ROLLBACK.
+                Err(Ok(transaction)) => {
+                    tracing::debug!(
+                        "transaction begun after its caller went away; rolling it back"
+                    );
+                    drop(transaction);
+                }
+                Err(Err(error)) => {
+                    tracing::debug!(%error, "transaction begin failed after its caller went away");
+                }
+            }
+        }
+        .in_current_span()
+        .with_current_subscriber(),
+    );
+    if let Ok(begun) = answered.await {
+        return begun;
+    }
+    // The task ended without an answer: it panicked, or the runtime is shutting down.
+    match task.await {
+        Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
+        _ => Err(DbErr::Conn(RuntimeErr::Internal(
+            "transaction begin task stopped before it answered".to_owned(),
+        ))),
+    }
 }
 
 fn sqlite_mode(
     backend: DbBackend,
     access_mode: Option<AccessMode>,
-    immediate: bool,
+    sqlite: SqliteBeginMode,
 ) -> Option<SqliteTransactionMode> {
-    (immediate && backend == DbBackend::Sqlite && access_mode != Some(AccessMode::ReadOnly))
-        .then_some(SqliteTransactionMode::Immediate)
+    (sqlite == SqliteBeginMode::Immediate
+        && backend == DbBackend::Sqlite
+        && access_mode != Some(AccessMode::ReadOnly))
+    .then_some(SqliteTransactionMode::Immediate)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "sqlite")]
+    use sea_orm::ConnectionTrait;
 
     const ACCESS_MODES: [Option<AccessMode>; 3] = [
         None,
@@ -71,7 +149,7 @@ mod tests {
     fn immediate_sqlite_writers_begin_immediate() {
         for access_mode in [None, Some(AccessMode::ReadWrite)] {
             assert_eq!(
-                sqlite_mode(DbBackend::Sqlite, access_mode, true),
+                sqlite_mode(DbBackend::Sqlite, access_mode, SqliteBeginMode::Immediate),
                 Some(SqliteTransactionMode::Immediate)
             );
         }
@@ -80,14 +158,21 @@ mod tests {
     #[test]
     fn readers_deferred_databases_and_other_backends_keep_the_default() {
         assert_eq!(
-            sqlite_mode(DbBackend::Sqlite, Some(AccessMode::ReadOnly), true),
+            sqlite_mode(
+                DbBackend::Sqlite,
+                Some(AccessMode::ReadOnly),
+                SqliteBeginMode::Immediate
+            ),
             None
         );
         for access_mode in ACCESS_MODES {
-            assert_eq!(sqlite_mode(DbBackend::Sqlite, access_mode, false), None);
+            assert_eq!(
+                sqlite_mode(DbBackend::Sqlite, access_mode, SqliteBeginMode::Deferred),
+                None
+            );
             for backend in [DbBackend::Postgres, DbBackend::MySql] {
-                for immediate in [false, true] {
-                    assert_eq!(sqlite_mode(backend, access_mode, immediate), None);
+                for mode in [SqliteBeginMode::Deferred, SqliteBeginMode::Immediate] {
+                    assert_eq!(sqlite_mode(backend, access_mode, mode), None);
                 }
             }
         }
@@ -168,7 +253,9 @@ mod tests {
                     .execute_unprepared("CREATE TABLE IF NOT EXISTS t (x INTEGER)")
                     .await
                     .unwrap();
-                let held = holder.begin().await.unwrap();
+                let held = begin(&holder, None, None, SqliteBeginMode::Deferred)
+                    .await
+                    .unwrap();
                 held.execute_unprepared("INSERT INTO t VALUES (1)")
                     .await
                     .unwrap();
@@ -212,5 +299,21 @@ mod tests {
             matches!(&error, crate::DbError::InvalidSqlitePragma { key, .. } if key == "transaction_mode"),
             "{error}"
         );
+    }
+
+    /// A `Db`'s runner carries its database's `transaction_mode`, both ways of setting it.
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn a_db_conn_carries_the_database_begin_mode() {
+        use crate::secure::DBRunnerInternal;
+        for (mode, expected) in [
+            ("deferred", SqliteBeginMode::Deferred),
+            ("immediate", SqliteBeginMode::Immediate),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            for db in open_both_ways(&dir.path().join("db.sqlite3"), mode).await {
+                assert_eq!(db.conn().unwrap().sqlite_begin_mode(), expected, "{mode}");
+            }
+        }
     }
 }
