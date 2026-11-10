@@ -1,6 +1,9 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
+
+use rustls_pki_types::CertificateDer;
 
 /// Default User-Agent string for HTTP requests
 pub const DEFAULT_USER_AGENT: &str = concat!("toolkit-http/", env!("CARGO_PKG_VERSION"));
@@ -583,7 +586,7 @@ pub struct TlsConfig {
 }
 
 /// Overall HTTP client configuration
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 #[non_exhaustive]
 pub struct HttpClientConfig {
     /// Per-request timeout (default: 30 seconds)
@@ -627,7 +630,8 @@ pub struct HttpClientConfig {
     /// [`HttpError::InsecureTransport`]: crate::error::HttpError::InsecureTransport
     pub transport: TransportSecurity,
 
-    /// TLS root certificate strategy (default: `WebPki`)
+    /// TLS root certificate strategy (default: `WebPki`). See also
+    /// [`extra_root_certs`](Self::extra_root_certs).
     pub tls_roots: TlsRootConfig,
 
     /// TLS handshake configuration: minimum protocol version and optional
@@ -677,6 +681,176 @@ pub struct HttpClientConfig {
     /// **Note**: This only limits *idle* connections. Active connections are
     /// not limited by this setting.
     pub pool_max_idle_per_host: usize,
+
+    /// Bound on establishing a connection: DNS, TCP connect (to the destination
+    /// or the proxy), proxy `CONNECT` and TLS handshake together (default:
+    /// `None`, bounded only by `request_timeout`). A connect timeout surfaces
+    /// as [`HttpError::Transport`](crate::HttpError::Transport).
+    pub connect_timeout: Option<Duration>,
+
+    /// Extra trust anchors added to the store selected by `tls_roots`
+    /// (default: none). Use for a private CA without touching the OS store.
+    /// With [`TlsRootConfig::Native`], they also stand in for an OS store
+    /// that has no usable certificate.
+    pub extra_root_certs: Arc<[CertificateDer<'static>]>,
+
+    /// Outbound (forward) proxy (default: [`OutboundProxy::None`]).
+    pub outbound_proxy: OutboundProxy,
+}
+
+/// Outbound (forward) proxy for client connections.
+///
+/// HTTPS destinations go through an HTTP `CONNECT` tunnel; TLS still runs end
+/// to end with the destination, so `tls_roots`, `extra_root_certs` and FIPS
+/// hardening apply unchanged. Plain-HTTP destinations (only reachable with
+/// [`TransportSecurity::AllowInsecureHttp`]) are forwarded in absolute form.
+///
+/// Proxy URLs use `http` (a missing scheme means `http`) or `https`; anything
+/// else fails [`HttpClientBuilder::build`]. An `https://` proxy is verified
+/// with the same roots as destinations but is never sent the client
+/// certificate. SOCKS and OS proxy settings are not supported. Credentials in
+/// the URL (`http://user:pass@host:port`, percent-encoded, `@` included) are sent to the
+/// proxy as `Basic` `Proxy-Authorization`; with an `http://` proxy that hop,
+/// and the credentials, are cleartext.
+///
+/// [`HttpClientBuilder::build`]: crate::builder::HttpClientBuilder::build
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum OutboundProxy {
+    /// Connect directly (default).
+    #[default]
+    None,
+    /// Read `HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY` and `NO_PROXY` once, when
+    /// the client is built.
+    ///
+    /// `HTTPS_PROXY` is used for HTTPS destinations and `HTTP_PROXY` for plain
+    /// HTTP; `ALL_PROXY` fills in when that variable is unset or empty. Of
+    /// each upper/lower case pair the upper case one wins when it is set, even
+    /// to an empty value (curl prefers lower case). Only the URLs that will be
+    /// used are validated: `HTTP_PROXY` is ignored unless plain HTTP is
+    /// allowed.
+    ///
+    /// When `REQUEST_METHOD` is set (a CGI process), the environment proxy is
+    /// ignored: `HTTP_PROXY` there can come from a request header (httpoxy).
+    FromEnv,
+    /// Use the given proxies.
+    Explicit(ExplicitProxy),
+}
+
+impl From<ExplicitProxy> for OutboundProxy {
+    fn from(proxy: ExplicitProxy) -> Self {
+        Self::Explicit(proxy)
+    }
+}
+
+/// Proxies for [`OutboundProxy::Explicit`].
+#[derive(Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ExplicitProxy {
+    /// Proxy for `http://` destinations.
+    pub http: Option<String>,
+    /// Proxy for `https://` destinations.
+    pub https: Option<String>,
+    /// Comma-separated bypass list in `NO_PROXY` syntax: host names
+    /// (matching subdomains too), IPs, CIDRs, or `*`.
+    pub no_proxy: Option<String>,
+}
+
+impl ExplicitProxy {
+    /// Use `proxy_url` for both `http://` and `https://` destinations.
+    #[must_use]
+    pub fn all(proxy_url: impl Into<String>) -> Self {
+        let url = proxy_url.into();
+        Self {
+            http: Some(url.clone()),
+            https: Some(url),
+            no_proxy: None,
+        }
+    }
+
+    /// Set the proxy for `http://` destinations.
+    #[must_use]
+    pub fn with_http(mut self, proxy_url: impl Into<String>) -> Self {
+        self.http = Some(proxy_url.into());
+        self
+    }
+
+    /// Set the proxy for `https://` destinations.
+    #[must_use]
+    pub fn with_https(mut self, proxy_url: impl Into<String>) -> Self {
+        self.https = Some(proxy_url.into());
+        self
+    }
+
+    /// Set the bypass list.
+    #[must_use]
+    pub fn with_no_proxy(mut self, list: impl Into<String>) -> Self {
+        self.no_proxy = Some(list.into());
+        self
+    }
+}
+
+impl std::fmt::Debug for ExplicitProxy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExplicitProxy")
+            .field("http", &self.http.as_deref().map(redact_userinfo))
+            .field("https", &self.https.as_deref().map(redact_userinfo))
+            .field("no_proxy", &self.no_proxy)
+            .finish()
+    }
+}
+
+/// Replace everything between the scheme and the last `@` with `***`.
+///
+/// Uses the last `@` of the whole string, not of the authority: unencoded
+/// `/`, `?` or `#` in a password would otherwise end the authority early.
+/// Proxy URLs have no meaningful path, so over-redacting one is harmless.
+pub fn redact_userinfo(url: &str) -> String {
+    // Only a real scheme counts: a `://` inside a scheme-less password must
+    // not shield the credentials before it.
+    let after_scheme = url
+        .find("://")
+        .filter(|&i| {
+            let scheme = &url[..i];
+            scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+                && scheme
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+        })
+        .map_or(0, |i| i + 3);
+    match url[after_scheme..].rfind('@') {
+        Some(at) => format!(
+            "{}***@{}",
+            &url[..after_scheme],
+            &url[after_scheme + at + 1..]
+        ),
+        None => url.to_owned(),
+    }
+}
+
+// Manual so `extra_root_certs` prints as a count, not as kilobytes of DER.
+impl std::fmt::Debug for HttpClientConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HttpClientConfig")
+            .field("request_timeout", &self.request_timeout)
+            .field("total_timeout", &self.total_timeout)
+            .field("max_body_size", &self.max_body_size)
+            .field("user_agent", &self.user_agent)
+            .field("retry", &self.retry)
+            .field("rate_limit", &self.rate_limit)
+            .field("transport", &self.transport)
+            .field("tls_roots", &self.tls_roots)
+            .field("tls", &self.tls)
+            .field("otel", &self.otel)
+            .field("buffer_capacity", &self.buffer_capacity)
+            .field("redirect", &self.redirect)
+            .field("pool_idle_timeout", &self.pool_idle_timeout)
+            .field("pool_max_idle_per_host", &self.pool_max_idle_per_host)
+            .field("connect_timeout", &self.connect_timeout)
+            .field("extra_root_certs", &self.extra_root_certs.len())
+            .field("outbound_proxy", &self.outbound_proxy)
+            .finish()
+    }
 }
 
 impl Default for HttpClientConfig {
@@ -696,6 +870,9 @@ impl Default for HttpClientConfig {
             redirect: RedirectConfig::default(),
             pool_idle_timeout: Some(Duration::from_secs(90)),
             pool_max_idle_per_host: 32,
+            connect_timeout: None,
+            extra_root_certs: Arc::default(),
+            outbound_proxy: OutboundProxy::None,
         }
     }
 }
@@ -719,6 +896,9 @@ impl HttpClientConfig {
             redirect: RedirectConfig::default(),
             pool_idle_timeout: Some(Duration::from_secs(30)),
             pool_max_idle_per_host: 8,
+            connect_timeout: None,
+            extra_root_certs: Arc::default(),
+            outbound_proxy: OutboundProxy::None,
         }
     }
 
@@ -740,6 +920,9 @@ impl HttpClientConfig {
             redirect: RedirectConfig::default(),
             pool_idle_timeout: Some(Duration::from_mins(2)),
             pool_max_idle_per_host: 64,
+            connect_timeout: None,
+            extra_root_certs: Arc::default(),
+            outbound_proxy: OutboundProxy::None,
         }
     }
 
@@ -782,6 +965,9 @@ impl HttpClientConfig {
             redirect: RedirectConfig::default(),
             pool_idle_timeout: Some(Duration::from_mins(1)),
             pool_max_idle_per_host: 4,
+            connect_timeout: None,
+            extra_root_certs: Arc::default(),
+            outbound_proxy: OutboundProxy::None,
         }
     }
 
@@ -816,6 +1002,9 @@ impl HttpClientConfig {
             redirect: RedirectConfig::for_testing(),
             pool_idle_timeout: Some(Duration::from_secs(10)),
             pool_max_idle_per_host: 4,
+            connect_timeout: None,
+            extra_root_certs: Arc::default(),
+            outbound_proxy: OutboundProxy::None,
         }
     }
 
@@ -876,6 +1065,9 @@ impl HttpClientConfig {
             redirect: RedirectConfig::default(),
             pool_idle_timeout: None, // use hyper-util default
             pool_max_idle_per_host: 1,
+            connect_timeout: None,
+            extra_root_certs: Arc::default(),
+            outbound_proxy: OutboundProxy::None,
         }
     }
 
@@ -920,6 +1112,9 @@ impl HttpClientConfig {
             redirect: RedirectConfig::disabled(), // pass 3xx back to the client
             pool_idle_timeout: Some(Duration::from_secs(90)),
             pool_max_idle_per_host: 64, // fan out to many upstream gears
+            connect_timeout: None,
+            extra_root_certs: Arc::default(),
+            outbound_proxy: OutboundProxy::None,
         }
     }
 }
@@ -928,6 +1123,34 @@ impl HttpClientConfig {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redact_userinfo_hides_credentials() {
+        assert_eq!(
+            redact_userinfo("http://user:pa@ss@proxy:3128/x"),
+            "http://***@proxy:3128/x"
+        );
+        assert_eq!(redact_userinfo("user:pass@proxy:3128"), "***@proxy:3128");
+        assert_eq!(redact_userinfo("http://proxy:3128"), "http://proxy:3128");
+        assert_eq!(redact_userinfo("user:a://b@proxy:3128"), "***@proxy:3128");
+        for url in [
+            "http://user:p?ss@proxy:3128",
+            "http://user:p#ss@proxy:3128",
+            "http://user:p/ss@proxy:3128",
+        ] {
+            assert_eq!(redact_userinfo(url), "http://***@proxy:3128", "{url}");
+        }
+    }
+
+    #[test]
+    fn outbound_proxy_debug_hides_credentials() {
+        let text = format!(
+            "{:?}",
+            OutboundProxy::from(ExplicitProxy::all("http://user:p?secret@proxy:3128"))
+        );
+        assert!(!text.contains("secret"), "{text}");
+        assert!(text.contains("proxy:3128"), "{text}");
+    }
 
     #[test]
     fn test_retry_trigger_constants() {

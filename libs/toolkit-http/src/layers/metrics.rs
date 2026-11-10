@@ -91,7 +91,8 @@ fn normalize_method(method: &http::Method) -> &'static str {
 /// 4xx/5xx). Only transport-class failures reach the `Err` arm here — the
 /// `OTel` analogue of go-appkit's `status="0"`. Because the layer is outside the
 /// concurrency limiter, a load-shed rejection reaches this arm too and is
-/// recorded as `"overloaded"`. Everything else collapses to `"other"` rather
+/// recorded as `"overloaded"`. A connect that fails at the outbound proxy is
+/// `"proxy"`. Everything else collapses to `"other"` rather
 /// than enumerating variants that cannot occur at this point.
 fn error_type(err: &HttpError) -> &'static str {
     match err {
@@ -100,6 +101,7 @@ fn error_type(err: &HttpError) -> &'static str {
         HttpError::Transport(_) => "transport",
         HttpError::Tls(_) => "tls",
         HttpError::Overloaded => "overloaded",
+        HttpError::Proxy { .. } => "proxy",
         _ => "other",
     }
 }
@@ -447,6 +449,13 @@ mod tests {
             "transport"
         );
         assert_eq!(error_type(&HttpError::Overloaded), "overloaded");
+        assert_eq!(
+            error_type(&HttpError::Proxy {
+                kind: crate::error::ProxyErrorKind::AuthRequired,
+                proxy: "http://proxy:3128".to_owned(),
+            }),
+            "proxy"
+        );
     }
 
     /// A load-shed rejection (`HttpError::Overloaded`) reaching this layer — as

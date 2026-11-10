@@ -3,7 +3,7 @@
 //! This gear provides cached loading of native root certificates to avoid
 //! repeated OS certificate store lookups (which can be slow on some platforms).
 
-use crate::config::{ClientAuthConfig, TlsConfig, TlsVersion};
+use crate::config::{ClientAuthConfig, TlsConfig, TlsRootConfig, TlsVersion};
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 use std::sync::{Arc, OnceLock};
 
@@ -349,8 +349,16 @@ fn apply_fips_hardening(cfg: &mut rustls::ClientConfig) -> Result<(), TlsConfigE
 /// This fail-fast behavior ensures TLS configuration errors are caught at client
 /// construction time rather than failing later during TLS handshakes.
 pub fn native_roots_client_config(tls: &TlsConfig) -> Result<rustls::ClientConfig, TlsConfigError> {
-    let certs = native_root_certs();
+    build_client_config(native_root_store()?, tls)
+}
 
+fn native_root_store() -> Result<rustls::RootCertStore, TlsConfigError> {
+    root_store_from_native(native_root_certs())
+}
+
+fn root_store_from_native(
+    certs: &[CertificateDer<'static>],
+) -> Result<rustls::RootCertStore, TlsConfigError> {
     let mut root_store = rustls::RootCertStore::empty();
 
     if certs.is_empty() {
@@ -380,7 +388,13 @@ pub fn native_roots_client_config(tls: &TlsConfig) -> Result<rustls::ClientConfi
         ));
     }
 
-    build_client_config(root_store, tls)
+    Ok(root_store)
+}
+
+fn webpki_root_store() -> rustls::RootCertStore {
+    let mut root_store = rustls::RootCertStore::empty();
+    root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    root_store
 }
 
 /// Build a rustls `ClientConfig` using Mozilla's webpki-roots trust anchors.
@@ -394,9 +408,7 @@ pub fn native_roots_client_config(tls: &TlsConfig) -> Result<rustls::ClientConfi
 ///
 /// See [`custom_roots_client_config`].
 pub fn webpki_roots_client_config(tls: &TlsConfig) -> Result<rustls::ClientConfig, TlsConfigError> {
-    let mut root_store = rustls::RootCertStore::empty();
-    root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    build_client_config(root_store, tls)
+    build_client_config(webpki_root_store(), tls)
 }
 
 /// Build a rustls `ClientConfig` trusting exactly `root_store` (e.g. a
@@ -417,11 +429,145 @@ pub fn custom_roots_client_config(
     build_client_config(root_store, tls)
 }
 
+/// Parse every `CERTIFICATE` block of a PEM bundle; other PEM sections are
+/// skipped.
+///
+/// # Errors
+///
+/// [`TlsConfigError::Other`] when the PEM is malformed or holds no
+/// certificate.
+pub fn load_pem_bundle(pem: &[u8]) -> Result<Vec<CertificateDer<'static>>, TlsConfigError> {
+    let certs = CertificateDer::pem_slice_iter(pem)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| with_context("invalid PEM certificate bundle", e))?;
+    if certs.is_empty() {
+        return Err(TlsConfigError::Other(
+            "PEM certificate bundle contains no certificates".into(),
+        ));
+    }
+    Ok(certs)
+}
+
+/// The root store for `roots` plus `extra` trust anchors.
+///
+/// # Errors
+///
+/// [`TlsConfigError::Other`] for an invalid extra root, or for an OS store
+/// with no usable certificate when there are no extra roots.
+pub fn root_store_with_extra(
+    roots: TlsRootConfig,
+    extra: &[CertificateDer<'static>],
+) -> Result<rustls::RootCertStore, TlsConfigError> {
+    root_store_from_parts(roots, native_root_certs, extra)
+}
+
+/// Unlike the OS store, where unparsable entries are skipped, a bad extra
+/// certificate is an error: it was configured explicitly.
+///
+/// An OS store with no usable certificate is an error only without extra
+/// roots; with them, the extra roots alone are trusted.
+fn root_store_from_parts(
+    roots: TlsRootConfig,
+    native: fn() -> &'static [CertificateDer<'static>],
+    extra: &[CertificateDer<'static>],
+) -> Result<rustls::RootCertStore, TlsConfigError> {
+    let mut root_store = match roots {
+        TlsRootConfig::WebPki => webpki_root_store(),
+        TlsRootConfig::Native if extra.is_empty() => root_store_from_native(native())?,
+        TlsRootConfig::Native => root_store_from_native(native()).unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "OS root store unusable; trusting only the extra roots");
+            rustls::RootCertStore::empty()
+        }),
+    };
+    for (index, cert) in extra.iter().enumerate() {
+        root_store
+            .add(cert.clone())
+            .map_err(|e| with_context(format!("invalid extra root certificate #{index}"), e))?;
+    }
+    Ok(root_store)
+}
+
+/// An error message with the underlying error kept as `source()`.
+#[derive(Debug, thiserror::Error)]
+#[error("{context}: {source}")]
+struct Context {
+    context: String,
+    source: Box<dyn std::error::Error + Send + Sync>,
+}
+
+fn with_context(
+    context: impl Into<String>,
+    source: impl std::error::Error + Send + Sync + 'static,
+) -> TlsConfigError {
+    TlsConfigError::Other(Box::new(Context {
+        context: context.into(),
+        source: Box::new(source),
+    }))
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use std::sync::atomic::Ordering;
+
+    fn test_ca() -> rcgen::Certificate {
+        let key = rcgen::KeyPair::generate().expect("key pair");
+        let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).expect("params");
+        params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        params.self_signed(&key).expect("self-signed CA")
+    }
+
+    #[test]
+    fn extra_roots_are_added_to_webpki_store() {
+        let store =
+            root_store_with_extra(TlsRootConfig::WebPki, &[test_ca().der().clone()]).unwrap();
+        assert_eq!(store.len(), webpki_roots::TLS_SERVER_ROOTS.len() + 1);
+    }
+
+    #[test]
+    fn extra_roots_stand_in_for_an_empty_os_store() {
+        let store =
+            root_store_from_parts(TlsRootConfig::Native, || &[], &[test_ca().der().clone()])
+                .unwrap();
+        assert_eq!(store.len(), 1);
+    }
+
+    #[test]
+    fn empty_os_store_without_extra_roots_is_rejected() {
+        assert!(root_store_from_parts(TlsRootConfig::Native, || &[], &[]).is_err());
+    }
+
+    #[test]
+    fn invalid_extra_root_is_rejected_with_an_empty_os_store() {
+        let garbage = CertificateDer::from(vec![0u8; 8]);
+        assert!(root_store_from_parts(TlsRootConfig::Native, || &[], &[garbage]).is_err());
+    }
+
+    #[test]
+    fn invalid_extra_root_is_rejected() {
+        let garbage = CertificateDer::from(vec![0x30, 0x03, 0x02, 0x01, 0x00]);
+        assert!(root_store_with_extra(TlsRootConfig::WebPki, &[garbage]).is_err());
+    }
+
+    #[test]
+    fn pem_bundle_keeps_every_certificate_and_skips_other_sections() {
+        let key = rcgen::KeyPair::generate().expect("key pair");
+        let pem = format!(
+            "{}{}{}",
+            test_ca().pem(),
+            key.serialize_pem(),
+            test_ca().pem()
+        );
+        assert_eq!(load_pem_bundle(pem.as_bytes()).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn pem_bundle_without_certificates_is_rejected() {
+        let key = rcgen::KeyPair::generate().expect("key pair");
+        assert!(load_pem_bundle(key.serialize_pem().as_bytes()).is_err());
+        assert!(load_pem_bundle(b"").is_err());
+    }
 
     /// Test that native root certs are cached after the first load.
     ///
