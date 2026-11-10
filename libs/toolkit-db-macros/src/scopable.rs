@@ -109,8 +109,18 @@ fn dimension_column(col: Option<&(String, Span)>) -> syn::Result<TokenStream> {
 }
 
 /// The `Self::Column` variant a column name maps to.
+///
+/// A name that does not convert to an identifier is reported at the attribute
+/// rather than panicking inside the macro, which `syn::Ident::new` would do.
 fn column_path(name: &str, span: Span) -> syn::Result<TokenStream> {
-    let ident = syn::Ident::new(&snake_to_upper_camel(name), span);
+    let variant = snake_to_upper_camel(name);
+    let ident = syn::parse_str::<syn::Ident>(&variant).map_err(|_| {
+        syn::Error::new(
+            span,
+            format!("secure: column name '{name}' is not a valid column identifier"),
+        )
+    })?;
+    let ident = syn::Ident::new(&ident.to_string(), span);
     Ok(quote! { Self::Column::#ident })
 }
 

@@ -38,6 +38,11 @@ fn ui() {
     t.compile_fail("tests/ui/err_pep_duplicate_property.rs");
     t.compile_fail("tests/ui/err_unrestricted_with_pep.rs");
 
+    // Error cases: a column name that is not an identifier is reported, not a panic
+    t.compile_fail("tests/ui/err_dimension_column_empty.rs");
+    t.compile_fail("tests/ui/err_dimension_column_not_an_identifier.rs");
+    t.compile_fail("tests/ui/err_pep_column_not_an_identifier.rs");
+
     // Note: Compile-pass tests (ok_*.rs) exist on disk for documentation but are
     // not registered here — successful expansion requires the toolkit-db crate which
     // is not available in the trybuild environment. The macro is tested in actual
