@@ -1,7 +1,7 @@
 [package]
 name = "cf-gears-event-broker"
 description = "Event Broker: Ingest/Delivery/Dispatcher composite module (deployment-topology skeleton)"
-version = "0.4.0"
+version = "0.5.1"
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
@@ -23,7 +23,7 @@ autobins = false
 # router-driving side modules (`request`/`response`) additionally need `http`
 # + `tower`, and the fixtures need `types-registry-sdk`'s `test-util`, so the
 # feature pulls those in (they are otherwise dev-only).
-test-utils = ["dep:http", "dep:tower", "types-registry-sdk/test-util"]
+test-utils = ["dep:http", "dep:tower", "dep:schemars", "types-registry-sdk/test-util"]
 # Gates the engine-matrix tests (`tests/*_backends_test.rs`), which need a
 # Docker daemon for their PostgreSQL and MySQL servers (or the servers
 # `EB_TEST_POSTGRES_URL` / `EB_TEST_MYSQL_URL` name), so a default `cargo test`
@@ -41,6 +41,7 @@ path = "src/bin/server.rs"
 workspace = true
 
 [dependencies]
+schemars = { workspace = true, optional = true }
 # A concrete topic and a concrete event type are both derived GTS type schemas,
 # so the broker models neither itself: the identifier wrapper comes from `gts`,
 # the resolved type schema from `types-registry-sdk`, and the DTO shapes the API
@@ -52,7 +53,9 @@ workspace = true
 # `gts_id!(...)` literals.
 event-broker-sdk = { workspace = true }
 gts = { workspace = true }
-types-registry-sdk = { workspace = true }
+# `rest-client`: the resolving client `#[toolkit::consumes]` registers when no
+# in-process registry publishes the platform API.
+types-registry-sdk = { workspace = true, features = ["rest-client"] }
 
 cluster = { workspace = true }
 cluster-sdk = { workspace = true }
@@ -194,9 +197,9 @@ tracing-test = { workspace = true }
 # rather than in-process mocks.
 reqwest = { workspace = true, features = ["json", "stream"] }
 tempfile = { workspace = true }
-# `types_registry_sdk::testing::MockTypesRegistryClient` - the SDK's own
-# ready-made in-memory test double, reused rather than hand-rolled
-# (`eb-gts-type-registration`).
+# `types_registry_sdk::testing_platform::MockTypesRegistry` - the SDK's own
+# in-memory `PlatformTypesRegistryApi` test double, reused rather than
+# hand-rolled.
 types-registry-sdk = { workspace = true, features = ["test-util"] }
 # `cf-gears-standalone-cluster-plugin` moved to [dependencies] above (also
 # needed by src/bin/server.rs); regular dependencies are available to tests

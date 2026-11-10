@@ -21,17 +21,6 @@ dependencies = [
 
 [[package]]
 name = "ahash"
-version = "0.7.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "891477e0c6a8957309ee5c45a6368af3ae14bb510732d2684ffa19af310920f9"
-dependencies = [
- "getrandom 0.2.17",
- "once_cell",
- "version_check",
-]
-
-[[package]]
-name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5a15f179cd60c4584b8a8c596927aadc462e27f2ca70c04e0071964a73ba7a75"
@@ -339,7 +328,7 @@ version = "58.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ae33dad492b7df00a217563a7b0ef2874df68a0deea1b1a3acf628152f7f7a69"
 dependencies = [
- "ahash 0.8.12",
+ "ahash",
  "arrow-buffer",
  "arrow-data",
  "arrow-schema",
@@ -435,7 +424,7 @@ version = "58.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c58da39eb3d8350ad4a549e5c2bc49284dac554016c69829310350f1731b0aad"
 dependencies = [
- "ahash 0.8.12",
+ "ahash",
  "arrow-array",
  "arrow-buffer",
  "arrow-data",
@@ -1264,28 +1253,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d20789868f4b01b2f2caec9f5c4e0213b41e3e5702a50157d699ae31ced2fcb"
 
 [[package]]
-name = "bytecheck"
-version = "0.6.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23cdc57ce23ac53c931e88a43d06d070a6fd142f2617be5855eb75efc9beb1c2"
-dependencies = [
- "bytecheck_derive",
- "ptr_meta",
- "simdutf8",
-]
-
-[[package]]
-name = "bytecheck_derive"
-version = "0.6.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3db406d29fbcd95542e92559bed4d8ad92636d1ca8b3b72ede10b4bcc010e659"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 1.0.109",
-]
-
-[[package]]
 name = "bytecount"
 version = "0.6.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1526,7 +1493,7 @@ dependencies = [
 
 [[package]]
 name = "cf-api-contracts"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1561,7 +1528,7 @@ dependencies = [
 
 [[package]]
 name = "cf-api-contracts-consumer"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1619,7 +1586,7 @@ dependencies = [
 
 [[package]]
 name = "cf-chat-engine"
-version = "0.3.11"
+version = "0.3.12"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1678,7 +1645,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-account-management"
-version = "0.11.2"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1738,7 +1705,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-account-management-sdk"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "async-trait",
  "cf-gears-tenant-resolver-sdk",
@@ -1810,7 +1777,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-api-gateway"
-version = "0.7.0"
+version = "0.7.2"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1852,7 +1819,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tower",
- "tower-http",
+ "tower-http 0.7.1",
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
@@ -1863,7 +1830,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-authn-resolver"
-version = "0.2.40"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1883,7 +1850,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-authn-resolver-sdk"
-version = "0.3.40"
+version = "0.3.41"
 dependencies = [
  "async-trait",
  "cf-gears-toolkit",
@@ -1900,7 +1867,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-authz-resolver"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1926,7 +1893,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-authz-resolver-sdk"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "async-trait",
  "axum",
@@ -2082,7 +2049,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-bss-ledger-sdk"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "async-trait",
  "cf-gears-bss-money",
@@ -2150,6 +2117,7 @@ dependencies = [
  "cf-gears-types-registry-sdk",
  "futures",
  "governor",
+ "gts",
  "opentelemetry",
  "opentelemetry_sdk",
  "parking_lot",
@@ -2244,6 +2212,7 @@ dependencies = [
  "cf-gears-toolkit-security",
  "cf-gears-types-registry",
  "cf-gears-types-registry-sdk",
+ "gts",
  "parking_lot",
  "proptest",
  "rust_decimal",
@@ -2354,7 +2323,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-bss-rate-provider"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2375,7 +2344,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-bss-rate-provider-ecb-plugin"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2397,7 +2366,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-bss-rate-provider-http-json-plugin"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2423,7 +2392,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-bss-rate-provider-sdk"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "axum",
@@ -2472,7 +2441,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-clickhouse-usage-collector-plugin"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2512,7 +2481,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-cluster"
-version = "0.3.2"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -2559,7 +2528,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-cluster-conformance"
-version = "0.3.11"
+version = "0.3.12"
 dependencies = [
  "async-trait",
  "cf-gears-cluster-sdk",
@@ -2571,7 +2540,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-cluster-sdk"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -2605,7 +2574,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-construct"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2614,6 +2583,8 @@ dependencies = [
  "cf-gears-authz-resolver",
  "cf-gears-authz-resolver-sdk",
  "cf-gears-construct-sdk",
+ "cf-gears-graph-storage",
+ "cf-gears-graph-storage-sdk",
  "cf-gears-oagw-sdk",
  "cf-gears-settings-service-sdk",
  "cf-gears-toolkit",
@@ -2622,14 +2593,21 @@ dependencies = [
  "cf-gears-toolkit-db-macros",
  "cf-gears-toolkit-gts",
  "cf-gears-toolkit-macros",
+ "cf-gears-toolkit-odata",
+ "cf-gears-toolkit-odata-macros",
  "cf-gears-toolkit-security",
+ "cf-gears-toolkit-utils",
  "cf-gears-types-registry",
  "cf-gears-types-registry-sdk",
  "futures",
+ "gts",
  "hex",
  "http",
  "inventory",
  "jsonschema 0.60.2",
+ "opentelemetry",
+ "opentelemetry_sdk",
+ "parking_lot",
  "proptest",
  "reqwest",
  "sea-orm",
@@ -2639,6 +2617,7 @@ dependencies = [
  "thiserror 2.0.21",
  "time",
  "tokio",
+ "tokio-retry",
  "tokio-util",
  "tower",
  "tracing",
@@ -2649,7 +2628,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-construct-sdk"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "cf-gears-graph-storage-sdk",
@@ -2669,7 +2648,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-credstore"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2707,7 +2686,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-credstore-sdk"
-version = "0.2.20"
+version = "0.2.21"
 dependencies = [
  "async-trait",
  "cf-gears-tenant-resolver-sdk",
@@ -2768,7 +2747,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-event-broker"
-version = "0.4.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2815,6 +2794,7 @@ dependencies = [
  "opentelemetry_sdk",
  "rand 0.10.3",
  "reqwest",
+ "schemars 1.2.3",
  "sea-orm",
  "sea-orm-migration",
  "serde",
@@ -2870,7 +2850,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-event-broker-sdk"
-version = "0.4.0"
+version = "0.5.1"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -2979,7 +2959,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-file-parser"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3012,7 +2992,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-file-parser-sdk"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3022,7 +3002,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-file-storage"
-version = "0.4.1"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3073,7 +3053,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-file-storage-sdk"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "cf-gears-toolkit-canonical-errors",
  "cf-gears-toolkit-gts",
@@ -3095,7 +3075,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-firebase-authn-plugin"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3124,7 +3104,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-flight-control"
-version = "0.1.2"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "cf-gears-api-gateway",
@@ -3143,7 +3123,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-github-mirror"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3227,7 +3207,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-github-mirror-sdk"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "async-trait",
  "cf-gears-toolkit",
@@ -3242,7 +3222,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-graph-storage"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3263,6 +3243,8 @@ dependencies = [
  "cf-gears-toolkit-macros",
  "cf-gears-toolkit-odata",
  "cf-gears-toolkit-security",
+ "cf-gears-types-registry",
+ "cf-gears-types-registry-sdk",
  "gts",
  "hex",
  "http",
@@ -3285,7 +3267,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-graph-storage-onnx-embedding-plugin"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "async-trait",
  "cf-gears-graph-storage-sdk",
@@ -3302,7 +3284,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-graph-storage-remote-embedding-plugin"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "async-trait",
  "cf-gears-graph-storage-sdk",
@@ -3320,7 +3302,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-graph-storage-sdk"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "cf-gears-toolkit-canonical-errors",
@@ -3338,7 +3320,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-grpc-hub"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3367,7 +3349,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-kafka-event-broker-plugin"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "async-trait",
  "cf-gears-event-broker-backend-bench",
@@ -3393,7 +3375,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-keycloak-idp-plugin"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3434,8 +3416,78 @@ dependencies = [
 ]
 
 [[package]]
-name = "cf-gears-license-enforcement-sdk"
+name = "cf-gears-le-default-evaluator"
 version = "0.1.0"
+dependencies = [
+ "cf-gears-license-enforcement-sdk",
+ "cf-gears-license-resolver-sdk",
+ "cf-gears-toolkit-canonical-errors",
+ "gts",
+ "serde_json",
+ "time",
+ "uuid",
+]
+
+[[package]]
+name = "cf-gears-le-issue-admission-plugin"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "cf-gears-license-enforcement-sdk",
+ "gts",
+ "serde",
+ "serde_json",
+ "time",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "cf-gears-license-enforcement"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "cf-gears-authz-resolver",
+ "cf-gears-authz-resolver-sdk",
+ "cf-gears-le-default-evaluator",
+ "cf-gears-le-issue-admission-plugin",
+ "cf-gears-license-enforcement-sdk",
+ "cf-gears-license-resolver-sdk",
+ "cf-gears-tenant-resolver",
+ "cf-gears-tenant-resolver-sdk",
+ "cf-gears-test-containers",
+ "cf-gears-toolkit",
+ "cf-gears-toolkit-canonical-errors",
+ "cf-gears-toolkit-db",
+ "cf-gears-toolkit-db-macros",
+ "cf-gears-toolkit-macros",
+ "cf-gears-toolkit-odata",
+ "cf-gears-toolkit-security",
+ "cf-gears-types-registry",
+ "cf-gears-types-registry-sdk",
+ "gts",
+ "hex",
+ "http",
+ "inventory",
+ "sea-orm",
+ "sea-orm-migration",
+ "serde",
+ "serde_json",
+ "testcontainers",
+ "testcontainers-modules",
+ "thiserror 2.0.21",
+ "time",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "cf-gears-license-enforcement-sdk"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -3463,7 +3515,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-license-resolver"
-version = "0.1.8"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3494,7 +3546,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-license-resolver-sdk"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "async-trait",
  "axum",
@@ -3516,7 +3568,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-llm-gateway-sdk"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "cf-gears-model-registry-sdk",
@@ -3536,7 +3588,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-memory-event-broker-plugin"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "async-trait",
  "cf-gears-event-broker-backend-bench",
@@ -3553,7 +3605,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-mini-chat"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3626,7 +3678,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-model-registry-sdk"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "async-trait",
  "cf-gears-toolkit-gts",
@@ -3643,7 +3695,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-mysql-event-broker-plugin"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "async-trait",
  "cf-gears-event-broker-backend-bench",
@@ -3669,7 +3721,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-nodes-registry"
-version = "0.1.46"
+version = "0.1.47"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3704,7 +3756,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-noop-usage-collector-plugin"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3726,7 +3778,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-oagw"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -3800,7 +3852,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-oagw-sdk"
-version = "0.5.16"
+version = "0.5.17"
 dependencies = [
  "async-openai",
  "async-trait",
@@ -3826,7 +3878,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-oidc-authn-plugin"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3932,7 +3984,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-postgres-event-broker-plugin"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "async-trait",
  "cf-gears-event-broker-backend-bench",
@@ -3961,7 +4013,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-quota-enforcement"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -3981,6 +4033,7 @@ dependencies = [
  "cf-gears-toolkit-contract",
  "cf-gears-toolkit-db",
  "cf-gears-toolkit-macros",
+ "cf-gears-toolkit-odata",
  "cf-gears-toolkit-security",
  "cf-gears-types-registry",
  "cf-gears-types-registry-sdk",
@@ -4000,13 +4053,14 @@ dependencies = [
  "tokio-util",
  "tower",
  "tracing",
+ "tracing-subscriber",
  "utoipa",
  "uuid",
 ]
 
 [[package]]
 name = "cf-gears-quota-enforcement-engine-cel"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "cel-core",
  "cf-gears-quota-enforcement-sdk",
@@ -4017,7 +4071,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-quota-enforcement-engine-most-restrictive"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "cf-gears-quota-enforcement-sdk",
  "serde_json",
@@ -4026,27 +4080,35 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-quota-enforcement-sdk"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-trait",
+ "axum",
+ "cf-gears-toolkit",
  "cf-gears-toolkit-canonical-errors",
+ "cf-gears-toolkit-contract",
  "cf-gears-toolkit-gts",
+ "cf-gears-toolkit-http",
+ "cf-gears-toolkit-http-middleware",
+ "cf-gears-toolkit-odata",
  "cf-gears-toolkit-security",
  "gts",
  "inventory",
  "parking_lot",
  "schemars 1.2.3",
+ "secrecy",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
  "time",
  "tokio",
+ "utoipa",
  "uuid",
 ]
 
 [[package]]
 name = "cf-gears-quota-enforcement-storage-plugin"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4080,7 +4142,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-resource-group"
-version = "0.4.8"
+version = "0.4.9"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4123,7 +4185,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-resource-group-sdk"
-version = "0.3.7"
+version = "0.3.8"
 dependencies = [
  "async-trait",
  "cf-gears-toolkit-canonical-errors",
@@ -4141,7 +4203,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-rg-tr-plugin"
-version = "0.1.24"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4166,7 +4228,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-rustls-corecrypto-provider"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "core-foundation 0.10.1",
  "core-foundation-sys",
@@ -4198,7 +4260,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-service-discovery"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4226,7 +4288,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-settings-service"
-version = "0.1.10"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4278,7 +4340,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-settings-service-sdk"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "async-trait",
  "cf-gears-toolkit-canonical-errors",
@@ -4298,7 +4360,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-simple-user-settings"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4328,7 +4390,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-simple-user-settings-sdk"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "async-trait",
  "cf-gears-toolkit",
@@ -4341,7 +4403,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-single-tenant-tr-plugin"
-version = "0.1.43"
+version = "0.1.44"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4360,7 +4422,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-sqlite-event-broker-plugin"
-version = "0.2.0"
+version = "0.2.2"
 dependencies = [
  "async-trait",
  "cf-gears-event-broker-backend-bench",
@@ -4382,7 +4444,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-standalone-cluster-plugin"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "async-trait",
  "cf-gears-cluster-sdk",
@@ -4395,7 +4457,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-static-authn-plugin"
-version = "0.3.21"
+version = "0.3.22"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4416,7 +4478,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-static-authz-plugin"
-version = "0.1.41"
+version = "0.1.42"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4437,7 +4499,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-static-credstore-plugin"
-version = "0.2.18"
+version = "0.2.19"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4457,7 +4519,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-static-idp-plugin"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4483,7 +4545,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-static-license-plugin"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4505,7 +4567,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-static-tr-plugin"
-version = "0.1.42"
+version = "0.1.43"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4524,7 +4586,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-system-sdk-directory"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4539,14 +4601,14 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-system-sdks"
-version = "0.1.50"
+version = "0.1.51"
 dependencies = [
  "cf-gears-system-sdk-directory",
 ]
 
 [[package]]
 name = "cf-gears-tenant-resolver"
-version = "0.1.44"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4567,7 +4629,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-tenant-resolver-sdk"
-version = "0.4.8"
+version = "0.4.9"
 dependencies = [
  "async-trait",
  "cf-gears-toolkit",
@@ -4594,7 +4656,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-timescaledb-usage-collector-plugin"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4626,7 +4688,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-toolkit"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -4664,6 +4726,7 @@ dependencies = [
  "opentelemetry_sdk",
  "parking_lot",
  "rustls",
+ "schemars 1.2.3",
  "sea-orm-migration",
  "secrecy",
  "serde",
@@ -4694,7 +4757,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-toolkit-auth"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -4752,7 +4815,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-toolkit-contract"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -4792,7 +4855,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-toolkit-contract-macros"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "heck 0.5.0",
  "proc-macro-crate",
@@ -4818,7 +4881,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-toolkit-contract-protogen"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "cf-gears-toolkit-contract",
  "heck 0.5.0",
@@ -4831,7 +4894,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-toolkit-db"
-version = "0.17.2"
+version = "0.17.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4891,7 +4954,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-toolkit-durable-execution"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "apalis",
@@ -4927,7 +4990,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-toolkit-gateway"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "async-trait",
  "axum",
@@ -4950,9 +5013,10 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-toolkit-gts"
-version = "0.1.7"
+version = "0.2.0"
 dependencies = [
  "anyhow",
+ "cf-gears-toolkit-gts-declarations-fixture",
  "cf-gears-toolkit-gts-macros",
  "gts",
  "gts-macros",
@@ -4963,20 +5027,37 @@ dependencies = [
 ]
 
 [[package]]
-name = "cf-gears-toolkit-gts-macros"
-version = "0.1.6"
+name = "cf-gears-toolkit-gts-declarations-fixture"
+version = "0.1.0"
 dependencies = [
+ "cf-gears-toolkit-gts",
+ "gts",
+ "schemars 1.2.3",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "cf-gears-toolkit-gts-macros"
+version = "0.2.0"
+dependencies = [
+ "cf-gears-toolkit-gts",
+ "cf-gears-toolkit-gts-declarations-fixture",
  "gts",
  "gts-id",
  "proc-macro-crate",
  "proc-macro2",
  "quote",
+ "schemars 1.2.3",
+ "serde",
+ "serde_json",
  "syn 3.0.9",
+ "trybuild",
 ]
 
 [[package]]
 name = "cf-gears-toolkit-http"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "bytes",
  "cf-gears-toolkit-security",
@@ -5006,7 +5087,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tower",
- "tower-http",
+ "tower-http 0.7.1",
  "tracing",
  "url",
  "uuid",
@@ -5015,7 +5096,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-toolkit-http-middleware"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "axum",
  "cf-gears-toolkit-canonical-errors",
@@ -5031,7 +5112,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-toolkit-http-proxy"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -5064,7 +5145,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-toolkit-k8s-auth"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "cf-gears-toolkit-security",
  "k8s-openapi",
@@ -5076,7 +5157,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-toolkit-macros"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "heck 0.5.0",
  "proc-macro2",
@@ -5092,9 +5173,17 @@ dependencies = [
  "anyhow",
  "async-trait",
  "cf-gears-toolkit",
+ "cf-gears-toolkit-gts",
+ "cf-gears-toolkit-gts-declarations-fixture",
  "cf-gears-toolkit-macros",
+ "gts",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "tokio",
  "tokio-util",
  "trybuild",
+ "uuid",
 ]
 
 [[package]]
@@ -5117,7 +5206,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-toolkit-odata"
-version = "0.10.1"
+version = "0.10.2"
 dependencies = [
  "base64 0.22.1",
  "bigdecimal",
@@ -5171,8 +5260,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "cf-gears-toolkit-resilience"
+version = "0.1.0"
+dependencies = [
+ "cf-gears-toolkit-utils",
+ "opentelemetry",
+ "opentelemetry_sdk",
+ "parking_lot",
+ "pin-project-lite",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tower",
+ "tracing",
+]
+
+[[package]]
 name = "cf-gears-toolkit-sdk"
-version = "0.7.15"
+version = "0.7.16"
 dependencies = [
  "cf-gears-toolkit-odata",
  "cf-gears-toolkit-odata-macros",
@@ -5194,7 +5300,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-toolkit-security"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "aws-lc-rs",
  "base64 0.22.1",
@@ -5233,7 +5339,7 @@ version = "0.2.0"
 
 [[package]]
 name = "cf-gears-toolkit-taskward"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "criterion",
  "futures-util",
@@ -5246,7 +5352,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-toolkit-trace-context"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "http",
  "opentelemetry",
@@ -5259,7 +5365,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-toolkit-transport-grpc"
-version = "0.9.1"
+version = "0.9.2"
 dependencies = [
  "anyhow",
  "cf-gears-toolkit-security",
@@ -5295,7 +5401,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-tr-authz-plugin"
-version = "0.1.24"
+version = "0.1.25"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5318,7 +5424,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-types-registry"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5367,7 +5473,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-types-registry-sdk"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5397,7 +5503,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-usage-collector"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5435,7 +5541,7 @@ dependencies = [
 
 [[package]]
 name = "cf-gears-usage-collector-sdk"
-version = "0.3.17"
+version = "0.3.18"
 dependencies = [
  "async-trait",
  "bigdecimal",
@@ -5459,7 +5565,7 @@ dependencies = [
 
 [[package]]
 name = "cf-k8s-cluster-plugin"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -5491,7 +5597,7 @@ dependencies = [
 
 [[package]]
 name = "cf-postgres-cluster-plugin"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "async-trait",
  "cf-gears-cluster",
@@ -5520,7 +5626,7 @@ dependencies = [
 
 [[package]]
 name = "cf-redis-cluster-plugin"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "cf-gears-cluster",
@@ -5583,9 +5689,9 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
 name = "chacha20"
-version = "0.10.0"
+version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f8d983286843e49675a4b7a2d174efe136dc93a18d69130dd18198a6c167601"
+checksum = "65c35e4b699c7e15ccbe7ee35c005e4fc0a278d22238a2857e6ce2dadeda1b06"
 dependencies = [
  "cfg-if",
  "cpufeatures 0.3.0",
@@ -6036,7 +6142,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e75b2483e97a5a7da73ac68a05b629f9c53cff58d8ed1c77866079e18b00dba5"
 dependencies = [
  "digest 0.10.7",
- "spin 0.10.0",
+ "spin 0.10.1",
 ]
 
 [[package]]
@@ -6955,7 +7061,7 @@ checksum = "5e139bc46ca777eb5efaf62df0ab8cc5fd400866427e56c68b22e414e53bd3be"
 dependencies = [
  "futures-core",
  "futures-sink",
- "spin 0.9.8",
+ "spin 0.9.9",
 ]
 
 [[package]]
@@ -7019,7 +7125,7 @@ dependencies = [
  "futures",
  "log",
  "parking_lot",
- "rand 0.8.5",
+ "rand 0.8.8",
  "redis-protocol",
  "rustls",
  "rustls-native-certs",
@@ -7450,9 +7556,6 @@ name = "hashbrown"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a9ee70c43aaf417c914396645a0fa852624801b24ebb7ae78fe8272889ac888"
-dependencies = [
- "ahash 0.7.8",
-]
 
 [[package]]
 name = "hashbrown"
@@ -7547,7 +7650,7 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "hello"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7656,7 +7759,7 @@ version = "3.19.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e0c9d1d13553220b2dd9bbbd135b6d8d9dfcb8c1893a842e93f93b9f59bcc5a4"
 dependencies = [
- "ahash 0.8.12",
+ "ahash",
  "astral-tl",
  "base64 0.23.1",
  "bitflags",
@@ -8186,16 +8289,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d98f6fed1fde3f8c21bc40a1abb88dd75e67924f9cffc3ef95607bad8017f8e2"
 
 [[package]]
-name = "iri-string"
-version = "0.7.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "25e659a4bb38e810ebc252e53b5814ff908a8c58c2a9ce2fae1bbec24cbf4e20"
-dependencies = [
- "memchr",
- "serde",
-]
-
-[[package]]
 name = "is_ci"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8388,7 +8481,7 @@ version = "0.58.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f622c574a29fb3034a0a90645afee194dfedc75fc124228801b6e77041075bd1"
 dependencies = [
- "ahash 0.8.12",
+ "ahash",
  "bytecount",
  "data-encoding",
  "email_address",
@@ -8416,7 +8509,7 @@ version = "0.60.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a42a11b47492e6a2cc76e9c7bcc8077776cb31dac444e0795d7f61bcc6441c08"
 dependencies = [
- "ahash 0.8.12",
+ "ahash",
  "bytecount",
  "data-encoding",
  "email_address",
@@ -8462,7 +8555,7 @@ version = "0.58.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39b7670345e5ce87371339d13705dbb9276b7e3e934bbe1efa2c6734a1f65a96"
 dependencies = [
- "ahash 0.8.12",
+ "ahash",
  "bytecount",
  "fraction",
  "getrandom 0.3.4",
@@ -8478,7 +8571,7 @@ version = "0.60.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e281d6b177bb4834f2ffd6f92aa0443cffe29c996b251c8d94eb6f456186feba"
 dependencies = [
- "ahash 0.8.12",
+ "ahash",
  "bytecount",
  "fraction",
  "getrandom 0.3.4",
@@ -8524,7 +8617,7 @@ version = "4.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e056571d553c707d91a3499d935dcd9445f9ca4e06ae818fb190665021e80270"
 dependencies = [
- "ahash 0.8.12",
+ "ahash",
  "async-trait",
  "base64 0.23.1",
  "biblatex",
@@ -8650,7 +8743,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tower",
- "tower-http",
+ "tower-http 0.6.11",
  "tracing",
 ]
 
@@ -8693,7 +8786,7 @@ version = "4.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3eb064ef71c7bea55e934a443960da9e9ec31fbb2ba63e47e4aeca32603d5cc7"
 dependencies = [
- "ahash 0.8.12",
+ "ahash",
  "async-broadcast",
  "async-stream",
  "backon",
@@ -8720,7 +8813,7 @@ version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 dependencies = [
- "spin 0.9.8",
+ "spin 0.9.9",
 ]
 
 [[package]]
@@ -9292,7 +9385,7 @@ dependencies = [
  "httparse",
  "memchr",
  "mime",
- "spin 0.9.8",
+ "spin 0.9.9",
  "version_check",
 ]
 
@@ -9507,7 +9600,7 @@ dependencies = [
  "num-integer",
  "num-iter",
  "num-traits",
- "rand 0.8.5",
+ "rand 0.8.8",
  "smallvec",
  "zeroize",
 ]
@@ -9730,7 +9823,7 @@ dependencies = [
  "sha2 0.10.9",
  "snafu",
  "tower",
- "tower-http",
+ "tower-http 0.6.11",
  "url",
  "web-time",
 ]
@@ -9770,9 +9863,9 @@ checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
 name = "opentelemetry"
-version = "0.32.0"
+version = "0.33.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b0142c63252a9e054e68a4c61a5778f7b14f576274d593f8ce883d191a099682"
+checksum = "8c1f1a6ac9c875a4941e4c7c085b61e8f4daa326de03b4701768c3491a6ad9ee"
 dependencies = [
  "futures-core",
  "futures-sink",
@@ -9784,9 +9877,9 @@ dependencies = [
 
 [[package]]
 name = "opentelemetry-http"
-version = "0.32.0"
+version = "0.33.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5683015d09e2df236ef005b17f6f196f0d5f6313c4fa43a7b6a53b52776e4331"
+checksum = "302249bd8ee804789faaa7b5b2cbf79bc61cb864714079c644e3828af5b7e811"
 dependencies = [
  "async-trait",
  "bytes",
@@ -9797,11 +9890,12 @@ dependencies = [
 
 [[package]]
 name = "opentelemetry-otlp"
-version = "0.32.0"
+version = "0.33.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9966929966d17620d7c316c643ba62631826e10021409357772d5eea84f62c35"
+checksum = "0756af24841e367128ef31c831999937b8b5c5197d47914590d8f4e2e88c2e1a"
 dependencies = [
  "http",
+ "httpdate",
  "opentelemetry",
  "opentelemetry-http",
  "opentelemetry-proto",
@@ -9816,9 +9910,9 @@ dependencies = [
 
 [[package]]
 name = "opentelemetry-proto"
-version = "0.32.0"
+version = "0.33.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "56d658ba1faf63f7b9c492cfbe6e0ec365440a16132d3270c1065f7b33f1b638"
+checksum = "d576f5dddc3299341bcd85a04be17b2564844c0c9563214f02d85f2524d1afae"
 dependencies = [
  "opentelemetry",
  "opentelemetry_sdk",
@@ -9829,9 +9923,9 @@ dependencies = [
 
 [[package]]
 name = "opentelemetry_sdk"
-version = "0.32.1"
+version = "0.33.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9b59f80e1ac4d5ff7a2db8fb6c80badb7f0f3f858211fba08dd9aaec750894f9"
+checksum = "372a912db2974d1990207006fd0e3aa0ef3fd4ad3be43c65cfaadf2206866061"
 dependencies = [
  "futures-channel",
  "futures-executor",
@@ -10653,26 +10747,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "33cb294fe86a74cbcf50d4445b37da762029549ebeea341421c7c70370f86cac"
 
 [[package]]
-name = "ptr_meta"
-version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0738ccf7ea06b608c10564b31debd4f5bc5e197fc8bfe088f68ae5ce81e7a4f1"
-dependencies = [
- "ptr_meta_derive",
-]
-
-[[package]]
-name = "ptr_meta_derive"
-version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "16b845dbfca988fa33db069c0e230574d15a3088f147a87b64c7589eb662c9ac"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 1.0.109",
-]
-
-[[package]]
 name = "pulldown-cmark"
 version = "0.13.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10839,9 +10913,9 @@ checksum = "dc33ff2d4973d518d823d61aa239014831e521c75da58e3df4840d3f47749d09"
 
 [[package]]
 name = "rand"
-version = "0.8.5"
+version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34af8d1a0e25924bc5b7c43c079c942339d8f0a8b57c39049bef581b46327404"
+checksum = "e058c7de0b26af77780c769414d6257830bb240f3c38477dbc2c16e5f54d6d4c"
 dependencies = [
  "libc",
  "rand_chacha 0.3.1",
@@ -11146,7 +11220,7 @@ version = "0.58.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "558f3855529c0a7e78a48e409fa653456e55f1b167eab4109c16a255b7727e3f"
 dependencies = [
- "ahash 0.8.12",
+ "ahash",
  "fluent-uri",
  "getrandom 0.3.4",
  "hashbrown 0.17.0",
@@ -11163,7 +11237,7 @@ version = "0.60.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f42818036d3b37cda6bd4c494543158a36e431cb717015ef7c93acc6ba214d3b"
 dependencies = [
- "ahash 0.8.12",
+ "ahash",
  "fluent-uri",
  "getrandom 0.3.4",
  "hashbrown 0.17.0",
@@ -11238,15 +11312,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rend"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "71fe3824f5629716b1589be05dacd749f6aa084c87e00e016714a8cdfccc997c"
-dependencies = [
- "bytecheck",
-]
-
-[[package]]
 name = "reqwest"
 version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11283,7 +11348,7 @@ dependencies = [
  "tokio-rustls",
  "tokio-util",
  "tower",
- "tower-http",
+ "tower-http 0.6.11",
  "tower-service",
  "url",
  "wasm-bindgen",
@@ -11310,35 +11375,6 @@ dependencies = [
  "libc",
  "untrusted 0.9.0",
  "windows-sys 0.52.0",
-]
-
-[[package]]
-name = "rkyv"
-version = "0.7.46"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2297bf9c81a3f0dc96bc9521370b88f054168c29826a75e89c55ff196e7ed6a1"
-dependencies = [
- "bitvec",
- "bytecheck",
- "bytes",
- "hashbrown 0.12.3",
- "ptr_meta",
- "rend",
- "rkyv_derive",
- "seahash",
- "tinyvec",
- "uuid",
-]
-
-[[package]]
-name = "rkyv_derive"
-version = "0.7.46"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "84d7b42d4b8d06048d3ac8db0eb31bcb942cbeb709f0b5f2b2ebde398d3038f5"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 1.0.109",
 ]
 
 [[package]]
@@ -11446,16 +11482,16 @@ dependencies = [
 
 [[package]]
 name = "rust_decimal"
-version = "1.41.0"
+version = "1.43.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ce901f9a19d251159075a4c37af514c3b8ef99c22e02dd8c19161cf397ee94a"
+checksum = "7653272e75dcac41dc199fbea6f5797633994fafd339943c06c9af16bf29cd3a"
 dependencies = [
  "arrayvec",
  "borsh",
  "bytes",
  "num-traits",
- "rand 0.8.5",
- "rkyv",
+ "rand 0.8.8",
+ "rand 0.9.4",
  "serde",
  "serde_json",
  "wasm-bindgen",
@@ -11952,12 +11988,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "seahash"
-version = "4.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1c107b6f4780854c8b126e228ea8869f4d7b71260f962fefb57b996b8959ba6b"
-
-[[package]]
 name = "sec1"
 version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12038,7 +12068,7 @@ version = "0.0.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7bd22781911de0ca6debda95f073c8f18bec65d1a94f1fa9573f3102e514cea4"
 dependencies = [
- "ahash 0.8.12",
+ "ahash",
  "annotate-snippets",
  "base64 0.22.1",
  "encoding_rs_io",
@@ -12527,18 +12557,18 @@ dependencies = [
 
 [[package]]
 name = "spin"
-version = "0.9.8"
+version = "0.9.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
+checksum = "3763264f6b73151db08c50ff20d7d8a0b8796e021cdea7ceedad07b80155fa0e"
 dependencies = [
  "lock_api",
 ]
 
 [[package]]
 name = "spin"
-version = "0.10.0"
+version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d5fe4ccb98d9c292d56fec89a5e07da7fc4cf0dc11e156b41793132775d3e591"
+checksum = "023a211cb3138dbc438680b32560ad89f699977624c9f8dbb95a47d5b4c07dd3"
 
 [[package]]
 name = "spin"
@@ -13079,7 +13109,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
@@ -13295,7 +13325,7 @@ version = "0.23.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7afbf6e88718afcc138bad01d6ccc3051dbbc3b2ce9793d8b8a3aeb610969cfc"
 dependencies = [
- "ahash 0.8.12",
+ "ahash",
  "compact_str 0.9.0",
  "daachorse",
  "dary_heap",
@@ -13604,12 +13634,32 @@ dependencies = [
 
 [[package]]
 name = "tower-http"
-version = "0.6.8"
+version = "0.6.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d4e6559d53cc268e5031cd8429d05415bc4cb4aefc4aa5d6cc35fbf5b924a1f8"
+checksum = "4cfcf7e2740e6fc6d4d688b4ef00650406bb94adf4731e43c096c3a19fe40840"
+dependencies = [
+ "base64 0.22.1",
+ "bitflags",
+ "bytes",
+ "futures-util",
+ "http",
+ "http-body",
+ "mime",
+ "pin-project-lite",
+ "tower",
+ "tower-layer",
+ "tower-service",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "tower-http"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08a05a66a4fdd61cbbe0a1d755ffe0ca6aba159dd4820936a0ff8a8278245b9c"
 dependencies = [
  "async-compression",
- "base64 0.22.1",
  "bitflags",
  "bytes",
  "futures-core",
@@ -13617,8 +13667,7 @@ dependencies = [
  "http",
  "http-body",
  "http-body-util",
- "iri-string",
- "mime",
+ "percent-encoding",
  "pin-project-lite",
  "tokio",
  "tokio-util",
@@ -13626,6 +13675,7 @@ dependencies = [
  "tower-layer",
  "tower-service",
  "tracing",
+ "url",
  "uuid",
 ]
 
@@ -13720,9 +13770,9 @@ dependencies = [
 
 [[package]]
 name = "tracing-opentelemetry"
-version = "0.33.0"
+version = "0.34.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "adbc64cba7137545b8044cb1fe9814f7aacf3c6b5f9b45be8bb5db538befdb26"
+checksum = "0a904802a1b902f43638b677ff2a650847e3b4404101b6c586d648e8c1e3e8fe"
 dependencies = [
  "js-sys",
  "opentelemetry",
@@ -14069,7 +14119,7 @@ dependencies = [
  "time",
  "tokio",
  "tokio-util",
- "tower-http",
+ "tower-http 0.7.1",
  "tracing",
  "url",
  "users-info-sdk",

@@ -19,6 +19,7 @@
 
 use crate::domain::model::Sequence;
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::Utc;
@@ -27,7 +28,7 @@ use cluster_sdk::cache::{PutRequest, Ttl};
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter, Set};
 use toolkit_db::DBProvider;
-use toolkit_db::outbox::Outbox;
+use toolkit_db::outbox::{Outbox, TraceSubscription};
 use toolkit_db::secure::{SecureDeleteExt, SecureEntityExt, SecureUpdateExt, secure_insert};
 use toolkit_gts::GtsInstanceId;
 use toolkit_security::AccessScope;
@@ -43,6 +44,7 @@ use crate::domain::model::{ConsumerGroup, ConsumerGroupKind, Cursor};
 use crate::domain::producer_reset::ProducerResetScope;
 use crate::domain::repo::{ConsumerGroupRepo, CursorRepo, RoutingMarkers};
 use crate::domain::specification::SpecificationManager;
+use crate::domain::sync_wait::{SyncWait, SyncWaitRegistry};
 use crate::infra::storage::entity::{
     consumer_group, cursor, outbox_identity, producer, producer_sequence,
 };
@@ -725,13 +727,54 @@ impl RoutingMarkers for Storage {
     }
 }
 
+impl SyncWaitRegistry for Storage {
+    fn subscribe(&self, trace: Uuid) -> Box<dyn SyncWait> {
+        // The ingest outbox owns the trace machinery. If it is not wired yet
+        // the publish's own `check_and_enqueue` fails with a `503` before the
+        // wait is ever awaited, so an unsubscribed waiter is only ever dropped.
+        let subscription = self
+            .outbox
+            .get()
+            .and_then(|outbox| outbox.subscribe(&trace.to_string()).ok());
+        Box::new(TraceWaiter { subscription })
+    }
+}
+
+/// A [`SyncWait`] over an outbox [`TraceSubscription`]: awaiting it holds until
+/// the traced batch completes or the wait elapses.
+struct TraceWaiter {
+    /// `None` when the outbox was not wired (so nothing could subscribe); the
+    /// wait then resolves at once to the honest `202`.
+    subscription: Option<TraceSubscription>,
+}
+
+#[async_trait]
+impl SyncWait for TraceWaiter {
+    async fn stored(self: Box<Self>, wait: Duration) -> bool {
+        let Some(subscription) = self.subscription else {
+            // Nothing subscribed (the outbox was not wired): the honest `202`.
+            return false;
+        };
+        // A completion within the wait means the traced batch was stored. Ingest
+        // dead-letters nothing an ingest row can hit (feature 0007 §4.1 retries
+        // forever), so a completion is always clean today; the `is_clean` guard
+        // keeps a batch that ended with a failure from being reported stored,
+        // should an ingest row ever become dead-letterable. A `None` (the outbox
+        // stopped) or an elapsed wait is the honest `202`.
+        matches!(
+            tokio::time::timeout(wait, subscription.completion()).await,
+            Ok(Some(outcome)) if outcome.is_clean()
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::{DateTime, Utc};
     use toolkit_db::outbox::{LeasedMessageHandler, MessageResult, OutboxMessage, Partitions};
-    use types_registry_sdk::testing::{MockTypesRegistryClient, make_test_instance};
 
     use super::*;
+    use crate::test_support::type_registry::registry_holding;
 
     const TEST_INSTANCE_ID: Uuid = Uuid::from_u128(0x5eed);
     use crate::domain::idempotency::ProducerChainCheck;
@@ -798,15 +841,13 @@ mod tests {
     /// read the outbox's own bookkeeping tables directly.
     async fn test_storage_with_db() -> (Storage, String) {
         let (db, dsn) = test_db().await;
-        let instance = make_test_instance(
-            TOPIC_ID,
-            serde_json::json!({
+        let client: Arc<dyn types_registry_sdk::PlatformTypesRegistryApi> = registry_holding(
+            &[serde_json::json!({
                 "id": TOPIC_ID,
                 "description": "a topic this test keeps cursors for",
-            }),
+            })],
+            &[],
         );
-        let client: Arc<dyn types_registry_sdk::TypesRegistryClient> =
-            Arc::new(MockTypesRegistryClient::new().with_instances(vec![instance]));
         crate::infra::specification::bulk_load(
             &client,
             &db,

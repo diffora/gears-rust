@@ -670,6 +670,192 @@ async fn a_deleted_edge_is_revived_by_the_next_upsert() {
     .await;
 }
 
+/// One edge between `edge-a` and `edge-b` on a fresh tenant, and its key.
+async fn one_edge(stand: &Stand) -> (Uuid, String) {
+    let tenant = tenant_on(stand).await;
+    let scope = AccessScope::for_tenant(tenant);
+    let ctx = conformance::ctx(tenant, &scope, None);
+    stand
+        .store
+        .register_types(&ctx, conformance::ontology_batch())
+        .await
+        .expect("the ontology registers");
+    conformance::ingest_batch(
+        stand.store.as_ref(),
+        &ctx,
+        conformance::batch(
+            vec![
+                conformance::node("edge-a", "a"),
+                conformance::node("edge-b", "b"),
+            ],
+            vec![conformance::edge("edge-a", "edge-b")],
+        ),
+    )
+    .await
+    .expect("the edge is created");
+    let key = stand
+        .store
+        .get_node(&ctx, &"edge-a".to_owned(), 10)
+        .await
+        .expect("the endpoint reads")
+        .adjacency
+        .first()
+        .expect("the edge is adjacent")
+        .edge_key
+        .clone();
+    (tenant, key)
+}
+
+/// A key no edge ever held is absent, not a no-op: only a tombstone under
+/// the key proves the delete already happened.
+#[tokio::test]
+async fn deleting_an_edge_key_nobody_holds_is_not_found() {
+    let Some(stand) = stand().await else {
+        return;
+    };
+    let tenant = tenant_on(&stand).await;
+    let scope = AccessScope::for_tenant(tenant);
+    let ctx = conformance::ctx(tenant, &scope, None);
+    let refused = stand
+        .store
+        .soft_delete(
+            &ctx,
+            graph_storage_sdk::models::DeleteRequest::Edge("no-such-edge".to_owned()),
+        )
+        .await;
+    assert!(
+        matches!(
+            refused,
+            Err(graph_storage_sdk::plugin_api::GraphStoreError::NotFound)
+        ),
+        "an edge that never existed reads as absent, got {refused:?}"
+    );
+}
+
+/// The edge half of the lost compare-and-set, made deterministic.
+///
+/// The race test above opens the window only now and then, so the arm that
+/// settles a delete whose `deleted_at IS NULL` write found the row already
+/// tombstoned went unrun. Here a plain transaction tombstones the row and
+/// holds its lock: the delete reads the edge live, blocks on the write, and
+/// sees zero rows affected once the holder commits. That delete happened
+/// already, so the answer is the no-op, not a conflict and not absence.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_edge_delete_that_loses_its_write_to_another_delete_is_a_no_op() {
+    use sea_orm::{ConnectionTrait as _, TransactionTrait as _};
+    let Some(stand) = stand().await else {
+        return;
+    };
+    let (tenant, key) = one_edge(&stand).await;
+
+    let raw = sea_orm::Database::connect(&stand.dsn)
+        .await
+        .expect("a plain connection to hold the row");
+    let holder = raw.begin().await.expect("the holder begins");
+    holder
+        .execute_unprepared(&format!(
+            "UPDATE edge SET deleted_at = now() WHERE edge_key = '{key}'"
+        ))
+        .await
+        .expect("the holder tombstones the row and keeps its lock");
+
+    let deleter = {
+        let store = Arc::clone(&stand.store);
+        let key = key.clone();
+        tokio::spawn(async move {
+            let scope = AccessScope::for_tenant(tenant);
+            let ctx = conformance::ctx(tenant, &scope, None);
+            store
+                .soft_delete(&ctx, graph_storage_sdk::models::DeleteRequest::Edge(key))
+                .await
+        })
+    };
+
+    // Commit only once the delete waits on the row, or it would read the
+    // tombstone and take the arm that is already covered.
+    let waiting = sea_orm::Statement::from_string(
+        sea_orm::DatabaseBackend::Postgres,
+        "SELECT count(*)::bigint AS n FROM pg_stat_activity \
+         WHERE wait_event_type = 'Lock' AND datname = current_database()"
+            .to_owned(),
+    );
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let row = raw
+            .query_one_raw(waiting.clone())
+            .await
+            .expect("the activity view reads")
+            .expect("a count is one row");
+        if row.try_get::<i64>("", "n").expect("the count is a number") > 0 {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the delete never blocked on the held row"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    holder.commit().await.expect("the holder commits");
+
+    let outcome = deleter
+        .await
+        .expect("the deleter task does not panic")
+        .expect("a delete that lost to another delete is a no-op, not a refusal");
+    assert_eq!(
+        (outcome.tombstoned_nodes, outcome.tombstoned_edges),
+        (0, 0),
+        "the delete reports no write it did not make"
+    );
+}
+
+/// An endpoint hidden while its edge stays live leaves the edge to the
+/// edge read's answer: absent. Tombstoning the node by hand, without its
+/// edges, is the shape a scope the caller does not hold also takes, and
+/// the delete must neither tombstone the edge nor call it already gone.
+#[tokio::test]
+async fn an_edge_whose_endpoint_is_hidden_is_not_found_and_stays_live() {
+    use sea_orm::ConnectionTrait as _;
+    let Some(stand) = stand().await else {
+        return;
+    };
+    let (tenant, key) = one_edge(&stand).await;
+    let raw = sea_orm::Database::connect(&stand.dsn)
+        .await
+        .expect("a plain connection to hide the endpoint");
+    raw.execute_unprepared("UPDATE node SET deleted_at = now() WHERE node_key = 'edge-b'")
+        .await
+        .expect("the endpoint is tombstoned alone");
+
+    let scope = AccessScope::for_tenant(tenant);
+    let ctx = conformance::ctx(tenant, &scope, None);
+    let refused = stand
+        .store
+        .soft_delete(
+            &ctx,
+            graph_storage_sdk::models::DeleteRequest::Edge(key.clone()),
+        )
+        .await;
+    assert!(
+        matches!(
+            refused,
+            Err(graph_storage_sdk::plugin_api::GraphStoreError::NotFound)
+        ),
+        "a live edge behind a hidden endpoint reads as absent, got {refused:?}"
+    );
+    let live = raw
+        .query_one_raw(sea_orm::Statement::from_string(
+            sea_orm::DatabaseBackend::Postgres,
+            format!("SELECT (deleted_at IS NULL) AS live FROM edge WHERE edge_key = '{key}'"),
+        ))
+        .await
+        .expect("the edge reads")
+        .expect("the edge row is there");
+    assert!(
+        live.try_get::<bool>("", "live").expect("a flag"),
+        "the refused delete left the edge as it was"
+    );
+}
+
 /// Written out rather than `pg_case!`d, for the same reason as the scope
 /// race: the two ingests are spawned as separate tasks and need a runtime
 /// with threads to put them on.
@@ -1069,13 +1255,29 @@ async fn the_hop_and_the_filtered_listing_have_an_index_to_use() {
     let tenant = tenant_on(&stand).await;
     let scope = AccessScope::for_tenant(tenant);
     let ctx = conformance::ctx(tenant, &scope, None);
+    let mut ontology = conformance::ontology_batch();
+    ontology.push(conformance::other_thing_type());
     stand
         .store
-        .register_types(&ctx, conformance::ontology_batch())
+        .register_types(&ctx, ontology)
         .await
         .expect("ontology registers");
-    let nodes = (0..400)
-        .map(|i| conformance::node(&format!("n{i}"), "n"))
+    // The listed type is a fifth of the tenant and interleaved with another
+    // in key order (`n1` < `n1-x0` < ... < `n10`), which is what a listing
+    // of one type among several looks like. With one type alone, walking
+    // the tenant's key index and filtering on the type *is* the type's key
+    // order, the two plans cost the same, and which one the planner picks
+    // turned on how the rows happened to be laid out on disk -- ingest
+    // writing in key order was enough to flip it.
+    let nodes: Vec<_> = (0..400)
+        .flat_map(|i| {
+            std::iter::once(conformance::node(&format!("n{i}"), "n")).chain((0..4).map(move |j| {
+                graph_storage_sdk::models::NodeSpec {
+                    type_id: conformance::OTHER_THING.to_owned(),
+                    ..conformance::node(&format!("n{i}-x{j}"), "other")
+                }
+            }))
+        })
         .collect();
     let edges = (0..400)
         .map(|i| conformance::edge(&format!("n{i}"), &format!("n{}", (i * 7 + 1) % 400)))
@@ -1147,6 +1349,70 @@ async fn the_hop_and_the_filtered_listing_have_an_index_to_use() {
         reads_the_type_by_index && !sorts,
         "a listing reads one type in key order, without a sort:\n{}",
         listing.join("\n")
+    );
+}
+
+/// `m0011` brings an edge written with an empty discriminator to the form
+/// ingest now writes, none. The edge is written through the store, below the
+/// service's normalisation, which is how every such row was written before
+/// it.
+#[tokio::test]
+async fn m0011_stores_an_empty_discriminator_as_none() {
+    use sea_orm_migration::{MigrationTrait as _, SchemaManager};
+    let Some(stand) = stand().await else {
+        return;
+    };
+    let tenant = tenant_on(&stand).await;
+    let scope = AccessScope::for_tenant(tenant);
+    let ctx = conformance::ctx(tenant, &scope, None);
+    let store = stand.store.as_ref();
+    store
+        .register_types(&ctx, conformance::ontology_batch())
+        .await
+        .expect("the ontology registers");
+    conformance::ingest_batch(
+        store,
+        &ctx,
+        conformance::batch(
+            vec![
+                conformance::node("empty-a", "a"),
+                conformance::node("empty-b", "b"),
+            ],
+            vec![graph_storage_sdk::models::EdgeSpec {
+                discriminator: Some(String::new()),
+                ..conformance::edge("empty-a", "empty-b")
+            }],
+        ),
+    )
+    .await
+    .expect("the edge commits");
+    let key = "empty-a".to_owned();
+
+    let before = store
+        .get_node(&ctx, &key, 100)
+        .await
+        .expect("the node reads");
+    assert_eq!(
+        before.adjacency[0].discriminator.as_deref(),
+        Some(""),
+        "the store kept the empty string it was given"
+    );
+
+    let raw = sea_orm::Database::connect(&stand.dsn)
+        .await
+        .expect("a plain connection to the stand");
+    graph_storage::infra::storage::migrations::m0011_empty_discriminator::Migration
+        .up(&SchemaManager::new(&raw))
+        .await
+        .expect("m0011 applies");
+
+    let after = store
+        .get_node(&ctx, &key, 100)
+        .await
+        .expect("the node reads");
+    assert_eq!(
+        after.adjacency[0].discriminator, None,
+        "an empty discriminator is stored as none"
     );
 }
 
@@ -1616,6 +1882,7 @@ async fn a_hop_never_leaves_its_tenant() {
                     max_edges_scanned: 1_000,
                 },
                 with_degrees: false,
+                discriminators: None,
             },
         )
         .await
@@ -1661,6 +1928,7 @@ async fn a_stopped_hop_reports_why() {
                     max_edges_scanned: 10,
                 },
                 with_degrees: false,
+                discriminators: None,
             },
         )
         .await
@@ -1725,6 +1993,7 @@ async fn asking_for_degrees_does_not_double_the_hop_edge_budget() {
             max_edges_scanned: 4,
         },
         with_degrees,
+        discriminators: None,
     };
 
     let plain = stand
@@ -1819,6 +2088,7 @@ async fn a_hop_that_hits_its_edge_budget_reports_it() {
             max_edges_scanned,
         },
         with_degrees: false,
+        discriminators: None,
     };
 
     let cut = stand
@@ -1910,6 +2180,7 @@ async fn a_hop_reports_the_reached_nodes_degree_only_when_asked() {
             max_edges_scanned: 1_000,
         },
         with_degrees,
+        discriminators: None,
     };
 
     let silent = stand
@@ -2138,11 +2409,12 @@ pg_case!(
 ///
 /// Phantom creation relies on it: two batches naming one new endpoint race,
 /// the loser's insert is elided, and the loser must read the winner's row
-/// rather than fail. On a backend with `RETURNING` the elision surfaces as
-/// `RecordNotFound` -- the returning select found no row -- and that is the
-/// only variant the phantom path accepts as one. Were an ORM upgrade to
-/// report it differently, this is where it shows, not as a batch that fails
-/// only when two producers happen to collide.
+/// rather than fail; so must a node or an edge inserted twice. On a backend
+/// with `RETURNING` the elision surfaces as `RecordNotFound` -- the returning
+/// select found no row -- and every insert that settles a race asks
+/// `lost_insert_race` whether this is that. The answer is checked here, on the
+/// server: were an ORM upgrade to report it differently, this is where it
+/// shows, not as a batch that fails only when two producers happen to collide.
 #[tokio::test]
 async fn an_elided_insert_that_asks_for_its_row_reports_record_not_found() {
     use graph_storage::infra::storage::entity::graph_meta;
@@ -2178,6 +2450,11 @@ async fn an_elided_insert_that_asks_for_its_row_reports_record_not_found() {
     assert!(
         matches!(elided, Err(sea_orm::DbErr::RecordNotFound(_))),
         "an elided insert with RETURNING must report RecordNotFound, got {elided:?}"
+    );
+    let error = toolkit_db::secure::ScopeError::Db(elided.expect_err("elided"));
+    assert!(
+        graph_storage::infra::store::ingest::lost_insert_race(&error),
+        "every insert that settles a race reads this error as one: {error:?}"
     );
 }
 
@@ -2225,4 +2502,93 @@ async fn two_creators_with_expected_version_zero_do_not_both_win() {
         Uuid::now_v7(),
     )
     .await;
+}
+
+pg_case!(
+    a_read_returns_the_version_a_write_compares_against,
+    conformance::a_read_returns_the_version_a_write_compares_against
+);
+
+#[tokio::test]
+async fn a_hop_follows_only_its_direction() {
+    let Some(stand) = stand().await else {
+        return;
+    };
+    let tenant = tenant_on(&stand).await;
+    conformance::a_hop_follows_only_its_direction(stand.store.as_ref(), &stand.engine, tenant)
+        .await;
+}
+
+#[tokio::test]
+async fn a_hop_reports_and_filters_discriminators() {
+    let Some(stand) = stand().await else {
+        return;
+    };
+    let tenant = tenant_on(&stand).await;
+    conformance::a_hop_reports_and_filters_discriminators(
+        stand.store.as_ref(),
+        &stand.engine,
+        tenant,
+    )
+    .await;
+}
+
+/// Real row locks, so the runtime needs threads for the writers to overlap.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn overlapping_batches_all_land() {
+    let Some(stand) = stand().await else {
+        return;
+    };
+    let tenant = tenant_on(&stand).await;
+    conformance::overlapping_batches_all_land(
+        std::sync::Arc::clone(&stand.store) as std::sync::Arc<dyn GraphStoreV1>,
+        tenant,
+    )
+    .await;
+}
+
+pg_case!(
+    a_count_agrees_with_the_listing,
+    conformance::a_count_agrees_with_the_listing
+);
+
+/// A column filter goes through the platform's binding on this store (the
+/// fake answers column filters unfiltered), so its count is asserted here.
+#[tokio::test]
+async fn a_count_applies_a_column_filter_as_the_listing_does() {
+    let Some(stand) = stand().await else {
+        return;
+    };
+    let tenant = tenant_on(&stand).await;
+    let scope = AccessScope::for_tenant(tenant);
+    let ctx = conformance::ctx(tenant, &scope, None);
+    stand
+        .store
+        .register_types(&ctx, conformance::ontology_batch())
+        .await
+        .expect("ontology registers");
+    conformance::ingest_batch(
+        stand.store.as_ref(),
+        &ctx,
+        conformance::batch(
+            vec![
+                conformance::node("col-a", "alpha"),
+                conformance::node("col-b", "beta"),
+                conformance::node("col-c", "alpha"),
+            ],
+            Vec::new(),
+        ),
+    )
+    .await
+    .expect("the batch commits");
+    let counted = stand
+        .store
+        .count_table(
+            &ctx,
+            conformance::projection(&[], "name eq 'alpha'", &[]),
+            100,
+        )
+        .await
+        .expect("the count answers");
+    assert_eq!((counted.count, counted.capped), (2, false));
 }

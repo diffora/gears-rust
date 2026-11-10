@@ -2,7 +2,8 @@
 //!
 //! Concrete resources use their own GTS id as the PEP resource type
 //! (`docs/DESIGN.md` §3.3). The id is also sent as a resource property.
-//! Tenant scope is checked separately through the deployed authorization policy.
+//! Event and topic decisions carry the target tenant as `owner_tenant_id`;
+//! tenant authority is also checked independently through the deployed policy.
 
 use std::sync::LazyLock;
 
@@ -24,14 +25,14 @@ pub const CONSUMER_GROUP_FAMILY_RESOURCE: ResourceType =
 /// Matches the event base type and its descendants. Invalid SDK metadata is
 /// handled by [`event_family`] without panicking.
 static EVENT_FAMILY: LazyLock<Option<GtsIdPattern>> =
-    LazyLock::new(|| GtsIdPattern::try_new(EventV1::TYPE_ID).ok());
+    LazyLock::new(|| GtsIdPattern::try_new(EventV1::<()>::TYPE_ID).ok());
 
 /// The event family pattern; fails closed when it cannot be built.
 fn event_family() -> Result<&'static GtsIdPattern, DomainError> {
     EVENT_FAMILY.as_ref().ok_or_else(|| {
         DomainError::Internal(format!(
             "event base type '{}' is not a valid GTS pattern",
-            EventV1::TYPE_ID
+            EventV1::<()>::TYPE_ID
         ))
     })
 }
@@ -53,7 +54,10 @@ pub fn event_type_resource(event_type: &GtsTypeId) -> Result<ResourceType, Domai
             resource: event_type.to_string(),
         });
     }
-    Ok(ResourceType::new(event_type.as_ref().to_owned(), &[]))
+    Ok(ResourceType::new(
+        event_type.as_ref().to_owned(),
+        &[pep_properties::OWNER_TENANT_ID],
+    ))
 }
 
 /// PEP resource for a JOIN event-type interest (`consume`).
@@ -74,7 +78,7 @@ pub fn event_type_interest_resource(pattern: &GtsIdPattern) -> Result<ResourceTy
             message: format!(
                 "event type selector '{}' cannot match any event type ({}…)",
                 pattern.pattern(),
-                EventV1::TYPE_ID
+                EventV1::<()>::TYPE_ID
             ),
         });
     }
@@ -83,16 +87,22 @@ pub fn event_type_interest_resource(pattern: &GtsIdPattern) -> Result<ResourceTy
         .iter()
         .any(GtsIdPatternSegment::is_wildcard);
     Ok(if wildcard {
-        ResourceType::from_static(EventV1::TYPE_ID, &[])
+        ResourceType::from_static(EventV1::<()>::TYPE_ID, &[pep_properties::OWNER_TENANT_ID])
     } else {
-        ResourceType::new(pattern.pattern().to_owned(), &[])
+        ResourceType::new(
+            pattern.pattern().to_owned(),
+            &[pep_properties::OWNER_TENANT_ID],
+        )
     })
 }
 
 /// PEP resource for one concrete topic (`topic:consume` on JOIN).
 #[must_use]
 pub fn topic_resource(topic: &GtsInstanceId) -> ResourceType {
-    ResourceType::new(topic.as_ref().to_owned(), &[])
+    ResourceType::new(
+        topic.as_ref().to_owned(),
+        &[pep_properties::OWNER_TENANT_ID],
+    )
 }
 
 /// PEP resource for an existing named consumer group.

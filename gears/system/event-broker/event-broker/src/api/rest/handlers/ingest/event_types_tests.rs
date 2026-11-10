@@ -57,7 +57,9 @@ async fn list_event_types_happy_path_returns_all_seeded_types() {
                     "partition_key": "/tenant_id",
                     "data_schema": {
                         "allOf": [
-                            { "type": ["object", "null"] },
+                            {
+                                "type": ["object", "null"],
+                            },
                             { "type": ["object", "null"] },
                         ],
                     },
@@ -70,7 +72,9 @@ async fn list_event_types_happy_path_returns_all_seeded_types() {
                     "partition_key": "/tenant_id",
                     "data_schema": {
                         "allOf": [
-                            { "type": ["object", "null"] },
+                            {
+                                "type": ["object", "null"],
+                            },
                             { "type": ["object", "null"] },
                         ],
                     },
@@ -121,7 +125,9 @@ async fn list_event_types_filters_by_id() {
                 "partition_key": "/tenant_id",
                 "data_schema": {
                         "allOf": [
-                            { "type": ["object", "null"] },
+                            {
+                                "type": ["object", "null"],
+                            },
                             { "type": ["object", "null"] },
                         ],
                     },
@@ -171,7 +177,9 @@ async fn list_event_types_filters_by_topic() {
                 "partition_key": "/tenant_id",
                 "data_schema": {
                         "allOf": [
-                            { "type": ["object", "null"] },
+                            {
+                                "type": ["object", "null"],
+                            },
                             { "type": ["object", "null"] },
                         ],
                     },

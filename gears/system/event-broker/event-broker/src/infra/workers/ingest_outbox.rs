@@ -55,8 +55,12 @@ impl IngestOutboxHandler {
         }
     }
 
-    /// Appends the message's event; on failure, the backend label and the
-    /// cause of the retry.
+    /// Appends the message's event; on failure, the backend label and the cause
+    /// of the retry. A synchronous row is appended with [`Flush::Sync`] so its
+    /// event is immediately readable once the publish is answered `201` (feature
+    /// 0007 §4.1, AC-2, S2); an async row stays [`Flush::Async`]. The waiting
+    /// publish is released through the row's outbox trace, which the ack counts
+    /// down - not from here.
     async fn append(&self, msg: &OutboxMessage) -> Result<(), (String, RetryCause)> {
         let payload = decode(msg)?;
         let topic = self.topic(&payload.topic).await?;
@@ -73,9 +77,17 @@ impl IngestOutboxHandler {
             },
             topic: &topic.id,
             events: &events,
-            // `Prefer: wait` is answered `501`, so nothing waits on positions
-            // being assigned.
-            flush: Flush::Async,
+            // A `Prefer: wait=N` publish is answered `201` only once its events
+            // are stored and readable, so a sync row is flushed synchronously;
+            // an async row keeps the cheaper async flush. `Flush` governs only
+            // position visibility, never durability: `Ok(Appended)` survives a
+            // crash whichever flush was asked (feature 0007 §2.2 "Durable
+            // first").
+            flush: if payload.stored_wait {
+                Flush::Sync
+            } else {
+                Flush::Async
+            },
         };
         match backend.append(&request).await {
             // `Heads` and `Accepted`: stored; `Duplicate`: stored by an earlier
@@ -135,6 +147,8 @@ impl LeasedMessageHandler for IngestOutboxHandler {
         match self.append(msg).await {
             Ok(()) => {
                 self.metrics.handled(msg.partition_id);
+                // A synchronous publish waiting on this row's trace is released
+                // by the outbox ack counting the trace down, not from here.
                 MessageResult::Ok
             }
             Err((backend, cause)) => {
@@ -159,7 +173,6 @@ mod tests {
     use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData};
     use opentelemetry_sdk::metrics::{InMemoryMetricExporter, PeriodicReader, SdkMeterProvider};
     use toolkit_db::DBProvider;
-    use types_registry_sdk::testing::{MockTypesRegistryClient, make_test_instance};
     use uuid::Uuid;
 
     use event_broker_sdk::backend::Partition;
@@ -171,6 +184,7 @@ mod tests {
     use crate::infra::specification::TypesRegistrySpecificationManager;
     use crate::infra::storage::migrations::Migrator;
     use crate::test_support::SingleBackendResolver;
+    use crate::test_support::type_registry::registry_holding;
 
     const TOPIC_ID: &str =
         toolkit_gts::gts_id!("cf.core.events.topic.v1~example.eb.ingestoutbox.topic.v1");
@@ -301,15 +315,13 @@ mod tests {
         provisioned: bool,
     ) -> (IngestOutboxHandler, MemoryBackend, Recorder, String) {
         let (db, dsn) = test_db().await;
-        let instance = make_test_instance(
-            TOPIC_ID,
-            serde_json::json!({
+        let client: Arc<dyn types_registry_sdk::PlatformTypesRegistryApi> = registry_holding(
+            &[serde_json::json!({
                 "id": TOPIC_ID,
                 "description": "a topic this test drains the outbox into",
-            }),
+            })],
+            &[],
         );
-        let client: Arc<dyn types_registry_sdk::TypesRegistryClient> =
-            Arc::new(MockTypesRegistryClient::new().with_instances(vec![instance]));
         crate::infra::specification::bulk_load(
             &client,
             &db,
@@ -382,6 +394,7 @@ mod tests {
                 topic: event.topic.clone(),
                 key: "key".to_owned(),
                 event: event.clone(),
+                stored_wait: false,
             })
             .expect("serialize payload"),
             payload_type: INGEST_PAYLOAD_TYPE.to_owned(),
