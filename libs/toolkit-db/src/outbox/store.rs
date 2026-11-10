@@ -1,12 +1,10 @@
-use sea_orm::{
-    ConnectionTrait, DatabaseExecutor, DbBackend, DbErr, FromQueryResult, Statement,
-    TransactionTrait,
-};
+use sea_orm::{ConnectionTrait, DatabaseExecutor, DbBackend, DbErr, FromQueryResult, Statement};
 
 use super::dialect::{AllocSql, ClaimSql, Dialect, VacuumSql};
 use super::statements::{MySqlIdReservationStatements, OutboxStatements};
 use super::tables::OutboxTables;
 use super::trace::TraceAdvance;
+use crate::tx_begin::SqliteBeginMode;
 
 /// Runtime SQL context for one outbox table family on one database backend.
 ///
@@ -451,7 +449,8 @@ impl<'a> OutboxStore<'a> {
                 .await;
         }
 
-        let txn = conn.begin().await?;
+        // Only backends without RETURNING (MySQL) get here, so the SQLite begin mode does not apply.
+        let txn = crate::tx_begin::begin(conn, None, None, SqliteBeginMode::Deferred).await?;
         let claimed = match self
             .exec_claim_trace_mail(&DatabaseExecutor::Transaction(&txn), trace, instance_id)
             .await

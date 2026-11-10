@@ -62,6 +62,14 @@ impl<'a> SeaOrmRunner<'a> {
 pub trait DBRunnerInternal: sealed::Sealed + Send + Sync {
     /// Returns the underlying `SeaORM` executor for this runner.
     fn as_seaorm(&self) -> SeaOrmRunner<'_>;
+
+    /// How a top-level transaction this runner begins starts on `SQLite`.
+    ///
+    /// Only a [`DbConn`] knows its database's `transaction_mode`. A transaction's `begin` is a
+    /// savepoint, where the mode does not apply, and a `SecureConn` begins deferred.
+    fn sqlite_begin_mode(&self) -> crate::tx_begin::SqliteBeginMode {
+        crate::tx_begin::SqliteBeginMode::Deferred
+    }
 }
 
 /// Hidden capability marker used by repositories and services.
@@ -79,6 +87,10 @@ impl sealed::Sealed for DbConn<'_> {}
 impl DBRunnerInternal for DbConn<'_> {
     fn as_seaorm(&self) -> SeaOrmRunner<'_> {
         SeaOrmRunner::Conn(self.conn)
+    }
+
+    fn sqlite_begin_mode(&self) -> crate::tx_begin::SqliteBeginMode {
+        self.sqlite_begin
     }
 }
 impl DBRunner for DbConn<'_> {}

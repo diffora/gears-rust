@@ -414,6 +414,7 @@ impl Db {
         }
         Ok(DbConn {
             conn: self.handle.sea_internal_ref(),
+            sqlite_begin: self.handle.sqlite_begin_mode(),
         })
     }
 
@@ -443,7 +444,7 @@ impl Db {
             self.handle.sea_internal_ref(),
             config.isolation.map(Into::into),
             config.access_mode.map(Into::into),
-            self.handle.sqlite_begin_immediate(),
+            self.handle.sqlite_begin_mode(),
         )
         .await
     }
@@ -1128,6 +1129,9 @@ impl Db {
 pub struct DbConn<'a> {
     /// Underlying connection borrowed for the lifetime of this handle.
     pub(crate) conn: &'a DatabaseConnection,
+    /// How a top-level transaction on `conn` begins on `SQLite`: the database's
+    /// `transaction_mode`.
+    pub(crate) sqlite_begin: crate::tx_begin::SqliteBeginMode,
 }
 
 impl std::fmt::Debug for DbConn<'_> {
