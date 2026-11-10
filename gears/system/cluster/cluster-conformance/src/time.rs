@@ -46,6 +46,10 @@ impl TimeControl {
     /// a few sweep intervals is enough to prove the same property.
     const REAL_CAP: Duration = Duration::from_millis(500);
 
+    /// How much longer a lease is under [`Real`](Self::Real) than the scenario
+    /// writes it. See [`lease`](Self::lease).
+    const REAL_LEASE_SCALE: u32 = 5;
+
     /// Freezes virtual time under [`Virtual`](Self::Virtual); a no-op under
     /// [`Real`](Self::Real). Call once at the start of a time-sensitive scenario.
     pub fn begin(self) {
@@ -60,6 +64,37 @@ impl TimeControl {
         if self == Self::Virtual {
             tokio::time::resume();
         }
+    }
+
+    /// A lease length for a scenario that asserts the lease is still held a
+    /// moment later. Under [`Virtual`](Self::Virtual) it is `dur`; under
+    /// [`Real`](Self::Real) it is `dur` times `REAL_LEASE_SCALE`.
+    ///
+    /// Under `Real` every backend round trip spends lease time: the CAS lock
+    /// stamps its deadline before the write leaves the client, and a renew
+    /// reads before it writes. A 200 ms lease left ~150 ms for that, which a
+    /// loaded CI runner did not always have (SC-LOCK-005, SC-LOCK-007). Pair
+    /// it with [`elapse_lease`](Self::elapse_lease) for waits measured against
+    /// the same lease.
+    #[must_use]
+    pub fn lease(self, dur: Duration) -> Duration {
+        match self {
+            Self::Virtual => dur,
+            Self::Real => dur * Self::REAL_LEASE_SCALE,
+        }
+    }
+
+    /// [`elapse`](Self::elapse) for a wait measured against a
+    /// [`lease`](Self::lease): under [`Real`](Self::Real) it sleeps `dur`
+    /// scaled the same way and **not** capped at `REAL_CAP`, so a wait meant
+    /// to outlast a lease still does. Under [`Virtual`](Self::Virtual) it is
+    /// `elapse(dur)`.
+    pub async fn elapse_lease(self, dur: Duration) {
+        match self {
+            Self::Virtual => tokio::time::advance(dur).await,
+            Self::Real => tokio::time::sleep(self.lease(dur)).await,
+        }
+        tokio::task::yield_now().await;
     }
 
     /// Advances scenario time, then yields so background reaper / renewal /
