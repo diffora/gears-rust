@@ -45,7 +45,7 @@ pub fn scope_admits(scope: &AccessScope, order_id: Option<Uuid>, proposed: Arran
     let constrains_audit_namespace = scope.constraints().iter().any(|constraint| {
         constraint.filters().iter().any(|filter| {
             matches!(
-                order::Entity::resolve_property(filter.property()),
+                order::Entity::SCOPE.resolve_property(filter.property()),
                 Some(order::Column::AuditTenantId)
             )
         })

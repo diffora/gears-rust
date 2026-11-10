@@ -543,7 +543,7 @@ where
 
     let mut and_cond = Condition::all();
     for (filter_index, filter) in constraint.filters().iter().enumerate() {
-        let Some(col) = E::resolve_property(filter.property()) else {
+        let Some(col) = E::SCOPE.resolve_property(filter.property()) else {
             return Ok(None);
         };
         let column = addressed::<E>(col, address);
@@ -1182,8 +1182,15 @@ mod tests {
         use super::*;
         use sea_orm::entity::prelude::*;
 
-        #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
+        #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, toolkit_db::secure::Scopable)]
         #[sea_orm(table_name = "custom_prop_test")]
+        #[secure(
+            tenant_col = "tenant_id",
+            resource_col = "id",
+            no_owner,
+            no_type,
+            pep_prop(department_id = "department_id")
+        )]
         pub struct Model {
             #[sea_orm(primary_key)]
             pub id: Uuid,
@@ -1195,32 +1202,6 @@ mod tests {
         pub enum Relation {}
 
         impl ActiveModelBehavior for ActiveModel {}
-
-        impl crate::secure::ScopableEntity for Entity {
-            fn tenant_col() -> Option<Column> {
-                Some(Column::TenantId)
-            }
-            fn resource_col() -> Option<Column> {
-                Some(Column::Id)
-            }
-            fn owner_col() -> Option<Column> {
-                None
-            }
-            fn type_col() -> Option<Column> {
-                None
-            }
-            fn resolve_property(property: &str) -> Option<Column> {
-                match property {
-                    p if p == pep_properties::OWNER_TENANT_ID => Some(Column::TenantId),
-                    p if p == pep_properties::RESOURCE_ID => Some(Column::Id),
-                    "department_id" => Some(Column::DepartmentId),
-                    _ => None,
-                }
-            }
-            fn scope_columns() -> Vec<Column> {
-                vec![Column::TenantId, Column::Id, Column::DepartmentId]
-            }
-        }
     }
 
     #[test]

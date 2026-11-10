@@ -55,7 +55,7 @@ impl TenantFilterProvider for SimpleTenantFilter {
         }
 
         // Entity has no tenant column but tenant IDs requested → deny all
-        let Some(tcol) = E::tenant_col() else {
+        let Some(tcol) = E::SCOPE.tenant() else {
             return Some(Condition::all().add(Expr::value(false)));
         };
 
