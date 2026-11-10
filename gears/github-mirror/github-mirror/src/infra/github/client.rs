@@ -2466,16 +2466,18 @@ fn workflow_record(repo_id: i64, w: GhWorkflow) -> WorkflowRecord {
 }
 
 fn artifact_record(repo_id: i64, a: GhArtifact) -> ArtifactRecord {
-    let run = a.workflow_run;
+    let (workflow_run_id, head_branch, head_sha) = a
+        .workflow_run
+        .map_or((None, None, None), |r| (r.id, r.head_branch, r.head_sha));
     ArtifactRecord {
         id: a.id,
         repo_id,
         name: a.name,
         size_in_bytes: a.size_in_bytes,
         expired: a.expired,
-        workflow_run_id: run.as_ref().and_then(|r| r.id),
-        head_branch: run.as_ref().and_then(|r| r.head_branch.clone()),
-        head_sha: run.and_then(|r| r.head_sha),
+        workflow_run_id,
+        head_branch,
+        head_sha,
         created_at: a.created_at,
         updated_at: a.updated_at,
         expires_at: a.expires_at,

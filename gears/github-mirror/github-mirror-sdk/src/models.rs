@@ -477,6 +477,7 @@ pub struct WorkflowRun {
     pub actor_login: Option<String>,
 }
 
+/// A mirrored GitHub Actions workflow definition (read-slice shape).
 #[domain_model]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Workflow {
@@ -486,6 +487,7 @@ pub struct Workflow {
     pub state: String,
 }
 
+/// A mirrored GitHub Actions artifact (read-slice shape).
 #[domain_model]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Artifact {

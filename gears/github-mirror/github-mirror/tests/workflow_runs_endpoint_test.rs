@@ -269,6 +269,26 @@ async fn workflows_are_listed_as_github_returned_them() {
 }
 
 #[tokio::test]
+async fn second_page_of_workflows_holds_the_next_workflow() {
+    let ctx = common::caller_in(Uuid::new_v4());
+    let service = service_with_workflows(&ctx).await;
+
+    let response = get(
+        router_for(service, ctx),
+        "/repos/acme/widget/actions/workflows?per_page=1&page=2",
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["total_count"], 3);
+    let workflows = json["workflows"].as_array().expect("workflows");
+    assert_eq!(workflows.len(), 1);
+    assert_eq!(workflows[0]["id"], 9);
+    assert_eq!(workflows[0]["name"], "Release");
+}
+
+#[tokio::test]
 async fn runs_of_a_workflow_can_be_asked_by_file_name() {
     let ctx = common::caller_in(Uuid::new_v4());
     let service = service_with_workflows(&ctx).await;

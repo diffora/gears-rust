@@ -254,6 +254,16 @@ so the unchecked boxes below read as "not yet", not "abandoned".
   (repositories the pool runs at once) and `max_concurrent_tasks` (tasks inside one
   repository's run)
 
+**Delivered by the Constructor Studio read increment**
+([gears-rust#5573](https://github.com/constructorfabric/gears-rust/pull/5573)):
+
+- Two more entity families, workflows and artifacts (`gm_workflows`, `gm_artifacts`,
+  migration `m0002_artifacts`), synced with the workflow runs
+- Four more GitHub-compatible endpoints: repository-wide issue comments
+  (`/repos/{owner}/{repo}/issues/comments`), workflows (`/actions/workflows`), runs of
+  one workflow by id or file name (`/actions/workflows/{workflow_id}/runs`), and
+  artifacts (`/actions/artifacts`)
+
 **Deferred to tracked follow-ups**:
 
 - A GitHub token per tenant and token pools (`cpt-cf-github-mirror-fr-token-pool`):
