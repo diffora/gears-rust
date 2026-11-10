@@ -2,18 +2,6 @@ use serde::Deserialize;
 
 pub use toolkit_utils::SecretString;
 
-/// `OAuth2` client authentication method.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum ClientAuthMethod {
-    /// HTTP Basic authentication (RFC 6749 §2.3.1).
-    /// `Authorization: Basic base64(client_id:client_secret)`
-    #[default]
-    Basic,
-    /// Credentials in the request body (RFC 6749 §2.3.1 alternative).
-    /// `client_id` and `client_secret` as form fields.
-    Form,
-}
-
 /// Deserialized `OAuth2` token endpoint response.
 ///
 /// Only the fields required by the client credentials flow are included.
@@ -38,11 +26,6 @@ pub(crate) struct TokenResponse {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-
-    #[test]
-    fn default_auth_method_is_basic() {
-        assert_eq!(ClientAuthMethod::default(), ClientAuthMethod::Basic);
-    }
 
     #[test]
     fn deserialize_full_response() {

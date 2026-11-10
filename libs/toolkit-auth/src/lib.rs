@@ -36,7 +36,7 @@ pub use validation::{ValidationConfig, validate_claims};
 // the `oauth2` namespace - they are wiring details rather than entry-point
 // API.
 pub use oauth2::{
-    BearerAuthAutoRefreshLayer, BearerAuthAutoRefreshOpts, BearerAuthLayer, ClientAuthMethod,
-    FetchedToken, HttpClientBuilderExt, HttpOperation, OAuthClientConfig, SecretString, TokenError,
-    TokenProvider, fetch_token,
+    BearerAuthAutoRefreshLayer, BearerAuthAutoRefreshOpts, BearerAuthLayer, ClientCredentials,
+    FetchedToken, HttpClientBuilderExt, HttpOperation, OAuthClientConfig, PrivateKeyJwt, RsaJwsAlg,
+    SecretString, TokenEndpoint, TokenError, TokenProvider, fetch_token,
 };

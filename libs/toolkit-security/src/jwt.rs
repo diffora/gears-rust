@@ -1,8 +1,9 @@
 //! JWT signing and signature verification through the facade, with
 //! jsonwebtoken's existing claim validation. This adapter owns the
 //! signature-disabled second pass; callers cannot obtain claims without first
-//! verifying the original token. Signing never constructs a jsonwebtoken
-//! signer: the compact JWS is assembled here over a facade signature.
+//! verifying the original token. Signing (`ES256`, `RS*`, `PS*`) never
+//! constructs a jsonwebtoken signer: the compact JWS is assembled here over a
+//! facade signature.
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use jsonwebtoken::errors::{ErrorKind, Result};
@@ -15,34 +16,93 @@ use serde::{Serialize, de::DeserializeOwned};
 use crate::crypto::{
     CryptoError,
     signature::{
-        EcdsaAlgorithm, EcdsaP256KeyPair, RsaAlgorithm, fixed_to_der,
+        EcdsaAlgorithm, EcdsaP256KeyPair, RsaAlgorithm, RsaKeyPair, fixed_to_der,
         verify_ecdsa as verify_ecdsa_der, verify_rsa_components,
     },
 };
 
-/// Encode and sign a JWT with `ES256` through the configured OS backend.
+/// A facade key that can sign a JWS: [`EcdsaP256KeyPair`] (`ES256`) or
+/// [`RsaKeyPair`] (`RS256/384/512`, `PS256/384/512`). Sealed.
+pub trait JwsSigningKey: sealed::Sealed {}
+
+impl JwsSigningKey for EcdsaP256KeyPair {}
+impl JwsSigningKey for RsaKeyPair {}
+
+mod sealed {
+    use super::{Algorithm, ErrorKind, Result, rsa_algorithm};
+    use crate::crypto::signature::{EcdsaP256KeyPair, RsaKeyPair};
+
+    pub trait Sealed {
+        /// `InvalidAlgorithm` unless `alg` matches this key type.
+        fn check_alg(&self, alg: Algorithm) -> Result<()>;
+        /// JOSE signature bytes over `message`; `alg` already checked.
+        fn sign_jws(&self, alg: Algorithm, message: &[u8]) -> Result<Vec<u8>>;
+    }
+
+    impl Sealed for EcdsaP256KeyPair {
+        fn check_alg(&self, alg: Algorithm) -> Result<()> {
+            if alg == Algorithm::ES256 {
+                Ok(())
+            } else {
+                Err(ErrorKind::InvalidAlgorithm.into())
+            }
+        }
+
+        fn sign_jws(&self, _: Algorithm, message: &[u8]) -> Result<Vec<u8>> {
+            self.sign_fixed(message)
+                .map(Vec::from)
+                .map_err(|error| ErrorKind::Provider(error.to_string()).into())
+        }
+    }
+
+    impl Sealed for RsaKeyPair {
+        fn check_alg(&self, alg: Algorithm) -> Result<()> {
+            rsa_algorithm(alg).map(|_| ())
+        }
+
+        fn sign_jws(&self, alg: Algorithm, message: &[u8]) -> Result<Vec<u8>> {
+            self.sign(rsa_algorithm(alg)?, message)
+                .map_err(|error| ErrorKind::Provider(error.to_string()).into())
+        }
+    }
+}
+
+/// Encode and sign a JWT through the configured OS backend.
 ///
 /// The header and claims are serialized exactly as `jsonwebtoken::encode`
 /// does, so `kid`, `typ` and custom claims round-trip through either decoder.
-/// Only `ES256` is supported: the facade owns P-256 keys and no other curve.
-/// `header.alg` must already say so; the header is signed as given.
+/// `header.alg` must match the key: `ES256` for [`EcdsaP256KeyPair`],
+/// `RS*`/`PS*` for [`RsaKeyPair`]. The header is signed as given.
 ///
 /// # Errors
-/// Returns `InvalidAlgorithm` for any other `alg`, `Json` when the header or
-/// claims do not serialize, and `Provider` when the backend cannot sign.
-pub fn encode<T: Serialize>(header: &Header, claims: &T, key: &EcdsaP256KeyPair) -> Result<String> {
-    if header.alg != Algorithm::ES256 {
-        return Err(ErrorKind::InvalidAlgorithm.into());
-    }
+/// Returns `InvalidAlgorithm` when `alg` does not match the key type, `Json`
+/// when the header or claims do not serialize, and `Provider` when the
+/// backend cannot sign.
+pub fn encode<T, K>(header: &Header, claims: &T, key: &K) -> Result<String>
+where
+    T: Serialize,
+    K: JwsSigningKey + ?Sized,
+{
+    key.check_alg(header.alg)?;
     let mut token = URL_SAFE_NO_PAD.encode(serde_json::to_vec(header)?);
     token.push('.');
     token.push_str(&URL_SAFE_NO_PAD.encode(serde_json::to_vec(claims)?));
-    let signature = key
-        .sign_fixed(token.as_bytes())
-        .map_err(|error| ErrorKind::Provider(error.to_string()))?;
+    let signature = key.sign_jws(header.alg, token.as_bytes())?;
     token.push('.');
     token.push_str(&URL_SAFE_NO_PAD.encode(signature));
     Ok(token)
+}
+
+fn rsa_algorithm(alg: Algorithm) -> Result<RsaAlgorithm> {
+    match alg {
+        Algorithm::RS256 => Ok(RsaAlgorithm::Pkcs1Sha256),
+        Algorithm::RS384 => Ok(RsaAlgorithm::Pkcs1Sha384),
+        Algorithm::RS512 => Ok(RsaAlgorithm::Pkcs1Sha512),
+        Algorithm::PS256 => Ok(RsaAlgorithm::PssSha256),
+        Algorithm::PS384 => Ok(RsaAlgorithm::PssSha384),
+        Algorithm::PS512 => Ok(RsaAlgorithm::PssSha512),
+        _ => Err(ErrorKind::InvalidAlgorithm.into()),
+    }
 }
 
 /// Decode a JWT, verifying its signature with the configured OS backend and
@@ -107,15 +167,7 @@ fn verify(token: &str, key: &DecodingKey, header: &Header) -> Result<()> {
         | Algorithm::PS256
         | Algorithm::PS384
         | Algorithm::PS512 => {
-            let algorithm = match header.alg {
-                Algorithm::RS256 => RsaAlgorithm::Pkcs1Sha256,
-                Algorithm::RS384 => RsaAlgorithm::Pkcs1Sha384,
-                Algorithm::RS512 => RsaAlgorithm::Pkcs1Sha512,
-                Algorithm::PS256 => RsaAlgorithm::PssSha256,
-                Algorithm::PS384 => RsaAlgorithm::PssSha384,
-                Algorithm::PS512 => RsaAlgorithm::PssSha512,
-                _ => unreachable!("RSA branch"),
-            };
+            let algorithm = rsa_algorithm(header.alg)?;
             match key.kind() {
                 DecodingKeyKind::RsaModulusExponent { n, e } => {
                     verify_rsa_components(algorithm, n, e, message, &signature)

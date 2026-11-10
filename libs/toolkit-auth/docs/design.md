@@ -35,22 +35,48 @@ Rules:
 
 ### Token configuration
 
-**Required:**
+**Required** (the arguments of `OAuthClientConfig::new`):
 
-- `token_endpoint` or `issuer_url`
-- `client_id`, `client_secret`
-- `scopes` (normalized once, stable order)
+- `endpoint` (`TokenEndpoint`): `Direct(url)`, or `Issuer(url)` for OIDC
+  discovery
+- `client_id`
+- `credentials` (`ClientCredentials`): the client authentication method
+  together with its credential
+    - `SecretBasic(secret)`: `client_secret_basic`, `Authorization: Basic`
+    - `SecretPost(secret)`: `client_secret_post`, secret in the form body
+    - `PrivateKeyJwt(key)`: `private_key_jwt` (RFC 7523 §2.2, OIDC Core §9),
+      no shared secret on the wire
 
-**Optional:**
+**Optional** (defaults from `new`, overridden with struct update syntax):
 
+- `scopes` (normalized once, stable order; default none)
 - extra headers for vendor quirks
-- client auth method: `Basic` (default) or `form`
 - refresh policy:
     - refresh offset (default 30 minutes)
     - jitter max (default 5 minutes)
     - minimum refresh period (default 10 seconds)
 - safe default TTL if `expires_in` is missing
 - `HttpClientConfig` override for the token endpoint client (defaults to `HttpClientConfig::token_endpoint()`)
+
+### `private_key_jwt`
+
+Every token request carries a new assertion, signed through the
+`toolkit-security` crypto facade (`toolkit_security::jwt::encode`). With
+`toolkit-security/fips` enabled, signing runs in the platform FIPS module
+(AWS-LC FIPS, corecrypto, CNG); jsonwebtoken's signer is never used.
+
+- Keys: unencrypted PKCS#8 PEM, P-256 (`ES256`) or RSA 2048–8192 bits
+  (`RS256`, `PS256`). Keys are parsed and checked when `PrivateKeyJwt` is
+  built, so a bad key fails at construction rather than on the first request.
+- Claims: `iss` = `sub` = `client_id`, `aud`, `jti` (random UUID from the
+  facade CSPRNG), `iat`, `exp` = `iat` + 60 s. Optional `kid` header.
+- `aud` defaults to the resolved token endpoint, so it is the exact URL the
+  request is sent to. With `TokenEndpoint::Issuer`, it is computed after OIDC
+  discovery. `with_audience` overrides it for IdPs that expect their issuer.
+- The request body carries `client_id`, `client_assertion_type` and
+  `client_assertion`. It has no `client_secret` and no `Authorization`
+  header.
+- Assertions are not cached. Token caching and refresh are unchanged.
 
 ### Token source (toolkit-http based)
 
@@ -70,8 +96,8 @@ The token source holds an `HttpClient` instance built with `HttpClientConfig::to
 **Responsibilities:**
 
 - resolve token endpoint:
-    - use direct `token_endpoint`, or
-    - OIDC discovery from `issuer_url` using `/.well-known/openid-configuration`
+    - use `TokenEndpoint::Direct(url)` as is, or
+    - OIDC discovery from `TokenEndpoint::Issuer(url)` using `/.well-known/openid-configuration`
 - do client credentials grant:
     - `grant_type=client_credentials`
     - optional `scope` (space-separated)

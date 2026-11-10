@@ -123,14 +123,7 @@ impl EcdsaP256KeyPair {
     /// `EC PRIVATE KEY` and `ENCRYPTED PRIVATE KEY`, for a non-conforming
     /// encapsulation, and for every [`Self::from_pkcs8`] failure.
     pub fn from_pkcs8_pem(pem: &str) -> Result<Self, CryptoError> {
-        let pem = pem.trim().as_bytes();
-        let mut buffer = Zeroizing::new(vec![0; pem.len()]);
-        let (label, der) =
-            pem_rfc7468::decode(pem, &mut buffer).map_err(|_| CryptoError::InvalidKey)?;
-        if label != "PRIVATE KEY" {
-            return Err(CryptoError::InvalidKey);
-        }
-        Self::from_pkcs8(der)
+        super::with_pkcs8_pem(pem, Self::from_pkcs8)
     }
 
     pub(super) fn from_pkcs8_with_provider(

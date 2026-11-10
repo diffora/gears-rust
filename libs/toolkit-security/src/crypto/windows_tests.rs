@@ -134,6 +134,33 @@ fn native_cng_operations() {
             .is_err()
         );
     }
+    // CNG RSA import, pairwise check and signing (JOSE RS*/PS*), checked by AWS-LC.
+    let (_, rsa_der) = pem_rfc7468::decode_vec(include_bytes!("testdata/rsa-private.pem")).unwrap();
+    let rsa_key = rsa::RsaKeyPair::from_pkcs8_with_provider(&rsa_der, &provider).unwrap();
+    assert_eq!(rsa_key.modulus(), public.modulus.as_bytes());
+    for (algorithm, oracle) in [
+        (
+            rsa::RsaAlgorithm::Pkcs1Sha256,
+            &signature::RSA_PKCS1_2048_8192_SHA256,
+        ),
+        (
+            rsa::RsaAlgorithm::Pkcs1Sha512,
+            &signature::RSA_PKCS1_2048_8192_SHA512,
+        ),
+        (
+            rsa::RsaAlgorithm::PssSha256,
+            &signature::RSA_PSS_2048_8192_SHA256,
+        ),
+        (
+            rsa::RsaAlgorithm::PssSha512,
+            &signature::RSA_PSS_2048_8192_SHA512,
+        ),
+    ] {
+        let signed = rsa_key.sign(algorithm, b"CNG RSA signing").unwrap();
+        signature::UnparsedPublicKey::new(oracle, key.public_key().as_ref())
+            .verify(b"CNG RSA signing", &signed)
+            .unwrap();
+    }
     // CNG key generation, import, pairwise check and signing, independent of policy.
     let private = ecdsa::generate_pkcs8().unwrap();
     let key = ecdsa::EcdsaP256KeyPair::from_pkcs8_with_provider(&private, &provider).unwrap();

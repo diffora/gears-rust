@@ -67,6 +67,26 @@ pub fn initialize() -> Result<(), CryptoError> {
     backend::sha256_suite().map(|_| ())
 }
 
+/// Decode an unencrypted PKCS#8 PEM document (`-----BEGIN PRIVATE KEY-----`)
+/// into a buffer that is erased on every path and hand the DER to `import`.
+///
+/// Surrounding whitespace is trimmed; otherwise RFC 7468 strict (64-column
+/// base64 lines). Any other label, SEC1/PKCS#1 and encrypted keys included,
+/// is `InvalidKey`.
+fn with_pkcs8_pem<T>(
+    pem: &str,
+    import: impl FnOnce(&[u8]) -> Result<T, CryptoError>,
+) -> Result<T, CryptoError> {
+    let pem = pem.trim().as_bytes();
+    let mut buffer = zeroize::Zeroizing::new(vec![0; pem.len()]);
+    let (label, der) =
+        pem_rfc7468::decode(pem, &mut buffer).map_err(|_| CryptoError::InvalidKey)?;
+    if label != "PRIVATE KEY" {
+        return Err(CryptoError::InvalidKey);
+    }
+    import(der)
+}
+
 /// Compare bytes without content-dependent early exit. Lengths are public.
 #[must_use]
 pub fn constant_time_eq(expected: &[u8], provided: &[u8]) -> bool {

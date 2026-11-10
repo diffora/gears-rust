@@ -23,7 +23,10 @@
 
 use std::borrow::Cow;
 
-use toolkit_auth::{HttpClientBuilderExt, OAuthClientConfig, SecretString, TokenProvider};
+use toolkit_auth::{
+    ClientCredentials, HttpClientBuilderExt, OAuthClientConfig, SecretString, TokenEndpoint,
+    TokenProvider,
+};
 use toolkit_http::HttpClientBuilder;
 
 /// Demonstrate provider construction and authenticated requests to an external service.
@@ -31,11 +34,12 @@ use toolkit_http::HttpClientBuilder;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Step 1 -- create the token provider (see oauth2_basic.rs).
     let token = TokenProvider::new(OAuthClientConfig {
-        token_endpoint: Some("https://idp.example.com/oauth/token".parse()?),
-        client_id: "tenants-resolver".into(),
-        client_secret: SecretString::new("my-secret"),
         scopes: vec!["tenants.read".into()],
-        ..Default::default()
+        ..OAuthClientConfig::new(
+            TokenEndpoint::Direct("https://idp.example.com/oauth/token".parse()?),
+            "tenants-resolver",
+            ClientCredentials::SecretBasic(SecretString::new("my-secret")),
+        )
     })?;
 
     // Step 2a -- simplest form: Bearer auth + default metrics.
