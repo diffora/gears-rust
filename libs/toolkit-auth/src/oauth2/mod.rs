@@ -6,6 +6,7 @@
 pub mod auto_refresh;
 pub mod builder_ext;
 pub mod config;
+pub mod credentials;
 /// OIDC discovery: resolves the token endpoint from an issuer URL.
 pub(crate) mod discovery;
 pub mod error;
@@ -22,9 +23,10 @@ pub use auto_refresh::{
     DEFAULT_MIN_INVALIDATION_INTERVAL, ShouldRefreshFn,
 };
 pub use builder_ext::HttpClientBuilderExt;
-pub use config::OAuthClientConfig;
+pub use config::{OAuthClientConfig, TokenEndpoint};
+pub use credentials::{ClientCredentials, PrivateKeyJwt, RsaJwsAlg};
 pub use error::{HttpOperation, TokenError};
 pub use fetch::{FetchedToken, fetch_token};
 pub use layer::BearerAuthLayer;
 pub use token::TokenProvider;
-pub use types::{ClientAuthMethod, SecretString};
+pub use types::SecretString;

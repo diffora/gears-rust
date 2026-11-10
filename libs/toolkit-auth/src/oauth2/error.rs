@@ -68,6 +68,11 @@ pub enum TokenError {
     #[error("OAuth2 config error: {0}")]
     ConfigError(String),
 
+    /// The `private_key_jwt` client assertion could not be built or signed.
+    /// Carries the backend failure reason only, never key material.
+    #[error("client assertion signing failed: {0}")]
+    ClientAssertion(String),
+
     /// The provider has been permanently stopped.
     #[error("token provider shut down")]
     Shutdown,

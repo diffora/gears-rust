@@ -4,19 +4,21 @@
 use httpmock::prelude::*;
 use std::time::Duration;
 use toolkit_auth::oauth2::{
-    HttpOperation, OAuthClientConfig, SecretString, TokenError, TokenProvider,
+    ClientCredentials, HttpOperation, OAuthClientConfig, SecretString, TokenEndpoint, TokenError,
+    TokenProvider,
 };
 use url::Url;
 
 /// Build a mock-server configuration without transport-level retries.
 fn config(server: &MockServer) -> OAuthClientConfig {
     OAuthClientConfig {
-        token_endpoint: Some(Url::parse(&server.url("/token")).unwrap()),
-        client_id: "client".into(),
-        client_secret: SecretString::new("secret"),
         http_config: Some(toolkit_http::HttpClientConfig::for_testing()),
         jitter_max: Duration::ZERO,
-        ..Default::default()
+        ..OAuthClientConfig::new(
+            TokenEndpoint::Direct(Url::parse(&server.url("/token")).unwrap()),
+            "client",
+            ClientCredentials::SecretBasic(SecretString::new("secret")),
+        )
     }
 }
 
@@ -85,8 +87,7 @@ async fn discovery_failure_recovers_and_resolution_survives_invalidation() {
         })
         .await;
     let mut cfg = config(&server);
-    cfg.token_endpoint = None;
-    cfg.issuer_url = Some(Url::parse(&server.base_url()).unwrap());
+    cfg.endpoint = TokenEndpoint::Issuer(Url::parse(&server.base_url()).unwrap());
     let token = TokenProvider::new(cfg).unwrap();
     assert!(matches!(
         attempt(&token).await,
@@ -129,10 +130,10 @@ async fn unauthorized_attempts_are_visible_to_get() {
         })
         .await;
     let mut cfg = config(&server);
-    cfg.token_endpoint
-        .as_mut()
-        .unwrap()
-        .set_query(Some("diagnostic=secret-query"));
+    let TokenEndpoint::Direct(url) = &mut cfg.endpoint else {
+        panic!("config() uses a direct token endpoint");
+    };
+    url.set_query(Some("diagnostic=secret-query"));
     let token = TokenProvider::new(cfg).unwrap();
     for _ in 0..2 {
         let error = attempt(&token).await.unwrap_err();
@@ -168,8 +169,7 @@ async fn token_failure_recovers_without_repeating_discovery() {
         })
         .await;
     let mut cfg = config(&server);
-    cfg.token_endpoint = None;
-    cfg.issuer_url = Some(Url::parse(&server.base_url()).unwrap());
+    cfg.endpoint = TokenEndpoint::Issuer(Url::parse(&server.base_url()).unwrap());
     let token = TokenProvider::new(cfg).unwrap();
     assert_eq!(
         attempt(&token).await.unwrap_err().status(),
@@ -194,8 +194,13 @@ async fn token_failure_recovers_without_repeating_discovery() {
 /// Invalid credentials configuration is rejected before starting a watcher.
 #[tokio::test]
 async fn lazy_creation_rejects_invalid_configuration() {
+    let cfg = OAuthClientConfig::new(
+        TokenEndpoint::Direct(Url::parse("https://example.com/token").unwrap()),
+        "client",
+        ClientCredentials::SecretBasic(SecretString::new("")),
+    );
     assert!(matches!(
-        TokenProvider::new(OAuthClientConfig::default()),
+        TokenProvider::new(cfg),
         Err(TokenError::ConfigError(_))
     ));
 }
@@ -203,12 +208,11 @@ async fn lazy_creation_rejects_invalid_configuration() {
 /// A valid configuration outside Tokio returns an error rather than panicking.
 #[test]
 fn lazy_creation_without_runtime_returns_error() {
-    let cfg = OAuthClientConfig {
-        token_endpoint: Some(Url::parse("https://example.com/token").unwrap()),
-        client_id: "client".into(),
-        client_secret: SecretString::new("secret"),
-        ..Default::default()
-    };
+    let cfg = OAuthClientConfig::new(
+        TokenEndpoint::Direct(Url::parse("https://example.com/token").unwrap()),
+        "client",
+        ClientCredentials::SecretBasic(SecretString::new("secret")),
+    );
     assert!(
         matches!(TokenProvider::new(cfg), Err(TokenError::ConfigError(message)) if message.contains("Tokio runtime"))
     );

@@ -18,6 +18,7 @@ use rustls::Error;
 use rustls::crypto::KeyProvider;
 use rustls::pki_types::PrivateKeyDer;
 use rustls::sign::SigningKey;
+use zeroize::Zeroizing;
 
 mod ec;
 mod rsa;
@@ -42,7 +43,9 @@ impl KeyProvider for CoreCryptoKeyProvider {
         &self,
         key_der: PrivateKeyDer<'static>,
     ) -> Result<Arc<dyn SigningKey>, Error> {
-        any_supported_type(&key_der)
+        // The caller hands over its only copy of the private key DER; wipe it
+        // when loading is done, as rustls's own aws-lc provider does.
+        any_supported_type(&Zeroizing::new(key_der))
     }
 
     fn fips(&self) -> bool {

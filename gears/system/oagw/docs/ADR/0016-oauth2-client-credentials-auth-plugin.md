@@ -116,12 +116,12 @@ These are bundled into a `TokenCacheConfig` struct and threaded through `DataPla
 `TinyUfo` (used internally by `pingora-memory-cache`) hashes keys to `u64` and does **not** use `Eq` for collision resolution. To avoid silent collisions, the cache uses a `String` key encoding all identity components:
 
 ```rust
-fn build_cache_key(ctx: &AuthContext, auth_method: ClientAuthMethod) -> String {
+fn build_cache_key(ctx: &AuthContext, auth_method: SecretAuthMethod) -> String {
     format!(
         "{}:{}:{}:{}",
         ctx.security_context.subject_tenant_id(),
         ctx.security_context.subject_id(),
-        auth_method_tag(auth_method),
+        auth_method.tag(),
         hash_config(&ctx.config),
     )
 }
@@ -169,12 +169,19 @@ Failed token fetches are **not** cached — the next request for the same key re
 
 ### Plugin Implementation
 
+`SecretAuthMethod { Basic, Form }` is the plugin's own enum: the plugin only
+ever resolves a client secret, so `private_key_jwt` is not a value it can hold.
+`SecretAuthMethod::credentials(secret)` maps it to
+`toolkit_auth::ClientCredentials::SecretBasic` / `SecretPost` when building the
+`OAuthClientConfig`, and `SecretAuthMethod::tag()` gives the cache-key segment
+(`"basic"` / `"form"`).
+
 ```rust
 use pingora_memory_cache::MemoryCache;
 
 pub struct OAuth2ClientCredAuthPlugin {
     credstore: Arc<dyn CredStoreClientV1>,
-    auth_method: ClientAuthMethod,
+    auth_method: SecretAuthMethod,
     http_config: Option<toolkit_http::HttpClientConfig>,
     cache: MemoryCache<String, CachedToken>,
     cache_ttl: Duration,
@@ -183,7 +190,7 @@ pub struct OAuth2ClientCredAuthPlugin {
 impl OAuth2ClientCredAuthPlugin {
     pub fn new(
         credstore: Arc<dyn CredStoreClientV1>,
-        auth_method: ClientAuthMethod,
+        auth_method: SecretAuthMethod,
         cache_ttl: Duration,
         cache_capacity: usize,
     ) -> Self {
@@ -211,13 +218,13 @@ impl AuthPluginRegistry {
 
         let form_plugin = OAuth2ClientCredAuthPlugin::new(
             credstore.clone(),
-            ClientAuthMethod::Form,
+            SecretAuthMethod::Form,
             token_cache_config.ttl,
             token_cache_config.capacity,
         );
         let basic_plugin = OAuth2ClientCredAuthPlugin::new(
             credstore.clone(),
-            ClientAuthMethod::Basic,
+            SecretAuthMethod::Basic,
             token_cache_config.ttl,
             token_cache_config.capacity,
         );
