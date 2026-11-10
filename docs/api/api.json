@@ -6192,14 +6192,20 @@
             "type": "integer"
           },
           "name": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
           }
         },
         "required": [
-          "id"
+          "id",
+          "name",
+          "path",
+          "state"
         ],
         "type": "object"
       },
@@ -58380,7 +58386,7 @@
     },
     "/repos/{owner}/{name}/actions/workflows": {
       "get": {
-        "description": "List the workflows that have mirrored runs, served entirely from the locally mirrored store in GitHub's JSON shape - the mirror never calls live GitHub to answer. List responses paginate with `page`/`per_page` and a `Link` header, exactly as GitHub's API does. Data is as fresh as the repository's last sync.",
+        "description": "List the repository's workflows, served entirely from the locally mirrored store in GitHub's JSON shape - the mirror never calls live GitHub to answer. List responses paginate with `page`/`per_page` and a `Link` header, exactly as GitHub's API does. Data is as fresh as the repository's last sync.",
         "operationId": "github_mirror.compat.list_workflows",
         "parameters": [
           {
@@ -58517,7 +58523,7 @@
             }
           },
           {
-            "description": "Workflow id",
+            "description": "Workflow id or workflow file name (`ci.yml`)",
             "in": "path",
             "name": "workflow_id",
             "required": true,
