@@ -15,3 +15,9 @@ CREATE TABLE IF NOT EXISTS gm_artifacts (
     PRIMARY KEY (tenant_id, id),
     KEY idx_gm_artifacts_tenant_repo (tenant_id, repo_id)
 );
+
+CREATE INDEX idx_gm_comments_tenant_repo_created
+    ON gm_comments (tenant_id, repo_id, created_at);
+
+CREATE INDEX idx_gm_comments_tenant_repo_updated
+    ON gm_comments (tenant_id, repo_id, updated_at);

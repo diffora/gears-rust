@@ -7,7 +7,9 @@ const POSTGRES: &str = include_str!("m0002_artifacts/postgres.sql");
 const MYSQL: &str = include_str!("m0002_artifacts/mysql.sql");
 const SQLITE: &str = include_str!("m0002_artifacts/sqlite.sql");
 
-const TABLES: [&str; 1] = ["gm_artifacts"];
+const DOWN_POSTGRES: &str = include_str!("m0002_artifacts/down_postgres.sql");
+const DOWN_MYSQL: &str = include_str!("m0002_artifacts/down_mysql.sql");
+const DOWN_SQLITE: &str = include_str!("m0002_artifacts/down_sqlite.sql");
 
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
@@ -16,6 +18,6 @@ impl MigrationTrait for Migration {
     }
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        super::drop_tables(manager, &TABLES).await
+        super::run_schema(manager, DOWN_POSTGRES, DOWN_MYSQL, DOWN_SQLITE).await
     }
 }
