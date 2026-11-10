@@ -324,6 +324,7 @@ impl From<commits::Model> for Commit {
             committed_at: m.committed_at,
             additions: m.additions,
             deletions: m.deletions,
+            html_url: m.html_url,
         }
     }
 }
@@ -644,6 +645,7 @@ impl From<pull_request_commits::Model> for PullRequestCommit {
             committer_login: m.committer_login,
             authored_at: m.authored_at,
             committed_at: m.committed_at,
+            html_url: m.html_url,
         }
     }
 }

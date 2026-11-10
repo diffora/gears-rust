@@ -549,6 +549,7 @@ pub struct CommitRecord {
     pub committed_at: Option<String>,
     pub additions: i64,
     pub deletions: i64,
+    pub html_url: Option<String>,
 }
 
 #[async_trait]
@@ -1366,6 +1367,7 @@ pub struct PullRequestCommitRecord {
     pub committer_login: Option<String>,
     pub authored_at: Option<String>,
     pub committed_at: Option<String>,
+    pub html_url: Option<String>,
 }
 
 #[async_trait]

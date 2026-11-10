@@ -21,3 +21,7 @@ CREATE INDEX idx_gm_comments_tenant_repo_created
 
 CREATE INDEX idx_gm_comments_tenant_repo_updated
     ON gm_comments (tenant_id, repo_id, updated_at);
+
+ALTER TABLE gm_commits ADD COLUMN html_url VARCHAR(1024);
+
+ALTER TABLE gm_pull_request_commits ADD COLUMN html_url VARCHAR(1024);

@@ -275,6 +275,7 @@ fn large_repository() -> FetchedRepository {
             committed_at: Some(stamp(i)),
             additions: 1,
             deletions: 0,
+            html_url: None,
         })
         .collect();
     repo.review_comments.clear();

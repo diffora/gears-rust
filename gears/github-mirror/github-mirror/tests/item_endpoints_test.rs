@@ -232,6 +232,7 @@ async fn get_commit_returns_stats_and_files() {
                 committed_at: Some("2026-08-20T00:00:00Z".to_owned()),
                 additions: 4,
                 deletions: 1,
+                html_url: None,
             },
         )
         .await

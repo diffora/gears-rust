@@ -549,6 +549,7 @@ fn commit_active_model(tenant_id: Uuid, r: &CommitRecord) -> commits::ActiveMode
         committed_at: ActiveValue::Set(r.committed_at.clone()),
         additions: ActiveValue::Set(r.additions),
         deletions: ActiveValue::Set(r.deletions),
+        html_url: ActiveValue::Set(r.html_url.clone()),
         extracted_at: ActiveValue::Set(Some(Utc::now())),
     }
 }
@@ -1687,6 +1688,7 @@ fn pull_request_commit_active_model(
         committer_login: ActiveValue::Set(r.committer_login.clone()),
         authored_at: ActiveValue::Set(r.authored_at.clone()),
         committed_at: ActiveValue::Set(r.committed_at.clone()),
+        html_url: ActiveValue::Set(r.html_url.clone()),
         extracted_at: ActiveValue::Set(Some(Utc::now())),
     }
 }
@@ -2601,6 +2603,7 @@ async fn commit_upsert_in<C: DBRunner>(
         commits::Column::CommittedAt,
         commits::Column::Additions,
         commits::Column::Deletions,
+        commits::Column::HtmlUrl,
         commits::Column::ExtractedAt,
     ])
     .map_err(map_scope_error)?;
@@ -2625,6 +2628,7 @@ async fn commit_upsert_in<C: DBRunner>(
         committed_at: record.committed_at,
         additions: record.additions,
         deletions: record.deletions,
+        html_url: record.html_url,
     })
 }
 
@@ -4350,6 +4354,7 @@ async fn pull_request_commit_upsert_in<C: DBRunner>(
         pull_request_commits::Column::CommitterLogin,
         pull_request_commits::Column::AuthoredAt,
         pull_request_commits::Column::CommittedAt,
+        pull_request_commits::Column::HtmlUrl,
         pull_request_commits::Column::ExtractedAt,
     ])
     .map_err(map_scope_error)?;
@@ -4373,6 +4378,7 @@ async fn pull_request_commit_upsert_in<C: DBRunner>(
         committer_login: record.committer_login,
         authored_at: record.authored_at,
         committed_at: record.committed_at,
+        html_url: record.html_url,
     })
 }
 

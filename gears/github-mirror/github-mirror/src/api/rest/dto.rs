@@ -365,13 +365,16 @@ pub struct CommentDto {
     pub issue_url: String,
 }
 
-fn issue_api_url(owner: &str, name: &str, number: i64) -> String {
-    format!("https://api.github.com/repos/{owner}/{name}/issues/{number}")
+fn issue_api_url(api_base_url: &str, owner: &str, name: &str, number: i64) -> String {
+    format!(
+        "{}/repos/{owner}/{name}/issues/{number}",
+        api_base_url.trim_end_matches('/')
+    )
 }
 
 impl CommentDto {
     #[must_use]
-    pub fn new(c: Comment, owner: &str, name: &str) -> Self {
+    pub fn new(c: Comment, api_base_url: &str, owner: &str, name: &str) -> Self {
         Self {
             id: c.id,
             user: actor(c.author_login),
@@ -379,7 +382,7 @@ impl CommentDto {
             created_at: c.created_at,
             updated_at: c.updated_at,
             html_url: c.html_url,
-            issue_url: issue_api_url(owner, name, c.issue_number),
+            issue_url: issue_api_url(api_base_url, owner, name, c.issue_number),
         }
     }
 }
@@ -664,7 +667,9 @@ fn commit_html_url(owner: &str, name: &str, sha: &str) -> String {
 impl CommitDto {
     #[must_use]
     pub fn new(c: Commit, owner: &str, name: &str) -> Self {
-        let html_url = commit_html_url(owner, name, &c.sha);
+        let html_url = c
+            .html_url
+            .unwrap_or_else(|| commit_html_url(owner, name, &c.sha));
         Self {
             sha: c.sha,
             html_url,
@@ -1407,7 +1412,9 @@ impl From<Deployment> for DeploymentDto {
 impl CommitDto {
     #[must_use]
     pub fn from_pull_request_commit(c: PullRequestCommit, owner: &str, name: &str) -> Self {
-        let html_url = commit_html_url(owner, name, &c.sha);
+        let html_url = c
+            .html_url
+            .unwrap_or_else(|| commit_html_url(owner, name, &c.sha));
         Self {
             sha: c.sha,
             html_url,

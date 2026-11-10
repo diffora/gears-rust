@@ -340,6 +340,7 @@ pub mod commits {
         pub committed_at: Option<String>,
         pub additions: i64,
         pub deletions: i64,
+        pub html_url: Option<String>,
         /// When a sync last wrote this row. Doubles as the
         /// deletion-reconciliation watermark; `None` on rows from before
         /// the column existed.
@@ -1325,6 +1326,7 @@ pub mod pull_request_commits {
         /// GitHub's own stamps, kept verbatim (see the module doc).
         pub authored_at: Option<String>,
         pub committed_at: Option<String>,
+        pub html_url: Option<String>,
         /// When a sync last wrote this row. Doubles as the
         /// deletion-reconciliation watermark; `None` on rows from before
         /// the column existed.

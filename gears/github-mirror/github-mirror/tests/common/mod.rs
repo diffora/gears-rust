@@ -778,6 +778,7 @@ pub fn fetched_repository() -> FetchedRepository {
                 committed_at: Some("2026-08-19T00:00:00Z".to_owned()),
                 additions: 0,
                 deletions: 0,
+                html_url: None,
             },
             CommitRecord {
                 repo_id: 42,
@@ -789,6 +790,7 @@ pub fn fetched_repository() -> FetchedRepository {
                 committed_at: Some("2026-08-20T00:00:00Z".to_owned()),
                 additions: 0,
                 deletions: 0,
+                html_url: None,
             },
         ],
         comments: vec![CommentRecord {
@@ -993,6 +995,7 @@ pub fn fetched_repository() -> FetchedRepository {
             committer_login: Some("ivan".to_owned()),
             authored_at: Some("2026-08-20T00:00:00Z".to_owned()),
             committed_at: Some("2026-08-20T00:00:00Z".to_owned()),
+            html_url: None,
         }],
         commit_statuses: vec![CommitStatusRecord {
             id: 121,

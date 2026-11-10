@@ -309,7 +309,7 @@ async fn query_one(
                 .list_comments(ctx, owner, name, number, window)
                 .await?
                 .items,
-            |c| CommentDto::new(c, owner, name),
+            |c| CommentDto::new(c, service.api_base_url(), owner, name),
         ),
         Entity::ReviewThreads => rows(
             service
@@ -382,7 +382,9 @@ async fn conversations(
     {
         let members = service.conversation_comments(ctx, &conversation).await?;
         let comments = if members.review_comments.is_empty() {
-            rows(members.comments, |c| CommentDto::new(c, owner, name))?
+            rows(members.comments, |c| {
+                CommentDto::new(c, service.api_base_url(), owner, name)
+            })?
         } else {
             rows(members.review_comments, ReviewCommentDto::from)?
         };

@@ -487,7 +487,11 @@ pub async fn list_comments(
         .await?
         .items;
     let path = format!("/repos/{owner}/{name}/issues/{number}/comments");
-    Ok(respond(&page, &path, comment_dtos(items, &owner, &name)))
+    Ok(respond(
+        &page,
+        &path,
+        comment_dtos(items, svc.api_base_url(), &owner, &name),
+    ))
 }
 
 /// Serves `GET /repos/{owner}/{name}/issues/comments` (comments of every issue) from the mirror with GitHub-style pagination and a `Link` header.
@@ -510,13 +514,22 @@ pub async fn list_repo_comments(
         .await?
         .items;
     let path = format!("/repos/{owner}/{name}/issues/comments");
-    Ok(respond(&page, &path, comment_dtos(items, &owner, &name)))
+    Ok(respond(
+        &page,
+        &path,
+        comment_dtos(items, svc.api_base_url(), &owner, &name),
+    ))
 }
 
-fn comment_dtos(items: Vec<Comment>, owner: &str, name: &str) -> Vec<CommentDto> {
+fn comment_dtos(
+    items: Vec<Comment>,
+    api_base_url: &str,
+    owner: &str,
+    name: &str,
+) -> Vec<CommentDto> {
     items
         .into_iter()
-        .map(|c| CommentDto::new(c, owner, name))
+        .map(|c| CommentDto::new(c, api_base_url, owner, name))
         .collect()
 }
 

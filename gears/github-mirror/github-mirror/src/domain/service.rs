@@ -1163,6 +1163,12 @@ impl Service {
             .ok_or(DomainError::NotFound)
     }
 
+    /// GitHub API base URL the mirror reads from (`https://api.github.com` or a GitHub Enterprise `/api/v3` URL).
+    #[must_use]
+    pub fn api_base_url(&self) -> &str {
+        &self.config.api_base_url
+    }
+
     #[must_use]
     pub fn status(&self) -> MirrorStatus {
         MirrorStatus {

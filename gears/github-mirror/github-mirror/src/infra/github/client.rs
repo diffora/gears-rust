@@ -1960,6 +1960,7 @@ struct GhCommit {
     author: Option<GhActor>,
     #[serde(default, deserialize_with = "actor_or_none")]
     committer: Option<GhActor>,
+    html_url: Option<String>,
 }
 
 fn repository_record(r: GhRepository) -> RepoRecord {
@@ -2608,6 +2609,7 @@ fn pull_request_commit_record(
         committer_login: c.committer.map(|a| a.login),
         authored_at: c.commit.author.and_then(|p| p.date),
         committed_at: c.commit.committer.and_then(|p| p.date),
+        html_url: c.html_url,
     }
 }
 
@@ -2743,6 +2745,7 @@ fn commit_record(repo_id: i64, c: GhCommit) -> CommitRecord {
         committed_at: c.commit.committer.and_then(|p| p.date),
         additions: 0,
         deletions: 0,
+        html_url: c.html_url,
     }
 }
 

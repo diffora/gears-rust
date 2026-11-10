@@ -213,6 +213,7 @@ pub struct Commit {
     pub committed_at: Option<String>,
     pub additions: i64,
     pub deletions: i64,
+    pub html_url: Option<String>,
 }
 
 /// One count gap verification gave up on: GitHub declared more children for a
@@ -743,6 +744,7 @@ pub struct PullRequestCommit {
     pub committer_login: Option<String>,
     pub authored_at: Option<String>,
     pub committed_at: Option<String>,
+    pub html_url: Option<String>,
 }
 
 /// A mirrored commit status: one external check reported against a commit

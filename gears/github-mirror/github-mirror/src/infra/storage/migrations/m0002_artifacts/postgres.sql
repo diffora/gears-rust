@@ -23,3 +23,7 @@ CREATE INDEX IF NOT EXISTS idx_gm_comments_tenant_repo_created
 
 CREATE INDEX IF NOT EXISTS idx_gm_comments_tenant_repo_updated
     ON gm_comments (tenant_id, repo_id, updated_at);
+
+ALTER TABLE gm_commits ADD COLUMN IF NOT EXISTS html_url VARCHAR(1024);
+
+ALTER TABLE gm_pull_request_commits ADD COLUMN IF NOT EXISTS html_url VARCHAR(1024);
