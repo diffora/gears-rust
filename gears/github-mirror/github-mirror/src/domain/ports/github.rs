@@ -16,7 +16,7 @@ use crate::domain::repo::{
     IssueEventRecord, IssueReactionRecord, IssueRecord, IssueTimelineEventRecord, LabelRecord,
     MilestoneRecord, PullRequestCommitRecord, PullRequestFileRecord, PullRequestRecord,
     ReleaseRecord, RepoRecord, ReviewCommentRecord, ReviewRecord, ReviewThreadRecord, TagRecord,
-    WorkflowJobRecord, WorkflowRunRecord,
+    WorkflowJobRecord, WorkflowRecord, WorkflowRunRecord,
 };
 use crate::domain::scope::ScopeConfig;
 use crate::domain::sync::telemetry::SessionTelemetry;
@@ -318,12 +318,13 @@ pub struct MetadataListing {
     pub tags: Vec<TagRecord>,
 }
 
-/// The GitHub Actions listings: workflow runs, deployments and artifacts. Jobs
-/// are only reachable per run, so they come from
+/// The GitHub Actions listings: workflows, workflow runs, deployments and
+/// artifacts. Jobs are only reachable per run, so they come from
 /// [`GithubPort::refine_workflow_run`].
 #[domain_model]
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ActionsListing {
+    pub workflows: Vec<WorkflowRecord>,
     pub workflow_runs: Vec<WorkflowRunRecord>,
     pub deployments: Vec<DeploymentRecord>,
     pub artifacts: Vec<ArtifactRecord>,

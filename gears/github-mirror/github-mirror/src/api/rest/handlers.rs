@@ -755,13 +755,13 @@ pub async fn list_workflow_runs(
 pub async fn list_workflow_runs_of_workflow(
     Extension(ctx): Extension<SecurityContext>,
     Extension(svc): Extension<Arc<ConcreteService>>,
-    Path((owner, name, workflow_id)): Path<(String, String, i64)>,
+    Path((owner, name, workflow_id)): Path<(String, String, String)>,
     Query(query): Query<GithubPageQuery>,
 ) -> ApiResult<(HeaderMap, JsonBody<WorkflowRunsPageDto>)> {
     validate_repo_path(&owner, &name)?;
     let page = query.normalized()?;
     let (items, total) = svc
-        .list_workflow_runs_of_workflow(&ctx, &owner, &name, workflow_id, page.window())
+        .list_workflow_runs_of_workflow(&ctx, &owner, &name, &workflow_id, page.window())
         .await?;
     let path = format!("/repos/{owner}/{name}/actions/workflows/{workflow_id}/runs");
     Ok(workflow_runs_page(&page, &path, items.items, total))

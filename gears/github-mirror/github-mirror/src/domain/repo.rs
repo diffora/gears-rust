@@ -1081,12 +1081,40 @@ pub trait WorkflowRunRepository: Send + Sync {
         repo_id: i64,
         window: PageWindow,
     ) -> Result<Vec<WorkflowRun>, DomainError>;
+}
 
-    async fn workflows_by_repo(
+#[domain_model]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowRecord {
+    pub id: i64,
+    pub repo_id: i64,
+    pub name: String,
+    pub path: String,
+    pub state: String,
+}
+
+#[async_trait]
+pub trait WorkflowRepository: Send + Sync {
+    async fn page_by_repo(
         &self,
         scope: &AccessScope,
         repo_id: i64,
-    ) -> Result<Vec<Workflow>, DomainError>;
+        window: PageWindow,
+    ) -> Result<(Vec<Workflow>, u64), DomainError>;
+
+    async fn find_by_id(
+        &self,
+        scope: &AccessScope,
+        repo_id: i64,
+        id: i64,
+    ) -> Result<Option<Workflow>, DomainError>;
+
+    async fn find_by_path(
+        &self,
+        scope: &AccessScope,
+        repo_id: i64,
+        path: &str,
+    ) -> Result<Option<Workflow>, DomainError>;
 }
 
 /// Write-side record for a mirrored pull-request file.

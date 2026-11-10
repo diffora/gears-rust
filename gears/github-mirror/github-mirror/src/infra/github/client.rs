@@ -24,7 +24,7 @@ use crate::domain::repo::{
     IssueEventRecord, IssueReactionRecord, IssueRecord, IssueTimelineEventRecord, LabelRecord,
     MilestoneRecord, PullRequestCommitRecord, PullRequestFileRecord, PullRequestRecord,
     ReleaseRecord, RepoRecord, ReviewCommentRecord, ReviewRecord, ReviewThreadRecord, TagRecord,
-    WorkflowJobRecord, WorkflowRunRecord,
+    WorkflowJobRecord, WorkflowRecord, WorkflowRunRecord,
 };
 use crate::domain::scope::InlineCommentSnippets;
 use crate::domain::sync::telemetry::{GithubApi, RequestOutcome, SessionTelemetry, TelemetryEntry};
@@ -1798,6 +1798,19 @@ struct GhArtifactsPage {
 }
 
 #[derive(Debug, Deserialize)]
+struct GhWorkflow {
+    id: i64,
+    name: String,
+    path: String,
+    state: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GhWorkflowsPage {
+    workflows: Vec<GhWorkflow>,
+}
+
+#[derive(Debug, Deserialize)]
 struct GhPullFile {
     filename: String,
     /// The file's unified diff; GitHub omits it for very large diffs.
@@ -2439,6 +2452,16 @@ fn workflow_run_record(repo_id: i64, w: GhWorkflowRun) -> WorkflowRunRecord {
         updated_at: w.updated_at,
         html_url: w.html_url,
         actor_login: w.actor.map(|a| a.login),
+    }
+}
+
+fn workflow_record(repo_id: i64, w: GhWorkflow) -> WorkflowRecord {
+    WorkflowRecord {
+        id: w.id,
+        repo_id,
+        name: w.name,
+        path: w.path,
+        state: w.state,
     }
 }
 
@@ -3469,6 +3492,18 @@ impl GithubPort for GithubClient {
             return Ok(ActionsListing::default());
         }
 
+        let workflows = match self
+            .get_json_all_wrapped(
+                &format!("/repos/{owner}/{name}/actions/workflows?per_page={FIRST_PAGE_SIZE}"),
+                options,
+                |page: GhWorkflowsPage| page.workflows,
+            )
+            .await
+        {
+            Ok(workflows) => workflows,
+            Err(DomainError::NotFound | DomainError::AccessLost(_)) => Vec::new(),
+            Err(error) => return Err(error),
+        };
         let runs = self
             .get_json_newest_wrapped(
                 &format!("/repos/{owner}/{name}/actions/runs?per_page={FIRST_PAGE_SIZE}"),
@@ -3498,6 +3533,10 @@ impl GithubPort for GithubClient {
         };
 
         Ok(ActionsListing {
+            workflows: workflows
+                .into_iter()
+                .map(|w| workflow_record(repo_id, w))
+                .collect(),
             workflow_runs: runs
                 .into_iter()
                 .map(|w| workflow_run_record(repo_id, w))

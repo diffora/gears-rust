@@ -888,7 +888,7 @@ fn register_workflow_routes(mut router: Router, openapi: &dyn OpenApiRegistry) -
         .operation_id("github_mirror.compat.list_workflows")
         .summary("List workflows (GitHub-compatible)")
         .description(
-            "List the workflows that have mirrored runs, served entirely from the locally mirrored store in GitHub's JSON shape - the mirror never calls live GitHub to answer. List responses paginate with `page`/`per_page` and a `Link` header, exactly as GitHub's API does. Data is as fresh as the repository's last sync.",
+            "List the repository's workflows, served entirely from the locally mirrored store in GitHub's JSON shape - the mirror never calls live GitHub to answer. List responses paginate with `page`/`per_page` and a `Link` header, exactly as GitHub's API does. Data is as fresh as the repository's last sync.",
         )
         .tag(API_TAG)
         .authenticated()
@@ -921,7 +921,7 @@ fn register_workflow_routes(mut router: Router, openapi: &dyn OpenApiRegistry) -
         .require_license_features::<License>([])
         .path_param("owner", "Repo owner login")
         .path_param("name", "Repo name")
-        .path_param("workflow_id", "Workflow id")
+        .path_param("workflow_id", "Workflow id or workflow file name (`ci.yml`)")
         .query_param("page", false, PAGE_DOC)
         .query_param("per_page", false, PER_PAGE_DOC)
         .handler(handlers::list_workflow_runs_of_workflow)

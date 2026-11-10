@@ -35,7 +35,7 @@ use github_mirror::infra::storage::sea_orm_repo::{
     SeaOrmPullRequestRepository, SeaOrmReleaseRepository, SeaOrmRepoRepository,
     SeaOrmRepoSyncStatusRepository, SeaOrmReviewCommentRepository, SeaOrmReviewRepository,
     SeaOrmReviewThreadRepository, SeaOrmSyncSessionRepository, SeaOrmSyncWatermarkRepository,
-    SeaOrmSyncWriter, SeaOrmTagRepository, SeaOrmWorkflowJobRepository,
+    SeaOrmSyncWriter, SeaOrmTagRepository, SeaOrmWorkflowJobRepository, SeaOrmWorkflowRepository,
     SeaOrmWorkflowRunRepository,
 };
 use toolkit::api::canonical_prelude::CanonicalError;
@@ -385,6 +385,7 @@ impl GithubPort for FakeGithub {
     ) -> Result<ActionsListing, DomainError> {
         let f = self.fixture()?;
         Ok(ActionsListing {
+            workflows: Vec::new(),
             workflow_runs: f.workflow_runs.clone(),
             deployments: f.deployments.clone(),
             artifacts: Vec::new(),
@@ -561,6 +562,7 @@ pub fn service_with_deadline(
         Arc::new(SeaOrmIssueEventRepository::new(Arc::clone(&db))),
         Arc::new(SeaOrmDeploymentRepository::new(Arc::clone(&db))),
         Arc::new(SeaOrmArtifactRepository::new(Arc::clone(&db))),
+        Arc::new(SeaOrmWorkflowRepository::new(Arc::clone(&db))),
         Arc::new(SeaOrmPullRequestCommitRepository::new(Arc::clone(&db))),
         Arc::new(SeaOrmCommitStatusRepository::new(Arc::clone(&db))),
         Arc::new(SeaOrmWorkflowJobRepository::new(Arc::clone(&db))),

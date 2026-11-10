@@ -27,3 +27,17 @@ CREATE INDEX IF NOT EXISTS idx_gm_comments_tenant_repo_updated
 ALTER TABLE gm_commits ADD COLUMN IF NOT EXISTS html_url VARCHAR(1024);
 
 ALTER TABLE gm_pull_request_commits ADD COLUMN IF NOT EXISTS html_url VARCHAR(1024);
+
+CREATE TABLE IF NOT EXISTS gm_workflows (
+    tenant_id UUID NOT NULL,
+    id BIGINT NOT NULL,
+    repo_id BIGINT NOT NULL,
+    name VARCHAR(1024) NOT NULL,
+    path VARCHAR(1024) NOT NULL,
+    state VARCHAR(64) NOT NULL,
+    extracted_at TIMESTAMPTZ,
+    PRIMARY KEY (tenant_id, id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_gm_workflows_tenant_repo
+    ON gm_workflows (tenant_id, repo_id);

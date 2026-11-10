@@ -1,3 +1,5 @@
+DROP TABLE IF EXISTS gm_workflows;
+
 ALTER TABLE gm_commits DROP COLUMN html_url;
 
 ALTER TABLE gm_pull_request_commits DROP COLUMN html_url;

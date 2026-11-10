@@ -42,7 +42,8 @@ use super::repo::{
     ReviewCommentRecord, ReviewCommentRepository, ReviewRecord, ReviewRepository,
     ReviewThreadRecord, ReviewThreadRepository, SessionStatus, SyncSessionRecord,
     SyncSessionRepository, SyncWatermarkRepository, SyncWriter, TagRecord, TagRepository,
-    WorkflowJobRecord, WorkflowJobRepository, WorkflowRunRecord, WorkflowRunRepository,
+    WorkflowJobRecord, WorkflowJobRepository, WorkflowRepository, WorkflowRunRecord,
+    WorkflowRunRepository,
 };
 use super::scope::ScopeConfig;
 use super::sync::conversations::{self, group_conversations};
@@ -681,6 +682,7 @@ pub struct Service {
     issue_events: Arc<dyn IssueEventRepository>,
     deployments: Arc<dyn DeploymentRepository>,
     artifacts: Arc<dyn ArtifactRepository>,
+    workflows: Arc<dyn WorkflowRepository>,
     pull_request_commits: Arc<dyn PullRequestCommitRepository>,
     commit_statuses: Arc<dyn CommitStatusRepository>,
     workflow_jobs: Arc<dyn WorkflowJobRepository>,
@@ -892,6 +894,7 @@ impl Clone for Service {
             issue_events: Arc::clone(&self.issue_events),
             deployments: Arc::clone(&self.deployments),
             artifacts: Arc::clone(&self.artifacts),
+            workflows: Arc::clone(&self.workflows),
             pull_request_commits: Arc::clone(&self.pull_request_commits),
             commit_statuses: Arc::clone(&self.commit_statuses),
             workflow_jobs: Arc::clone(&self.workflow_jobs),
@@ -950,6 +953,7 @@ impl Service {
         issue_events: Arc<dyn IssueEventRepository>,
         deployments: Arc<dyn DeploymentRepository>,
         artifacts: Arc<dyn ArtifactRepository>,
+        workflows: Arc<dyn WorkflowRepository>,
         pull_request_commits: Arc<dyn PullRequestCommitRepository>,
         commit_statuses: Arc<dyn CommitStatusRepository>,
         workflow_jobs: Arc<dyn WorkflowJobRepository>,
@@ -995,6 +999,7 @@ impl Service {
             issue_events,
             deployments,
             artifacts,
+            workflows,
             pull_request_commits,
             commit_statuses,
             workflow_jobs,
@@ -2281,17 +2286,17 @@ impl Service {
     }
 
     /// # Errors
-    /// `NotFound` when the repository is not mirrored; `Forbidden`/`Database`
-    /// as usual.
+    /// `NotFound` when the repository is not mirrored or has no such workflow;
+    /// `Forbidden`/`Database` as usual.
     pub async fn list_workflow_runs_of_workflow(
         &self,
         ctx: &SecurityContext,
         owner: &str,
         name: &str,
-        workflow_id: i64,
+        workflow: &str,
         window: PageWindow,
     ) -> Result<(Page<WorkflowRun>, u64), DomainError> {
-        self.workflow_runs_page(ctx, owner, name, Some(workflow_id), window)
+        self.workflow_runs_page(ctx, owner, name, Some(workflow), window)
             .await
     }
 
@@ -2308,16 +2313,7 @@ impl Service {
         let (scope, repo_id) = self
             .mirrored_repository(ctx, &WORKFLOW_RUN_RESOURCE, owner, name)
             .await?;
-        let workflows = self
-            .workflow_runs
-            .workflows_by_repo(&scope, repo_id)
-            .await?;
-        let total = workflows.len() as u64;
-        let items = workflows
-            .into_iter()
-            .skip(usize::try_from(window.offset()).unwrap_or(usize::MAX))
-            .take(usize::try_from(window.limit()).unwrap_or(usize::MAX))
-            .collect();
+        let (items, total) = self.workflows.page_by_repo(&scope, repo_id, window).await?;
 
         Ok((
             Page::new(
@@ -2366,12 +2362,16 @@ impl Service {
         ctx: &SecurityContext,
         owner: &str,
         name: &str,
-        workflow_id: Option<i64>,
+        workflow: Option<&str>,
         window: PageWindow,
     ) -> Result<(Page<WorkflowRun>, u64), DomainError> {
         let (scope, repo_id) = self
             .mirrored_repository(ctx, &WORKFLOW_RUN_RESOURCE, owner, name)
             .await?;
+        let workflow_id = match workflow {
+            Some(workflow) => Some(self.mirrored_workflow_id(&scope, repo_id, workflow).await?),
+            None => None,
+        };
 
         // Both statements run on one transaction, and on the scope and
         // repository already resolved above: the total describes the page it
@@ -2392,6 +2392,23 @@ impl Service {
             ),
             total,
         ))
+    }
+
+    async fn mirrored_workflow_id(
+        &self,
+        scope: &AccessScope,
+        repo_id: i64,
+        workflow: &str,
+    ) -> Result<i64, DomainError> {
+        let found = match workflow.parse::<i64>() {
+            Ok(id) => self.workflows.find_by_id(scope, repo_id, id).await?,
+            Err(_) => {
+                self.workflows
+                    .find_by_path(scope, repo_id, &format!(".github/workflows/{workflow}"))
+                    .await?
+            }
+        };
+        found.map(|w| w.id).ok_or(DomainError::NotFound)
     }
 
     /// Insert or update a mirrored workflow-run row for the caller's tenant.

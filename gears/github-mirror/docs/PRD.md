@@ -581,8 +581,8 @@ The following endpoint families **MUST** be supported (reading from the local no
 - `/repos/{owner}/{repo}/labels` — labels
 - `/repos/{owner}/{repo}/actions/runs` — workflow runs
 - `/repos/{owner}/{repo}/actions/runs/{run_id}/jobs` — workflow jobs
-- `/repos/{owner}/{repo}/actions/workflows` — workflows that have mirrored runs
-- `/repos/{owner}/{repo}/actions/workflows/{workflow_id}/runs` — workflow runs of one workflow
+- `/repos/{owner}/{repo}/actions/workflows` — workflows
+- `/repos/{owner}/{repo}/actions/workflows/{workflow_id}/runs` — workflow runs of one workflow, by id or file name
 - `/repos/{owner}/{repo}/actions/artifacts` — workflow artifacts
 - `/repos/{owner}/{repo}/deployments` — deployments
 - `/repos/{owner}/{repo}/contributors` — derived contributors

@@ -888,7 +888,9 @@ pub struct WorkflowRunsPageDto {
 #[schema(as = GithubMirrorWorkflowDto)]
 pub struct WorkflowDto {
     pub id: i64,
-    pub name: Option<String>,
+    pub name: String,
+    pub path: String,
+    pub state: String,
 }
 
 impl From<Workflow> for WorkflowDto {
@@ -896,6 +898,8 @@ impl From<Workflow> for WorkflowDto {
         Self {
             id: w.id,
             name: w.name,
+            path: w.path,
+            state: w.state,
         }
     }
 }

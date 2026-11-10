@@ -87,6 +87,7 @@ async fn service_with_artifacts(ctx: &SecurityContext) -> Arc<ConcreteService> {
             &AccessScope::for_tenant(tenant),
             tenant,
             ActionsListing {
+                workflows: Vec::new(),
                 workflow_runs: Vec::new(),
                 deployments: Vec::new(),
                 artifacts: vec![

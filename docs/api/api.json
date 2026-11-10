@@ -696,62 +696,6 @@
         ],
         "type": "object"
       },
-      "ArtifactDto": {
-        "properties": {
-          "created_at": {
-            "format": "date-time",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "expired": {
-            "type": "boolean"
-          },
-          "expires_at": {
-            "format": "date-time",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "id": {
-            "format": "int64",
-            "type": "integer"
-          },
-          "name": {
-            "type": "string"
-          },
-          "size_in_bytes": {
-            "format": "int64",
-            "type": "integer"
-          },
-          "updated_at": {
-            "format": "date-time",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "workflow_run": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/ArtifactWorkflowRunDto"
-              }
-            ]
-          }
-        },
-        "required": [
-          "id",
-          "name",
-          "size_in_bytes",
-          "expired"
-        ],
-        "type": "object"
-      },
       "ArtifactWorkflowRunDto": {
         "properties": {
           "head_branch": {
@@ -773,25 +717,6 @@
         },
         "required": [
           "id"
-        ],
-        "type": "object"
-      },
-      "ArtifactsPageDto": {
-        "properties": {
-          "artifacts": {
-            "items": {
-              "$ref": "#/components/schemas/ArtifactDto"
-            },
-            "type": "array"
-          },
-          "total_count": {
-            "format": "int64",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "total_count",
-          "artifacts"
         ],
         "type": "object"
       },
@@ -6114,6 +6039,81 @@
         },
         "type": "object"
       },
+      "GithubMirrorArtifactDto": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expired": {
+            "type": "boolean"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "size_in_bytes": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "workflow_run": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ArtifactWorkflowRunDto"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "size_in_bytes",
+          "expired"
+        ],
+        "type": "object"
+      },
+      "GithubMirrorArtifactsPageDto": {
+        "properties": {
+          "artifacts": {
+            "items": {
+              "$ref": "#/components/schemas/GithubMirrorArtifactDto"
+            },
+            "type": "array"
+          },
+          "total_count": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total_count",
+          "artifacts"
+        ],
+        "type": "object"
+      },
       "GithubMirrorDeploymentDto": {
         "description": "GitHub-shaped deployment.",
         "properties": {
@@ -6182,6 +6182,43 @@
         "required": [
           "gear",
           "version"
+        ],
+        "type": "object"
+      },
+      "GithubMirrorWorkflowDto": {
+        "properties": {
+          "id": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "GithubMirrorWorkflowsPageDto": {
+        "properties": {
+          "total_count": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "workflows": {
+            "items": {
+              "$ref": "#/components/schemas/GithubMirrorWorkflowDto"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "total_count",
+          "workflows"
         ],
         "type": "object"
       },
@@ -23161,24 +23198,6 @@
         ],
         "type": "string"
       },
-      "WorkflowDto": {
-        "properties": {
-          "id": {
-            "format": "int64",
-            "type": "integer"
-          },
-          "name": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "id"
-        ],
-        "type": "object"
-      },
       "WorkflowJobDto": {
         "description": "GitHub-shaped workflow job. `steps` is replayed from the raw GitHub\nJSON the mirror stored, or an empty array when the sync never saw any.",
         "properties": {
@@ -23424,25 +23443,6 @@
         },
         "required": [
           "name"
-        ],
-        "type": "object"
-      },
-      "WorkflowsPageDto": {
-        "properties": {
-          "total_count": {
-            "format": "int64",
-            "type": "integer"
-          },
-          "workflows": {
-            "items": {
-              "$ref": "#/components/schemas/WorkflowDto"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "total_count",
-          "workflows"
         ],
         "type": "object"
       }
@@ -58071,7 +58071,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ArtifactsPageDto"
+                  "$ref": "#/components/schemas/GithubMirrorArtifactsPageDto"
                 }
               }
             },
@@ -58425,7 +58425,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/WorkflowsPageDto"
+                  "$ref": "#/components/schemas/GithubMirrorWorkflowsPageDto"
                 }
               }
             },

@@ -481,7 +481,9 @@ pub struct WorkflowRun {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Workflow {
     pub id: i64,
-    pub name: Option<String>,
+    pub name: String,
+    pub path: String,
+    pub state: String,
 }
 
 #[domain_model]

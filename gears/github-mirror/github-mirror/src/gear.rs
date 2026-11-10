@@ -38,7 +38,7 @@ use crate::infra::storage::sea_orm_repo::{
     SeaOrmRepoRepository, SeaOrmRepoSyncStatusRepository, SeaOrmReviewCommentRepository,
     SeaOrmReviewRepository, SeaOrmReviewThreadRepository, SeaOrmSyncSessionRepository,
     SeaOrmSyncWatermarkRepository, SeaOrmSyncWriter, SeaOrmTagRepository,
-    SeaOrmWorkflowJobRepository, SeaOrmWorkflowRunRepository,
+    SeaOrmWorkflowJobRepository, SeaOrmWorkflowRepository, SeaOrmWorkflowRunRepository,
 };
 use crate::infra::telemetry_sink::JsonlTelemetrySink;
 
@@ -165,6 +165,7 @@ impl Gear for GithubMirrorGear {
         let issue_events = Arc::new(SeaOrmIssueEventRepository::new(Arc::clone(&db)));
         let deployments = Arc::new(SeaOrmDeploymentRepository::new(Arc::clone(&db)));
         let artifacts = Arc::new(SeaOrmArtifactRepository::new(Arc::clone(&db)));
+        let workflows = Arc::new(SeaOrmWorkflowRepository::new(Arc::clone(&db)));
         let pull_request_commits =
             Arc::new(SeaOrmPullRequestCommitRepository::new(Arc::clone(&db)));
         let commit_statuses = Arc::new(SeaOrmCommitStatusRepository::new(Arc::clone(&db)));
@@ -218,6 +219,7 @@ impl Gear for GithubMirrorGear {
             issue_events,
             deployments,
             artifacts,
+            workflows,
             pull_request_commits,
             commit_statuses,
             workflow_jobs,

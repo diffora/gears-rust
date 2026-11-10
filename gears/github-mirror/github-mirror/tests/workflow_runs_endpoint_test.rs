@@ -8,9 +8,12 @@ use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
 use github_mirror::api::rest::routes::{ConcreteService, register_routes};
-use github_mirror::domain::repo::{RepoRecord, WorkflowRunRecord};
+use github_mirror::domain::ports::github::ActionsListing;
+use github_mirror::domain::repo::{RepoRecord, SyncWriter, WorkflowRecord, WorkflowRunRecord};
+use github_mirror::infra::storage::sea_orm_repo::SeaOrmSyncWriter;
 use toolkit::api::OpenApiRegistryImpl;
-use toolkit_security::SecurityContext;
+use toolkit_db::DBProvider;
+use toolkit_security::{AccessScope, SecurityContext};
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -195,8 +198,19 @@ fn run_of_workflow(
     }
 }
 
-async fn service_with_two_workflows(ctx: &SecurityContext) -> Arc<ConcreteService> {
-    let service = common::service("https://api.github.com").await;
+fn workflow_record(id: i64, name: &str, file: &str) -> WorkflowRecord {
+    WorkflowRecord {
+        id,
+        repo_id: 998,
+        name: name.to_owned(),
+        path: format!(".github/workflows/{file}"),
+        state: "active".to_owned(),
+    }
+}
+
+async fn service_with_workflows(ctx: &SecurityContext) -> Arc<ConcreteService> {
+    let db = common::inmem_db().await;
+    let service = common::service_over(db.clone(), "https://api.github.com");
     service
         .upsert_repo(ctx, repo_record())
         .await
@@ -211,13 +225,30 @@ async fn service_with_two_workflows(ctx: &SecurityContext) -> Arc<ConcreteServic
             .await
             .expect("run seed must succeed");
     }
+
+    let tenant = ctx.subject_tenant_id();
+    SeaOrmSyncWriter::new(Arc::new(DBProvider::new(db)))
+        .write_actions_listing(
+            &AccessScope::for_tenant(tenant),
+            tenant,
+            ActionsListing {
+                workflows: vec![
+                    workflow_record(8, "Build", "build.yml"),
+                    workflow_record(9, "Release", "release.yml"),
+                    workflow_record(10, "Nightly", "nightly.yml"),
+                ],
+                ..ActionsListing::default()
+            },
+        )
+        .await
+        .expect("workflow seed must succeed");
     service
 }
 
 #[tokio::test]
-async fn workflows_are_built_from_stored_runs_under_their_latest_name() {
+async fn workflows_are_listed_as_github_returned_them() {
     let ctx = common::caller_in(Uuid::new_v4());
-    let service = service_with_two_workflows(&ctx).await;
+    let service = service_with_workflows(&ctx).await;
 
     let response = get(
         router_for(service, ctx),
@@ -227,21 +258,52 @@ async fn workflows_are_built_from_stored_runs_under_their_latest_name() {
 
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
-    assert_eq!(json["total_count"], 2);
+    assert_eq!(json["total_count"], 3);
     let workflows = json["workflows"].as_array().expect("workflows");
     assert_eq!(workflows[0]["id"], 8);
-    assert_eq!(
-        workflows[0]["name"], "Build",
-        "a renamed workflow shows its newest name"
-    );
-    assert_eq!(workflows[1]["id"], 9);
-    assert_eq!(workflows[1]["name"], "Release");
+    assert_eq!(workflows[0]["name"], "Build");
+    assert_eq!(workflows[0]["path"], ".github/workflows/build.yml");
+    assert_eq!(workflows[0]["state"], "active");
+    assert_eq!(workflows[2]["id"], 10);
+    assert_eq!(workflows[2]["name"], "Nightly");
+}
+
+#[tokio::test]
+async fn runs_of_a_workflow_can_be_asked_by_file_name() {
+    let ctx = common::caller_in(Uuid::new_v4());
+    let service = service_with_workflows(&ctx).await;
+
+    let response = get(
+        router_for(service, ctx),
+        "/repos/acme/widget/actions/workflows/build.yml/runs",
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["total_count"], 2);
+}
+
+#[tokio::test]
+async fn a_workflow_that_never_ran_has_no_runs() {
+    let ctx = common::caller_in(Uuid::new_v4());
+    let service = service_with_workflows(&ctx).await;
+
+    let response = get(
+        router_for(service, ctx),
+        "/repos/acme/widget/actions/workflows/10/runs",
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["total_count"], 0);
 }
 
 #[tokio::test]
 async fn runs_of_one_workflow_leave_the_others_out() {
     let ctx = common::caller_in(Uuid::new_v4());
-    let service = service_with_two_workflows(&ctx).await;
+    let service = service_with_workflows(&ctx).await;
     let router = router_for(service, ctx);
 
     let json = body_json(
@@ -263,6 +325,20 @@ async fn runs_of_one_workflow_leave_the_others_out() {
 }
 
 #[tokio::test]
+async fn runs_of_an_unknown_workflow_return_404() {
+    let ctx = common::caller_in(Uuid::new_v4());
+    let service = service_with_workflows(&ctx).await;
+
+    let response = get(
+        router_for(service, ctx),
+        "/repos/acme/widget/actions/workflows/77/runs",
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn workflows_of_unknown_repository_return_404() {
     let ctx = common::caller_in(Uuid::new_v4());
     let service = common::service("https://api.github.com").await;
@@ -277,7 +353,7 @@ async fn workflows_of_unknown_repository_return_404() {
 #[tokio::test]
 async fn workflows_are_tenant_scoped() {
     let owner = common::caller_in(Uuid::new_v4());
-    let service = service_with_two_workflows(&owner).await;
+    let service = service_with_workflows(&owner).await;
 
     let stranger = common::caller_in(Uuid::new_v4());
     let response = get(
