@@ -206,6 +206,24 @@ fn samples() -> Vec<(&'static str, Value, Value)> {
             json!({ "title": "Attention Is All You Need", "doi": "arXiv.1706.03762" }),
         ),
         (
+            "programming_languages",
+            json!({ "name": "Rust", "level": "advanced", "years": 4 }),
+            json!({ "name": "Rust", "level": "guru" }),
+        ),
+        (
+            "tools_and_frameworks",
+            json!({ "name": "Docker", "level": "intermediate" }),
+            json!({ "level": "intermediate" }),
+        ),
+        ("projects", json!("Atlas"), json!("  ")),
+        ("repositories", json!("gears-rust"), json!("")),
+        (
+            "development_environment",
+            json!("Neovim on Ubuntu"),
+            json!("  "),
+        ),
+        ("coding_conventions", json!("tests before code"), json!("")),
+        (
             "research_areas",
             json!({ "name": "Computational biology", "weight": 0.7 }),
             json!({ "name": "Computational biology", "weight": 1.5 }),
@@ -413,7 +431,9 @@ fn each_property_holds_one_value_unless_a_person_can_have_several() {
         "public_profiles",
         "assistive_tools",
         "communication_channel",
+        "coding_conventions",
         "current_focus_areas",
+        "development_environment",
         "focus_windows",
         "local_environment_constraint",
         "long_term_goals",
@@ -428,13 +448,17 @@ fn each_property_holds_one_value_unless_a_person_can_have_several() {
         "board_memberships",
         "group_memberships",
         "roles_and_affiliations",
+        "projects",
+        "repositories",
         "work_history",
         "activity_by_year",
         "awards",
         "languages",
+        "programming_languages",
         "publications",
         "research_areas",
         "skills",
+        "tools_and_frameworks",
     ]
     .into_iter()
     .collect();
