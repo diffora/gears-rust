@@ -24,7 +24,7 @@ patterns = ["gears/bss/libs"]
 
 [[ignore]]
 reason = "Ignore 'gears/bss/docs' — BSS-wide architecture decisions shared by the BSS gears (ADR/), not a module; each gear's own design set stays under gears/bss/$system/docs."
-patterns = ["gears/bss/docs", "gears/bss/docs/*"]
+patterns = ["gears/bss/docs"]
 
 [[ignore]]
 reason = "Ignore 'coord' shared utility library (distributed-lease primitive; infrastructure crate, not an SDLC-documented product module — no PRD/DESIGN required, README-documented)."
@@ -184,6 +184,26 @@ patterns = ["gears/bss/*/docs/design/*"]
 name = "cf-gears"
 slug = "cf"
 kit = "gears"
+
+[[systems.artifacts]]
+path = "docs/arch/bss-commercial-model/PRD.md"
+kind = "PRD"
+traceability = "DOCS-ONLY"
+
+[[systems.artifacts]]
+path = "docs/arch/bss-commercial-model/DESIGN.md"
+kind = "DESIGN"
+traceability = "DOCS-ONLY"
+
+[[systems.artifacts]]
+path = "gears/bss/docs/ADR/0002-cpt-cf-bss-adr-commercial-ownership-tenant-rbac.md"
+kind = "ADR"
+traceability = "DOCS-ONLY"
+
+[[systems.artifacts]]
+path = "gears/bss/docs/ADR/0003-cpt-cf-bss-adr-multi-tier-resale-model.md"
+kind = "ADR"
+traceability = "DOCS-ONLY"
 
 [[systems.autodetect]]
 kit = "gears"
