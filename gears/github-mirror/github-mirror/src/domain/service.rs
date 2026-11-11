@@ -8,10 +8,10 @@ use authz_resolver_sdk::PolicyEnforcer;
 use authz_resolver_sdk::pep::{AccessRequest, ResourceType};
 use chrono::{DateTime, Utc};
 use github_mirror_sdk::{
-    Branch, CheckRun, Comment, Commit, CommitComment, CommitFile, CommitStatus, Contributor,
-    Deployment, Issue, IssueEvent, IssueReaction, IssueTimelineEvent, Label, Milestone,
-    MirrorStatus, PullRequest, PullRequestCommit, PullRequestFile, Release, Repo, Review,
-    ReviewComment, ReviewThread, SyncSummary, Tag, WorkflowJob, WorkflowRun,
+    Artifact, Branch, CheckRun, Comment, Commit, CommitComment, CommitFile, CommitStatus,
+    Contributor, Deployment, Issue, IssueEvent, IssueReaction, IssueTimelineEvent, Label,
+    Milestone, MirrorStatus, PullRequest, PullRequestCommit, PullRequestFile, Release, Repo,
+    Review, ReviewComment, ReviewThread, SyncSummary, Tag, Workflow, WorkflowJob, WorkflowRun,
 };
 use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
@@ -27,8 +27,8 @@ use super::ports::github::{
 };
 use super::ports::telemetry_sink::TelemetrySink;
 use super::repo::{
-    ActiveSyncRecord, ActiveSyncRepository, BranchRecord, BranchRepository, CheckRunRecord,
-    CheckRunRepository, CommentRecord, CommentRepository, CommitCommentRecord,
+    ActiveSyncRecord, ActiveSyncRepository, ArtifactRepository, BranchRecord, BranchRepository,
+    CheckRunRecord, CheckRunRepository, CommentRecord, CommentRepository, CommitCommentRecord,
     CommitCommentRepository, CommitFileRecord, CommitFileRepository, CommitRecord,
     CommitRepository, CommitStatusRecord, CommitStatusRepository, ContributorRecord,
     ContributorRepository, ConversationComments, ConversationRepository, DeploymentRecord,
@@ -42,7 +42,8 @@ use super::repo::{
     ReviewCommentRecord, ReviewCommentRepository, ReviewRecord, ReviewRepository,
     ReviewThreadRecord, ReviewThreadRepository, SessionStatus, SyncSessionRecord,
     SyncSessionRepository, SyncWatermarkRepository, SyncWriter, TagRecord, TagRepository,
-    WorkflowJobRecord, WorkflowJobRepository, WorkflowRunRecord, WorkflowRunRepository,
+    WorkflowJobRecord, WorkflowJobRepository, WorkflowRepository, WorkflowRunRecord,
+    WorkflowRunRepository,
 };
 use super::scope::ScopeConfig;
 use super::sync::conversations::{self, group_conversations};
@@ -404,6 +405,12 @@ pub(crate) const DEPLOYMENT_RESOURCE: ResourceType = ResourceType::from_static(
     &[pep_properties::OWNER_TENANT_ID, pep_properties::RESOURCE_ID],
 );
 
+/// Authorization resource type `github_mirror.artifact` (the mirrored workflow artifact).
+pub(crate) const ARTIFACT_RESOURCE: ResourceType = ResourceType::from_static(
+    "github_mirror.artifact",
+    &[pep_properties::OWNER_TENANT_ID, pep_properties::RESOURCE_ID],
+);
+
 /// Authorization resource type `github_mirror.pull_request_commit` (the mirrored pull request commit).
 pub(crate) const PULL_REQUEST_COMMIT_RESOURCE: ResourceType = ResourceType::from_static(
     "github_mirror.pull_request_commit",
@@ -674,6 +681,8 @@ pub struct Service {
     commit_comments: Arc<dyn CommitCommentRepository>,
     issue_events: Arc<dyn IssueEventRepository>,
     deployments: Arc<dyn DeploymentRepository>,
+    artifacts: Arc<dyn ArtifactRepository>,
+    workflows: Arc<dyn WorkflowRepository>,
     pull_request_commits: Arc<dyn PullRequestCommitRepository>,
     commit_statuses: Arc<dyn CommitStatusRepository>,
     workflow_jobs: Arc<dyn WorkflowJobRepository>,
@@ -884,6 +893,8 @@ impl Clone for Service {
             commit_comments: Arc::clone(&self.commit_comments),
             issue_events: Arc::clone(&self.issue_events),
             deployments: Arc::clone(&self.deployments),
+            artifacts: Arc::clone(&self.artifacts),
+            workflows: Arc::clone(&self.workflows),
             pull_request_commits: Arc::clone(&self.pull_request_commits),
             commit_statuses: Arc::clone(&self.commit_statuses),
             workflow_jobs: Arc::clone(&self.workflow_jobs),
@@ -941,6 +952,8 @@ impl Service {
         commit_comments: Arc<dyn CommitCommentRepository>,
         issue_events: Arc<dyn IssueEventRepository>,
         deployments: Arc<dyn DeploymentRepository>,
+        artifacts: Arc<dyn ArtifactRepository>,
+        workflows: Arc<dyn WorkflowRepository>,
         pull_request_commits: Arc<dyn PullRequestCommitRepository>,
         commit_statuses: Arc<dyn CommitStatusRepository>,
         workflow_jobs: Arc<dyn WorkflowJobRepository>,
@@ -985,6 +998,8 @@ impl Service {
             commit_comments,
             issue_events,
             deployments,
+            artifacts,
+            workflows,
             pull_request_commits,
             commit_statuses,
             workflow_jobs,
@@ -1151,6 +1166,12 @@ impl Service {
             .find_by_sha(&scope, repository.id, sha)
             .await?
             .ok_or(DomainError::NotFound)
+    }
+
+    /// GitHub API base URL the mirror reads from (`https://api.github.com` or a GitHub Enterprise `/api/v3` URL).
+    #[must_use]
+    pub fn api_base_url(&self) -> &str {
+        &self.config.api_base_url
     }
 
     #[must_use]
@@ -1566,6 +1587,35 @@ impl Service {
         let items = self
             .comments
             .list_by_issue(&scope, repository.id, issue_number, window)
+            .await?;
+
+        Ok(Page::new(
+            items,
+            PageInfo {
+                next_cursor: None,
+                prev_cursor: None,
+                limit: window.limit(),
+            },
+        ))
+    }
+
+    /// # Errors
+    /// `NotFound` when the repository is not mirrored; `Forbidden`/`Database`
+    /// as usual.
+    pub async fn list_repo_comments(
+        &self,
+        ctx: &SecurityContext,
+        owner: &str,
+        name: &str,
+        window: PageWindow,
+        filter: ListingFilter,
+    ) -> Result<Page<Comment>, DomainError> {
+        let (scope, repo_id) = self
+            .mirrored_repository(ctx, &COMMENT_RESOURCE, owner, name)
+            .await?;
+        let items = self
+            .comments
+            .list_by_repo(&scope, repo_id, window, filter)
             .await?;
 
         Ok(Page::new(
@@ -2231,11 +2281,65 @@ impl Service {
         name: &str,
         window: PageWindow,
     ) -> Result<(Page<WorkflowRun>, u64), DomainError> {
+        self.workflow_runs_page(ctx, owner, name, None, window)
+            .await
+    }
+
+    /// # Errors
+    /// `NotFound` when the repository is not mirrored or has no such workflow;
+    /// `Forbidden`/`Database` as usual.
+    pub async fn list_workflow_runs_of_workflow(
+        &self,
+        ctx: &SecurityContext,
+        owner: &str,
+        name: &str,
+        workflow: &str,
+        window: PageWindow,
+    ) -> Result<(Page<WorkflowRun>, u64), DomainError> {
+        self.workflow_runs_page(ctx, owner, name, Some(workflow), window)
+            .await
+    }
+
+    /// # Errors
+    /// `NotFound` when the repository is not mirrored; `Forbidden`/`Database`
+    /// as usual.
+    pub async fn list_workflows(
+        &self,
+        ctx: &SecurityContext,
+        owner: &str,
+        name: &str,
+        window: PageWindow,
+    ) -> Result<(Page<Workflow>, u64), DomainError> {
+        let (scope, repo_id) = self
+            .mirrored_repository(ctx, &WORKFLOW_RUN_RESOURCE, owner, name)
+            .await?;
+        let (items, total) = self.workflows.page_by_repo(&scope, repo_id, window).await?;
+
+        Ok((
+            Page::new(
+                items,
+                PageInfo {
+                    next_cursor: None,
+                    prev_cursor: None,
+                    limit: window.limit(),
+                },
+            ),
+            total,
+        ))
+    }
+
+    async fn mirrored_repository(
+        &self,
+        ctx: &SecurityContext,
+        resource: &ResourceType,
+        owner: &str,
+        name: &str,
+    ) -> Result<(AccessScope, i64), DomainError> {
         let scope = self
             .policy_enforcer
             .access_scope_with(
                 ctx,
-                &WORKFLOW_RUN_RESOURCE,
+                resource,
                 actions::LIST,
                 None,
                 &AccessRequest::new()
@@ -2250,12 +2354,31 @@ impl Service {
             .await?
             .ok_or(DomainError::NotFound)?;
 
+        Ok((scope, repository.id))
+    }
+
+    async fn workflow_runs_page(
+        &self,
+        ctx: &SecurityContext,
+        owner: &str,
+        name: &str,
+        workflow: Option<&str>,
+        window: PageWindow,
+    ) -> Result<(Page<WorkflowRun>, u64), DomainError> {
+        let (scope, repo_id) = self
+            .mirrored_repository(ctx, &WORKFLOW_RUN_RESOURCE, owner, name)
+            .await?;
+        let workflow_id = match workflow {
+            Some(workflow) => Some(self.mirrored_workflow_id(&scope, repo_id, workflow).await?),
+            None => None,
+        };
+
         // Both statements run on one transaction, and on the scope and
         // repository already resolved above: the total describes the page it
         // is returned with, and one policy evaluation covers both.
         let (items, total) = self
             .workflow_runs
-            .page_by_repo(&scope, repository.id, window)
+            .page_by_repo(&scope, repo_id, workflow_id, window)
             .await?;
 
         Ok((
@@ -2269,6 +2392,23 @@ impl Service {
             ),
             total,
         ))
+    }
+
+    async fn mirrored_workflow_id(
+        &self,
+        scope: &AccessScope,
+        repo_id: i64,
+        workflow: &str,
+    ) -> Result<i64, DomainError> {
+        let found = match workflow.parse::<i64>() {
+            Ok(id) => self.workflows.find_by_id(scope, repo_id, id).await?,
+            Err(_) => {
+                self.workflows
+                    .find_by_path(scope, repo_id, &format!(".github/workflows/{workflow}"))
+                    .await?
+            }
+        };
+        found.map(|w| w.id).ok_or(DomainError::NotFound)
     }
 
     /// Insert or update a mirrored workflow-run row for the caller's tenant.
@@ -2900,6 +3040,34 @@ impl Service {
             ..record
         };
         self.deployments.upsert(&scope, tenant_id, record).await
+    }
+
+    /// # Errors
+    /// `NotFound` when the repository is not mirrored; `Forbidden`/`Database`
+    /// as usual.
+    pub async fn list_artifacts(
+        &self,
+        ctx: &SecurityContext,
+        owner: &str,
+        name: &str,
+        window: PageWindow,
+    ) -> Result<(Page<Artifact>, u64), DomainError> {
+        let (scope, repo_id) = self
+            .mirrored_repository(ctx, &ARTIFACT_RESOURCE, owner, name)
+            .await?;
+        let (items, total) = self.artifacts.page_by_repo(&scope, repo_id, window).await?;
+
+        Ok((
+            Page::new(
+                items,
+                PageInfo {
+                    next_cursor: None,
+                    prev_cursor: None,
+                    limit: window.limit(),
+                },
+            ),
+            total,
+        ))
     }
 
     /// List the mirrored commits of one pull request, tenant-scoped,

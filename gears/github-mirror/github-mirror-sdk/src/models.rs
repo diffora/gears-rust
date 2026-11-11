@@ -213,6 +213,7 @@ pub struct Commit {
     pub committed_at: Option<String>,
     pub additions: i64,
     pub deletions: i64,
+    pub html_url: Option<String>,
 }
 
 /// One count gap verification gave up on: GitHub declared more children for a
@@ -253,6 +254,7 @@ pub struct SyncSummary {
     pub commit_comments_synced: u64,
     pub issue_events_synced: u64,
     pub deployments_synced: u64,
+    pub artifacts_synced: u64,
     pub pull_request_commits_synced: u64,
     pub commit_statuses_synced: u64,
     pub workflow_jobs_synced: u64,
@@ -473,6 +475,33 @@ pub struct WorkflowRun {
     pub updated_at: String,
     pub html_url: Option<String>,
     pub actor_login: Option<String>,
+}
+
+/// A mirrored GitHub Actions workflow definition (read-slice shape).
+#[domain_model]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Workflow {
+    pub id: i64,
+    pub name: String,
+    pub path: String,
+    pub state: String,
+}
+
+/// A mirrored GitHub Actions artifact (read-slice shape).
+#[domain_model]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Artifact {
+    pub id: i64,
+    pub repo_id: i64,
+    pub name: String,
+    pub size_in_bytes: i64,
+    pub expired: bool,
+    pub workflow_run_id: Option<i64>,
+    pub head_branch: Option<String>,
+    pub head_sha: Option<String>,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+    pub expires_at: Option<String>,
 }
 
 /// A mirrored changed file of one pull request (read-slice shape).
@@ -719,6 +748,7 @@ pub struct PullRequestCommit {
     pub committer_login: Option<String>,
     pub authored_at: Option<String>,
     pub committed_at: Option<String>,
+    pub html_url: Option<String>,
 }
 
 /// A mirrored commit status: one external check reported against a commit

@@ -977,6 +977,22 @@ async fn fetch_repository_maps_github_payloads_into_records() {
     server
         .mock_async(|when, then| {
             when.method("GET")
+                .path("/repos/rust-lang/rust/actions/workflows");
+            then.status(200)
+                .json_body(json!({ "total_count": 0, "workflows": [] }));
+        })
+        .await;
+    server
+        .mock_async(|when, then| {
+            when.method("GET")
+                .path("/repos/rust-lang/rust/actions/artifacts");
+            then.status(200)
+                .json_body(json!({ "total_count": 0, "artifacts": [] }));
+        })
+        .await;
+    server
+        .mock_async(|when, then| {
+            when.method("GET")
                 .path("/repos/rust-lang/rust/actions/runs/81/jobs");
             then.status(200).json_body(gh_workflow_jobs_json());
         })
