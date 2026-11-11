@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use authz_resolver_sdk::PolicyEnforcer;
@@ -8,7 +9,7 @@ use toolkit_security::{SecurityContext, pep_properties};
 use uuid::Uuid;
 
 use super::agent::AgentMessage;
-use super::processing::{Managed, NothingStored, Processing};
+use super::processing::{ManageDeadlines, Managed, NothingStored, Processing};
 use crate::domain::error::DomainError;
 
 pub(crate) const SUBJECT_FACTS_RESOURCE: ResourceType = ResourceType::from_static(
@@ -20,22 +21,64 @@ pub(crate) mod actions {
     pub const MANAGE: &str = "manage";
 }
 
+/// How long a manage-facts call may take from its start: the steps before the write, and the whole call, the write
+/// included.
+#[domain_model]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ManageBudget {
+    /// The profile read, the agent loop, the checks and Admission.
+    pub before_write: Duration,
+    /// The whole call, the write included.
+    pub answer: Duration,
+}
+
+impl ManageBudget {
+    /// The deadlines of a call that started at `start`.
+    #[must_use]
+    pub fn deadlines_from(self, start: Instant) -> ManageDeadlines {
+        ManageDeadlines {
+            before_write: start + self.before_write,
+            answer: start + self.answer,
+        }
+    }
+}
+
 /// The synchronous manage-facts operation: what a subject told an agent, decided and stored while the caller waits.
 #[domain_model]
 pub struct ManageFacts {
-    processing: Processing,
+    /// The chain record processing runs; none when the deployment does not configure processing.
+    processing: Option<Arc<Processing>>,
     policy_enforcer: PolicyEnforcer,
-    budget: Duration,
+    /// How long a call may take.
+    pub(crate) budget: ManageBudget,
 }
 
 impl ManageFacts {
-    /// `budget` bounds the steps before the write, so the answer fits the gateway's request timeout.
+    /// `budget` bounds the call, so the answer fits the gateway's request timeout.
     #[must_use]
-    pub fn new(processing: Processing, policy_enforcer: PolicyEnforcer, budget: Duration) -> Self {
+    pub fn new(
+        processing: Arc<Processing>,
+        policy_enforcer: PolicyEnforcer,
+        budget: ManageBudget,
+    ) -> Self {
         Self {
-            processing,
+            processing: Some(processing),
             policy_enforcer,
             budget,
+        }
+    }
+
+    /// Manage-facts for a deployment without record processing: a caller the platform lets act for the subject is
+    /// answered not configured.
+    #[must_use]
+    pub fn not_configured(policy_enforcer: PolicyEnforcer) -> Self {
+        Self {
+            processing: None,
+            policy_enforcer,
+            budget: ManageBudget {
+                before_write: Duration::ZERO,
+                answer: Duration::ZERO,
+            },
         }
     }
 
@@ -44,8 +87,8 @@ impl ManageFacts {
     ///
     /// # Errors
     ///
-    /// [`DomainError::Forbidden`] when the caller may not act for the subject, and the errors of
-    /// [`Processing::manage`].
+    /// [`DomainError::Forbidden`] when the caller may not act for the subject, not configured when the deployment does
+    /// not configure record processing, and the errors of [`Processing::manage`].
     ///
     /// @cpt-dod:cpt-cf-construct-dod-planner-manage-route:p1
     #[tracing::instrument(skip_all, fields(tenant_id = %ctx.subject_tenant_id(), subject_id = %subject_id))]
@@ -56,7 +99,7 @@ impl ManageFacts {
         message: String,
         conversation: String,
     ) -> Result<Managed, DomainError> {
-        let deadline = Instant::now() + self.budget;
+        let deadlines = self.budget.deadlines_from(Instant::now());
         if ctx.subject_id() != subject_id {
             return Err(DomainError::forbidden(format!(
                 "subject {} may not manage the facts of subject {subject_id} (tenant {})",
@@ -75,6 +118,11 @@ impl ManageFacts {
                 &AccessRequest::new().resource_property(pep_properties::OWNER_TENANT_ID, tenant_id),
             )
             .await?;
+        let Some(processing) = &self.processing else {
+            return Err(DomainError::NotConfigured(
+                "record processing is not configured".to_owned(),
+            ));
+        };
         if message.trim().is_empty() {
             return Ok(Managed::NothingStored(NothingStored::NoChange));
         }
@@ -85,8 +133,6 @@ impl ManageFacts {
             message,
             conversation,
         };
-        self.processing
-            .manage(ctx, &scope, &message, deadline)
-            .await
+        processing.manage(ctx, &scope, &message, deadlines).await
     }
 }

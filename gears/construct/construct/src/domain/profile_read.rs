@@ -378,6 +378,7 @@ pub(crate) fn read_failure(err: DomainError) -> DomainError {
         err @ (DomainError::Refused(_)
         | DomainError::NotVisible(_)
         | DomainError::Unavailable(_)
+        | DomainError::WriteUnknown(_)
         | DomainError::NotConfigured(_)
         | DomainError::NoSuchFact(_)
         | DomainError::NoSuchReviewRequest(_)

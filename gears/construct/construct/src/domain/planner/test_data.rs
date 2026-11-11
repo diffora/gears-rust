@@ -13,7 +13,8 @@ use uuid::Uuid;
 use super::agent::{AgentMessage, Planner, PlannerCaps};
 use super::catalog::PropertyCatalog;
 use super::processing::{
-    Managed, PlanWriter, Processing, ProcessingContexts, ProcessingPorts, ProfileSource, Written,
+    ManageDeadlines, Managed, PlanWriter, Processing, ProcessingContexts, ProcessingPorts,
+    ProfileSource, Written,
 };
 use crate::domain::admission::{Admission, AdmissionPorts, AdmissionRules};
 use crate::domain::error::DomainError;
@@ -235,6 +236,7 @@ impl ProfileSource for Profiles {
 pub(super) struct Writer {
     pub(super) answers: Mutex<VecDeque<Result<Written, ()>>>,
     pub(super) plans: Mutex<Vec<Plan>>,
+    pub(super) deadlines: Mutex<Vec<Instant>>,
     pub(super) takes: Duration,
 }
 
@@ -243,6 +245,7 @@ impl Writer {
         Arc::new(Self {
             answers: Mutex::new(answers.iter().copied().collect()),
             plans: Mutex::default(),
+            deadlines: Mutex::default(),
             takes: Duration::ZERO,
         })
     }
@@ -250,11 +253,22 @@ impl Writer {
     pub(super) fn plans(&self) -> Vec<Plan> {
         self.plans.lock().expect("lock").clone()
     }
+
+    /// The deadline of every write, in order.
+    pub(super) fn deadlines(&self) -> Vec<Instant> {
+        self.deadlines.lock().expect("lock").clone()
+    }
 }
 
 #[async_trait]
 impl PlanWriter for Writer {
-    async fn write(&self, _: &SecurityContext, plan: &Plan) -> Result<Written, DomainError> {
+    async fn write_by(
+        &self,
+        _: &SecurityContext,
+        plan: &Plan,
+        deadline: Instant,
+    ) -> Result<Written, DomainError> {
+        self.deadlines.lock().expect("lock").push(deadline);
         tokio::time::sleep(self.takes).await;
         self.plans.lock().expect("lock").push(plan.clone());
         let mut answers = self.answers.lock().expect("lock");
@@ -304,19 +318,20 @@ impl Chain {
         self.processing().process(record).await;
     }
 
-    pub(super) async fn manage(&self, deadline: Instant) -> Result<Managed, DomainError> {
-        self.manage_as(processing_context(TENANT).1, deadline).await
+    pub(super) async fn manage(&self, deadlines: ManageDeadlines) -> Result<Managed, DomainError> {
+        self.manage_as(processing_context(TENANT).1, deadlines)
+            .await
     }
 
     /// A manage-facts call by an agent whose scope is `scope`.
     pub(super) async fn manage_as(
         &self,
         scope: AccessScope,
-        deadline: Instant,
+        deadlines: ManageDeadlines,
     ) -> Result<Managed, DomainError> {
         let (ctx, _) = processing_context(TENANT);
         self.processing()
-            .manage(&ctx, &scope, &agent_message(), deadline)
+            .manage(&ctx, &scope, &agent_message(), deadlines)
             .await
     }
 

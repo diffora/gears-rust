@@ -31,6 +31,11 @@ pub enum DomainError {
     #[error("Service unavailable: {0}")]
     Unavailable(String),
 
+    /// A write was sent and its result is unknown: it may have been stored.
+    /// Answered as unavailable, with a detail that says so.
+    #[error("Write result unknown: {0}")]
+    WriteUnknown(String),
+
     /// The deployment does not configure what the call needs, such as the
     /// processing identity. Not cured by a retry, so it is not `Unavailable`.
     #[error("Not configured: {0}")]
