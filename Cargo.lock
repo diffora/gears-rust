@@ -2915,6 +2915,7 @@ dependencies = [
  "cf-gears-bss-rate-provider-http-json-plugin",
  "cf-gears-clickhouse-usage-collector-plugin",
  "cf-gears-cluster",
+ "cf-gears-construct",
  "cf-gears-credstore",
  "cf-gears-event-broker",
  "cf-gears-file-parser",
