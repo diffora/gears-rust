@@ -14,11 +14,11 @@ use std::sync::Arc;
 
 use common::{
     create_root_group, create_root_type, make_ctx, make_group_service, make_membership_service,
-    make_membership_service_deny, make_membership_service_tenant_scoped, make_type_service,
-    test_db,
+    make_membership_service_deny, make_type_service, test_db,
 };
 use resource_group::domain::error::DomainError;
-use resource_group::domain::membership_service::MembershipService;
+use resource_group::domain::membership_service::{MembershipService, RG_MEMBERSHIP_RESOURCE};
+use resource_group::domain::repo::{MembershipRepositoryTrait, TypeRepositoryTrait};
 use resource_group::infra::storage::group_repo::GroupRepository;
 use resource_group::infra::storage::membership_repo::MembershipRepository;
 use resource_group::infra::storage::type_repo::TypeRepository;
@@ -26,6 +26,7 @@ use resource_group_sdk::CreateTypeRequest;
 use toolkit_db::{DBProvider, DbError};
 use toolkit_gts::GTS_ID_PREFIX;
 use toolkit_odata::ODataQuery;
+use toolkit_security::{AccessScope, pep_properties};
 use uuid::Uuid;
 
 type MbrSvc = MembershipService<GroupRepository, TypeRepository, MembershipRepository>;
@@ -33,13 +34,15 @@ type MbrSvc = MembershipService<GroupRepository, TypeRepository, MembershipRepos
 struct Fixture {
     db: Arc<DBProvider<DbError>>,
     member_type: String,
+    grp_code: String,
     tenant_a: Uuid,
     tenant_b: Uuid,
     group_a: Uuid,
     group_b: Uuid,
-    /// Tenant-scoping service (the one under test).
+    /// Service under test: the PDP permits and scopes to the caller's tenant.
     scoped: MbrSvc,
-    /// Allow-all service used for seeding and for unscoped verification.
+    /// Used only through its `*_unscoped` methods, which skip the PDP, for
+    /// seeding and for verifying what is stored.
     seed: MbrSvc,
 }
 
@@ -49,7 +52,7 @@ async fn setup() -> Fixture {
     let type_svc = make_type_service(db.clone());
     let group_svc = make_group_service(db.clone());
     let seed = make_membership_service(db.clone());
-    let scoped = make_membership_service_tenant_scoped(db.clone());
+    let scoped = make_membership_service(db.clone());
 
     let member_type = create_root_type(&type_svc, "isombr").await;
     let grp_code = format!(
@@ -86,6 +89,7 @@ async fn setup() -> Fixture {
     Fixture {
         db,
         member_type: member_type.code,
+        grp_code,
         tenant_a,
         tenant_b,
         group_a,
@@ -156,31 +160,68 @@ async fn list_with_filter_on_foreign_group_is_empty() {
     assert_eq!(page.items.len(), 1, "owner still sees its own row");
 }
 
+/// Groups are created alternating B1, A1, B2, A2, B3, A3, so the newest group
+/// (first in the default `group_id DESC` order) belongs to tenant A. Each
+/// group holds one membership, so keyset pagination on `group_id` is well
+/// defined. Paging as tenant B must yield exactly B's rows, and no page may
+/// contain a row of A.
 #[tokio::test]
-async fn list_with_page_limit_stays_within_tenant() {
+async fn paging_as_tenant_b_never_returns_tenant_a_rows() {
     let f = setup().await;
+    let group_svc = make_group_service(f.db.clone());
+
+    let mut expected_b = vec![(f.group_b, "res-b".to_owned())];
+    let mut rows_a = vec![(f.group_a, "res-a".to_owned())];
     for i in 0..3 {
-        f.scoped
-            .add_membership(
-                &make_ctx(f.tenant_b),
-                f.group_b,
-                &f.member_type,
-                &format!("extra-{i}"),
+        for (tenant, rows) in [(f.tenant_b, &mut expected_b), (f.tenant_a, &mut rows_a)] {
+            let group = create_root_group(
+                &group_svc,
+                &make_ctx(tenant),
+                &f.grp_code,
+                &format!("G{i}"),
+                tenant,
             )
-            .await
-            .expect("add own membership");
+            .await;
+            let res_id = format!("res-{tenant}-{i}");
+            f.seed
+                .add_membership_unscoped(group.id, &f.member_type, &res_id)
+                .await
+                .expect("seed membership");
+            rows.push((group.id, res_id));
+        }
     }
-    let first = f
-        .scoped
-        .list_memberships(&make_ctx(f.tenant_b), &ODataQuery::default().with_limit(2))
-        .await
-        .expect("first page");
-    assert_eq!(first.items.len(), 2);
-    assert!(first.items.iter().all(|m| m.group_id == f.group_b));
-    assert!(
-        first.page_info.next_cursor.is_some(),
-        "tenant B has more rows than the page limit"
-    );
+
+    let mut collected = Vec::new();
+    let mut query = ODataQuery::default().with_limit(2);
+    let mut pages = 0;
+    loop {
+        let page = f
+            .scoped
+            .list_memberships(&make_ctx(f.tenant_b), &query)
+            .await
+            .expect("page as B");
+        pages += 1;
+        for m in &page.items {
+            assert!(
+                !rows_a.iter().any(|(g, _)| *g == m.group_id),
+                "page contained a row of tenant A: {m:?}"
+            );
+            collected.push((m.group_id, m.resource_id.clone()));
+        }
+        match page.page_info.next_cursor {
+            Some(cursor) => {
+                query = ODataQuery::default()
+                    .with_limit(2)
+                    .with_cursor(toolkit_odata::CursorV1::decode(&cursor).expect("cursor"));
+            }
+            None => break,
+        }
+        assert!(pages < 10, "paging must terminate");
+    }
+
+    collected.sort();
+    expected_b.sort();
+    assert_eq!(collected, expected_b);
 }
 
 #[tokio::test]
@@ -224,6 +265,7 @@ async fn add_into_foreign_group_looks_like_missing_group() {
 async fn remove_foreign_membership_looks_like_missing_membership() {
     let f = setup().await;
     let ctx_b = make_ctx(f.tenant_b);
+    let missing_group = Uuid::now_v7();
 
     let foreign = f
         .scoped
@@ -235,15 +277,30 @@ async fn remove_foreign_membership_looks_like_missing_membership() {
         .remove_membership(&ctx_b, f.group_b, &f.member_type, "no-such-resource")
         .await
         .expect_err("remove missing membership must fail");
+    let no_group = f
+        .scoped
+        .remove_membership(&ctx_b, missing_group, &f.member_type, "res-x")
+        .await
+        .expect_err("remove from nonexistent group must fail");
 
-    assert!(
-        matches!(foreign, DomainError::MembershipNotFound { .. }),
-        "got: {foreign:?}"
-    );
-    assert!(
-        matches!(missing, DomainError::MembershipNotFound { .. }),
-        "got: {missing:?}"
-    );
+    for err in [&foreign, &missing, &no_group] {
+        assert!(
+            matches!(err, DomainError::MembershipNotFound { .. }),
+            "got: {err:?}"
+        );
+    }
+
+    // Rendered messages are equal once the ids the caller itself sent are masked.
+    let mask = |err: &DomainError, group: Uuid, res: &str| {
+        err.to_string()
+            .replace(&group.to_string(), "<group>")
+            .replace(res, "<res>")
+    };
+    let foreign_msg = mask(&foreign, f.group_a, "res-a");
+    let missing_msg = mask(&missing, f.group_b, "no-such-resource");
+    let no_group_msg = mask(&no_group, missing_group, "res-x");
+    assert_eq!(foreign_msg, missing_msg);
+    assert_eq!(foreign_msg, no_group_msg);
 
     let all = list_all_unscoped(&f).await;
     assert!(
@@ -285,6 +342,8 @@ async fn owner_can_add_list_and_remove_in_own_group() {
     }
 }
 
+/// Covers the PDP gate only: a denying PDP rejects every operation. The scope
+/// path is covered by the repository-level tests below.
 #[tokio::test]
 async fn deny_all_pdp_rejects_list_add_and_remove() {
     let f = setup().await;
@@ -321,18 +380,149 @@ async fn deny_all_pdp_rejects_list_add_and_remove() {
     assert_eq!(list_all_unscoped(&f).await.len(), 2);
 }
 
+/// The unscoped paths skip the PDP: a service wired with a denying PDP still
+/// seeds any tenant's group and lists every tenant's rows.
 #[tokio::test]
-async fn add_unscoped_works_for_any_tenants_group() {
+async fn unscoped_paths_work_under_deny_all_pdp() {
     let f = setup().await;
-    f.scoped
-        .add_membership_unscoped(f.group_a, &f.member_type, "seed-a")
+    let deny = make_membership_service_deny(f.db.clone());
+
+    deny.add_membership_unscoped(f.group_a, &f.member_type, "seed-a")
         .await
         .expect("unscoped add into A");
-    f.scoped
-        .add_membership_unscoped(f.group_b, &f.member_type, "seed-b")
+    deny.add_membership_unscoped(f.group_b, &f.member_type, "seed-b")
         .await
         .expect("unscoped add into B");
-    let all = list_all_unscoped(&f).await;
-    assert!(all.contains(&(f.group_a, "seed-a".to_owned())));
-    assert!(all.contains(&(f.group_b, "seed-b".to_owned())));
+
+    let page = deny
+        .list_memberships_unscoped(&ODataQuery::default())
+        .await
+        .expect("unscoped list");
+    let rows: Vec<(Uuid, String)> = page
+        .items
+        .into_iter()
+        .map(|m| (m.group_id, m.resource_id))
+        .collect();
+    for expected in [
+        (f.group_a, "res-a"),
+        (f.group_b, "res-b"),
+        (f.group_a, "seed-a"),
+        (f.group_b, "seed-b"),
+    ] {
+        assert!(rows.contains(&(expected.0, expected.1.to_owned())));
+    }
+}
+
+// -- Repository level: the scope is applied through the owning group --
+
+async fn type_id(f: &Fixture) -> i16 {
+    let conn = f.db.conn().expect("conn");
+    TypeRepository
+        .resolve_id(&conn, &f.member_type)
+        .await
+        .expect("resolve")
+        .expect("type exists")
+}
+
+#[tokio::test]
+async fn repo_list_under_deny_all_scope_is_empty() {
+    let f = setup().await;
+    let conn = f.db.conn().expect("conn");
+    let page = MembershipRepository
+        .list_memberships(&conn, &AccessScope::deny_all(), &ODataQuery::default())
+        .await
+        .expect("list");
+    assert!(page.items.is_empty());
+}
+
+#[tokio::test]
+async fn repo_delete_under_deny_all_scope_deletes_nothing() {
+    let f = setup().await;
+    let conn = f.db.conn().expect("conn");
+    let deleted = MembershipRepository
+        .delete(
+            &conn,
+            &AccessScope::deny_all(),
+            f.group_a,
+            type_id(&f).await,
+            "res-a",
+        )
+        .await
+        .expect("delete");
+    assert_eq!(deleted, 0);
+    assert!(
+        list_all_unscoped(&f)
+            .await
+            .contains(&(f.group_a, "res-a".to_owned()))
+    );
+}
+
+#[tokio::test]
+async fn repo_list_respects_tenant_scopes() {
+    let f = setup().await;
+    let conn = f.db.conn().expect("conn");
+    let query = ODataQuery::default();
+
+    let only_a = MembershipRepository
+        .list_memberships(&conn, &AccessScope::for_tenant(f.tenant_a), &query)
+        .await
+        .expect("list A");
+    assert_eq!(only_a.items.len(), 1);
+    assert_eq!(only_a.items[0].group_id, f.group_a);
+
+    let both = MembershipRepository
+        .list_memberships(
+            &conn,
+            &AccessScope::for_tenants(vec![f.tenant_a, f.tenant_b]),
+            &query,
+        )
+        .await
+        .expect("list both");
+    assert_eq!(both.items.len(), 2);
+}
+
+#[tokio::test]
+async fn repo_delete_respects_tenant_scopes() {
+    let f = setup().await;
+    let conn = f.db.conn().expect("conn");
+    let type_id = type_id(&f).await;
+
+    let by_b = MembershipRepository
+        .delete(
+            &conn,
+            &AccessScope::for_tenant(f.tenant_b),
+            f.group_a,
+            type_id,
+            "res-a",
+        )
+        .await
+        .expect("delete as B");
+    assert_eq!(by_b, 0, "B's scope must not reach A's row");
+    assert!(
+        list_all_unscoped(&f)
+            .await
+            .contains(&(f.group_a, "res-a".to_owned()))
+    );
+
+    let by_a = MembershipRepository
+        .delete(
+            &conn,
+            &AccessScope::for_tenant(f.tenant_a),
+            f.group_a,
+            type_id,
+            "res-a",
+        )
+        .await
+        .expect("delete as A");
+    assert_eq!(by_a, 1);
+}
+
+/// The scope helper reads the group entity, so the membership resource type
+/// must keep `owner_tenant_id` as its only property.
+#[test]
+fn membership_resource_declares_only_owner_tenant_id() {
+    assert_eq!(
+        RG_MEMBERSHIP_RESOURCE.supported_properties(),
+        &[pep_properties::OWNER_TENANT_ID]
+    );
 }

@@ -33,7 +33,7 @@ pub trait GroupRepositoryTrait: Send + Sync + 'static {
     ) -> Result<Option<rg_entity::Model>, DomainError>;
 
     /// Find the raw entity model by ID, visible under `scope`.
-    async fn find_model_by_id_in_scope<C: DBRunner>(
+    async fn find_model_by_id_scoped<C: DBRunner>(
         &self,
         db: &C,
         scope: &AccessScope,

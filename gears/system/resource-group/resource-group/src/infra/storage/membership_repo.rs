@@ -21,6 +21,9 @@ use super::odata_filter::prepare_filter;
 use crate::domain::error::DomainError;
 use crate::domain::repo::MembershipRepositoryTrait;
 use crate::infra::storage::FK_RGM_GROUP_ID;
+use crate::infra::storage::entity::resource_group::{
+    self as rg_entity, Entity as ResourceGroupEntity,
+};
 use crate::infra::storage::entity::resource_group_membership::{
     self as membership_entity, Entity as MembershipEntity,
 };
@@ -38,10 +41,13 @@ fn system_scope() -> AccessScope {
 }
 
 /// Ids of the groups visible under `scope`, as a subquery.
+///
+/// The scope was issued for the membership resource type and is compiled
+/// against the group entity here. This is sound only while that resource type
+/// declares `owner_tenant_id` as its sole property (see
+/// `RG_MEMBERSHIP_RESOURCE`), because a resource-id property would be read as
+/// a group id.
 fn groups_in_scope(scope: &AccessScope) -> sea_orm::sea_query::SelectStatement {
-    use crate::infra::storage::entity::resource_group::{
-        self as rg_entity, Entity as ResourceGroupEntity,
-    };
     use sea_orm::{QuerySelect, QueryTrait};
     ResourceGroupEntity::find()
         .secure()
@@ -243,9 +249,6 @@ impl MembershipRepositoryTrait for MembershipRepository {
         resource_id: &str,
         tenant_id: Uuid,
     ) -> Result<bool, DomainError> {
-        use crate::infra::storage::entity::resource_group::{
-            self as rg_entity, Entity as ResourceGroupEntity,
-        };
         use sea_orm::QuerySelect;
 
         let scope = system_scope();

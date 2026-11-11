@@ -143,7 +143,7 @@ impl<GR: GroupRepositoryTrait, TR: TypeRepositoryTrait, MR: MembershipRepository
         // exactly like a missing one, so this is not an existence oracle.
         let group_model = self
             .group_repo
-            .find_model_by_id_in_scope(&conn, scope, group_id)
+            .find_model_by_id_scoped(&conn, scope, group_id)
             .await?
             .ok_or(DomainError::GroupNotFound { id: group_id })?;
         // @cpt-end:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-4

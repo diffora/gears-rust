@@ -494,10 +494,10 @@ async fn trace_update_type() {
     );
 }
 
-/// `list_memberships`'s tenant scoping runs as a correlated EXISTS
-/// subquery embedded in the page's single `SELECT`, not a second round trip
-/// and not one subquery evaluation per row (the DB engine evaluates the
-/// EXISTS per candidate row server-side, inside one statement -- there is no
+/// `list_memberships`'s tenant scoping is applied as
+/// `group_id IN (subquery over resource_group)` inside the page's single
+/// `SELECT`, not a second round trip (the DB engine evaluates the
+/// subquery server-side, inside one statement -- there is no
 /// N+1 at the client/statement level, which is what this audit suite
 /// measures).
 #[tokio::test]
