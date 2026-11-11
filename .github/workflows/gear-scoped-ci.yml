@@ -216,15 +216,46 @@ jobs:
         with:
           submodules: recursive
 
+      # Own App budget, separate from the shared GITHUB_TOKEN pool (GitHub App per workflow family)
+      - name: Mint gears-rust-ci app token
+        id: app
+        # Unset variable, or a fork/Dependabot run without secrets: skip and fall back to GITHUB_TOKEN.
+        if: >-
+          vars.GEARS_CI_APP_CLIENT_ID != '' &&
+          github.actor != 'dependabot[bot]' &&
+          !github.event.pull_request.head.repo.fork
+        continue-on-error: true  # a bad key or missing install must never fail the job
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.GEARS_CI_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GEARS_CI_APP_PRIVATE_KEY }}
+          permission-contents: read
+          permission-pull-requests: read
+      - name: Report API token source
+        shell: bash
+        env:
+          APP_TOKEN_SET: ${{ steps.app.outputs.token != '' }}
+          MINT_OUTCOME: ${{ steps.app.outcome }}
+          API_TOKEN: ${{ steps.app.outputs.token || github.token }}
+        run: |
+          if [ "$APP_TOKEN_SET" = true ]; then src=gears-rust-ci; echo "::notice::GitHub API token: gears-rust-ci app"
+          elif [ "$MINT_OUTCOME" = failure ]; then src=github-token; echo "::warning::gears-rust-ci app token mint failed; using GITHUB_TOKEN"
+          else src=github-token; echo "::notice::GitHub API token: GITHUB_TOKEN (gears-rust-ci app not configured or fork run)"; fi
+          # GET /rate_limit is free; one sample per job gives a per-token time series (see the API limits plan).
+          core=$(curl -fsS -m 10 -H "Authorization: Bearer $API_TOKEN" -H "Accept: application/vnd.github+json" \
+            https://api.github.com/rate_limit 2>/dev/null | tr -d ' \n' | sed -n 's/.*"core":{\([^}]*\)}.*/\1/p' | tr -d '"' | tr ',' ' ' | sed 's/:/=/g') || true
+          echo "RATE-APP ts=$(date -u +%Y-%m-%dT%H:%M:%SZ) token=$src workflow=$GITHUB_WORKFLOW job=$GITHUB_JOB ${core:-unavailable}"
+
       - name: Install protoc
         if: runner.environment == 'github-hosted'
         uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          repo-token: ${{ steps.app.outputs.token || github.token }}
 
       - name: Install Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
+          token: ${{ steps.app.outputs.token || github.token }}
           go-version: '1.21.x'
           cache: false
 

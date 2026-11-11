@@ -44,11 +44,41 @@ jobs:
         with:
           fetch-depth: 1
 
+      # Own App budget, separate from the shared GITHUB_TOKEN pool (GitHub App per workflow family)
+      - name: Mint gears-rust-ci app token
+        id: app
+        # Unset variable, or a fork/Dependabot run without secrets: skip and fall back to GITHUB_TOKEN.
+        if: >-
+          vars.GEARS_CI_APP_CLIENT_ID != '' &&
+          github.actor != 'dependabot[bot]' &&
+          !github.event.pull_request.head.repo.fork
+        continue-on-error: true  # a bad key or missing install must never fail the job
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.GEARS_CI_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GEARS_CI_APP_PRIVATE_KEY }}
+          permission-contents: read
+          permission-pull-requests: read
+      - name: Report API token source
+        shell: bash
+        env:
+          APP_TOKEN_SET: ${{ steps.app.outputs.token != '' }}
+          MINT_OUTCOME: ${{ steps.app.outcome }}
+          API_TOKEN: ${{ steps.app.outputs.token || github.token }}
+        run: |
+          if [ "$APP_TOKEN_SET" = true ]; then src=gears-rust-ci; echo "::notice::GitHub API token: gears-rust-ci app"
+          elif [ "$MINT_OUTCOME" = failure ]; then src=github-token; echo "::warning::gears-rust-ci app token mint failed; using GITHUB_TOKEN"
+          else src=github-token; echo "::notice::GitHub API token: GITHUB_TOKEN (gears-rust-ci app not configured or fork run)"; fi
+          # GET /rate_limit is free; one sample per job gives a per-token time series (see the API limits plan).
+          core=$(curl -fsS -m 10 -H "Authorization: Bearer $API_TOKEN" -H "Accept: application/vnd.github+json" \
+            https://api.github.com/rate_limit 2>/dev/null | tr -d ' \n' | sed -n 's/.*"core":{\([^}]*\)}.*/\1/p' | tr -d '"' | tr ',' ' ' | sed 's/:/=/g') || true
+          echo "RATE-APP ts=$(date -u +%Y-%m-%dT%H:%M:%SZ) token=$src workflow=$GITHUB_WORKFLOW job=$GITHUB_JOB ${core:-unavailable}"
+
       - name: Select scan mode from changed files
         id: choose
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app.outputs.token || github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           IS_DRAFT: ${{ github.event.pull_request.draft }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -132,9 +162,39 @@ jobs:
           > codeql-rust-stub/Cargo.toml
         echo 'pub fn stub() {}' > codeql-rust-stub/lib.rs
 
+    - name: Mint gears-rust-ci app token
+      id: app
+      # Unset variable, or a fork/Dependabot run without secrets: skip and fall back to GITHUB_TOKEN.
+      if: >-
+        vars.GEARS_CI_APP_CLIENT_ID != '' &&
+        github.actor != 'dependabot[bot]' &&
+        !github.event.pull_request.head.repo.fork
+      continue-on-error: true  # a bad key or missing install must never fail the job
+      uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+      with:
+        client-id: ${{ vars.GEARS_CI_APP_CLIENT_ID }}
+        private-key: ${{ secrets.GEARS_CI_APP_PRIVATE_KEY }}
+        permission-security-events: write
+        permission-contents: read
+    - name: Report API token source
+      shell: bash
+      env:
+        APP_TOKEN_SET: ${{ steps.app.outputs.token != '' }}
+        MINT_OUTCOME: ${{ steps.app.outcome }}
+        API_TOKEN: ${{ steps.app.outputs.token || github.token }}
+      run: |
+        if [ "$APP_TOKEN_SET" = true ]; then src=gears-rust-ci; echo "::notice::GitHub API token: gears-rust-ci app"
+        elif [ "$MINT_OUTCOME" = failure ]; then src=github-token; echo "::warning::gears-rust-ci app token mint failed; using GITHUB_TOKEN"
+        else src=github-token; echo "::notice::GitHub API token: GITHUB_TOKEN (gears-rust-ci app not configured or fork run)"; fi
+        # GET /rate_limit is free; one sample per job gives a per-token time series (see the API limits plan).
+        core=$(curl -fsS -m 10 -H "Authorization: Bearer $API_TOKEN" -H "Accept: application/vnd.github+json" \
+          https://api.github.com/rate_limit 2>/dev/null | tr -d ' \n' | sed -n 's/.*"core":{\([^}]*\)}.*/\1/p' | tr -d '"' | tr ',' ' ' | sed 's/:/=/g') || true
+        echo "RATE-APP ts=$(date -u +%Y-%m-%dT%H:%M:%SZ) token=$src workflow=$GITHUB_WORKFLOW job=$GITHUB_JOB ${core:-unavailable}"
+
     - name: Initialize CodeQL
       uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
       with:
+        token: ${{ steps.app.outputs.token || github.token }}
         languages: ${{ matrix.language }}
         build-mode: none
         # Test code is ~46% of the Rust LOC and dominates query time. Applied to PR and
@@ -154,4 +214,5 @@ jobs:
     - name: Perform CodeQL Analysis
       uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
       with:
+        token: ${{ steps.app.outputs.token || github.token }}
         category: "/language:${{ matrix.language }}"
