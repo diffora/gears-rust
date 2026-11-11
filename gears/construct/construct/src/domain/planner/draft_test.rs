@@ -310,6 +310,32 @@ fn an_unknown_property_is_refused_with_the_known_ones() {
 }
 
 #[test]
+fn a_write_to_each_developer_property_is_accepted() {
+    let catalog = catalog();
+    let mut draft = PlanDraft::new(&catalog, profile());
+    let writes = [
+        ("projects", json!("Atlas")),
+        ("repositories", json!("https://github.com/acme/api")),
+        (
+            "programming_languages",
+            json!({ "name": "Rust", "level": "advanced" }),
+        ),
+        ("tools_and_frameworks", json!({ "name": "Docker" })),
+        ("development_environment", json!("Neovim on Ubuntu")),
+        ("coding_conventions", json!("tests before code")),
+    ];
+
+    for (property, value) in &writes {
+        draft
+            .apply(&add(property, value))
+            .unwrap_or_else(|refusal| panic!("{property}: {refusal:?}"));
+    }
+
+    let plan = draft.finish(TENANT, SUBJECT, origin());
+    assert_eq!(plan.steps.len(), writes.len());
+}
+
+#[test]
 fn a_value_that_breaks_the_property_schema_is_refused_with_the_schema() {
     let catalog = catalog();
     for (refused, property) in [

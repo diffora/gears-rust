@@ -38,10 +38,10 @@ use uuid::Uuid;
 /// A person's identity: names, external ids, public profiles, location, background.
 pub const IDENTITY_TYPE: &str =
     gts_id!("cf.core.graph.node.v1~cf.core.graph.owned_node.v1~cf.construct.person.identity.v1~");
-/// A person's roles: current role, education, programme, affiliations and work history.
+/// A person's roles: current role, education, programme, affiliations, work history, projects and repositories.
 pub const ROLE_TYPE: &str =
     gts_id!("cf.core.graph.node.v1~cf.core.graph.owned_node.v1~cf.construct.person.role.v1~");
-/// A person's skills: skills, languages, research areas, publications, awards and research metrics.
+/// A person's skills: skills, programming languages, tools and frameworks, languages, research areas, publications, awards and research metrics.
 pub const SKILL_TYPE: &str =
     gts_id!("cf.core.graph.node.v1~cf.core.graph.owned_node.v1~cf.construct.person.skill.v1~");
 /// How a person wants to be served: language, format, tone, accessibility, constraints and goals.
