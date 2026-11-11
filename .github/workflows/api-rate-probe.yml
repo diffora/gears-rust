@@ -1,8 +1,11 @@
 name: API rate probe
 
 # TEMPORARY (remove after ~2 weeks, by 2026-11-30): samples the shared
-# GITHUB_TOKEN REST budget (1,000/h per repo) so the burst at job start and the
-# effect of the fixes can be measured. GET /rate_limit itself is free.
+# GITHUB_TOKEN REST budget (5,000/h for this repository: rejected requests carry
+# x-ratelimit-limit: 5000) so the burst at job start and the effect of the
+# fixes can be measured. GET /rate_limit itself is free.
+# The RATE line is core; RATE-RES lines add graphql and search from the same
+# response. .github/scripts/api-rate-report.py probe collects the series.
 
 on:
   schedule:
@@ -35,3 +38,7 @@ jobs:
           line=$(jq -r '.resources.core | "RATE ts=\(now|todate) limit=\(.limit) used=\(.used) remaining=\(.remaining) reset=\(.reset|todate)"' <<<"$json")
           echo "$line"
           echo "$line" >> "$GITHUB_STEP_SUMMARY"
+          res=$(jq -r '(now|todate) as $ts | .resources as $r | ("graphql", "search") as $k
+            | $r[$k] | "RATE-RES ts=\($ts) resource=\($k) limit=\(.limit) used=\(.used) remaining=\(.remaining) reset=\(.reset|todate)"' <<<"$json")
+          echo "$res"
+          echo "$res" >> "$GITHUB_STEP_SUMMARY"

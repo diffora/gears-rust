@@ -207,7 +207,13 @@ jobs:
                   call("PATCH", f"{api}/check-runs/{run['id']}",
                        {"output": {"title": title[:250], "summary": run["output"]["summary"] or title}})
               except (urllib.error.URLError, TimeoutError) as exc:
-                  print(f"::warning::could not retitle check {name!r}: {exc}")
+                  # Keep the rate-limit headers: they tell primary from secondary limits.
+                  detail = ""
+                  if isinstance(exc, urllib.error.HTTPError):
+                      keys = ("x-ratelimit-limit", "x-ratelimit-remaining", "x-ratelimit-used",
+                              "x-ratelimit-reset", "x-ratelimit-resource", "retry-after")
+                      detail = " " + " ".join(f"{k}={exc.headers.get(k)}" for k in keys if exc.headers.get(k))
+                  print(f"::warning::could not retitle check {name!r}: {exc}{detail}")
                   continue
               print(f"{name}: {title}")
 
