@@ -212,21 +212,21 @@ impl From<OriginKind> for OriginKindDto {
 /// Who a fact came from.
 #[derive(Debug)]
 #[toolkit_macros::api_dto(response)]
-pub struct OriginDto {
+pub struct FactOriginDto {
     pub kind: OriginKindDto,
 }
 
 /// A category of a person's profile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[toolkit_macros::api_dto(response)]
-pub enum EntityKindDto {
+pub enum ProfileEntityKindDto {
     Identity,
     Role,
     Skill,
     Preference,
 }
 
-impl From<Category> for EntityKindDto {
+impl From<Category> for ProfileEntityKindDto {
     fn from(category: Category) -> Self {
         match category {
             Category::Identity => Self::Identity,
@@ -250,7 +250,7 @@ pub struct ProfileFactDto {
     /// The property's value: a string, or an object for a property with
     /// fields, such as `{"name": "Rust"}` for a skill.
     pub value: serde_json::Value,
-    pub origin: OriginDto,
+    pub origin: FactOriginDto,
     #[serde(with = "time::serde::rfc3339")]
     #[schema(value_type = String, format = DateTime)]
     pub stored_at: OffsetDateTime,
@@ -264,7 +264,7 @@ pub struct ProfileFactDto {
 #[derive(Debug)]
 #[toolkit_macros::api_dto(response)]
 pub struct ProfileCategoryDto {
-    pub entity_kind: EntityKindDto,
+    pub entity_kind: ProfileEntityKindDto,
     pub facts: Vec<ProfileFactDto>,
 }
 
@@ -286,7 +286,7 @@ impl From<StoredFact> for ProfileFactDto {
             fact_id: fact.node_key.0,
             property: fact.property,
             value: fact.value,
-            origin: OriginDto {
+            origin: FactOriginDto {
                 kind: fact.origin.into(),
             },
             stored_at: fact.stored_at,
@@ -319,7 +319,7 @@ impl From<ProfileView> for ProfileDto {
 #[derive(Debug)]
 #[toolkit_macros::api_dto(response)]
 pub struct SubjectFactDto {
-    pub entity_kind: EntityKindDto,
+    pub entity_kind: ProfileEntityKindDto,
     #[serde(flatten)]
     pub fact: ProfileFactDto,
     pub review_request: Option<FactReviewDto>,
@@ -340,7 +340,7 @@ impl From<SubjectFact> for SubjectFactDto {
 #[derive(Debug)]
 #[toolkit_macros::api_dto(response)]
 pub struct ExportedFactDto {
-    pub entity_kind: EntityKindDto,
+    pub entity_kind: ProfileEntityKindDto,
     #[serde(flatten)]
     pub fact: ProfileFactDto,
 }
@@ -430,7 +430,7 @@ pub struct ReviewRequestDto {
     #[schema(value_type = String)]
     pub subject_id: Uuid,
     pub fact_id: String,
-    pub entity_kind: EntityKindDto,
+    pub entity_kind: ProfileEntityKindDto,
     pub property: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(value_type = Option<Value>)]
@@ -631,12 +631,12 @@ impl AdminFactRequest {
 pub struct StoredFactDto {
     /// The fact's id, the graph node key.
     pub fact_id: String,
-    pub entity_kind: EntityKindDto,
+    pub entity_kind: ProfileEntityKindDto,
     /// The fact's property, such as `skills`.
     pub property: String,
     /// The value as Admission let it through.
     pub value: serde_json::Value,
-    pub origin: OriginDto,
+    pub origin: FactOriginDto,
 }
 
 impl StoredFactDto {
@@ -648,7 +648,7 @@ impl StoredFactDto {
             entity_kind: fact.category.into(),
             property: fact.property.name,
             value: fact.property.value,
-            origin: OriginDto {
+            origin: FactOriginDto {
                 kind: OriginKindDto::Administrator,
             },
         }
