@@ -124,6 +124,8 @@ jobs:
               - 'gears/graph-storage/**'
             github_mirror:
               - 'gears/github-mirror/**'
+              - 'libs/**'
+              - 'gears-rust.mk'
             dylint:
               - 'tools/dylint_lints/**'
             deps:
