@@ -2867,3 +2867,222 @@ async fn typed_filters_reject_unsupported_operators_unknown_types_and_null() {
         );
     }
 }
+
+// ── Membership tenant isolation (issue 5585) ────────────────────────────
+
+/// Router wired with the tenant-scoping enforcer, plus allow-all services
+/// on the same database for seeding fixtures.
+async fn build_tenant_scoped_router() -> (
+    Router,
+    Arc<TypeService<TypeRepository>>,
+    Arc<GroupService<GroupRepository, TypeRepository>>,
+    Arc<MembershipService<GroupRepository, TypeRepository, MembershipRepository>>,
+) {
+    let db = test_db().await;
+    let enforcer = common::make_tenant_scoping_enforcer();
+    let type_svc = Arc::new(TypeService::new(
+        db.clone(),
+        enforcer.clone(),
+        Arc::new(TypeRepository),
+    ));
+    let group_svc = Arc::new(GroupService::new(
+        db.clone(),
+        QueryProfile::default(),
+        enforcer.clone(),
+        Arc::new(GroupRepository),
+        Arc::new(TypeRepository),
+        common::make_types_registry(),
+    ));
+    let scoped_membership_svc = Arc::new(MembershipService::new(
+        db.clone(),
+        enforcer,
+        Arc::new(GroupRepository),
+        Arc::new(TypeRepository),
+        Arc::new(MembershipRepository),
+    ));
+    let seed_membership_svc = Arc::new(MembershipService::new(
+        db,
+        make_enforcer(),
+        Arc::new(GroupRepository),
+        Arc::new(TypeRepository),
+        Arc::new(MembershipRepository),
+    ));
+    let router = resource_group::api::rest::routes::register_routes(
+        Router::new(),
+        &NoopOpenApiRegistry,
+        type_svc.clone(),
+        group_svc.clone(),
+        scoped_membership_svc,
+    );
+    (router, type_svc, group_svc, seed_membership_svc)
+}
+
+struct IsolationFixture {
+    router: Router,
+    mt_encoded: String,
+    tenant_a: Uuid,
+    tenant_b: Uuid,
+    group_a: Uuid,
+}
+
+/// Tenant A owns a group with one membership `res-a`; tenant B exists only as a caller.
+async fn build_isolation_fixture() -> IsolationFixture {
+    let (router, type_svc, group_svc, seed_svc) = build_tenant_scoped_router().await;
+    let tenant_a = Uuid::now_v7();
+    let tenant_b = Uuid::now_v7();
+
+    let mt = rg_type_id!("test.isomt._.i{}.v1~", Uuid::now_v7().as_simple());
+    type_svc
+        .create_type_unscoped(resource_group_sdk::CreateTypeRequest {
+            code: mt.clone(),
+            can_be_root: true,
+            allowed_parent_types: vec![],
+            allowed_membership_types: vec![],
+            metadata_schema: None,
+        })
+        .await
+        .unwrap();
+    let gt = rg_type_id!("test.isogt.{}.v1~", Uuid::now_v7().as_simple());
+    type_svc
+        .create_type_unscoped(resource_group_sdk::CreateTypeRequest {
+            code: gt.clone(),
+            can_be_root: true,
+            allowed_parent_types: vec![],
+            allowed_membership_types: vec![mt.clone()],
+            metadata_schema: None,
+        })
+        .await
+        .unwrap();
+    let group_a = group_svc
+        .create_group(
+            &make_ctx(tenant_a),
+            resource_group_sdk::CreateGroupRequest::new(gt, "GA".to_owned()),
+            tenant_a,
+        )
+        .await
+        .unwrap();
+    seed_svc
+        .add_membership_unscoped(group_a.id, &mt, "res-a")
+        .await
+        .unwrap();
+
+    IsolationFixture {
+        router,
+        mt_encoded: mt.replace('~', "%7E"),
+        tenant_a,
+        tenant_b,
+        group_a: group_a.id,
+    }
+}
+
+/// Error bodies must match once the requested group id is masked out.
+fn masked_error_body(body: &serde_json::Value, group_id: Uuid) -> String {
+    body.to_string().replace(&group_id.to_string(), "<id>")
+}
+
+#[tokio::test]
+async fn rest_post_membership_into_foreign_group_matches_missing_group() {
+    let f = build_isolation_fixture().await;
+    let missing = Uuid::now_v7();
+
+    let foreign_req = json_request(
+        "POST",
+        &format!(
+            "/resource-group/v1/memberships/{}/{}/intruder",
+            f.group_a, f.mt_encoded
+        ),
+        None,
+        f.tenant_b,
+    );
+    let foreign_resp = f.router.clone().oneshot(foreign_req).await.unwrap();
+    let foreign_status = foreign_resp.status();
+    let foreign_body = response_body(foreign_resp).await;
+
+    let missing_req = json_request(
+        "POST",
+        &format!(
+            "/resource-group/v1/memberships/{missing}/{}/intruder",
+            f.mt_encoded
+        ),
+        None,
+        f.tenant_b,
+    );
+    let missing_resp = f.router.clone().oneshot(missing_req).await.unwrap();
+    let missing_status = missing_resp.status();
+    let missing_body = response_body(missing_resp).await;
+
+    assert_eq!(foreign_status, StatusCode::NOT_FOUND);
+    assert_eq!(foreign_status, missing_status);
+    assert_eq!(
+        masked_error_body(&foreign_body, f.group_a),
+        masked_error_body(&missing_body, missing)
+    );
+}
+
+#[tokio::test]
+async fn rest_delete_foreign_membership_matches_missing_membership() {
+    let f = build_isolation_fixture().await;
+
+    let foreign_req = json_request(
+        "DELETE",
+        &format!(
+            "/resource-group/v1/memberships/{}/{}/res-a",
+            f.group_a, f.mt_encoded
+        ),
+        None,
+        f.tenant_b,
+    );
+    let foreign_resp = f.router.clone().oneshot(foreign_req).await.unwrap();
+    let foreign_status = foreign_resp.status();
+
+    let missing_req = json_request(
+        "DELETE",
+        &format!(
+            "/resource-group/v1/memberships/{}/{}/no-such-resource",
+            f.group_a, f.mt_encoded
+        ),
+        None,
+        f.tenant_b,
+    );
+    let missing_resp = f.router.clone().oneshot(missing_req).await.unwrap();
+
+    assert_eq!(foreign_status, StatusCode::NOT_FOUND);
+    assert_eq!(foreign_status, missing_resp.status());
+
+    // The owner still sees the row.
+    let list_req = json_request("GET", "/resource-group/v1/memberships", None, f.tenant_a);
+    let list_resp = f.router.clone().oneshot(list_req).await.unwrap();
+    assert_eq!(list_resp.status(), StatusCode::OK);
+    let body = response_body(list_resp).await;
+    assert_eq!(body["items"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn rest_get_memberships_hides_foreign_rows() {
+    let f = build_isolation_fixture().await;
+
+    let req = json_request("GET", "/resource-group/v1/memberships", None, f.tenant_b);
+    let resp = f.router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = response_body(resp).await;
+    assert!(body["items"].as_array().unwrap().is_empty());
+
+    let req = json_request(
+        "GET",
+        &format!(
+            "/resource-group/v1/memberships?$filter=group_id%20eq%20{}",
+            f.group_a
+        ),
+        None,
+        f.tenant_b,
+    );
+    let resp = f.router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = response_body(resp).await;
+    assert!(body["items"].as_array().unwrap().is_empty());
+
+    let req = json_request("GET", "/resource-group/v1/memberships", None, f.tenant_a);
+    let resp = f.router.clone().oneshot(req).await.unwrap();
+    let body = response_body(resp).await;
+    assert_eq!(body["items"].as_array().unwrap().len(), 1);
+}

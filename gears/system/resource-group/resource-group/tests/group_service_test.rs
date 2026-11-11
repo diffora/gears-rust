@@ -3303,6 +3303,15 @@ impl GroupRepositoryTrait for ParentFlippingGroupRepo {
         Ok(result)
     }
 
+    async fn find_model_by_id_in_scope<C: DBRunner>(
+        &self,
+        db: &C,
+        scope: &AccessScope,
+        id: Uuid,
+    ) -> Result<Option<RgModel>, DomainError> {
+        self.inner.find_model_by_id_in_scope(db, scope, id).await
+    }
+
     async fn find_model_by_id_for_update<C: DBRunner>(
         &self,
         db: &C,

@@ -265,6 +265,47 @@ impl AuthZResolverApi for DenyAllAuthZ {
     }
 }
 
+// -- Tenant-scoping AuthZ mock --
+
+/// Mock PDP that allows and returns one constraint
+/// `In(OWNER_TENANT_ID, [subject tenant_id])`, like the static authz plugin.
+struct TenantScopingAuthZ;
+
+#[async_trait]
+impl AuthZResolverApi for TenantScopingAuthZ {
+    async fn evaluate(
+        &self,
+        _ctx: PlatformSecurityContext,
+        request: EvaluationRequest,
+    ) -> Result<EvaluationResponse, CanonicalError> {
+        let tenant_id = request
+            .subject
+            .properties
+            .get("tenant_id")
+            .and_then(|v| v.as_str())
+            .and_then(|s| Uuid::parse_str(s).ok())
+            .expect("subject must have tenant_id");
+
+        Ok(EvaluationResponse {
+            decision: true,
+            context: EvaluationResponseContext {
+                constraints: vec![Constraint {
+                    predicates: vec![Predicate::In(InPredicate::new(
+                        pep_properties::OWNER_TENANT_ID,
+                        [tenant_id],
+                    ))],
+                }],
+                deny_reason: None,
+            },
+        })
+    }
+}
+
+/// Build a `PolicyEnforcer` that scopes every request to the subject's tenant.
+pub fn make_tenant_scoping_enforcer() -> PolicyEnforcer {
+    PolicyEnforcer::new(Arc::new(TenantScopingAuthZ))
+}
+
 /// Build a `SecurityContext` for anonymous (nil tenant) -- matches `SecurityContext::anonymous()`.
 pub fn make_anon_ctx() -> SecurityContext {
     SecurityContext::anonymous()
@@ -661,6 +702,20 @@ pub fn make_membership_service_deny(
     MembershipService::new(
         db,
         PolicyEnforcer::new(Arc::new(DenyAllAuthZ)),
+        Arc::new(GroupRepository),
+        Arc::new(TypeRepository),
+        Arc::new(MembershipRepository),
+    )
+}
+
+/// Build a `MembershipService` wired with the tenant-scoping enforcer (see
+/// [`make_tenant_scoping_enforcer`]).
+pub fn make_membership_service_tenant_scoped(
+    db: Arc<DBProvider<DbError>>,
+) -> MembershipService<GroupRepository, TypeRepository, MembershipRepository> {
+    MembershipService::new(
+        db,
+        make_tenant_scoping_enforcer(),
         Arc::new(GroupRepository),
         Arc::new(TypeRepository),
         Arc::new(MembershipRepository),

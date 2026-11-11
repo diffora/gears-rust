@@ -37,6 +37,32 @@ fn system_scope() -> AccessScope {
     AccessScope::allow_all()
 }
 
+/// Ids of the groups visible under `scope`, as a subquery.
+fn groups_in_scope(scope: &AccessScope) -> sea_orm::sea_query::SelectStatement {
+    use crate::infra::storage::entity::resource_group::{
+        self as rg_entity, Entity as ResourceGroupEntity,
+    };
+    use sea_orm::{QuerySelect, QueryTrait};
+    ResourceGroupEntity::find()
+        .secure()
+        .scope_with(scope)
+        .into_inner()
+        .select_only()
+        .column(rg_entity::Column::Id)
+        .into_query()
+}
+
+/// Membership-side condition that restricts rows to groups visible under
+/// `scope`. `None` for an unconstrained scope: no tenant filtering, and no
+/// semi-join over all groups. A deny-all scope yields a subquery with
+/// `WHERE false`, so no rows match.
+fn membership_group_condition(scope: &AccessScope) -> Option<sea_orm::sea_query::SimpleExpr> {
+    if scope.is_unconstrained() {
+        return None;
+    }
+    Some(membership_entity::Column::GroupId.in_subquery(groups_in_scope(scope)))
+}
+
 /// Repository for membership persistence operations.
 pub struct MembershipRepository;
 
@@ -50,10 +76,18 @@ impl MembershipRepositoryTrait for MembershipRepository {
     async fn list_memberships<C: DBRunner>(
         &self,
         db: &C,
+        scope: &AccessScope,
         query: &ODataQuery,
     ) -> Result<Page<ResourceGroupMembership>, DomainError> {
-        let scope = system_scope();
-        let base_query = MembershipEntity::find().secure().scope_with(&scope);
+        // The membership table has no scope columns, so the row itself is
+        // read under the system scope. The caller's tenant scope is applied
+        // through the owning group (see `membership_group_condition`).
+        let row_scope = system_scope();
+        let mut select = MembershipEntity::find();
+        if let Some(cond) = membership_group_condition(scope) {
+            select = select.filter(cond);
+        }
+        let base_query = select.secure().scope_with(&row_scope);
         let (base_query, query_no_filter) =
             prepare_filter::<MembershipFilterField, MembershipODataMapper, _>(
                 db,
@@ -175,41 +209,28 @@ impl MembershipRepositoryTrait for MembershipRepository {
     async fn delete<C: DBRunner>(
         &self,
         db: &C,
+        scope: &AccessScope,
         group_id: Uuid,
         gts_type_id: i16,
         resource_id: &str,
     ) -> Result<u64, DomainError> {
-        let scope = system_scope();
-        let result = MembershipEntity::delete_many()
+        // No scope columns on the membership row: tenant scope is applied
+        // through the owning group, the row is run under the system scope.
+        let row_scope = system_scope();
+        let mut delete = MembershipEntity::delete_many()
             .filter(membership_entity::Column::GroupId.eq(group_id))
             .filter(membership_entity::Column::GtsTypeId.eq(gts_type_id))
-            .filter(membership_entity::Column::ResourceId.eq(resource_id))
+            .filter(membership_entity::Column::ResourceId.eq(resource_id));
+        if let Some(cond) = membership_group_condition(scope) {
+            delete = delete.filter(cond);
+        }
+        let result = delete
             .secure()
-            .scope_with(&scope)
+            .scope_with(&row_scope)
             .exec(db)
             .await
             .map_err(|e| DomainError::database(e.to_string()))?;
         Ok(result.rows_affected)
-    }
-
-    /// Find a membership by its composite key.
-    async fn find_by_composite_key<C: DBRunner>(
-        &self,
-        db: &C,
-        group_id: Uuid,
-        gts_type_id: i16,
-        resource_id: &str,
-    ) -> Result<Option<membership_entity::Model>, DomainError> {
-        let scope = system_scope();
-        MembershipEntity::find()
-            .filter(membership_entity::Column::GroupId.eq(group_id))
-            .filter(membership_entity::Column::GtsTypeId.eq(gts_type_id))
-            .filter(membership_entity::Column::ResourceId.eq(resource_id))
-            .secure()
-            .scope_with(&scope)
-            .one(db)
-            .await
-            .map_err(|e| DomainError::database(e.to_string()))
     }
 
     /// Whether the resource already belongs to a tenant other than
