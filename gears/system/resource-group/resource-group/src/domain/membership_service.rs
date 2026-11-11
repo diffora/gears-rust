@@ -27,6 +27,31 @@ pub const RG_MEMBERSHIP_RESOURCE: ResourceType = ResourceType::from_static(
     &[pep_properties::OWNER_TENANT_ID],
 );
 
+/// Narrow a scope issued for the membership resource type so it can be
+/// applied to the owning group.
+///
+/// The scope is issued for `RG_MEMBERSHIP_RESOURCE` and applied to the group
+/// that owns the membership. A property other than the owner tenant id would
+/// be read in terms of the group (a resource id would be read as the group
+/// id), so a scope that carries one grants nothing: the whole scope is closed,
+/// not just the constraint that carries it. Fail closed.
+#[must_use]
+pub(crate) fn group_scope_for_membership(scope: &AccessScope) -> AccessScope {
+    if scope.is_unconstrained() {
+        return scope.clone();
+    }
+    let foreign_property = scope.constraints().iter().any(|c| {
+        c.filters()
+            .iter()
+            .any(|f| f.property() != pep_properties::OWNER_TENANT_ID)
+    });
+    if foreign_property {
+        AccessScope::deny_all()
+    } else {
+        scope.clone()
+    }
+}
+
 // @cpt-flow:cpt-cf-resource-group-flow-membership-add:p1
 // @cpt-flow:cpt-cf-resource-group-flow-membership-remove:p1
 // @cpt-flow:cpt-cf-resource-group-flow-membership-list:p1
@@ -134,34 +159,6 @@ impl<GR: GroupRepositoryTrait, TR: TypeRepositoryTrait, MR: MembershipRepository
         resource_type: &str,
         resource_id: &str,
     ) -> Result<ResourceGroupMembership, DomainError> {
-        let conn = self.conn()?;
-
-        // @cpt-begin:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-3
-        // @cpt-begin:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-4
-        // Verify the group exists and is visible under the caller's scope,
-        // and get its type info. A group outside the scope is reported
-        // exactly like a missing one, so this is not an existence oracle.
-        let group_model = self
-            .group_repo
-            .find_model_by_id_scoped(&conn, scope, group_id)
-            .await?
-            .ok_or(DomainError::GroupNotFound { id: group_id })?;
-        // @cpt-end:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-4
-        // @cpt-end:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-3
-
-        // @cpt-begin:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-5
-        // @cpt-begin:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-6
-        // Resolve the GTS type path to a surrogate SMALLINT ID
-        let gts_type_id = self
-            .type_repo
-            .resolve_id(&conn, resource_type)
-            .await?
-            .ok_or_else(|| {
-                DomainError::validation(format!("Unknown resource type: {resource_type}"))
-            })?;
-        // @cpt-end:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-6
-        // @cpt-end:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-5
-
         // Tenant compatibility, the allowed_membership_types check, and the
         // membership insert all share one transaction, and that transaction
         // is `SERIALIZABLE` (RG-01).
@@ -183,20 +180,55 @@ impl<GR: GroupRepositoryTrait, TR: TypeRepositoryTrait, MR: MembershipRepository
         // serialize regardless, so the same conclusion holds there for a
         // different reason.
         let db = self.db.db();
+        let group_repo = self.group_repo.clone();
         let membership_repo = self.membership_repo.clone();
         let type_repo = self.type_repo.clone();
+        let group_scope = group_scope_for_membership(scope);
         let resource_type_owned = resource_type.to_owned();
         let resource_id_owned = resource_id.to_owned();
-        let target_tenant_id = group_model.tenant_id;
-        let group_type_id = group_model.gts_type_id;
 
         let model = db
             .transaction_with_retry(TxConfig::serializable(), DomainError::db_err, |tx| {
+                let group_repo = group_repo.clone();
                 let membership_repo = membership_repo.clone();
                 let type_repo = type_repo.clone();
+                let group_scope = group_scope.clone();
                 let resource_type = resource_type_owned.clone();
                 let resource_id = resource_id_owned.clone();
                 Box::pin(async move {
+                    // @cpt-begin:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-3
+                    // @cpt-begin:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-4
+                    // Verify the group exists and is visible under the caller's
+                    // scope, and get its type info. A group outside the scope
+                    // is reported exactly like a missing one, so this is not an
+                    // existence oracle. The read runs inside the same
+                    // SERIALIZABLE transaction as the insert, so a group that
+                    // was deleted and re-created with the same id under another
+                    // tenant between the check and the insert cannot pass the
+                    // gate.
+                    let group_model = group_repo
+                        .find_model_by_id_scoped(tx, &group_scope, group_id)
+                        .await?
+                        .ok_or(DomainError::GroupNotFound { id: group_id })?;
+                    let target_tenant_id = group_model.tenant_id;
+                    let group_type_id = group_model.gts_type_id;
+                    // @cpt-end:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-4
+                    // @cpt-end:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-3
+
+                    // @cpt-begin:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-5
+                    // @cpt-begin:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-6
+                    // Resolve the GTS type path to a surrogate SMALLINT ID
+                    let gts_type_id = type_repo
+                        .resolve_id(tx, &resource_type)
+                        .await?
+                        .ok_or_else(|| {
+                            DomainError::validation(format!(
+                                "Unknown resource type: {resource_type}"
+                            ))
+                        })?;
+                    // @cpt-end:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-6
+                    // @cpt-end:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-5
+
                     // @cpt-begin:cpt-cf-resource-group-flow-membership-add:p1:inst-add-memb-7
                     // Load group type's allowed_membership_types and validate.
                     //
@@ -447,3 +479,36 @@ impl<GR: GroupRepositoryTrait, TR: TypeRepositoryTrait, MR: MembershipRepository
     }
 }
 // @cpt-end:cpt-cf-resource-group-dod-membership-service:p1:inst-full
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use toolkit_security::{ScopeConstraint, ScopeFilter};
+
+    #[test]
+    fn group_scope_for_membership_fails_closed() {
+        let tenant = Uuid::now_v7();
+        let group = Uuid::now_v7();
+
+        let unconstrained = group_scope_for_membership(&AccessScope::allow_all());
+        assert!(unconstrained.is_unconstrained());
+
+        let tenant_only = AccessScope::for_tenant(tenant);
+        assert_eq!(group_scope_for_membership(&tenant_only), tenant_only);
+
+        let by_resource = group_scope_for_membership(&AccessScope::for_resource(group));
+        assert_eq!(by_resource, AccessScope::deny_all());
+
+        let mixed = AccessScope::from_constraints(vec![
+            ScopeConstraint::new(vec![ScopeFilter::in_uuids(
+                pep_properties::OWNER_TENANT_ID,
+                vec![tenant],
+            )]),
+            ScopeConstraint::new(vec![ScopeFilter::in_uuids(
+                pep_properties::RESOURCE_ID,
+                vec![group],
+            )]),
+        ]);
+        assert_eq!(group_scope_for_membership(&mixed), AccessScope::deny_all());
+    }
+}

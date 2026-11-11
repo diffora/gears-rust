@@ -26,6 +26,10 @@ pub trait GroupRepositoryTrait: Send + Sync + 'static {
         id: Uuid,
     ) -> Result<Option<ResourceGroup>, DomainError>;
 
+    /// Find the raw entity model by ID.
+    ///
+    /// Reads under the system scope, with no caller scope applied. Never use
+    /// it as an authorization gate, use `find_model_by_id_scoped` for that.
     async fn find_model_by_id<C: DBRunner>(
         &self,
         db: &C,
