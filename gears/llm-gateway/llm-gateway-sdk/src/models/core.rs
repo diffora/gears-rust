@@ -502,7 +502,7 @@ pub struct Usage {
     /// Breakdown of output token usage.
     pub output_tokens_details: OutputTokensDetails,
     /// Gateway extension: call cost in AI credits, computed by the provider
-    /// plugin from the pricing in the model's provider settings. A JSON
+    /// plugin from the model's `cost` rates (`ModelInfoV1.cost`). A JSON
     /// string on the wire (`"0.0125"`) so the amount never passes through a
     /// float.
     #[serde(default, with = "rust_decimal::serde::str")]
