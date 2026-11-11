@@ -2,7 +2,9 @@
 //!
 //! Built-in validation is a platform read. Policy management keeps the
 //! request's identity. Missing schemas are absent from the result; a failed
-//! batch, timeout or omitted answer fails the complete validation.
+//! batch, timeout or omitted answer fails the complete validation. A contract
+//! failure or any other deterministic refusal is internal; only availability
+//! failures stay retryable.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -94,7 +96,7 @@ impl TypeCatalogPort for RegistryTypeCatalog {
                 }
                 Some(_) => {}
                 None => {
-                    return Err(PortError::Unavailable(
+                    return Err(PortError::Internal(
                         "types registry omitted a requested type".to_owned(),
                     ));
                 }
@@ -113,7 +115,20 @@ fn registry_error(scope: TypeCatalogScope<'_>, error: CanonicalError) -> PortErr
         (TypeCatalogScope::Caller(_), CanonicalError::PermissionDenied { .. }) => {
             PortError::PermissionDenied
         }
-        (_, error) => PortError::Unavailable(format!("types registry: {error}")),
+        // Availability failures a later attempt can cure.
+        (
+            _,
+            error @ (CanonicalError::ServiceUnavailable { .. }
+            | CanonicalError::DeadlineExceeded { .. }
+            | CanonicalError::ResourceExhausted { .. }
+            | CanonicalError::Aborted { .. }
+            | CanonicalError::Unknown { .. }),
+        ) => PortError::Unavailable(format!("types registry: {error}")),
+        // Everything else is deterministic for this read: an SDK contract violation
+        // (`Internal`), a whole-call refusal of identifiers validated and batched here,
+        // a missing endpoint (`NotFound`, `Unimplemented`) or a platform credential the
+        // registry refuses. An absent type is not an error: it is answered as `None`.
+        (_, error) => PortError::Internal(format!("types registry: {error}")),
     }
 }
 

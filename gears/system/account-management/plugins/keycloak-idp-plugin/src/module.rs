@@ -80,9 +80,10 @@ impl KeycloakIdpPluginGear {
 impl Gear for KeycloakIdpPluginGear {
     async fn init(&self, ctx: &GearCtx) -> anyhow::Result<()> {
         // Phase 1: read the `enabled` flag without requiring Keycloak fields.
-        // Uses `config_or_default` so a missing module section → enabled = true
-        // (production default). This mirrors the temporal-workflow-executor-plugin
-        // pattern and allows test/CI configs to opt out with `enabled: false`.
+        // Uses `config_or_default`: a missing `config` section takes the derived
+        // `Default` (disabled), a present one enables the plugin unless it sets
+        // `enabled: false`. The publication probe reads `enabled` the same way.
+        // This mirrors the temporal-workflow-executor-plugin pattern.
         let probe: KeycloakIdpPluginEnabledProbe = ctx.config_or_default().map_err(|e| {
             anyhow::anyhow!("keycloak-idp-plugin: failed to read enabled flag: {e}")
         })?;

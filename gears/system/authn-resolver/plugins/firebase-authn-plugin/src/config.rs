@@ -33,6 +33,26 @@ impl Default for FirebaseAuthnPluginConfig {
     }
 }
 
+/// The GTS publication's view of [`FirebaseAuthnPluginConfig`]: the instance's vendor
+/// and priority, with the same defaults. It neither expands the project nor reads the
+/// identities, so a publishing process without the server's environment builds the
+/// manifest; `init` expands and validates the full configuration.
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+pub struct FirebaseAuthnPluginInstanceProbe {
+    pub vendor: String,
+    pub priority: i16,
+}
+
+impl Default for FirebaseAuthnPluginInstanceProbe {
+    fn default() -> Self {
+        let FirebaseAuthnPluginConfig {
+            vendor, priority, ..
+        } = FirebaseAuthnPluginConfig::default();
+        Self { vendor, priority }
+    }
+}
+
 /// One admitted account. The token's uid and verified email must both match.
 #[derive(Debug, Clone, Deserialize, toolkit_macros::ExpandVars)]
 #[serde(deny_unknown_fields)]

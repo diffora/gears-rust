@@ -304,4 +304,46 @@ mod publication {
     fn a_disabled_plugin_publishes_nothing() {
         assert!(manifest(&json!({ "enabled": false })).is_empty());
     }
+
+    /// The gear's whole configuration node, or none at all.
+    struct GearNode(Option<Value>);
+
+    impl ConfigProvider for GearNode {
+        fn get_gear_config(&self, _gear: &str) -> Option<&Value> {
+            self.0.as_ref()
+        }
+    }
+
+    /// Publication and `init` read `enabled` alike: no configuration section
+    /// keeps the plugin disabled, as before publication existed; a present
+    /// section enables it unless it says `enabled: false`.
+    #[test]
+    fn publication_and_init_agree_on_enabled() {
+        let cases = [
+            ("no gear node", None, false),
+            ("no config section", Some(json!({})), false),
+            ("empty config section", Some(json!({ "config": {} })), true),
+            (
+                "disabled explicitly",
+                Some(json!({ "config": { "enabled": false } })),
+                false,
+            ),
+        ];
+        for (case, node, enabled) in cases {
+            let provider = GearNode(node);
+            let published = !KeycloakIdpPluginGear
+                .descriptor()
+                .build_gts_manifest(&provider)
+                .expect("manifest")
+                .is_empty();
+            let init = toolkit::gear_config_or_default::<
+                crate::config::KeycloakIdpPluginEnabledProbe,
+            >(&provider, "keycloak-idp-plugin")
+            .expect("init probe")
+            .enabled;
+
+            assert_eq!(published, enabled, "publication: {case}");
+            assert_eq!(init, enabled, "init: {case}");
+        }
+    }
 }

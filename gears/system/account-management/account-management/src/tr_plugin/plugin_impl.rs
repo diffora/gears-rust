@@ -26,7 +26,8 @@ use crate::domain::tenant::hierarchy_read_port::TenantHierarchyReadPort;
 ///
 /// The gateway authorizes calls (DESIGN §4.2). The plugin ignores `_ctx` and
 /// reads through the port, whose adapter centrally uses `AccessScope::allow_all()`.
-/// Registry hydration is a named platform exception to P33: `tr-authz-plugin`
+/// Registry hydration is a named platform exception to the request-caller rule
+/// (types-registry SPEC §8.4): `tr-authz-plugin`
 /// passes `SecurityContext::anonymous()` (gears-rust#1597), not a forwarded user.
 /// Revisit when callers provide forwarded or S2S contexts; do not send this
 /// anonymous context to the tenant API.

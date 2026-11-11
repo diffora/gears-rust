@@ -12,7 +12,7 @@
 //! `types_registry_sdk::TypesRegistryApi` in production.
 //!
 //! Every method reads for the supplied [`SecurityContext`] and retains no
-//! caller context (P33). Implementations must not cache across calls.
+//! caller context (types-registry SPEC §8.4). Implementations must not cache across calls.
 //!
 //! Forward methods take `&gts::GtsTypeId`, already validated as an AM metadata
 //! schema by [`crate::domain::metadata::type_id::ParsedTypeId::parse`] and
@@ -105,8 +105,26 @@ pub trait MetadataSchemaRegistry: Send + Sync {
         type_id: &GtsTypeId,
     ) -> Result<InheritancePolicy, DomainError>;
 
+    /// The existence gate of reading or removing stored entries: the schema
+    /// is registered, active or deleted. A deleted schema keeps its exact
+    /// identity as a tombstone, so entries stored under it stay readable
+    /// and removable; a new value and the inheritance walk need the active
+    /// schema ([`Self::validate_value`], [`Self::resolve_inheritance_policy`]).
+    ///
+    /// # Errors
+    ///
+    /// * [`DomainError::MetadataEntryNotFound`] — the registry has no
+    ///   schema of this identity, active or deleted.
+    /// * The caller's registry refusal, or a registry failure, as the
+    ///   other reads.
+    async fn check_schema_retained(
+        &self,
+        ctx: &SecurityContext,
+        type_id: &GtsTypeId,
+    ) -> Result<(), DomainError>;
+
     /// Reverse-lookup the public chained `type_id` for a stored
-    /// `schema_uuid`. Used by the per-row resolve path (e.g. the
+    /// `schema_uuid`, active or deleted. Used by the per-row resolve path (e.g. the
     /// `/resolved` walk-up) to re-hydrate the public identifier from a
     /// single storage row.
     ///
@@ -124,7 +142,8 @@ pub trait MetadataSchemaRegistry: Send + Sync {
         schema_uuid: Uuid,
     ) -> Result<GtsTypeId, DomainError>;
 
-    /// Resolve UUIDs to public chained IDs for list hydration, omitting unknown UUIDs.
+    /// Resolve UUIDs to public chained IDs for list hydration, omitting unknown UUIDs;
+    /// a deleted schema still resolves to its exact identity.
     /// The caller handles missing entries per row (`MetadataEntryNotFound` or
     /// `Internal` for LIST), preserving the rest of the page.
     ///
@@ -307,6 +326,17 @@ impl MetadataSchemaRegistry for StubMetadataSchemaRegistry {
                 detail: format!("schema {type_id} is not registered in the types registry"),
                 entry: type_id.to_string(),
             })
+    }
+
+    /// The stub holds no deleted schemas: a retained schema is a registered one.
+    async fn check_schema_retained(
+        &self,
+        ctx: &SecurityContext,
+        type_id: &GtsTypeId,
+    ) -> Result<(), DomainError> {
+        self.resolve_inheritance_policy(ctx, type_id)
+            .await
+            .map(drop)
     }
 
     async fn resolve_id_by_uuid(

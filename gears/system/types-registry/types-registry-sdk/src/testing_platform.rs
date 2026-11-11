@@ -5,9 +5,15 @@
 //! changes, and idempotency keys replay operations. Type Schema materializations are
 //! resolved by `gts-rust`; tombstones retain them, and unresolvable document reads fail.
 //! Changed Type Schemas are validated with native GTS before storage; in-batch schema
-//! prerequisites settle first. Invalid schemas fail admission without replacing old state.
-//! Seeds deliberately bypass this validation. Publisher guards, history/compatibility,
-//! database locking and complete production graph-reason parity are not modeled.
+//! prerequisites settle first. Invalid schemas fail admission without replacing old state;
+//! the members of an in-batch cycle are refused as invalid and the candidates waiting on
+//! them are blocked by that dependency. Seeds deliberately bypass this validation.
+//! Publisher guards, history/compatibility, database locking and complete production
+//! graph-reason parity are not modeled.
+//!
+//! Instances are not validated against their Type Schema and neither wait on nor are
+//! blocked by in-batch schema candidates: a batch the registry refuses for an instance can
+//! succeed here. Assert instance admission against the registry's local client.
 //!
 //! Use [`Fault`] for delays and errors, [`MockTypesRegistry::reject`] and
 //! [`MockTypesRegistry::depends_on`] for admission rules, and [`ProtocolFault`] for

@@ -324,6 +324,14 @@ no check stops the others.
 Answers which concrete type ids exist in `types-registry`, within a bound; an outage fails the call and is never read
 as absence.
 
+Migration boundary: the resolver reads only the managed catalogue (`TypesRegistryApi`, `PlatformTypesRegistryApi`).
+Until the remaining gears migrate off the legacy `TypesRegistryClient` (types-registry SPEC §8.4), that catalogue holds
+the linked inventory and the configured seeds, which both catalogues share, and managed publications, but not Type
+Schemas a legacy-client gear writes later (for example settings-service setting types or quota-enforcement contract
+definitions). A concrete `resource_types` reference to such a type is `RESOURCE_TYPE_UNKNOWN` for built-in and tenant
+policies alike; wildcard references are not resolved. There is no fallback to the legacy catalogue: a policy that
+needs such a type waits for its writer's migration (`tests/registry_startup.rs`).
+
 #### Management Service
 
 - [ ] `p1` - **ID**: `cpt-cf-policy-engine-component-management`
@@ -411,7 +419,8 @@ The SDK also contributes its static declarations to the process-wide inventory f
 Validation and activation read through `TypesRegistryApi` with the unchanged request `SecurityContext` and an
 authoritative (`fresh`) batch read. Registry authentication and read-permission refusals become management
 `UNAUTHENTICATED` (401) and `REGISTRY_READ_DENIED` (403); there is no platform retry. A missing schema remains
-`RESOURCE_TYPE_UNKNOWN`, while an outage, timeout or unusable batch is `UNAVAILABLE` (503). Startup built-ins
+`RESOURCE_TYPE_UNKNOWN`, while an outage or timeout is `UNAVAILABLE` (503). A deterministic registry failure (an
+unusable batch, an SDK contract violation or another whole-call refusal) is `INTERNAL` (500). Startup built-ins
 use the platform contract and no fabricated tenant identity. The decision path performs no catalog reads.
 
 ### 3.4 Internal Dependencies

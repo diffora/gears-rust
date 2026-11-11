@@ -133,16 +133,57 @@ async fn init_without_an_admitted_manifest_binds_nothing() {
     assert!(!bound(&hub));
 }
 
+/// Publication reads vendor and priority only: neither a project variable the
+/// publishing process lacks nor the identity mappings stop it.
 #[tokio::test]
-async fn invalid_identity_configuration_publishes_nothing() {
+async fn publication_reads_neither_runtime_values_nor_identities() {
+    let registry = Arc::new(MockTypesRegistry::new());
+    let hub = hub(&registry);
+    let mut config = config("cf", 7);
+    config.0["config"]["project_id"] = json!("${CF_GEARS_TEST_UNSET_FIREBASE_PROJECT}");
+    config.0["config"]["identities"] = json!([]);
+
+    let manifest = prepare(&hub, &config).await.unwrap();
+
+    let documents = manifest.documents();
+    assert_eq!(documents.len(), 1);
+    assert_eq!(documents[0].1["vendor"], "cf");
+    assert_eq!(documents[0].1["priority"], 7);
+    assert!(registry.content(&instance_id()).is_some());
+}
+
+/// The full configuration is still expanded and validated by `init`, which binds
+/// nothing when it is refused.
+#[tokio::test]
+async fn invalid_identity_configuration_fails_init_and_binds_nothing() {
     let registry = Arc::new(MockTypesRegistry::new());
     let hub = hub(&registry);
     let mut config = config("cf", 7);
     config.0["config"]["identities"] = json!([]);
+    let manifest = prepare(&hub, &config).await.unwrap();
 
-    let error = prepare(&hub, &config).await.unwrap_err();
+    let error = FirebaseAuthnPlugin::default()
+        .init(&ctx(Arc::clone(&hub), config, Some(manifest)))
+        .await
+        .unwrap_err();
 
     assert!(format!("{error:#}").contains("identity mappings are required"));
-    assert!(registry.content(&instance_id()).is_none());
+    assert!(!bound(&hub));
+}
+
+#[tokio::test]
+async fn unexpanded_project_fails_init_and_binds_nothing() {
+    let registry = Arc::new(MockTypesRegistry::new());
+    let hub = hub(&registry);
+    let mut config = config("cf", 7);
+    config.0["config"]["project_id"] = json!("${CF_GEARS_TEST_UNSET_FIREBASE_PROJECT}");
+    let manifest = prepare(&hub, &config).await.unwrap();
+
+    let error = FirebaseAuthnPlugin::default()
+        .init(&ctx(Arc::clone(&hub), config, Some(manifest)))
+        .await
+        .unwrap_err();
+
+    assert!(format!("{error:#}").contains("CF_GEARS_TEST_UNSET_FIREBASE_PROJECT"));
     assert!(!bound(&hub));
 }

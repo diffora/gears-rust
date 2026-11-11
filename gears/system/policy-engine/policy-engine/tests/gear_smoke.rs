@@ -14,6 +14,7 @@ use policy_engine_sdk::{PolicyManagementClientV1, reason};
 use serde_json::json;
 use toolkit::Gear;
 use toolkit::client_hub::ClientScope;
+use toolkit_gts::gts_id;
 use uuid::Uuid;
 
 fn request(tenant: Uuid) -> EngineRequest {
@@ -127,7 +128,7 @@ async fn invalid_builtins_fail_startup() {
 
     // The managed catalog is ready at init, after the admission barrier.
     let unknown = json!({ "builtin_policies": [builtin(
-        "gadgets", "gts.cf.core.example.gadget.v1~", "package p\ndeny := true",
+        "gadgets", gts_id!("cf.core.example.gadget.v1~"), "package p\ndeny := true",
     )] });
     let (ctx, _hub) = gear_ctx(&unknown).await;
     let err = PolicyEngine::default()

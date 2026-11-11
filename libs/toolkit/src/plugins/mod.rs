@@ -136,16 +136,23 @@ impl GtsPluginSelector {
 ///
 /// Credential refusals and malformed/internal responses are not availability
 /// failures: resolvers must preserve those as faults instead of retryable outages.
+/// `ResourceExhausted` is an outage only as throttling, when a quota violation
+/// carries a retry hint (as the API gateway's throttling always sets). Without
+/// a retry hint this discovery policy treats the exhaustion as a non-retryable
+/// fault; the SDK listing helper's deterministic page bound is one such case.
 /// This is discovery policy, not a general retry classification for business calls.
 #[must_use]
 pub fn is_discovery_outage(error: &CanonicalError) -> bool {
-    matches!(
-        error,
+    match error {
         CanonicalError::ServiceUnavailable { .. }
-            | CanonicalError::DeadlineExceeded { .. }
-            | CanonicalError::ResourceExhausted { .. }
-            | CanonicalError::Aborted { .. }
-    )
+        | CanonicalError::DeadlineExceeded { .. }
+        | CanonicalError::Aborted { .. } => true,
+        CanonicalError::ResourceExhausted { ctx, .. } => ctx
+            .violations
+            .iter()
+            .any(|violation| violation.retry_after_seconds.is_some()),
+        _ => false,
+    }
 }
 
 /// Error returned by [`choose_plugin_instance`].

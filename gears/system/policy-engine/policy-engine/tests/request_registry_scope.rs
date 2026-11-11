@@ -34,6 +34,18 @@ async fn validation_and_activation_keep_caller_context_and_do_not_retry_refusals
             ManagementError::RegistryReadDenied,
             403,
         ),
+        // A registry contract failure is deterministic: an internal error, not a retry.
+        (
+            CanonicalError::internal("the registry answered with another kind").create(),
+            ManagementError::Internal,
+            500,
+        ),
+        // An outage stays retryable.
+        (
+            CanonicalError::service_unavailable().create(),
+            ManagementError::Unavailable,
+            503,
+        ),
     ] {
         let hub = Arc::new(ClientHub::new());
         let registry = registry();

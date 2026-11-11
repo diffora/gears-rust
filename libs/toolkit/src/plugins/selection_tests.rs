@@ -135,6 +135,7 @@ fn discovery_outages_exclude_credential_refusals_and_corrupt_pages() {
         Catalogue::deadline_exceeded("listing timed out").create(),
         Catalogue::resource_exhausted("listing throttled")
             .with_quota_violation("listing", "rate limit")
+            .with_quota_violation_retry_after_seconds(1)
             .create(),
         Catalogue::aborted("listing aborted")
             .with_reason("LISTING_ABORTED")
@@ -151,6 +152,10 @@ fn discovery_outages_exclude_credential_refusals_and_corrupt_pages() {
             .with_reason("PLATFORM_CREDENTIAL_REFUSED")
             .create(),
         CanonicalError::internal("malformed registry page").create(),
+        // A listing helper's own page bound: deterministic, no retry hint.
+        Catalogue::resource_exhausted("the listing did not end within its page bound")
+            .with_quota_violation("page", "at most N pages per listing helper call")
+            .create(),
     ];
     for error in faults {
         assert!(!is_discovery_outage(&error), "{error:?}");

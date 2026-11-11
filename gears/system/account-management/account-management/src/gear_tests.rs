@@ -549,7 +549,7 @@ mod no_seed_startup_tests {
     /// With only the request API in the hub, AM's publication cannot bind its
     /// backend — the tenant API does not stand in for the platform API — and AM's
     /// `init` refuses to build services without it. (Request paths read only
-    /// through the tenant API (P33); both are wired before the application group.)
+    /// through the tenant API (types-registry SPEC §8.4); both are wired before the application group.)
     #[tokio::test]
     async fn without_the_platform_api_neither_publication_nor_init_proceeds() {
         use toolkit::gts_publication::GtsPublicationCapability as _;
@@ -929,7 +929,7 @@ mod restart_tests {
         am: Arc<toolkit::lifecycle::WithLifecycle<AccountManagementGear>>,
         /// What the runtime does for AM: publication until admitted, `init`,
         /// then `start` and `wait_ready`. Taken by [`startup_settled`].
-        startup: parking_lot::Mutex<Option<tokio::task::JoinHandle<anyhow::Result<()>>>>,
+        startup: std::sync::Mutex<Option<tokio::task::JoinHandle<anyhow::Result<()>>>>,
         cancel: CancellationToken,
     }
 
@@ -1018,10 +1018,10 @@ mod restart_tests {
                 hub: Arc::clone(&hub),
                 am_db,
                 am: Arc::clone(&am),
-                startup: parking_lot::Mutex::new(None),
+                startup: std::sync::Mutex::new(None),
                 cancel: cancel.clone(),
             };
-            *booted.startup.lock() = Some(tokio::spawn(async move {
+            *booted.startup.lock().expect("startup lock") = Some(tokio::spawn(async move {
                 // What the runtime does for AM: publish its manifest until
                 // admitted, then `init` with the admitted manifest and
                 // `start`; then wait for its `ReadySignal` (or `serve` ending).
@@ -1073,9 +1073,11 @@ mod restart_tests {
     /// Await AM's startup: `Ok` once AM is initialized, started and ready, `Err`
     /// with its failure.
     async fn startup_settled(booted: &Booted) -> anyhow::Result<()> {
+        // The guard is a temporary of this statement: it is dropped before the await.
         let startup = booted
             .startup
             .lock()
+            .expect("startup lock")
             .take()
             .ok_or_else(|| anyhow::anyhow!("startup already awaited"))?;
         tokio::time::timeout(std::time::Duration::from_secs(60), startup)
@@ -1085,9 +1087,14 @@ mod restart_tests {
 
     impl Booted {
         /// Stop AM's background tasks; the SDK registry has no worker to drain.
-        async fn shutdown(self) {
+        async fn shutdown(mut self) {
             self.cancel.cancel();
-            if let Some(startup) = self.startup.lock().take() {
+            // Owned: no lock to take, and a poisoned value is still aborted.
+            let startup = self
+                .startup
+                .get_mut()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(startup) = startup.take() {
                 startup.abort();
             }
             self.am
@@ -1226,7 +1233,7 @@ mod restart_tests {
 
     #[tokio::test]
     async fn a_custom_root_type_is_published() {
-        let custom = "gts.cf.core.am.tenant_type.v1~acme.core.am.platform.v1~";
+        let custom = toolkit_gts::gts_id!("cf.core.am.tenant_type.v1~acme.core.am.platform.v1~");
         let data = DataRoot::new();
         let booted = data
             .boot(am_config(custom, false, false))

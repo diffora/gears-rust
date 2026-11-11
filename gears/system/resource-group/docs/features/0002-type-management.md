@@ -184,8 +184,15 @@ Types define the structural rules for the resource group hierarchy — which par
 6. [x] - `p1` - **FOR EACH** membership_path in allowed_membership_types - `inst-val-input-6`
    1. [x] - `p1` - Validate membership_path is a valid GtsTypePath (no RG prefix requirement) - `inst-val-input-6a`
    2. [x] - `p1` - Verify membership_path exists in gts_type table - `inst-val-input-6b`
-7. [x] - `p1` - **IF** metadata_schema provided, validate it is a valid JSON Schema via `jsonschema::validator_for()` (compile-check). Runtime metadata validation against group instances uses `validate_metadata_via_gts()` through `TypesRegistryClient`. - `inst-val-input-7`
+7. [x] - `p1` - **IF** metadata_schema provided, validate it is a valid JSON Schema via `jsonschema::validator_for()` (compile-check). - `inst-val-input-7`
 8. [x] - `p1` - **RETURN** validated type definition - `inst-val-input-8`
+
+**Migration boundary**: Runtime metadata validation against group instances uses
+`validate_metadata_via_gts()` through the legacy `TypesRegistryClient`, which skips
+validation when the type is not in the legacy catalogue. An RG type present only in
+the managed catalogue is therefore not validated until resource-group migrates;
+the migration and its regression test are tracked in the
+[Types Registry migration plan, T38b](../../../types-registry/docs/p0/todo.md#---t38b-remaining-system-and-service-gears--sdk-and-managed-publication).
 
 ### Hierarchy Safety Check for Type Update
 

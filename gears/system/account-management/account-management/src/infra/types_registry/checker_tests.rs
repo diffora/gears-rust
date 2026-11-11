@@ -383,7 +383,7 @@ async fn rejects_when_registry_probe_times_out() {
     );
 }
 
-// -------- who the schemas are read for (P33) --------
+// -------- who the schemas are read for --------
 
 /// One checker serves every request: each check reads for the caller it
 /// was given, and none reaches the platform API.

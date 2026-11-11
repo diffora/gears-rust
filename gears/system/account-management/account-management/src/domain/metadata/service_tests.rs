@@ -1754,13 +1754,13 @@ async fn resolve_accepts_suspended_tenant_per_feature_spec() {
     assert_eq!(entry.value, json!({"theme": "own"}));
 }
 
-// ---- who registry reads are made for (P33) -------------------------
+// ---- who registry reads are made for -------------------------------
 
 /// Records the caller of every schema-registry call, answering from a
 /// stub that relies on the port's default batch reverse lookup.
 struct RecordingRegistry {
     inner: StubMetadataSchemaRegistry,
-    seen: parking_lot::Mutex<Vec<SecurityContext>>,
+    seen: std::sync::Mutex<Vec<SecurityContext>>,
 }
 
 #[async_trait::async_trait]
@@ -1770,8 +1770,17 @@ impl crate::domain::metadata::registry::MetadataSchemaRegistry for RecordingRegi
         ctx: &SecurityContext,
         type_id: &GtsTypeId,
     ) -> Result<InheritancePolicy, DomainError> {
-        self.seen.lock().push(ctx.clone());
+        self.seen.lock().expect("seen lock").push(ctx.clone());
         self.inner.resolve_inheritance_policy(ctx, type_id).await
+    }
+
+    async fn check_schema_retained(
+        &self,
+        ctx: &SecurityContext,
+        type_id: &GtsTypeId,
+    ) -> Result<(), DomainError> {
+        self.seen.lock().expect("seen lock").push(ctx.clone());
+        self.inner.check_schema_retained(ctx, type_id).await
     }
 
     async fn resolve_id_by_uuid(
@@ -1779,7 +1788,7 @@ impl crate::domain::metadata::registry::MetadataSchemaRegistry for RecordingRegi
         ctx: &SecurityContext,
         schema_uuid: Uuid,
     ) -> Result<GtsTypeId, DomainError> {
-        self.seen.lock().push(ctx.clone());
+        self.seen.lock().expect("seen lock").push(ctx.clone());
         self.inner.resolve_id_by_uuid(ctx, schema_uuid).await
     }
 
@@ -1789,7 +1798,7 @@ impl crate::domain::metadata::registry::MetadataSchemaRegistry for RecordingRegi
         type_id: &GtsTypeId,
         value: &Value,
     ) -> Result<(), DomainError> {
-        self.seen.lock().push(ctx.clone());
+        self.seen.lock().expect("seen lock").push(ctx.clone());
         self.inner.validate_value(ctx, type_id, value).await
     }
 }
@@ -1810,7 +1819,7 @@ async fn every_schema_read_names_the_requests_caller() {
             schema_a(),
             InheritancePolicy::Inherit,
         )]),
-        seen: parking_lot::Mutex::new(Vec::new()),
+        seen: std::sync::Mutex::new(Vec::new()),
     });
     let svc = MetadataService::new(md_repo, tenants, registry.clone(), mock_enforcer())
         .with_now_fn(Arc::new(fixed_now));
@@ -1837,10 +1846,113 @@ async fn every_schema_read_names_the_requests_caller() {
         svc.delete_metadata(&ctx, tid, schema_a())
             .await
             .expect("delete");
-        let seen: Vec<SecurityContext> = registry.seen.lock().drain(..).collect();
+        let seen: Vec<SecurityContext> =
+            registry.seen.lock().expect("seen lock").drain(..).collect();
         // upsert: policy + validation; get, resolve, delete: policy;
         // list: one reverse lookup through the default batch.
         assert_eq!(seen.len(), 6);
         assert_only_caller(&seen, &ctx);
     }
+}
+
+// ---- metadata under a deleted schema --------------------------------
+
+/// Metadata stored under a schema that is later deleted in the Types
+/// Registry, through the production adapter: the stored entry stays
+/// listable, readable and removable under the deleted schema's exact
+/// identity, while no new value is accepted and the `/resolved` walk, which
+/// needs the live schema's inheritance policy, refuses it.
+#[tokio::test]
+async fn metadata_under_a_deleted_schema_stays_readable_and_removable() {
+    use crate::infra::types_registry::GtsMetadataSchemaRegistry;
+    use types_registry_sdk::testing_platform::{MockTypesRegistry, Seed};
+
+    let schema = schema_a();
+    let types = Arc::new(MockTypesRegistry::new());
+    types.seed_inventory();
+    types.seed(
+        schema.as_ref(),
+        json!({
+            "$id": format!("gts://{schema}"),
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "allOf": [{ "$ref": format!("gts://{}", gts_id!("cf.core.am.tenant_metadata.v1~")) }],
+        }),
+    );
+    let md_repo = Arc::new(FakeMetadataRepo::new());
+    let tenants = Arc::new(FakeTenantRepo::new());
+    let tid = Uuid::from_u128(0x1);
+    seed_tenant(&tenants, tid, None, TenantStatus::Active, false, "root");
+    let svc = MetadataService::new(
+        md_repo,
+        tenants,
+        Arc::new(GtsMetadataSchemaRegistry::new(types.clone())),
+        mock_enforcer(),
+    )
+    .with_now_fn(Arc::new(fixed_now));
+    svc.upsert_metadata(
+        &ctx(),
+        tid,
+        UpsertMetadataRequest::new(schema.clone(), json!({"theme": "dark"})),
+    )
+    .await
+    .expect("stored while the schema is live");
+
+    let content = types.content(schema.as_ref()).expect("seeded");
+    types.seed_entity(Seed::new(schema.as_ref(), content).deleted());
+
+    let page = svc
+        .list_metadata(&ctx(), tid, &first_page())
+        .await
+        .expect("LIST keeps the stored entry");
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].type_id, schema);
+    let entry = svc
+        .get_metadata(&ctx(), tid, schema.clone())
+        .await
+        .expect("GET keeps the stored entry");
+    assert_eq!(entry.value, json!({"theme": "dark"}));
+
+    let put = svc
+        .upsert_metadata(
+            &ctx(),
+            tid,
+            UpsertMetadataRequest::new(schema.clone(), json!({"theme": "light"})),
+        )
+        .await
+        .expect_err("a deleted schema accepts no new value");
+    assert!(
+        matches!(put, DomainError::MetadataEntryNotFound { .. }),
+        "{put:?}"
+    );
+    let kept = svc
+        .get_metadata(&ctx(), tid, schema.clone())
+        .await
+        .expect("the refused PUT wrote nothing");
+    assert_eq!(kept.value, json!({"theme": "dark"}));
+    let resolved = svc
+        .resolve_metadata(&ctx(), tid, schema.clone())
+        .await
+        .expect_err("the walk needs the live schema's policy");
+    assert!(
+        matches!(resolved, DomainError::MetadataEntryNotFound { .. }),
+        "{resolved:?}"
+    );
+
+    svc.delete_metadata(&ctx(), tid, schema.clone())
+        .await
+        .expect("DELETE removes the stored entry");
+    let gone = svc
+        .get_metadata(&ctx(), tid, schema)
+        .await
+        .expect_err("the entry is gone");
+    assert!(
+        matches!(gone, DomainError::MetadataEntryNotFound { .. }),
+        "{gone:?}"
+    );
+    let page = svc
+        .list_metadata(&ctx(), tid, &first_page())
+        .await
+        .expect("LIST after cleanup");
+    assert!(page.items.is_empty());
 }

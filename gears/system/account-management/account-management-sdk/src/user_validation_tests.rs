@@ -114,6 +114,8 @@ fn email_policy_rejects_display_text_unicode_local_bad_domains_and_literals() {
         "Alice <alice@example.com>",
         "<alice@example.com>",
         "t\u{e9}st@example.com",
+        // An IDN host: the previous property validator accepted it.
+        "user@m\u{fc}nchen.de",
         "a@exa_mple.com",
         "a@[not-an-ip]",
         "a@[127.0.0.256]",

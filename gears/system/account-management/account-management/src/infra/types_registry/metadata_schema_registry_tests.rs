@@ -6,7 +6,7 @@
 #![allow(clippy::expect_used, reason = "test helpers")]
 
 use serde_json::json;
-use toolkit_gts::gts_uri;
+use toolkit_gts::{gts_id, gts_uri};
 use types_registry_sdk::testing_platform::{Call, Fault, MockTypesRegistry, Seed};
 
 use super::*;
@@ -14,8 +14,8 @@ use crate::infra::types_registry::test_helpers::{
     CallerSpy, Tampered, assert_only_caller, at_the_boundary, caller, refusals,
 };
 
-const INHERITING: &str = "gts.cf.core.am.tenant_metadata.v1~acme.test.am.tier.v1~";
-const PLAIN: &str = "gts.cf.core.am.tenant_metadata.v1~acme.test.am.plain.v1~";
+const INHERITING: &str = gts_id!("cf.core.am.tenant_metadata.v1~acme.test.am.tier.v1~");
+const PLAIN: &str = gts_id!("cf.core.am.tenant_metadata.v1~acme.test.am.plain.v1~");
 
 fn uuid(type_id: &str) -> Uuid {
     GtsId::try_new(type_id).expect("valid id").to_uuid()
@@ -98,7 +98,7 @@ async fn an_unknown_or_deleted_schema_is_a_metadata_not_found() {
 
     for type_id in [
         INHERITING,
-        "gts.cf.core.am.tenant_metadata.v1~acme.test.am.absent.v1~",
+        gts_id!("cf.core.am.tenant_metadata.v1~acme.test.am.absent.v1~"),
     ] {
         let err = adapter
             .resolve_inheritance_policy(&caller(1), &GtsTypeId::new(type_id))
@@ -189,7 +189,7 @@ async fn metadata_validation_uses_native_gts_reference_constraints() {
                 "required": ["target"],
                 "properties": {"target": {
                     "type": "string",
-                    "x-gts-type-ref": "gts.cf.core.am.tenant_type.v1~"
+                    "x-gts-type-ref": gts_id!("cf.core.am.tenant_type.v1~")
                 }}
             }}
         }),
@@ -199,7 +199,7 @@ async fn metadata_validation_uses_native_gts_reference_constraints() {
         .validate_value(
             &caller(1),
             &GtsTypeId::new(INHERITING),
-            &json!({"target": "gts.cf.core.am.tenant_type.v1~"}),
+            &json!({"target": gts_id!("cf.core.am.tenant_type.v1~")}),
         )
         .await
         .expect("valid GTS type reference");
@@ -286,8 +286,10 @@ async fn a_snapshot_without_resolved_schema_validates_nothing() {
 
 // -------- reverse hydration --------
 
+/// A deleted schema still names the entries stored under it, by its exact
+/// identity; an unknown UUID is omitted.
 #[tokio::test]
-async fn hydrates_a_page_in_one_read_omitting_unknown_and_deleted_schemas() {
+async fn hydrates_a_page_in_one_read_keeping_deleted_and_omitting_unknown_schemas() {
     let registry = registry();
     delete(&registry, PLAIN);
     let unknown = Uuid::from_u128(0xF00D);
@@ -298,8 +300,9 @@ async fn hydrates_a_page_in_one_read_omitting_unknown_and_deleted_schemas() {
         .await
         .expect("hydration");
 
-    assert_eq!(ids.len(), 1);
+    assert_eq!(ids.len(), 2);
     assert_eq!(ids[&uuid(INHERITING)].as_ref(), INHERITING);
+    assert_eq!(ids[&uuid(PLAIN)].as_ref(), PLAIN);
     assert_eq!(registry.calls(Call::BatchGet), 1);
 }
 
@@ -369,22 +372,53 @@ async fn a_schema_that_does_not_round_trip_its_uuid_is_internal() {
 }
 
 #[tokio::test]
-async fn a_deleted_schema_uuid_is_an_orphan() {
+async fn a_deleted_schema_uuid_resolves_to_its_tombstone_identity() {
     let registry = registry();
     delete(&registry, INHERITING);
     let adapter = GtsMetadataSchemaRegistry::new(registry);
 
-    let err = adapter
+    let id = adapter
         .resolve_id_by_uuid(&caller(1), uuid(INHERITING))
         .await
-        .expect_err("a tombstone hydrates nothing");
+        .expect("a tombstone keeps its identity");
+    assert_eq!(id.as_ref(), INHERITING);
+}
+
+/// The read and cleanup gate admits a deleted schema and refuses an unknown
+/// one; the policy read, which serves new values, refuses both.
+#[tokio::test]
+async fn the_retained_gate_admits_a_deleted_schema_but_not_an_unknown_one() {
+    let registry = registry();
+    delete(&registry, PLAIN);
+    let adapter = GtsMetadataSchemaRegistry::new(registry);
+    let deleted = GtsTypeId::new(PLAIN);
+    let unknown = GtsTypeId::new(gts_id!(
+        "cf.core.am.tenant_metadata.v1~acme.test.am.absent.v1~"
+    ));
+
+    adapter
+        .check_schema_retained(&caller(1), &deleted)
+        .await
+        .expect("a tombstone is retained");
+    let err = adapter
+        .check_schema_retained(&caller(1), &unknown)
+        .await
+        .expect_err("an unknown schema is not");
+    assert!(
+        matches!(err, DomainError::MetadataEntryNotFound { .. }),
+        "{err:?}"
+    );
+    let err = adapter
+        .resolve_inheritance_policy(&caller(1), &deleted)
+        .await
+        .expect_err("a tombstone has no live policy");
     assert!(
         matches!(err, DomainError::MetadataEntryNotFound { .. }),
         "{err:?}"
     );
 }
 
-// -------- who the schemas are read for (P33) --------
+// -------- who the schemas are read for --------
 
 /// One adapter serves every metadata request: each of its reads is made
 /// for the caller passed with it, and none reaches the platform API.
@@ -432,6 +466,14 @@ impl MetadataSchemaRegistry for SingleLookups {
         type_id: &GtsTypeId,
     ) -> Result<InheritancePolicy, DomainError> {
         self.0.resolve_inheritance_policy(ctx, type_id).await
+    }
+
+    async fn check_schema_retained(
+        &self,
+        ctx: &SecurityContext,
+        type_id: &GtsTypeId,
+    ) -> Result<(), DomainError> {
+        self.0.check_schema_retained(ctx, type_id).await
     }
 
     async fn resolve_id_by_uuid(

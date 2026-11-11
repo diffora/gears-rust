@@ -8,7 +8,7 @@
 //! wires [`crate::infra::types_registry::GtsTenantTypeChecker`] through the local
 //! database-backed registry; a missing `TypesRegistryApi` fails AM init.
 //! Each check reads both schemas in one batch for the request's [`SecurityContext`]
-//! (P33). See the adapter for registry error classification.
+//! (types-registry SPEC §8.4). See the adapter for registry error classification.
 //!
 //! Disallowed pairings return [`DomainError::TypeNotAllowed`] (400,
 //! `failed_precondition`, `TYPE_NOT_ALLOWED`); unregistered types or malformed
@@ -31,7 +31,7 @@ use crate::domain::error::DomainError;
 /// (`algo-same-type-nesting-admission`).
 ///
 /// Read for the supplied request caller without retaining context or caching
-/// type definitions across calls (P33,
+/// type definitions across calls (types-registry SPEC §8.4,
 /// `dod-tenant-type-enforcement-gts-availability-surface`).
 #[async_trait]
 pub trait TenantTypeChecker: Send + Sync {

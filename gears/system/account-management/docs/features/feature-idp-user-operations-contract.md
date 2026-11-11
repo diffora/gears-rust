@@ -322,6 +322,26 @@ input cap remains input-only: adding a new cap to the persisted User v1 resource
 narrow its catalogue contract. User resource revisions do not redefine fixed command
 rules. Future typed extensible user data needs its own complete GTS payload contract.
 
+#### Breaking input changes
+
+Create and PATCH now enforce these rules on input that was previously forwarded to the
+IdP. The User v1 resource schema already declared the name bounds; the change is that
+commands are now checked against them.
+
+| Input | Before | Now |
+|---|---|---|
+| `"first_name": ""` or `"last_name": ""` on create or PATCH | forwarded unchanged | `validation` (400): 1–255 characters |
+| `first_name` / `last_name` longer than 255 characters | forwarded unchanged | `validation` (400) |
+| `"email": "user@münchen.de"` (IDN host) | accepted | `validation` (400): ASCII hostnames only |
+| `"email": "not-an-email"` | accepted | `validation` (400) |
+| `"email": "user@example.com"`, `"user@[192.0.2.1]"` | accepted | accepted |
+
+The previous property validator accepted both malformed and IDN addresses because JSON
+Schema `format` checking was not enabled, not because the contract allowed them. To clear
+an optional name, send an explicit `null` in the PATCH (JSON Merge Patch), for example
+`{"first_name": null}`; an empty string is not a clearing value. An omitted field stays
+unchanged, and `username` cannot be cleared.
+
 ### Published User Projection Schema
 
 - [x] `p1` - **ID**: `cpt-cf-account-management-dod-idp-user-operations-contract-user-projection-schema`

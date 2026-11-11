@@ -12,7 +12,7 @@ use toolkit::plugins::bind_plugin_instances;
 use tracing::info;
 use types_registry_sdk::GtsId;
 
-use crate::config::StaticAuthNPluginConfig;
+use crate::config::{StaticAuthNPluginConfig, StaticAuthNPluginInstanceProbe};
 use crate::domain::Service;
 
 /// The GTS segment of this plugin's instance.
@@ -37,7 +37,7 @@ impl StaticAuthNPlugin {
     fn plugin_instance(
         inputs: &GtsPublicationInputs<'_>,
     ) -> anyhow::Result<Vec<(GtsId, serde_json::Value)>> {
-        let cfg: StaticAuthNPluginConfig = inputs.config_expanded_or_default()?;
+        let cfg: StaticAuthNPluginInstanceProbe = inputs.config_or_default()?;
         let (id, document) = PluginV1::<AuthNResolverPluginSpecV1>::build_registration(
             INSTANCE_SEGMENT,
             cfg.vendor,

@@ -1,6 +1,7 @@
 //! Fixed tenant command bounds, independent of the registry and normalization.
 
 use crate::{CreateTenantRequest, UpdateTenantRequest, validate_tenant_name};
+use toolkit_gts::gts_id;
 use uuid::Uuid;
 
 #[test]
@@ -23,7 +24,7 @@ fn request_validation_delegates_name_bounds_without_mutating_inputs() {
             Uuid::nil(),
             Uuid::nil(),
             &name,
-            gts::GtsTypeId::new("gts.cf.core.am.tenant_type.v1~cf.core.am.customer.v1~"),
+            gts::GtsTypeId::new(gts_id!("cf.core.am.tenant_type.v1~cf.core.am.customer.v1~")),
         );
         let patch = UpdateTenantRequest::new().with_name(&name);
         assert_eq!(request.validate().is_ok(), valid);

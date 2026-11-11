@@ -275,7 +275,7 @@ pub enum Seen {
 pub struct CallerSpy<R> {
     inner: Arc<R>,
     forbid: Forbid,
-    seen: parking_lot::Mutex<Vec<Seen>>,
+    seen: std::sync::Mutex<Vec<Seen>>,
 }
 
 impl<R> CallerSpy<R> {
@@ -295,14 +295,20 @@ impl<R> CallerSpy<R> {
         Arc::new(Self {
             inner,
             forbid,
-            seen: parking_lot::Mutex::new(Vec::new()),
+            seen: std::sync::Mutex::new(Vec::new()),
         })
+    }
+
+    /// What was seen. A test that panicked while recording leaves nothing half-written.
+    fn seen(&self) -> std::sync::MutexGuard<'_, Vec<Seen>> {
+        self.seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// The contexts of every tenant read, in order.
     pub fn callers(&self) -> Vec<toolkit_security::SecurityContext> {
-        self.seen
-            .lock()
+        self.seen()
             .iter()
             .filter_map(|seen| match seen {
                 Seen::Tenant(ctx) => Some(ctx.clone()),
@@ -313,8 +319,7 @@ impl<R> CallerSpy<R> {
 
     /// How many platform reads were made.
     pub fn platform_reads(&self) -> usize {
-        self.seen
-            .lock()
+        self.seen()
             .iter()
             .filter(|seen| matches!(seen, Seen::Platform))
             .count()
@@ -322,7 +327,7 @@ impl<R> CallerSpy<R> {
 
     /// Forget what was seen, so a second caller's reads stand alone.
     pub fn clear(&self) {
-        self.seen.lock().clear();
+        self.seen().clear();
     }
 
     fn tenant(&self, ctx: &toolkit_security::SecurityContext) {
@@ -331,7 +336,7 @@ impl<R> CallerSpy<R> {
             Forbid::Tenant,
             "a platform operation read through the tenant API"
         );
-        self.seen.lock().push(Seen::Tenant(ctx.clone()));
+        self.seen().push(Seen::Tenant(ctx.clone()));
     }
 
     fn platform(&self) {
@@ -340,7 +345,7 @@ impl<R> CallerSpy<R> {
             Forbid::Platform,
             "a request path read through the platform API"
         );
-        self.seen.lock().push(Seen::Platform);
+        self.seen().push(Seen::Platform);
     }
 }
 

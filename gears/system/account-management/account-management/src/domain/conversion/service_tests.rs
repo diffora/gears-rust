@@ -3972,7 +3972,7 @@ async fn max_listing_top_defaults_to_platform_cap_and_honours_override() {
     assert_eq!(svc_capped.max_listing_top(), 25);
 }
 
-// ---- who registry reads are made for (P33) -------------------------
+// ---- who registry reads are made for -------------------------------
 
 /// Records the caller of every type check and admits the pairing.
 #[derive(Default)]

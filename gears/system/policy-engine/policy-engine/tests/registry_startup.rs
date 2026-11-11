@@ -10,9 +10,10 @@ use policy_engine::PolicyEngine;
 use policy_engine_sdk::PolicyManagementClientV1;
 use serde_json::json;
 use toolkit::{ClientHub, Gear};
+use toolkit_gts::gts_id;
 use types_registry_sdk::testing_platform::Call;
 
-const KNOWN_TYPE: &str = "gts.cf.toolkit.authz.permission.v1~";
+const KNOWN_TYPE: &str = gts_id!("cf.toolkit.authz.permission.v1~");
 
 fn builtin_over(resource_type: &str) -> serde_json::Value {
     json!({ "builtin_policies": [{
@@ -42,7 +43,7 @@ async fn an_unknown_concrete_type_fails_init_before_clients_are_exposed() {
     let hub = Arc::new(ClientHub::new());
     registry().install(&hub);
     let ctx = gear_ctx_over(
-        &builtin_over("gts.cf.core.example.gadget.v1~"),
+        &builtin_over(gts_id!("cf.core.example.gadget.v1~")),
         Arc::clone(&hub),
     )
     .await;
@@ -56,4 +57,27 @@ async fn an_unknown_concrete_type_fails_init_before_clients_are_exposed() {
         hub.try_get_local::<dyn PolicyManagementClientV1>()
             .is_none()
     );
+}
+
+/// The migration boundary: policies read only the managed catalogue. Inventory and
+/// configured seeds reach both catalogues, but a Type Schema a gear still on the legacy
+/// `TypesRegistryClient` writes later exists only in the legacy one. A concrete policy
+/// reference to it is unknown; there is no fallback to the legacy catalogue.
+#[tokio::test]
+async fn a_type_only_in_the_legacy_catalogue_is_unknown_to_policies() {
+    use types_registry_sdk::TypesRegistryClient;
+    use types_registry_sdk::testing::{MockTypesRegistryClient, make_test_type_schema};
+
+    const LEGACY_ONLY: &str = gts_id!("cf.core.example.gadget.v1~");
+    let hub = Arc::new(ClientHub::new());
+    registry().install(&hub);
+    hub.register::<dyn TypesRegistryClient>(Arc::new(
+        MockTypesRegistryClient::new().with_type_schemas([make_test_type_schema(LEGACY_ONLY)]),
+    ));
+    let ctx = gear_ctx_over(&builtin_over(LEGACY_ONLY), Arc::clone(&hub)).await;
+
+    let error = PolicyEngine::default().init(&ctx).await.unwrap_err();
+
+    let message = format!("{error:#}");
+    assert!(message.contains("RESOURCE_TYPE_UNKNOWN"), "{message}");
 }

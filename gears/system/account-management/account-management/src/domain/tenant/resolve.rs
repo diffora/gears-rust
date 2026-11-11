@@ -14,7 +14,7 @@
 //!    status with [`DomainError::Validation`] — before any provider
 //!    round-trip.
 //! 3. Resolve the chained `tenant_type` mandatorily, for the request's
-//!    caller (P33); a Types Registry outage is a
+//!    caller (types-registry SPEC §8.4); a Types Registry outage is a
 //!    [`DomainError::ServiceUnavailable`], not an `Option` leaking
 //!    through the plugin contract.
 //! 4. Replay the plugin's own opaque per-tenant `metadata`.

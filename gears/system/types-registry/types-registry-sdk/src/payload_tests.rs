@@ -3,13 +3,14 @@
 use std::error::Error as _;
 
 use serde_json::{Value, json};
+use toolkit_gts::gts_id;
 
 use crate::{
     CompilePayloadValidatorError, EntityField, GtsCompilePayloadValidatorError, GtsId, GtsTypeId,
     LifecycleStatus, PayloadValidationError, TypeSchema,
 };
 
-const TYPE_ID: &str = "gts.cf.test.payload.base.v1~cf.test.payload.leaf.v1~";
+const TYPE_ID: &str = gts_id!("cf.test.payload.base.v1~cf.test.payload.leaf.v1~");
 
 fn snapshot(content: Value, resolved_schema: Value) -> TypeSchema {
     TypeSchema {
@@ -148,7 +149,7 @@ fn boolean_resolved_schemas_keep_their_native_meaning() {
 
 #[test]
 fn self_references_use_the_selected_id_despite_an_inherited_schema_id() {
-    let base = "gts.cf.test.payload.base.v1~";
+    let base = gts_id!("cf.test.payload.base.v1~");
     let schema = snapshot(
         json!({}),
         json!({

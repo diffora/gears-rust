@@ -3081,7 +3081,7 @@ Rust API; REST contracts and dependency versions are unchanged.
 **Description:** Complete each remaining non-BSS consumer end to end while legacy remains available to other groups. Scope includes declarations-only owners, not just `TypesRegistryClient` matches.
 
 **Slices (each includes its plugins, tests and dependent fixtures):**
-- [ ] Resource-group, then OAGW host/startup closure; migrate OAGW UUID-tail provisioning identities and `seed_legacy_registry_fixtures` together with its reader
+- [ ] Resource-group, then OAGW host/startup closure; migrate OAGW UUID-tail provisioning identities and `seed_legacy_registry_fixtures` together with its reader. Resource-group's `validate_metadata_via_gts` reads the legacy catalogue and skips validation on `NotFound`, so group metadata of an RG type that exists only in the managed catalogue (admitted through the platform API or a managed publication) is accepted unvalidated today. The slice reads the managed catalogue and adds a test that such metadata is validated, and decides whether an unknown RG type stays a skip or becomes an error.
 - [ ] Quota-enforcement + storage plugin; consume materialized `resolved_schema`/`effective_traits`, retain catalogue checks and compile validators once at bootstrap (detailed requirements remain in T38)
 - [ ] License-resolver + static-license and license-enforcement; usage-collector + noop/ClickHouse/TimescaleDB
 - [ ] Event-broker declarations and cluster SDK ownership; event-broker's platform reads already exist. For system-group owners respect T37's prohibition on system publication capabilities: decide the supported seed/owner path before adding an attribute

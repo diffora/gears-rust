@@ -767,7 +767,7 @@ async fn revoke_denied_by_pdp_never_reaches_the_provider() {
     assert_eq!(idp.revoke_call_count(), 0);
 }
 
-// ---- who registry reads are made for (P33) ------------------------
+// ---- who registry reads are made for ------------------------------
 
 /// Two callers through one shared service: the tenant guard's
 /// `tenant_type` read is made for exactly the caller of each flow, and

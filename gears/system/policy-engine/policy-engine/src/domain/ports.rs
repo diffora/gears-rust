@@ -21,6 +21,10 @@ pub enum PortError {
     /// The dependency failed or answered unusably.
     #[error("dependency unavailable: {0}")]
     Unavailable(String),
+    /// The dependency broke its contract or refused the request deterministically:
+    /// repeating the same request cannot cure it.
+    #[error("dependency failed internally: {0}")]
+    Internal(String),
     /// The dependency does not know (or will not show) the subject.
     #[error("not found: {0}")]
     NotFound(String),

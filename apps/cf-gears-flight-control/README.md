@@ -144,5 +144,6 @@ The ConfigMap contains environment placeholders, not passwords. Optional
 participate in rollout checksums. For externally managed Secrets, restart the pods
 after rotating credentials.
 
-The previous chart-specific `postgres.*` values are replaced by the standard
-connection fields above. Local YAML examples under `config/` continue to use SQLite.
+Database connections use the standard toolkit connection fields above; the chart has
+no chart-specific database values. Local YAML examples under `config/` continue to use
+SQLite.

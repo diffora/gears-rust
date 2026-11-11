@@ -1,7 +1,10 @@
 //! Production [`MetadataSchemaRegistry`] over `types_registry_sdk::TypesRegistryApi`.
 //!
-//! Check existence before database access; unknown or deleted schemas yield
-//! [`DomainError::MetadataEntryNotFound`]. Read chain-merged `inheritance_policy`
+//! Check existence before database access; an unknown schema yields
+//! [`DomainError::MetadataEntryNotFound`]. A deleted schema keeps its exact
+//! identity as a tombstone: entries stored under it stay readable and removable
+//! (existence gate and reverse lookups), while its policy and value validation,
+//! which serve new values and the inheritance walk, treat it as absent. Read chain-merged `inheritance_policy`
 //! from effective traits: only `"inherit"` selects [`InheritancePolicy::Inherit`];
 //! missing, null or other values select [`InheritancePolicy::OverrideOnly`].
 //! Reverse lookup returns the schema's chained `type_id` by UUID.
@@ -72,16 +75,14 @@ fn map_registry_err(err: CanonicalError, schema_token: &str) -> DomainError {
     }
 }
 
-/// One Type Schema by identifier under `projection`; a deleted schema is
-/// as absent as an unknown one.
+/// One Type Schema by identifier under `projection`, active or deleted.
 async fn read_schema(
     registry: &dyn TypesRegistryApi,
     ctx: &SecurityContext,
     type_id: &GtsTypeId,
     projection: Projection,
 ) -> Result<TypeSchema, DomainError> {
-    let schema_str = type_id.as_ref();
-    let schema = registry
+    registry
         .get_type_schema(
             ctx,
             type_id,
@@ -91,9 +92,20 @@ async fn read_schema(
             },
         )
         .await
-        .map_err(|err| map_registry_err(err, schema_str))?;
+        .map_err(|err| map_registry_err(err, type_id.as_ref()))
+}
+
+/// [`read_schema`] for a new value or the inheritance walk: a deleted schema
+/// is as absent as an unknown one.
+async fn read_active_schema(
+    registry: &dyn TypesRegistryApi,
+    ctx: &SecurityContext,
+    type_id: &GtsTypeId,
+    projection: Projection,
+) -> Result<TypeSchema, DomainError> {
+    let schema = read_schema(registry, ctx, type_id, projection).await?;
     if schema.lifecycle_status != LifecycleStatus::Active {
-        return Err(not_registered(schema_str));
+        return Err(not_registered(type_id.as_ref()));
     }
     Ok(schema)
 }
@@ -144,7 +156,7 @@ impl MetadataSchemaRegistry for GtsMetadataSchemaRegistry {
         ctx: &SecurityContext,
         type_id: &GtsTypeId,
     ) -> Result<InheritancePolicy, DomainError> {
-        let schema = read_schema(
+        let schema = read_active_schema(
             self.registry.as_ref(),
             ctx,
             type_id,
@@ -199,8 +211,9 @@ impl MetadataSchemaRegistry for GtsMetadataSchemaRegistry {
         schema_uuids: &[Uuid],
     ) -> Result<std::collections::HashMap<Uuid, GtsTypeId>, DomainError> {
         // One batch read per page. A failed read fails the whole lookup;
-        // unknown and deleted schemas are omitted (page-poisoning guard)
-        // and the service layer decides per-row how to surface the miss.
+        // unknown schemas are omitted (page-poisoning guard) and the service
+        // layer decides per-row how to surface the miss. A deleted schema
+        // still names its stored entries.
         let found = self
             .registry
             .batch_get_type_schemas_by_uuid(ctx, schema_uuids, ReadOptions::default())
@@ -208,9 +221,7 @@ impl MetadataSchemaRegistry for GtsMetadataSchemaRegistry {
             .map_err(|err| DomainError::caller_registry_failure(err, "types-registry"))?;
         let mut out = std::collections::HashMap::with_capacity(found.len());
         for (uuid, schema) in found {
-            if let Some(schema) = schema
-                && schema.lifecycle_status == LifecycleStatus::Active
-            {
+            if let Some(schema) = schema {
                 out.insert(uuid, round_tripped(&schema, uuid)?);
             }
         }
@@ -228,10 +239,22 @@ impl MetadataSchemaRegistry for GtsMetadataSchemaRegistry {
             .get_type_schema_by_uuid(ctx, schema_uuid, ReadOptions::default())
             .await
             .map_err(|err| map_registry_err(err, &token))?;
-        if schema.lifecycle_status != LifecycleStatus::Active {
-            return Err(not_registered(&token));
-        }
         round_tripped(&schema, schema_uuid)
+    }
+
+    async fn check_schema_retained(
+        &self,
+        ctx: &SecurityContext,
+        type_id: &GtsTypeId,
+    ) -> Result<(), DomainError> {
+        read_schema(
+            self.registry.as_ref(),
+            ctx,
+            type_id,
+            Projection::Select(FieldSelection::light()),
+        )
+        .await
+        .map(drop)
     }
 
     async fn validate_value(
@@ -243,7 +266,7 @@ impl MetadataSchemaRegistry for GtsMetadataSchemaRegistry {
         // Validate the resolved schema and collect all violations into MetadataValidation.
         // Caller-named schemas missing from the registry return MetadataEntryNotFound
         // (404), rather than a deployment-prerequisite error.
-        let schema = read_schema(
+        let schema = read_active_schema(
             self.registry.as_ref(),
             ctx,
             type_id,

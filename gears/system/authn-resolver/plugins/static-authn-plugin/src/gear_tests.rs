@@ -77,6 +77,45 @@ fn the_manifest_is_the_configured_instance() {
     assert_eq!(documents[0].1["priority"], 7);
 }
 
+/// A configuration whose S2S secret names a variable only the serving process has.
+fn with_runtime_secret() -> Value {
+    json!({
+        "vendor": "cf",
+        "priority": 7,
+        "s2s_credentials": [{
+            "client_id": "svc",
+            "client_secret": "${CF_GEARS_TEST_UNSET_STATIC_AUTHN_SECRET}"
+        }]
+    })
+}
+
+/// The manifest reads vendor and priority only: a publishing process without the
+/// server's secret environment still builds it.
+#[test]
+fn the_manifest_does_not_expand_runtime_secrets() {
+    let manifest = manifest(&with_runtime_secret());
+
+    let documents = manifest.documents();
+    assert_eq!(documents.len(), 1);
+    assert_eq!(documents[0].1["vendor"], "cf");
+    assert_eq!(documents[0].1["priority"], 7);
+}
+
+/// The secret is still expanded, and its absence refused, by `init`.
+#[tokio::test]
+async fn init_refuses_an_unexpanded_runtime_secret() {
+    let config = with_runtime_secret();
+    let ctx = ctx(&config, Some(manifest(&config)));
+
+    let err = StaticAuthNPlugin::default().init(&ctx).await.unwrap_err();
+
+    assert!(
+        format!("{err:#}").contains("CF_GEARS_TEST_UNSET_STATIC_AUTHN_SECRET"),
+        "{err:#}"
+    );
+    assert!(!bound(&ctx.client_hub()));
+}
+
 #[tokio::test]
 async fn init_binds_the_admitted_instance() {
     let config = json!({ "vendor": "cf", "priority": 7 });

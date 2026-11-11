@@ -628,6 +628,10 @@ async fn a_store_outage_or_timeout_is_a_failure_never_a_permit() {
             EngineFailureCondition::Unavailable,
         ),
         (PortError::Timeout, EngineFailureCondition::Timeout),
+        (
+            PortError::Internal("store broke its contract".to_owned()),
+            EngineFailureCondition::Internal,
+        ),
     ] {
         *stack.bindings.fault.lock() = Some(fault);
         let result = stack

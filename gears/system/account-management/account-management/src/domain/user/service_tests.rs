@@ -1836,7 +1836,7 @@ mod cleanup {
     }
 }
 
-// ---- who registry reads are made for (P33) --------------------
+// ---- who registry reads are made for --------------------------
 
 /// Two callers through one shared service: the tenant guard's
 /// `tenant_type` reads are made for

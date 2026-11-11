@@ -585,6 +585,9 @@ impl<S: ContentStore> ManagementService<S> {
                 crate::domain::ports::PortError::PermissionDenied => {
                     ManagementError::RegistryReadDenied
                 }
+                internal @ crate::domain::ports::PortError::Internal(_) => {
+                    error::internal_logged(internal)
+                }
                 other => error::unavailable(other),
             })?;
         if findings.is_empty() {

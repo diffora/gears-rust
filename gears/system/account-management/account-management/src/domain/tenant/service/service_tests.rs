@@ -4578,6 +4578,159 @@ async fn mandatory_tenant_type_read_classifies_platform_credential_refusals_as_i
     }
 }
 
+/// An active child of `root`, visible in `root`'s subtree, with a tenant type
+/// the registry is asked about.
+fn seed_active_child(repo: &FakeTenantRepo, root: Uuid, child: Uuid) {
+    repo.seed_closure(root, child, 0, TenantStatus::Active);
+    repo.seed_closure(child, child, 0, TenantStatus::Active);
+    let now = OffsetDateTime::from_unix_timestamp(1_700_000_000).expect("epoch");
+    repo.insert_tenant_raw(TenantModel {
+        id: child,
+        parent_id: Some(root),
+        name: "child".into(),
+        status: TenantStatus::Active,
+        self_managed: false,
+        tenant_type_uuid: Uuid::from_u128(0xAA),
+        depth: 1,
+        created_at: now,
+        updated_at: now,
+        deleted_at: None,
+    });
+}
+
+/// `tenant_type` on a read is optional enrichment, but a registry refusal of
+/// the request's own caller is not swallowed into `None`: GET and LIST answer
+/// the caller's 401/403, as the mandatory type reads do.
+#[tokio::test]
+async fn optional_tenant_type_hydration_preserves_caller_refusals() {
+    use crate::infra::types_registry::test_helpers::{at_the_boundary, refusals};
+    use types_registry_sdk::testing_platform::{Call, Fault, MockTypesRegistry};
+
+    for (refusal, status) in refusals() {
+        let root = Uuid::from_u128(0x100);
+        let child = Uuid::from_u128(0x200);
+        let repo = Arc::new(FakeTenantRepo::with_root(root));
+        seed_active_child(&repo, root, child);
+        let registry = Arc::new(MockTypesRegistry::new());
+        registry.inject(Fault::on(Call::BatchGet).fail(refusal.clone()));
+        let service = make_service(repo, FakeOutcome::Ok).with_registry(registry.clone());
+
+        let get = service.get_tenant(&ctx_for(root), child).await;
+        registry.inject(Fault::on(Call::BatchGet).fail(refusal));
+        let list = service
+            .list_children(&ctx_for(root), root, &ODataQuery::default())
+            .await;
+
+        let get = get.expect_err("GET must answer the caller's refusal, not tenant_type: None");
+        let list = list.expect_err("LIST must answer the caller's refusal, not tenant_type: None");
+        assert_eq!(at_the_boundary(get).1, Some(status));
+        assert_eq!(at_the_boundary(list).1, Some(status));
+        assert_eq!(registry.platform_calls(Call::BatchGet), 0);
+    }
+}
+
+/// A transient registry failure leaves the optional `tenant_type` empty and
+/// still answers the authorized read.
+#[tokio::test]
+async fn optional_tenant_type_hydration_stays_best_effort_on_outages() {
+    use types_registry_sdk::testing_platform::{Call, Fault, MockTypesRegistry};
+
+    let root = Uuid::from_u128(0x100);
+    let child = Uuid::from_u128(0x200);
+    let repo = Arc::new(FakeTenantRepo::with_root(root));
+    seed_active_child(&repo, root, child);
+    let registry = Arc::new(MockTypesRegistry::new());
+    let service = make_service(repo, FakeOutcome::Ok).with_registry(registry.clone());
+
+    registry.inject(
+        Fault::on(Call::BatchGet)
+            .fail(toolkit_canonical_errors::CanonicalError::service_unavailable().create()),
+    );
+    let tenant = service
+        .get_tenant(&ctx_for(root), child)
+        .await
+        .expect("an outage does not fail the read");
+    assert_eq!(tenant.tenant_type, None);
+
+    registry.inject(
+        Fault::on(Call::BatchGet)
+            .fail(toolkit_canonical_errors::CanonicalError::service_unavailable().create()),
+    );
+    let page = service
+        .list_children(&ctx_for(root), root, &ODataQuery::default())
+        .await
+        .expect("an outage does not fail the listing");
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].tenant_type, None);
+}
+
+/// A mutation resolves the response's `tenant_type` before its side effect:
+/// a caller refusal answers the request and the row stays unchanged, never a
+/// committed change followed by a 401/403.
+#[tokio::test]
+async fn a_refused_tenant_type_read_fails_an_update_before_it_writes() {
+    use crate::infra::types_registry::test_helpers::{at_the_boundary, refusals};
+    use types_registry_sdk::testing_platform::{Call, Fault, MockTypesRegistry};
+
+    for (refusal, status) in refusals() {
+        let root = Uuid::from_u128(0x100);
+        let child = Uuid::from_u128(0x200);
+        let repo = Arc::new(FakeTenantRepo::with_root(root));
+        seed_active_child(&repo, root, child);
+        let before = repo.find_by_id_unchecked(child).expect("seeded");
+        let registry = Arc::new(MockTypesRegistry::new());
+        registry.inject(Fault::on(Call::BatchGet).fail(refusal));
+        let service = make_service(repo.clone(), FakeOutcome::Ok).with_registry(registry);
+
+        let error = service
+            .update_tenant(
+                &ctx_for(root),
+                child,
+                UpdateTenantRequest::new().with_name("renamed"),
+            )
+            .await
+            .expect_err("the caller cannot read the tenant type");
+
+        assert_eq!(at_the_boundary(error).1, Some(status));
+        let after = repo.find_by_id_unchecked(child).expect("still there");
+        assert_eq!(after.name, before.name);
+        assert_eq!(after.updated_at, before.updated_at);
+    }
+}
+
+/// Updating a deleted tenant stays the repo's `Conflict`: the response's
+/// tenant type is not read for it, so a registry refusal cannot take over.
+#[tokio::test]
+async fn updating_a_deleted_tenant_conflicts_before_any_tenant_type_read() {
+    use crate::infra::types_registry::test_helpers::refusals;
+    use types_registry_sdk::testing_platform::{Call, Fault, MockTypesRegistry};
+
+    let (refusal, _) = refusals()[0].clone();
+    let root = Uuid::from_u128(0x100);
+    let child = Uuid::from_u128(0x200);
+    let repo = Arc::new(FakeTenantRepo::with_root(root));
+    seed_active_child(&repo, root, child);
+    let mut deleted = repo.find_by_id_unchecked(child).expect("seeded");
+    deleted.status = TenantStatus::Deleted;
+    deleted.deleted_at = Some(deleted.updated_at);
+    repo.insert_tenant_raw(deleted);
+    let registry = Arc::new(MockTypesRegistry::new());
+    registry.inject(Fault::on(Call::BatchGet).fail(refusal));
+    let service = make_service(repo, FakeOutcome::Ok).with_registry(registry.clone());
+
+    let error = service
+        .update_tenant(
+            &ctx_for(root),
+            child,
+            UpdateTenantRequest::new().with_name("renamed"),
+        )
+        .await
+        .expect_err("a deleted tenant is read-only");
+
+    assert!(matches!(error, DomainError::Conflict { .. }), "{error:?}");
+    assert_eq!(registry.calls(Call::BatchGet), 0);
+}
+
 #[tokio::test]
 async fn load_tenant_context_defers_on_gts_type_schema_not_found() {
     let root = Uuid::from_u128(0x100);
@@ -4999,7 +5152,7 @@ fn chain_is_complete_rejects_a_chain_on_a_direct_child() {
 }
 
 // ---------------------------------------------------------------------------
-// Who registry reads are made for (P33)
+// Who registry reads are made for
 // ---------------------------------------------------------------------------
 
 mod caller_provenance {
@@ -5070,9 +5223,10 @@ mod caller_provenance {
             svc.unsuspend_tenant(&ctx, child).await.expect("unsuspend");
             svc.delete_tenant(&ctx, child).await.expect("delete");
 
-            // Parent context + activation lowering, get, list children,
-            // list descendants, update lowering, suspend, unsuspend, delete.
-            assert_eq!(spy.callers().len(), 9, "every flow read the registry");
+            // Parent context (create answers with its validated type), get,
+            // list children, list descendants, and the pre-write reads of
+            // update, suspend, unsuspend and delete.
+            assert_eq!(spy.callers().len(), 8, "every flow read the registry");
             assert_only_caller(&spy.callers(), &ctx);
             assert_only_caller(
                 &checker
@@ -5129,6 +5283,29 @@ mod caller_provenance {
         assert_eq!(res.scanned, 1);
         assert_eq!(spy.platform_reads(), 1);
         assert!(spy.callers().is_empty());
+    }
+
+    /// A created tenant answers with the tenant type validated before the
+    /// saga: the only registry read is the parent's `IdP` context, none
+    /// follows the activation.
+    #[tokio::test]
+    async fn create_reads_no_tenant_type_after_activation() {
+        let root = Uuid::from_u128(0x100);
+        let repo = Arc::new(FakeTenantRepo::with_root(root));
+        let spy = CallerSpy::for_requests(Arc::new(ConstantTypeRegistry(CUSTOMER_TENANT_TYPE_ID)));
+        let svc = make_service(repo, FakeOutcome::Ok).with_types_registry(spy.clone(), spy.clone());
+        let ctx = caller_in(1, root);
+
+        let created = svc
+            .create_tenant(&ctx, child_input(Uuid::from_u128(0x201), root))
+            .await
+            .expect("create");
+
+        assert_eq!(
+            created.tenant_type.as_deref(),
+            Some(CUSTOMER_TENANT_TYPE_ID)
+        );
+        assert_eq!(spy.callers().len(), 1, "the parent's IdP context only");
     }
 
     /// An unknown tenant type still lowers to `tenant_type: None` for a

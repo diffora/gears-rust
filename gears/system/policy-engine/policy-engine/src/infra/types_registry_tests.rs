@@ -149,8 +149,10 @@ async fn caller_refusals_are_not_unknown_types_or_a_platform_fallback() {
     }
 }
 
+/// The platform credential is deployment configuration: its refusal is not the
+/// request caller's and is not cured by retrying.
 #[tokio::test]
-async fn a_platform_credential_refusal_is_a_dependency_failure() {
+async fn a_platform_credential_refusal_is_an_internal_dependency_failure() {
     let registry = registry();
     registry.inject(
         Fault::on(Call::BatchGet).fail(
@@ -163,7 +165,7 @@ async fn a_platform_credential_refusal_is_a_dependency_failure() {
         .known_types(TypeCatalogScope::Platform, &[WIDGET.to_owned()])
         .await
         .unwrap_err();
-    assert!(matches!(error, PortError::Unavailable(_)));
+    assert!(matches!(error, PortError::Internal(_)), "{error:?}");
 }
 
 #[tokio::test(start_paused = true)]
@@ -177,24 +179,71 @@ async fn a_stalled_batch_fails_at_the_configured_budget() {
     assert_eq!(error, PortError::Timeout);
 }
 
+/// Contract failures are internal in both scopes, never a partial known set and
+/// never a retryable outage.
 #[tokio::test]
-async fn an_unusable_batch_never_becomes_a_partial_known_set() {
-    for malformed in [false, true] {
-        let registry = registry();
-        if malformed {
-            registry.protocol_fault(ProtocolFault::DropAnswers);
-        } else {
-            registry.inject(
-                Fault::on(Call::BatchGet).fail(CanonicalError::internal("outage").create()),
+async fn an_unusable_batch_is_an_internal_failure_never_a_partial_known_set() {
+    let caller = ctx(uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+    for scope in [
+        TypeCatalogScope::Platform,
+        TypeCatalogScope::Caller(&caller),
+    ] {
+        let refusals = [
+            CanonicalError::internal("contract violation").create(),
+            RegistryReadResource::invalid_argument()
+                .with_field_violation("key", "refused", "INVALID")
+                .create(),
+            // A whole-call `NotFound` is a missing endpoint or contract; an absent
+            // type is answered as `None` (see the first test), not as this error.
+            RegistryReadResource::not_found("no such route")
+                .with_resource("batch")
+                .create(),
+            RegistryReadResource::failed_precondition()
+                .with_precondition_violation("registry", "not configured", "STATE")
+                .create(),
+            RegistryReadResource::unimplemented("batch reads").create(),
+        ];
+        let mut faults: Vec<Option<CanonicalError>> = refusals.into_iter().map(Some).collect();
+        faults.push(None); // dropped answers
+        for fault in faults {
+            let registry = registry();
+            match &fault {
+                Some(error) => registry.inject(Fault::on(Call::BatchGet).fail(error.clone())),
+                None => registry.protocol_fault(ProtocolFault::DropAnswers),
+            }
+            let error = catalog(&registry)
+                .known_types(scope, &[WIDGET.to_owned(), UNKNOWN.to_owned()])
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(error, PortError::Internal(_)),
+                "{fault:?}: {error:?}"
             );
         }
+    }
+}
+
+#[tokio::test]
+async fn registry_outages_stay_retryable() {
+    for outage in [
+        CanonicalError::service_unavailable().create(),
+        RegistryReadResource::deadline_exceeded("slow").create(),
+        RegistryReadResource::resource_exhausted("throttled")
+            .with_quota_violation("reads", "rate limit")
+            .create(),
+        RegistryReadResource::aborted("contention")
+            .with_reason("CONTENTION")
+            .create(),
+    ] {
+        let registry = registry();
+        registry.inject(Fault::on(Call::BatchGet).fail(outage.clone()));
         let error = catalog(&registry)
-            .known_types(
-                TypeCatalogScope::Platform,
-                &[WIDGET.to_owned(), UNKNOWN.to_owned()],
-            )
+            .known_types(TypeCatalogScope::Platform, &[WIDGET.to_owned()])
             .await
             .unwrap_err();
-        assert!(matches!(error, PortError::Unavailable(_)), "{error:?}");
+        assert!(
+            matches!(error, PortError::Unavailable(_)),
+            "{outage:?}: {error:?}"
+        );
     }
 }

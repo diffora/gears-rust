@@ -367,6 +367,7 @@ fn port_failure(err: &PortError, what: &'static str) -> EngineFailure {
     tracing::warn!(dependency = what, error = %err, "policy-engine: dependency failed");
     match err {
         PortError::Timeout => EngineFailure::timeout(format!("{what} timed out")),
+        PortError::Internal(_) => EngineFailure::internal(format!("{what} failed internally")),
         PortError::Unavailable(_)
         | PortError::NotFound(_)
         | PortError::Unauthenticated

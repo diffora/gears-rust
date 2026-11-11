@@ -57,17 +57,47 @@ pub(super) fn decide_batch(
             }
         }
         if !progress {
-            for outcome in outcomes.iter_mut().filter(|o| o.is_none()) {
-                *outcome = Some(Decided::Failed(AdmissionFailure::new(
-                    Reason::InvalidSchema,
-                    "cyclic in-batch schema prerequisites",
-                )));
+            // Only the members of a cycle are refused as invalid; the candidates that
+            // wait on them are then blocked by that dependency, as the registry does.
+            let members = cycle_members(&dependencies, &outcomes);
+            for (i, outcome) in outcomes.iter_mut().enumerate() {
+                if outcome.is_none() && members.contains(&i) {
+                    *outcome = Some(Decided::Failed(AdmissionFailure::new(
+                        Reason::InvalidSchema,
+                        "cyclic in-batch schema prerequisites",
+                    )));
+                }
             }
         }
     }
     outcomes
         .into_iter()
         .map(|o| o.expect("every candidate decided"))
+        .collect()
+}
+
+/// The undecided candidates that wait on themselves through other undecided ones.
+/// Called only when no undecided candidate can progress, so at least one exists.
+fn cycle_members(
+    dependencies: &[Vec<(usize, String)>],
+    outcomes: &[Option<Decided>],
+) -> HashSet<usize> {
+    let undecided = |slot: usize| outcomes[slot].is_none();
+    (0..dependencies.len())
+        .filter(|&start| undecided(start))
+        .filter(|&start| {
+            let mut seen = HashSet::new();
+            let mut pending: Vec<usize> = dependencies[start].iter().map(|(s, _)| *s).collect();
+            while let Some(slot) = pending.pop() {
+                if slot == start {
+                    return true;
+                }
+                if undecided(slot) && seen.insert(slot) {
+                    pending.extend(dependencies[slot].iter().map(|(s, _)| *s));
+                }
+            }
+            false
+        })
         .collect()
 }
 

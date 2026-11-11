@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use toolkit_canonical_errors::CanonicalError;
+use toolkit_gts::gts_id;
 use toolkit_security::{PlatformSecurityContext, SecurityContext};
 
 use super::{Call, Fault, MockTypesRegistry, Seed};
@@ -398,9 +399,9 @@ async fn admission_rejects_and_waits_on_dependencies_as_told() {
 
 #[tokio::test]
 async fn a_failed_revision_blocks_transitive_dependents_without_poisoning_independent_writes() {
-    const INDEPENDENT: &str = "gts.cf.test.pkg.independent.v1~";
+    const INDEPENDENT: &str = gts_id!("cf.test.pkg.independent.v1~");
     let fake = MockTypesRegistry::new().completing_after(0);
-    fake.seed("gts.cf.test.pkg.invalid.v1~", json!({"type": 42}));
+    fake.seed(gts_id!("cf.test.pkg.invalid.v1~"), json!({"type": 42}));
     let mut middle = schema(TOY);
     middle["properties"] = json!({"nested": {"$ref": format!("gts://{BASE}")}});
     for item in register(

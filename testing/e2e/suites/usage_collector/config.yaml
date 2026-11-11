@@ -45,6 +45,7 @@ database:
         max_conns: 5
 
 server:
+  # conftest.py replaces it with a temporary home (APP__SERVER__HOME_DIR).
   home_dir: "~/.cf-gears"
 
 logging:

@@ -1,4 +1,4 @@
-//! Registry caller selection (P33).
+//! Registry caller selection (types-registry SPEC §8.4).
 //!
 //! Request reads use [`TypesRegistryApi`] with the unchanged [`SecurityContext`].
 //! Bootstrap, retention and the reaper use [`PlatformTypesRegistryApi`] without

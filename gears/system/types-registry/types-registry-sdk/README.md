@@ -565,9 +565,14 @@ event carries `reconcile_id` directly.
 - `seed` and `Seed` deliberately bypass admission for fixtures, including invalid schemas.
   Explicit call faults and admission refusals retain precedence; lifecycle, precondition,
   unchanged and idempotent-replay behavior is preserved. An unrelated invalid seed cannot
-  poison valid admission. The mock does not reproduce publisher guards, database locking,
-  compatibility/history checks or every production graph failure classification; Instance
-  payload admission remains outside this schema-only validation contract.
+  poison valid admission. The members of an in-batch schema cycle are refused as
+  `invalid_schema` and the candidates waiting on them are `blocked_by_dependency`, as in the
+  registry. The mock does not reproduce publisher guards, database locking,
+  compatibility/history checks or every production graph failure classification.
+- Instances are admitted without validating their payload against their Type Schema and
+  without waiting on, or being blocked by, in-batch schema candidates. A batch the registry
+  refuses (an invalid payload, an instance of a type refused in the same batch) can succeed
+  on the mock: assert instance admission against the registry's local client.
 - `testing_platform::conformance::run` holds the contract checks that the mock, the
   registry's local client and the REST client over TCP all pass.
 

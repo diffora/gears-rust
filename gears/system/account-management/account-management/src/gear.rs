@@ -639,7 +639,7 @@ impl Gear for AccountManagementGear {
         // registry's own local clients where it runs here, its resolving REST
         // clients otherwise (`gts_publication(...)` and `#[toolkit::consumes]` wire both
         // with the infrastructure). Request reads use `request_registry` with
-        // each caller's context (P33). Bootstrap, retention and the reaper use
+        // each caller's context (types-registry SPEC §8.4). Bootstrap, retention and the reaper use
         // `platform_registry`. Process-wide IdP selection and TR hierarchy reads
         // are named platform exceptions; see `tr_plugin::plugin_impl`.
         let request_registry = ctx

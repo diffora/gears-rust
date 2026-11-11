@@ -107,7 +107,7 @@ impl LazyIdpProvider {
                 let query =
                     ListEntitiesRequest::matching(GtsIdPattern::try_new(plugin_type_id.as_ref())?);
                 // List every page or fail. Selection is process-wide and cached, so use the
-                // platform API (P33), independent of whichever caller triggers it first.
+                // platform API (types-registry SPEC §8.4), independent of whichever caller triggers it first.
                 let instances = self
                     .registry
                     .list_instances(&PlatformSecurityContext::outbound_marker(), query)

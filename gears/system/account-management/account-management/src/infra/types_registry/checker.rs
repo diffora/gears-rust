@@ -1,5 +1,5 @@
 //! Production [`TenantTypeChecker`] over `types_registry_sdk::TypesRegistryApi`.
-//! Each check uses the request's context without retaining it (P33).
+//! Each check uses the request's context without retaining it (types-registry SPEC §8.4).
 //!
 //! For Feature 2.3 (`algo-allowed-parent-types-evaluation`,
 //! `algo-same-type-nesting-admission`):

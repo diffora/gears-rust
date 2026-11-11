@@ -1,5 +1,5 @@
 //! Firebase `AuthN` lifecycle and its scoped SDK implementation.
-use crate::config::FirebaseAuthnPluginConfig;
+use crate::config::{FirebaseAuthnPluginConfig, FirebaseAuthnPluginInstanceProbe};
 use crate::firebase::{AllowedIdentity, FirebaseVerifier, Refusal};
 use async_trait::async_trait;
 use authn_resolver_sdk::{
@@ -32,17 +32,17 @@ pub struct FirebaseAuthnPlugin {
 }
 
 impl FirebaseAuthnPlugin {
-    /// Validate configuration before publishing the instance, without constructing
-    /// the verifier or exposing configured identities in the GTS document.
+    /// The publication's config-only document: the plugin instance, from vendor and
+    /// priority alone. The project and identities are expanded and validated by `init`
+    /// and never appear in the GTS document.
     fn plugin_instance(
         inputs: &GtsPublicationInputs<'_>,
     ) -> anyhow::Result<Vec<(GtsId, serde_json::Value)>> {
-        let config: FirebaseAuthnPluginConfig = inputs.config_expanded_or_default()?;
-        config.validate()?;
+        let probe: FirebaseAuthnPluginInstanceProbe = inputs.config_or_default()?;
         let (id, document) = PluginV1::<AuthNResolverPluginSpecV1>::build_registration(
             PLUGIN_SUFFIX,
-            config.vendor,
-            config.priority,
+            probe.vendor,
+            probe.priority,
         )?;
         Ok(vec![(GtsId::try_new(id.as_ref())?, document)])
     }

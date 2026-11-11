@@ -189,9 +189,9 @@ pub struct TenantService<R: TenantRepo> {
     /// closure rows are written.
     tenant_type_checker: Arc<dyn TenantTypeChecker + Send + Sync>,
     /// Request registry for type hydration and parent `IdP` context
-    /// (P33). Single returns use `resolve_type_id`; `list_children` batches with
+    /// (types-registry SPEC §8.4). Single returns use `resolve_type_id`; `list_children` batches with
     /// `resolve_type_ids`. Tests may omit it, leaving `Tenant.tenant_type` as `None`.
-    /// Reads hit the database until the SDK cache (T36).
+    /// Reads hit the database until the SDK's client cache (types-registry SPEC §8.3).
     types_registry: Option<Arc<dyn TypesRegistryApi>>,
     /// The platform client for the service's own background pipelines —
     /// retention and the provisioning reaper — which run for no request
@@ -212,7 +212,7 @@ pub(super) mod reaper;
 pub(super) mod retention;
 mod scope_util;
 
-/// Who a [`TenantService`] registry read is made for (P33).
+/// Who a [`TenantService`] registry read is made for (types-registry SPEC §8.4).
 #[domain_model]
 #[derive(Clone, Copy)]
 pub(crate) enum CallerOrigin<'a> {
@@ -366,14 +366,29 @@ impl<R: TenantRepo> TenantService<R> {
     }
 
     /// Resolve a tenant-type UUID into its chained GTS string via the
-    /// configured registry client, for the request's caller. Returns
-    /// `None` when no registry is wired or when the lookup fails — the
+    /// configured registry client, for the request's caller. `None` when
+    /// no registry is wired or when the lookup fails otherwise — the
     /// public `tenant_type` field on [`Tenant`] is `Option<String>`
     /// precisely so a registry blip doesn't fail an otherwise-fine read.
-    async fn resolve_tenant_type(&self, ctx: &SecurityContext, type_uuid: Uuid) -> Option<String> {
-        let reader = self.types_registry_reader(CallerOrigin::Request(ctx))?;
+    ///
+    /// # Errors
+    /// A registry refusal of the request's caller (401/403) is the caller's
+    /// answer, as on the mandatory type reads, and is never swallowed.
+    /// Mutations resolve before their side effect, so a refusal never
+    /// follows a committed change.
+    async fn resolve_tenant_type(
+        &self,
+        ctx: &SecurityContext,
+        type_uuid: Uuid,
+    ) -> Result<Option<String>, DomainError> {
+        let Some(reader) = self.types_registry_reader(CallerOrigin::Request(ctx)) else {
+            return Ok(None);
+        };
         match reader.resolve_type_id(type_uuid).await {
-            Ok(type_id) => Some(type_id.as_ref().to_owned()),
+            Ok(type_id) => Ok(Some(type_id.as_ref().to_owned())),
+            Err(err) if is_caller_refusal(&err) => {
+                Err(reader.failure(err, "tenant_type resolution"))
+            }
             Err(err) => {
                 tracing::warn!(
                     target: "am.tenant.service",
@@ -381,7 +396,7 @@ impl<R: TenantRepo> TenantService<R> {
                     error = %err,
                     "tenant_type uuid -> chained-id resolution failed; returning None"
                 );
-                None
+                Ok(None)
             }
         }
     }
@@ -398,13 +413,16 @@ impl<R: TenantRepo> TenantService<R> {
     /// `TryFrom<TenantStatus>` so a bypass surfaces as
     /// [`DomainError::Internal`] (HTTP 500) instead of a process
     /// panic.
+    ///
+    /// `tenant_type` is resolved by the caller (see
+    /// [`Self::resolve_tenant_type`]): a mutation resolves it before its
+    /// side effect, so lowering itself reads no registry.
     async fn lower_to_tenant(
         &self,
-        ctx: &SecurityContext,
         scope: &AccessScope,
         model: TenantModel,
+        tenant_type: Option<String>,
     ) -> Result<Tenant, DomainError> {
-        let tenant_type = self.resolve_tenant_type(ctx, model.tenant_type_uuid).await;
         let status =
             account_management_sdk::TenantStatus::try_from(model.status).map_err(|_| {
                 DomainError::Internal {
@@ -442,29 +460,36 @@ impl<R: TenantRepo> TenantService<R> {
     }
 
     /// One types-registry round-trip for a set of tenant-type uuids.
-    /// Unknown uuids, and every uuid of a failed read, are absent from the map; the
-    /// projection then carries `tenant_type: None` (best-effort, same
-    /// policy as the single-row helper). Empty when no registry is
-    /// wired.
+    /// Unknown uuids, and every uuid of an otherwise failed read, are absent
+    /// from the map; the projection then carries `tenant_type: None`
+    /// (best-effort, same policy as the single-row helper). Empty when no
+    /// registry is wired.
+    ///
+    /// # Errors
+    /// A registry refusal of the request's caller, as
+    /// [`Self::resolve_tenant_type`].
     async fn resolve_type_strings(
         &self,
         ctx: &SecurityContext,
         mut uuids: Vec<Uuid>,
-    ) -> std::collections::HashMap<Uuid, String> {
+    ) -> Result<std::collections::HashMap<Uuid, String>, DomainError> {
         let mut out = std::collections::HashMap::new();
         let Some(reader) = self.types_registry_reader(CallerOrigin::Request(ctx)) else {
-            return out;
+            return Ok(out);
         };
         uuids.sort_unstable();
         uuids.dedup();
         if uuids.is_empty() {
-            return out;
+            return Ok(out);
         }
         match reader.resolve_type_ids(&uuids).await {
             Ok(found) => {
                 out.extend(found.into_iter().filter_map(|(uuid, type_id)| {
                     type_id.map(|type_id| (uuid, type_id.as_ref().to_owned()))
                 }));
+            }
+            Err(err) if is_caller_refusal(&err) => {
+                return Err(reader.failure(err, "tenant_type batch resolution"));
             }
             Err(err) => {
                 tracing::warn!(
@@ -474,7 +499,7 @@ impl<R: TenantRepo> TenantService<R> {
                 );
             }
         }
-        out
+        Ok(out)
     }
 
     /// Batched lowering of a listing page (`list_children`): one
@@ -488,7 +513,7 @@ impl<R: TenantRepo> TenantService<R> {
     ) -> Result<Page<Tenant>, DomainError> {
         let type_strings = self
             .resolve_type_strings(ctx, page.items.iter().map(|m| m.tenant_type_uuid).collect())
-            .await;
+            .await?;
         self.lower_page_with_types(scope, page, &type_strings).await
     }
 
@@ -1212,20 +1237,17 @@ impl<R: TenantRepo> TenantService<R> {
         // Saga step 3 returns an `Active` row, so lowering through the
         // `is_sdk_visible` invariant is safe.
         // tenant_type forwarded verbatim — chain already validated
-        // upstream, no need for a registry RTT.
+        // upstream, so no registry read follows the activation. The
+        // typed `GtsTypeId` lowers to the SDK's `Option<String>` wire form.
         // A freshly created tenant is always a 0-child leaf; `child_count`
         // resolves to 0 regardless of scope, so the saga's `allow_all`
         // posture is fine here.
-        let mut info = self
-            .lower_to_tenant(ctx, &AccessScope::allow_all(), activated)
-            .await?;
-        if info.tenant_type.is_none() {
-            // `Tenant.tenant_type` is `Option<String>` per the
-            // tenant-resolver-sdk public shape; lower the typed
-            // `GtsTypeId` back to its wire form.
-            info.tenant_type = Some(input.tenant_type.into_string());
-        }
-        Ok(info)
+        self.lower_to_tenant(
+            &AccessScope::allow_all(),
+            activated,
+            Some(input.tenant_type.into_string()),
+        )
+        .await
     }
     // @cpt-end:cpt-cf-account-management-dod-tenant-hierarchy-management-create-child-tenant-saga:p1:inst-dod-create-child-saga
     // @cpt-end:cpt-cf-account-management-algo-tenant-hierarchy-management-create-tenant-saga:p1:inst-algo-saga-service
@@ -1506,7 +1528,10 @@ impl<R: TenantRepo> TenantService<R> {
                 resource: id.to_string(),
             });
         }
-        self.lower_to_tenant(ctx, &scope, tenant).await
+        let tenant_type = self
+            .resolve_tenant_type(ctx, tenant.tenant_type_uuid)
+            .await?;
+        self.lower_to_tenant(&scope, tenant, tenant_type).await
     }
     // @cpt-end:cpt-cf-account-management-dod-tenant-hierarchy-management-tenant-read-scope:p1:inst-dod-read-scope-service
     // @cpt-end:cpt-cf-account-management-flow-tenant-hierarchy-management-read-tenant:p1:inst-flow-read-service
@@ -1677,7 +1702,7 @@ impl<R: TenantRepo> TenantService<R> {
                     .chain(chains.values().flatten().map(|a| a.tenant_type_uuid))
                     .collect(),
             )
-            .await;
+            .await?;
 
         let Page { items, page_info } = self
             .lower_page_with_types(&scope, page, &type_strings)
@@ -1779,6 +1804,16 @@ impl<R: TenantRepo> TenantService<R> {
         patch.validate().map_err(|error| DomainError::Validation {
             detail: format!("update_tenant: {error}"),
         })?;
+        // The response's tenant type, read before the write: a refusal of
+        // the caller must not follow a committed change. A `Deleted` row is
+        // refused by the repo guard below with its `Conflict`, which keeps
+        // its precedence over any registry answer, so nothing is read for it.
+        let tenant_type = if matches!(current.status, TenantStatus::Deleted) {
+            None
+        } else {
+            self.resolve_tenant_type(ctx, current.tenant_type_uuid)
+                .await?
+        };
         let updated = self.repo.update_tenant_mutable(&scope, id, &patch).await?;
 
         // Suppress the lifecycle event log on an idempotent no-op.
@@ -1801,7 +1836,7 @@ impl<R: TenantRepo> TenantService<R> {
             );
         }
 
-        self.lower_to_tenant(ctx, &scope, updated).await
+        self.lower_to_tenant(&scope, updated, tenant_type).await
     }
     // @cpt-end:cpt-cf-account-management-dod-tenant-hierarchy-management-update-mutable-only:p1:inst-dod-update-mutable-service
     // @cpt-end:cpt-cf-account-management-flow-tenant-hierarchy-management-update-tenant:p1:inst-flow-update-service
@@ -1902,6 +1937,10 @@ impl<R: TenantRepo> TenantService<R> {
         if current.parent_id.is_none() {
             return Err(DomainError::RootTenantCannotChangeStatus);
         }
+        // Read before the write, as in `update_tenant`.
+        let tenant_type = self
+            .resolve_tenant_type(ctx, current.tenant_type_uuid)
+            .await?;
         let now = OffsetDateTime::now_utc();
         let updated = self.repo.set_status(&scope, id, target, now).await?;
         let was_no_op = updated.updated_at == current.updated_at;
@@ -1920,7 +1959,7 @@ impl<R: TenantRepo> TenantService<R> {
                 "am tenant state changed"
             );
         }
-        self.lower_to_tenant(ctx, &scope, updated).await
+        self.lower_to_tenant(&scope, updated, tenant_type).await
     }
 
     // -----------------------------------------------------------------
@@ -1996,7 +2035,10 @@ impl<R: TenantRepo> TenantService<R> {
         // downstream filters can distinguish first-write events from
         // idempotent retries.
         if matches!(tenant.status, TenantStatus::Deleted) {
-            return self.lower_to_tenant(ctx, &scope, tenant).await;
+            let tenant_type = self
+                .resolve_tenant_type(ctx, tenant.tenant_type_uuid)
+                .await?;
+            return self.lower_to_tenant(&scope, tenant, tenant_type).await;
         }
         // 1. Child-rejection guard. `include_deleted = false` excludes
         // ONLY rows in `Deleted` status; `Provisioning`, `Active` and
@@ -2032,6 +2074,10 @@ impl<R: TenantRepo> TenantService<R> {
         if rg_links > 0 {
             return Err(DomainError::TenantHasResources);
         }
+        // Read before the write, as in `update_tenant`.
+        let tenant_type = self
+            .resolve_tenant_type(ctx, tenant.tenant_type_uuid)
+            .await?;
         // 3. Flip row + retention columns in one TX.
         let now = OffsetDateTime::now_utc();
         let retention: Option<Duration> = if self.cfg.retention.default_window_secs == 0 {
@@ -2055,12 +2101,20 @@ impl<R: TenantRepo> TenantService<R> {
             retention_secs = self.cfg.retention.default_window_secs,
             "am tenant state changed"
         );
-        self.lower_to_tenant(ctx, &scope, updated).await
+        self.lower_to_tenant(&scope, updated, tenant_type).await
     }
     // @cpt-end:cpt-cf-account-management-dod-tenant-hierarchy-management-data-lifecycle:p1:inst-dod-data-lifecycle-soft-delete
     // @cpt-end:cpt-cf-account-management-dod-tenant-hierarchy-management-soft-delete-preconditions:p1:inst-dod-soft-delete-preconditions
     // @cpt-end:cpt-cf-account-management-algo-tenant-hierarchy-management-soft-delete-preconditions:p1:inst-algo-sdelpc-service
     // @cpt-end:cpt-cf-account-management-flow-tenant-hierarchy-management-soft-delete-tenant:p1:inst-flow-sdel-service
+}
+
+/// A registry refusal of the request's own caller (401/403).
+fn is_caller_refusal(err: &CanonicalError) -> bool {
+    matches!(
+        err,
+        CanonicalError::Unauthenticated { .. } | CanonicalError::PermissionDenied { .. }
+    )
 }
 
 /// `true` when `chain` holds exactly one ancestor per depth strictly
