@@ -633,7 +633,7 @@ rusty-s3 = { version = "0.10", default-features = false }
 # RUSTSEC-2026-0195 (DoS) are fixed only as of this release.
 quick-xml = "0.42"
 
-# Synchronous locks for better performance
+# Synchronous locks
 parking_lot = "0.12"
 
 # Property / model-based testing (cluster conformance suite reference model)

@@ -46,7 +46,7 @@ uuid = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 arc-swap = { workspace = true }
-# Synchronous locks (guidelines/DEPENDENCIES.md): no poisoning, guard returned directly.
+# Synchronous locks: no poisoning, guard returned directly.
 parking_lot = { workspace = true }
 axum = { workspace = true }
 # The gear-local per-(caller, order) edge limiter (Foundation §3.7, D-185), the same keyed
