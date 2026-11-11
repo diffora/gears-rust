@@ -148,9 +148,20 @@ jobs:
           nohup bash -c 'while :; do echo "$(date -u +%H:%M:%S) $(df -k "$GITHUB_WORKSPACE" | awk "NR==2 {print \$4}")"; sleep 60; done' \
             > "$RUNNER_TEMP/df-samples.log" 2>&1 &
 
+      # macOS only: stream kernel storage errors into THIS step's log (#5710).
+      # A lost runner ("lost communication with the server") skips post steps
+      # and artifact uploads but keeps the streamed step log up to the loss.
+      # The watcher must live in this step: background output of an earlier
+      # step is not kept.
       - name: cargo test (no macros)
         shell: bash
-        run: tools/scripts/with_rust_annotations.sh make test-no-macros
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            echo "[kernel-watch] streaming kernel storage errors live (#5710): a lost runner keeps the step log but not artifacts"
+            trap 'kill $(jobs -p) 2>/dev/null || true' EXIT
+            log stream --style compact --predicate 'process == "kernel" AND (eventMessage CONTAINS[c] "I/O error" OR eventMessage CONTAINS[c] "checksum" OR eventMessage CONTAINS[c] "corrupt")' 2>&1 | sed -u 's/^/[kernel-watch] /' &
+          fi
+          tools/scripts/with_rust_annotations.sh make test-no-macros
 
       # Runs on failure too: a failed night is exactly when these numbers matter.
       - name: Disk usage report (macOS)
