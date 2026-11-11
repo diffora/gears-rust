@@ -858,8 +858,7 @@ test-fips: install-tools
 	$(call print_target_banner)
 	cargo test -p cf-gears-toolkit-security --features fips,jwt,internal-auth-cache --lib --test jwt_no_backend_fallback
 	cargo test -p cf-gears-toolkit-auth --features toolkit-security/fips --lib providers::jwks
-	cargo test -p cf-gears-toolkit-contract --features fips --lib runtime::config
-	cargo test -p cf-gears-toolkit-contract --features fips --test wiring_config
+	cargo test -p cf-gears-toolkit-contract --features fips,rest-client,rest-server,grpc-client,otel,canonical-errors
 	cargo nextest run -p cf-gears-toolkit -p cf-gears-toolkit-http -p cf-gears-toolkit-http-proxy -p cf-gears-oagw -p cf-gears-clickhouse-usage-collector-plugin \
 		--features cf-gears-toolkit/bootstrap,cf-gears-toolkit/fips,cf-gears-toolkit-http/fips,cf-gears-toolkit-http-proxy/fips,cf-gears-oagw/fips
 
