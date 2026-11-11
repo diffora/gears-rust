@@ -37,7 +37,7 @@ pub(crate) type ConcreteTenantService = TenantService<TenantRepoImpl>;
 ///
 /// Surfaces a canonical `Problem` envelope. Notable codes:
 /// `validation` (400 — parent not active, invalid `tenant_type` chain,
-/// GTS-schema rejection on the name), `failed_precondition` (400 —
+/// empty/whitespace-only or oversized name), `failed_precondition` (400 —
 /// incompatible parent/child `tenant_type` pairing
 /// [`type_not_allowed`], hierarchy depth strict-limit exceeded
 /// [`tenant_depth_exceeded`]), `cross_tenant_denied` (403), parent

@@ -35,7 +35,11 @@ pub type ConcreteRgService = RgService<GroupRepository, TypeRepository, Membersh
 pub type ConcreteTypeBootstrapService = RgTypeBootstrapService<TypeRepository>;
 
 // @cpt-dod:cpt-cf-resource-group-dod-sdk-foundation-gear-scaffold:p1
-/// Main gear struct for the resource-group gear.
+/// Resource-group gear.
+///
+/// `init` requires the legacy `TypesRegistryClient` for metadata validation.
+/// The `deps` edge links the registry into the host; its system-group startup
+/// makes the client available before this gear initializes.
 #[toolkit::consumes(contract = authz_resolver_sdk::AuthZResolverApi, from = "authz-resolver")]
 #[toolkit::gear(
     name = "resource-group",
@@ -147,7 +151,7 @@ impl Gear for ResourceGroup {
             .set(membership_service.clone())
             .map_err(|_| anyhow::anyhow!("{} gear already initialized", Self::MODULE_NAME))?;
 
-        // Phase 1 (SystemCapability): register SDK clients in ClientHub
+        // Application init: register SDK clients before client wiring and route composition.
         let type_svc = self
             .type_service
             .get()

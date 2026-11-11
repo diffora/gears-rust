@@ -110,7 +110,7 @@ Provides the core tenant CRUD surface the platform is built around: the hierarch
 **Error Scenarios**:
 
 - Parent is not `active` → `FailedPrecondition` (child creation under a suspended or deleted parent is rejected).
-- `name` is empty or all-whitespace → `InvalidArgument` (HTTP 400), before any DB write or IdP call. A valid name is trimmed before it is validated and persisted.
+- `name` is empty/all-whitespace or exceeds 255 Unicode scalars after trimming → `InvalidArgument` (HTTP 400), before any DB write or IdP call. `CreateTenantRequest::validate` checks the normalized name using fixed SDK bounds, independently of the Tenant resource schema.
 - Tenant-type validation fails (invalid type, parent type not in `allowed_parent_types`) → classified at `tenant-type-enforcement`'s boundary; surfaced here as `InvalidArgument` (`reason=INVALID_TENANT_TYPE`) or `FailedPrecondition` (`reason=TYPE_NOT_ALLOWED`) without modification.
 - Strict-mode depth exceedance → `FailedPrecondition` (HTTP 400) with `reason=TENANT_DEPTH_EXCEEDED`.
 - IdP `provision_tenant` fails with a clean compensable error → compensating transaction deletes the `provisioning` row; caller receives `ServiceUnavailable` (HTTP 503).
@@ -193,7 +193,7 @@ Provides the core tenant CRUD surface the platform is built around: the hierarch
 **Error Scenarios**:
 
 - Attempt to modify an immutable field (`id`, `parent_id`, `tenant_type`, `self_managed`, `depth`) → `CanonicalError::InvalidArgument` (HTTP 400).
-- `name` is empty or all-whitespace → `CanonicalError::InvalidArgument` (HTTP 400); the row is unchanged. A valid name is trimmed before the same-name idempotency check, validation, and persistence.
+- `name` is empty/all-whitespace or exceeds 255 Unicode scalars after trimming → `CanonicalError::InvalidArgument` (HTTP 400); the row is unchanged. Every supplied name passes `UpdateTenantRequest::validate` after trimming, including same-name requests, before repo no-op detection and persistence. No Tenant resource schema lookup is required.
 - Attempt to transition `status=deleted` via PATCH → `CanonicalError::FailedPrecondition` (HTTP 400) — deletion goes through DELETE.
 - Attempt to create a child / provision a user / write metadata / initiate a mode conversion on a suspended tenant (enforced at the respective feature's boundary, not here) surfaces as `CanonicalError::FailedPrecondition` (HTTP 400).
 - Concurrent status changes on the same tenant resolve deterministically per PRD §5.2 cross-cutting concurrency; losing writer receives `CanonicalError::Aborted` (HTTP 409, `reason=SERIALIZATION_CONFLICT`) after retry-budget exhaustion.

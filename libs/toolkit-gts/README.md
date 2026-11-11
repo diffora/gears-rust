@@ -7,7 +7,35 @@ ToolKit integration with the [Global Type System](https://github.com/hypernetix/
 - **Link-time inventory** — any `#[gts_type_schema(...)]`-annotated struct or `gts_instance!` declaration, in any crate linked into the process, lands in a shared `inventory`-based collector. `types-registry::init()` reads the collector and registers everything before publishing its client. No per-gear registration code is required for entries known at compile time.
 - **Platform base types** — this crate also ships the handful of shipped base Type Schemas that many gears need directly: `PluginV1<P>` (base of every toolkit plugin instance) and `AuthzPermissionV1` (base of every authorization permission).
 
-Gear-specific Type Schemas (e.g. plugin specs or gear-local permission extensions) can use either the wrapped `#[gts_type_schema(...)]` macro from this crate (and join the inventory automatically) or the raw upstream `#[gts_macros::struct_to_gts_schema(...)]` macro plus runtime registration in the gear's `init()`. Both paths end up in `types-registry`; the first has zero boilerplate.
+Gear-specific declarations use the inventory macros below, or the crate-local
+macros when their gear owns publication. Configured-only schemas use
+`gts_type_schema_template` to generate their document without joining either
+inventory; the caller includes the configured document in its startup manifest.
+
+## Schema templates without registration
+
+`gts_type_schema_template` forwards to the same upstream schema generator as
+`gts_type_schema`, preserving its attributes and generated accessors. It emits no
+inventory entry or declaration provenance and needs no `declare_gts_inventory!()`.
+The type ID in the attribute is still a compile-time literal. Applying runtime
+configuration and publishing the resulting document remain the caller's work.
+Consumers depend on `toolkit-gts`, not directly on `gts-macros`.
+
+```rust
+#[toolkit_gts::gts_type_schema_template(
+    dir_path = "schemas",
+    type_id = gts_id!("example.core.app.configured.v1~"),
+    description = "Configured-only schema template",
+    properties = "id,payload",
+    base = true
+)]
+pub struct ConfiguredV1<P> {
+    pub id: toolkit_gts::GtsInstanceId,
+    pub payload: P,
+}
+
+let schema = ConfiguredV1::<()>::gts_schema_with_refs_as_string();
+```
 
 ## Adding a platform base Type Schema (inside this crate)
 

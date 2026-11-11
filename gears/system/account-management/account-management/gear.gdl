@@ -5,13 +5,11 @@ gdl_version = "1.0"
 # Gearbox product metadata for the account-management gear.
 #
 # Projected from #[toolkit::gear]: id, runtime_caps (db, rest, stateful),
-# colocated_deps (authz-resolver, types-registry, resource-group,
-# tenant-resolver) and the lifecycle clause. Four `deps` is the widest
-# co-location closure in the platform, and it is why this gear is part of
-# `platform-host` rather than a pod of its own.
+# colocated_deps (authz-resolver, resource-group, tenant-resolver) and the
+# lifecycle clause.
 
 gear(
-    deps = ["authz-resolver", "resource-group", "tenant-resolver", "types-registry"],
+    deps = ["authz-resolver", "resource-group", "tenant-resolver"],
     source = git(url = "https://github.com/constructorfabric/gears-rust", path = "gears/system/account-management/account-management"),
     maturity = "preview",
     name = "Account Management",

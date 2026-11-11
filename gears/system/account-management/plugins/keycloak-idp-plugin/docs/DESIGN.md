@@ -336,7 +336,7 @@ The plugin is an in-process gear (gear name `keycloak-idp-plugin`, with declared
 
 Initialization proceeds in phases:
 
-1. **Enabled probe** — `enabled` (default `true`) is read leniently; a disabled plugin skips everything else and registers nothing.
+1. **Enabled probe** — `enabled` is read leniently: it defaults to `true` within a present `config` section, and a gear without a `config` section stays disabled. A disabled plugin skips everything else, registers nothing and publishes no instance.
 2. **Typed config expansion** — `${VAR}` substitution over the marked secret fields; unknown keys are rejected.
 3. **Static validation** — the `secret_ref_template` is validated by interpolating a 64-character synthetic realm name through `SecretRef::new`; the service-account section is validated.
 4. **Transport construction** — the reqwest client is built; if `tls_ca_bundle_ref` is set, the PEM bundle is read from the Credential Store and added as a root certificate.

@@ -151,20 +151,51 @@ impl Default for HttpRetryPolicy {
 
 /// Lightweight probe struct used to read the `enabled` flag without requiring
 /// all mandatory Keycloak fields to be present. Deserialization of
-/// [`KeycloakIdpPluginConfig`] is only attempted when the flag is `true` (default).
+/// [`KeycloakIdpPluginConfig`] is only attempted when the flag is `true`.
 ///
 /// This mirrors the pattern used by `temporal-workflow-executor-plugin`: read
 /// `enabled` via `ctx.config_or_default::<KeycloakIdpPluginEnabledProbe>()`, then
-/// proceed with the full config parse only when enabled.
+/// proceed with the full config parse only when enabled. Without a `config`
+/// section the derived `Default` applies and the plugin stays disabled; a
+/// present section enables it unless it sets `enabled: false`.
 #[derive(Debug, Default, Deserialize)]
 pub struct KeycloakIdpPluginEnabledProbe {
-    /// When `false` the module skips full init. Defaults to `true`.
+    /// When `false` the module skips full init. Defaults to `true` within a
+    /// present `config` section.
     #[serde(default = "default_enabled")]
     pub enabled: bool,
 }
 
 fn default_enabled() -> bool {
     true
+}
+
+/// The GTS publication's view of the configuration: whether the plugin is
+/// enabled, and the vendor and priority of its instance. Config-only: it
+/// reads no secret and needs no Keycloak or `CredStore`, so the runtime builds
+/// the manifest before any `init`. Defaults match [`KeycloakIdpPluginConfig`],
+/// and `enabled` follows [`KeycloakIdpPluginEnabledProbe`]: without a `config`
+/// section nothing is published, as `init` binds nothing.
+#[derive(Debug, Deserialize)]
+pub struct KeycloakIdpPluginInstanceProbe {
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_vendor")]
+    pub vendor: String,
+    #[serde(default = "default_priority")]
+    pub priority: i16,
+}
+
+/// The probe without a `config` section: disabled, as
+/// [`KeycloakIdpPluginEnabledProbe`]'s derived `Default`.
+impl Default for KeycloakIdpPluginInstanceProbe {
+    fn default() -> Self {
+        Self {
+            enabled: KeycloakIdpPluginEnabledProbe::default().enabled,
+            vendor: default_vendor(),
+            priority: default_priority(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, ExpandVars)]

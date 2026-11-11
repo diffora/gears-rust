@@ -24,6 +24,7 @@
   - [Deprovision Idempotency](#deprovision-idempotency)
   - [Published User Projection Schema](#published-user-projection-schema)
   - [Authenticated Tenant-Scoped Invocation](#authenticated-tenant-scoped-invocation)
+  - [Fixed User Command Validation](#fixed-user-command-validation)
 - [6. Acceptance Criteria](#6-acceptance-criteria)
 - [7. Deliberate Omissions](#7-deliberate-omissions)
 
@@ -128,7 +129,7 @@ Delivers the user-operations half of the AM↔IdP integration described in PRD �
 
 **Success Scenarios**:
 
-- Authenticated tenant-admin PATCHes `/tenants/{tenant_id}/users/{user_id}` with a JSON Merge Patch of the user's mutable attributes (`username`, `email`, `display_name`, `first_name`, `last_name`, `password`); UserService resolves the target tenant, validates the changed string fields against `gts.cf.core.am.user.v1~`, invokes `IdpPluginClient::update_user` with tenant-scope binding, and returns 200 OK with the updated user projected through the schema. AM persists no local user state — the IdP applies and owns the change.
+- Authenticated tenant-admin PATCHes `/tenants/{tenant_id}/users/{user_id}` with a JSON Merge Patch of the user's mutable attributes (`username`, `email`, `display_name`, `first_name`, `last_name`, `password`); UserService resolves the target tenant, validates supplied values through `IdpUserPatch::validate` using the fixed SDK DTO contract, invokes `IdpPluginClient::update_user` with tenant-scope binding, and returns 200 OK with the updated user projected through the schema. AM persists no local user state — the IdP applies and owns the change.
 
 **Error Scenarios**:
 
@@ -301,11 +302,55 @@ The system **MUST** treat an already-absent user on `DELETE /tenants/{tenant_id}
 - Entities: `IdpUser`
 - Error taxonomy: delegated to `feature-errors-observability` (catalog owner); `idp_unsupported_operation` code referenced by name only.
 
+### Fixed User Command Validation
+
+`IdpNewUser::validate` and `IdpUserPatch::validate` own fixed command-field validation.
+They require no User identity or User resource-schema read. The service retains PEP and
+mandatory active-tenant/type resolution before username normalization and DTO validation;
+registry refusals/outages on that tenant-type lookup still propagate.
+
+Username and supplied display/given/family names have 1–255 Unicode scalars; optional
+patch clears and omissions skip value validation. Enforcing the already-declared given/
+family-name bounds is an input tightening from the previous pass-through behavior. Email
+retains the existing 255-character command cap and uses a plain ASCII mailbox policy:
+no display text, DNS-style hostname labels or valid IPv4/IPv6 literals, no required TLD.
+Empty quoted local parts are rejected. This input policy does not claim complete RFC or
+JSON Schema `format: email` equivalence. Credentials remain provider-owned.
+
+Profile length bounds share SDK constants with the generated resource schema. The email
+input cap remains input-only: adding a new cap to the persisted User v1 resource would
+narrow its catalogue contract. User resource revisions do not redefine fixed command
+rules. Future typed extensible user data needs its own complete GTS payload contract.
+
+#### Breaking input changes
+
+Create and PATCH now enforce these rules on input that was previously forwarded to the
+IdP. The User v1 resource schema already declared the name bounds; the change is that
+commands are now checked against them.
+
+| Input | Before | Now |
+|---|---|---|
+| `"first_name": ""` or `"last_name": ""` on create or PATCH | forwarded unchanged | `validation` (400): 1–255 characters |
+| `first_name` / `last_name` longer than 255 characters | forwarded unchanged | `validation` (400) |
+| `"email": "user@münchen.de"` (IDN host) | accepted | `validation` (400): ASCII hostnames only |
+| `"email": "not-an-email"` | accepted | `validation` (400) |
+| `"email": "user@example.com"`, `"user@[192.0.2.1]"` | accepted | accepted |
+
+The previous property validator accepted both malformed and IDN addresses because JSON
+Schema `format` checking was not enabled, not because the contract allowed them. To clear
+an optional name, send an explicit `null` in the PATCH (JSON Merge Patch), for example
+`{"first_name": null}`; an empty string is not a clearing value. An omitted field stays
+unchanged, and `username` cannot be cleared.
+
 ### Published User Projection Schema
 
 - [x] `p1` - **ID**: `cpt-cf-account-management-dod-idp-user-operations-contract-user-projection-schema`
 
 The system **MUST** publish the user-projection schema at the chained GTS schema identifier `gts.cf.core.am.user.v1~` and **MUST** project every user response returned from the contract — including the post-update body from `update_user` — through that schema before returning to REST clients. Downstream consumers (e.g., `feature-user-groups` for user-existence checks, platform observability for audit emission) consume the published schema — no per-response custom projection is permitted. The schema **MUST NOT** include IdP-internal fields or credentials (the write-only `password` is never projected back); the projection is tenant-minimal per `adr-idp-user-identity-source-of-truth` and `adr-idp-user-tenant-binding`.
+
+Projection means mapping provider output to the SDK `IdpUser` representation; it does
+not make the full resource schema a create/patch input contract. The published type remains
+available for platform resource metadata and references.
 
 **Implements**:
 

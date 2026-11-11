@@ -95,7 +95,7 @@ async fn a_consumer_round_trips_submit_poll_and_read_through_the_trait() {
     let operation = submit_and_await(
         &*api,
         key("k"),
-        register_one(TYPE, json!({ "type": "object" })),
+        register_one(TYPE, schema(TYPE)),
         Duration::from_secs(30),
         &CancellationToken::new(),
     )
@@ -120,7 +120,7 @@ async fn a_consumer_round_trips_submit_poll_and_read_through_the_trait() {
         )
         .await
         .expect("reads");
-    assert_eq!(snapshot.content, Some(json!({ "type": "object" })));
+    assert_eq!(snapshot.content, Some(schema(TYPE)));
 }
 
 #[tokio::test(start_paused = true)]
@@ -130,7 +130,7 @@ async fn an_operation_nothing_drains_fails_on_its_deadline_naming_the_operation(
     let error = submit_and_await(
         &*fake,
         key("k"),
-        register_one(TYPE, json!({})),
+        register_one(TYPE, schema(TYPE)),
         Duration::from_secs(5),
         &CancellationToken::new(),
     )
@@ -156,7 +156,7 @@ async fn an_unrepresentable_deadline_is_refused_before_any_submit() {
     let error = submit_and_await(
         &fake,
         key("k"),
-        register_one(TYPE, json!({})),
+        register_one(TYPE, schema(TYPE)),
         Duration::MAX,
         &CancellationToken::new(),
     )
@@ -181,7 +181,7 @@ async fn cancellation_stops_waiting_without_cancelling_the_write() {
             submit_and_await(
                 &*fake,
                 key("k"),
-                register_one(TYPE, json!({})),
+                register_one(TYPE, schema(TYPE)),
                 Duration::from_secs(3600),
                 &cancel,
             )
@@ -628,7 +628,7 @@ async fn polls_back_off_from_the_initial_interval_to_the_cap() {
     submit_and_await(
         &*fake,
         key("k-poll"),
-        register_one(TYPE, json!({})),
+        register_one(TYPE, schema(TYPE)),
         budget,
         &CancellationToken::new(),
     )
@@ -671,7 +671,7 @@ async fn a_slow_submit_spends_the_one_budget_and_the_deadline_still_names_the_op
     let error = submit_and_await(
         &*fake,
         key("k"),
-        register_one(TYPE, json!({})),
+        register_one(TYPE, schema(TYPE)),
         Duration::from_secs(5),
         &CancellationToken::new(),
     )
@@ -702,7 +702,7 @@ async fn a_submit_that_never_answers_returns_by_the_deadline() {
     let error = submit_and_await(
         &fake,
         key("k"),
-        register_one(TYPE, json!({})),
+        register_one(TYPE, schema(TYPE)),
         Duration::from_secs(5),
         &CancellationToken::new(),
     )
@@ -723,7 +723,7 @@ async fn a_poll_that_never_answers_returns_by_the_deadline_naming_the_operation(
     let error = submit_and_await(
         &*fake,
         key("k"),
-        register_one(TYPE, json!({})),
+        register_one(TYPE, schema(TYPE)),
         Duration::from_secs(5),
         &CancellationToken::new(),
     )
@@ -747,7 +747,7 @@ async fn a_spent_budget_submits_nothing_even_to_an_instant_registry() {
     let error = submit_and_await(
         &fake,
         key("k"),
-        register_one(TYPE, json!({})),
+        register_one(TYPE, schema(TYPE)),
         Duration::ZERO,
         &CancellationToken::new(),
     )

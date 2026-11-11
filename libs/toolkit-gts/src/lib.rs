@@ -6,13 +6,14 @@
 //!
 //! 1. **Link-time inventory** of GTS Type Schemas and well-known Instances —
 //!    collectors populated at link time via the `inventory` crate. Any crate
-//!    in the process that uses the macros below contributes to the same
+//!    in the process that uses the declaration macros contributes to the same
 //!    global inventory. `types-registry` consumes the inventory at startup,
 //!    so there is no per-gear registration code for entries known at
 //!    compile time.
 //! 2. **Thin proc-macro wrappers** that delegate to upstream `gts-macros`
-//!    and additionally submit the corresponding inventory entry:
+//!    for schema generation and optional inventory registration:
 //!    - `#[gts_type_schema(...)]` — wraps `gts_macros::struct_to_gts_schema`.
+//!    - `#[gts_type_schema_template(...)]` — schema generation without inventory.
 //!    - `gts_instance!` — wraps `gts_macros::gts_instance!`.
 //!    - `gts_instance_raw!` — wraps `gts_macros::gts_instance_raw!`.
 //! 3. **Platform base types** — a small shipped set of GTS base Type Schemas
@@ -50,7 +51,9 @@ pub use inventory;
 
 // Re-export the companion proc-macros so consumers need only one crate dep.
 pub use gts_macros::GtsTraitsSchema;
-pub use toolkit_gts_macros::{gts_id, gts_instance, gts_instance_raw, gts_type_schema, gts_uri};
+pub use toolkit_gts_macros::{
+    gts_id, gts_instance, gts_instance_raw, gts_type_schema, gts_type_schema_template, gts_uri,
+};
 
 /// Hidden re-exports used by the `cf-gears-toolkit-gts-macros` proc-macro
 /// expansions to reach the upstream construction macros without forcing
