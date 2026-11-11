@@ -38,6 +38,9 @@ runtime-client = [
 # same name. The wrapper is a thin layer over the plain client and needs no
 # dependencies of its own, so splitting it into its own feature bought nothing.
 rest-client = ["runtime-client"]
+# FIPS build of the REST transport. `require_tls` follows toolkit-http's
+# default either way; this feature exists so `make test-fips` can test it.
+fips = ["runtime-client", "toolkit-http/fips"]
 # OpenTelemetry in generated clients. Activates `toolkit-http/otel`, which makes
 # the transport actually inject W3C `traceparent` (real distributed-trace
 # propagation) AND enables RED client metrics (`http.client.request.duration`)

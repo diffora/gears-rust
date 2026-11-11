@@ -339,6 +339,31 @@ mod runtime_conversion {
     }
 
     #[test]
+    fn effective_require_tls_matches_apply_to() {
+        // Startup checks read `effective_require_tls()` instead of the raw
+        // `Option`, so it must resolve an unset value the same way the client
+        // does: `false`, or `true` in a FIPS build.
+        for (json, explicit) in [
+            (r#"{"transport": "rest", "endpoint": "http://x"}"#, None),
+            (
+                r#"{"transport": "rest", "endpoint": "http://x", "require_tls": false}"#,
+                Some(false),
+            ),
+            (
+                r#"{"transport": "rest", "endpoint": "http://x", "require_tls": true}"#,
+                Some(true),
+            ),
+        ] {
+            let ClientWiring::Rest { endpoint, tuning } = parse(json).unwrap() else {
+                unreachable!()
+            };
+            let expected = explicit.unwrap_or(cfg!(feature = "fips"));
+            assert_eq!(tuning.effective_require_tls(), expected, "{json}");
+            assert_eq!(tuning.apply_to(endpoint).require_tls, expected, "{json}");
+        }
+    }
+
+    #[test]
     fn tuning_apply_with_no_overrides_keeps_defaults() {
         let w = parse(r#"{"transport": "rest", "endpoint": "https://y"}"#).unwrap();
         let ClientWiring::Rest { endpoint, tuning } = w else {

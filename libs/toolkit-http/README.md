@@ -100,7 +100,7 @@ let data: MyResponse = client
 | `redirect` | Same-origin, 10 max | Redirect policy with security controls (see below) |
 | `pool_idle_timeout` | 90s | Idle connection timeout (None to disable) |
 | `pool_max_idle_per_host` | 32 | Max idle connections per host |
-| `transport` | `TlsOnly` with `fips`, `AllowInsecureHttp` otherwise | Transport security mode; `deny_insecure_http()` enforces TLS |
+| `transport` | `TlsOnly` with `fips`, `AllowInsecureHttp` otherwise | Transport security mode; `deny_insecure_http()` enforces TLS. Under `fips`, selecting `AllowInsecureHttp` is an explicit opt-in and `build()` logs a warning |
 | `tls_roots` | WebPki | TLS root certificate source |
 | `extra_root_certs` | none | Extra trust anchors added to `tls_roots` |
 | `connect_timeout` | none | Bound on DNS + TCP connect + proxy `CONNECT` + TLS handshake |

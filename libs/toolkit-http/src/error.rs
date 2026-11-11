@@ -116,15 +116,6 @@ pub enum HttpError {
         reason: String,
     },
 
-    /// Insecure transport (`AllowInsecureHttp`) was configured but the binary
-    /// was built with `--features fips`, which mandates `TlsOnly`.
-    ///
-    /// Emitted from `HttpClientBuilder::build()` under `cfg(feature = "fips")`.
-    /// The variant exists on all builds so callers can write a single `match`
-    /// arm, but it is only ever returned when the `fips` feature is active.
-    #[error("insecure transport (AllowInsecureHttp) is not permitted under FIPS")]
-    InsecureTransport,
-
     /// The outbound proxy is misconfigured or refused the `CONNECT` tunnel.
     /// Replies of a proxy to plain HTTP requests are ordinary responses.
     ///

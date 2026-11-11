@@ -393,10 +393,9 @@ pub async fn try_acquire_buffer_slot(service: &mut BufferedService) -> Result<()
 }
 
 // The in-crate tests below rely on `httpmock` (plaintext HTTP only) and on
-// constructing clients that accept `http://` URLs. Under `--features fips`
-// the default `HttpClientConfig.transport` is `TlsOnly` and
-// `HttpClientBuilder::build()` rejects `AllowInsecureHttp` outright (see
-// issue #1934), so the whole gear cannot compile/run there. The FIPS-mode
+// constructing clients that accept `http://` URLs. Most of them use
+// `HttpClientBuilder::new()`, whose transport is `TlsOnly` under
+// `--features fips`, so the module is compiled out there. The FIPS-mode
 // contract is covered by the integration test in
 // `tests/fips_default_transport.rs` and by `tests/no_crypto_provider_fips.rs`.
 //

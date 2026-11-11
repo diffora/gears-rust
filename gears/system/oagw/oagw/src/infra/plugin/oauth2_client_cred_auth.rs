@@ -258,9 +258,9 @@ impl AuthPlugin for OAuth2ClientCredAuthPlugin {
 // `libs/toolkit-http/src/client.rs`. The tests below stand up an `httpmock`
 // plaintext server and construct token clients via
 // `HttpClientConfig::for_testing()`, both of which carry
-// `TransportSecurity::AllowInsecureHttp`. Under `--features fips`,
-// `HttpClientBuilder::build()` fails closed with `HttpError::InsecureTransport`,
-// so this whole suite is unrunnable in that configuration and is gated out.
+// `TransportSecurity::AllowInsecureHttp`. Under `--features fips` that also
+// needs the FIPS crypto provider and the plaintext opt-in, which this suite
+// does not set up, so it is gated out there.
 #[cfg(test)]
 #[cfg(not(feature = "fips"))]
 mod tests {

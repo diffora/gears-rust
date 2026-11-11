@@ -485,7 +485,10 @@ pub enum TlsRootConfig {
 /// Transport security configuration
 ///
 /// Controls whether the client enforces TLS or allows insecure HTTP.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+///
+/// [`TransportSecurity::default`] is `TlsOnly` under `--features fips` and
+/// `AllowInsecureHttp` otherwise, the same as every non-testing preset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum TransportSecurity {
     /// Require TLS for all connections (HTTPS only)
@@ -495,15 +498,21 @@ pub enum TransportSecurity {
     /// Use [`HttpClientBuilder::deny_insecure_http`] to switch to `TlsOnly`
     /// when TLS enforcement is required.
     ///
-    /// **FIPS**: under `--features fips`, configuring this on a builder causes
-    /// [`HttpClientBuilder::build`] to return [`HttpError::InsecureTransport`].
-    /// Use [`HttpClientConfig::for_testing`] only for non-FIPS local mocks.
+    /// **FIPS**: under `--features fips` this is never the default; it has to
+    /// be selected explicitly, and [`HttpClientBuilder::build`] logs a warning
+    /// when it is. FIPS 140-3 covers the crypto modules, not whether a given
+    /// connection is encrypted, so whether plaintext is acceptable (e.g. to a
+    /// loopback mTLS sidecar) is a deployment decision.
     ///
     /// [`HttpClientBuilder::deny_insecure_http`]: crate::builder::HttpClientBuilder::deny_insecure_http
     /// [`HttpClientBuilder::build`]: crate::builder::HttpClientBuilder::build
-    /// [`HttpError::InsecureTransport`]: crate::error::HttpError::InsecureTransport
-    #[default]
     AllowInsecureHttp,
+}
+
+impl Default for TransportSecurity {
+    fn default() -> Self {
+        DEFAULT_TRANSPORT
+    }
 }
 
 /// Default transport security for built-in presets.
@@ -621,13 +630,12 @@ pub struct HttpClientConfig {
     ///
     /// Default: `TlsOnly` under `--features fips`, `AllowInsecureHttp` otherwise.
     /// Only [`HttpClientConfig::for_testing`] keeps `AllowInsecureHttp` regardless
-    /// of features. Under `--features fips`, [`HttpClientBuilder::build`] returns
-    /// [`HttpError::InsecureTransport`] when this is `AllowInsecureHttp`.
+    /// of features. Under `--features fips`, setting `AllowInsecureHttp` is an
+    /// explicit opt-in: [`HttpClientBuilder::build`] accepts it and logs a warning.
     ///
     /// Use [`HttpClientBuilder::deny_insecure_http`] to enforce TLS for all connections.
     ///
     /// [`HttpClientBuilder::build`]: crate::builder::HttpClientBuilder::build
-    /// [`HttpError::InsecureTransport`]: crate::error::HttpError::InsecureTransport
     pub transport: TransportSecurity,
 
     /// TLS root certificate strategy (default: `WebPki`). See also
@@ -978,13 +986,11 @@ impl HttpClientConfig {
     /// preset (`default`, `minimal`, `infra_default`, `token_endpoint`, `sse`)
     /// uses `DEFAULT_TRANSPORT`, which is `TlsOnly` under `--features fips`.
     ///
-    /// Under `--features fips`, [`HttpClientBuilder::build`] still rejects
-    /// `AllowInsecureHttp` and returns [`HttpError::InsecureTransport`]; this
-    /// preset is intended for non-FIPS test code that wires up `httpmock` or
-    /// other plaintext mock servers.
+    /// Intended for test code that wires up `httpmock` or other plaintext mock
+    /// servers. Under `--features fips` the client still builds, and
+    /// [`HttpClientBuilder::build`] logs a plaintext warning.
     ///
     /// [`HttpClientBuilder::build`]: crate::builder::HttpClientBuilder::build
-    /// [`HttpError::InsecureTransport`]: crate::error::HttpError::InsecureTransport
     #[must_use]
     pub fn for_testing() -> Self {
         Self {

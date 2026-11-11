@@ -358,21 +358,15 @@ fn generate_client_struct(model: &GrpcContractModel, support: &TokenStream) -> T
                 // Honor `require_tls`: refuse to build the channel over a
                 // plaintext (`http://`) scheme so the long-lived, process-scoped
                 // platform-plane credential is never sent over cleartext h2c
-                // (`cpt-cf-adr-two-plane-auth`). When it is unset, the platform's
-                // deliberate in-mesh plaintext service-to-service convention
-                // is preserved (see `ClientConfig::require_tls`).
-                if config.require_tls
-                    && !config.base_url.trim_start().starts_with("https://")
-                {
-                    return ::std::result::Result::Err(
-                        #support::runtime::transport_error::TransportError::network(
-                            ::std::format!(
-                                "require_tls is set but the gRPC endpoint scheme is not https: {}",
-                                config.base_url,
-                            ),
-                        ),
-                    );
-                }
+                // (`cpt-cf-adr-two-plane-auth`). `require_tls` defaults to
+                // `false` (the in-mesh plaintext convention) and to `true` in
+                // FIPS builds, where an explicit `false` is logged as a
+                // plaintext opt-in (see `ClientConfig::require_tls`).
+                config.check_tls_scheme().map_err(|reason| {
+                    #support::runtime::transport_error::TransportError::network(
+                        ::std::format!("gRPC client: {reason}"),
+                    )
+                })?;
                 let endpoint = ::tonic::transport::Endpoint::from_shared(config.base_url.clone())
                     .map_err(|e| #support::runtime::transport_error::TransportError::network(e))?;
                 let endpoint = endpoint.timeout(config.timeout);

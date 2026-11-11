@@ -6,7 +6,8 @@
 //! This crate provides a hyper-based HTTP client with:
 //! - Automatic TLS via rustls; transport security is configurable via
 //!   [`TransportSecurity`] — defaults to
-//!   `TlsOnly` (HTTPS-only) under `--features fips`, `AllowInsecureHttp` otherwise
+//!   `TlsOnly` (HTTPS-only) under `--features fips`, `AllowInsecureHttp` otherwise;
+//!   under `fips`, plaintext is an explicit opt-in that logs a warning
 //! - Connection pooling
 //! - Configurable timeouts
 //! - Automatic retries with exponential backoff

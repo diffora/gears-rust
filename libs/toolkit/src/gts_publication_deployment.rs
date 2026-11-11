@@ -127,11 +127,16 @@ fn publisher_tunings(
                 tuning.require_tls = Some(true);
             }
             anyhow::ensure!(
-                tuning.require_tls != Some(true) || https,
-                "gears.{}.clients (consumes.{} over defaults) requires TLS, but registry \
+                !tuning.effective_require_tls() || https,
+                "gears.{}.clients (consumes.{} over defaults) requires TLS{}, but registry \
                  endpoint is not https",
                 descriptor.gear,
-                descriptor.provider
+                descriptor.provider,
+                if tuning.require_tls.is_none() {
+                    " (the FIPS-build default; set `require_tls: false` to opt in to plaintext)"
+                } else {
+                    ""
+                }
             );
             Ok(tuning)
         })

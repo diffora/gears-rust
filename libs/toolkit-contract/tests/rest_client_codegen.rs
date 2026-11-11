@@ -612,19 +612,22 @@ async fn unary_timeout_is_enforced() {
 async fn require_tls_rejects_plaintext_endpoint() {
     // `ClientConfig::with_require_tls(true)` must make the generated client
     // refuse a plaintext `http://` endpoint rather than silently sending the
-    // (bearer-carrying) request over it.
+    // (bearer-carrying) request over it. It fails when the client is built,
+    // not per call, where it would be a transient error and get retried.
     let (base_url, _) = start_server().await;
     let cfg = ClientConfig::new(base_url).with_require_tls(true);
-    let client = DemoApiRestClient::new(cfg).unwrap();
-    let err = DemoApi::echo_get(&client, anonymous_ctx(), "abc".to_owned())
-        .await
-        .unwrap_err();
+    let Err(err) = DemoApiRestClient::new(cfg) else {
+        panic!("require_tls over http:// must fail at client construction");
+    };
     assert!(
-        matches!(err, DemoError::Transport(TransportError::Network(_))),
-        "expected the plaintext request to be rejected as a network error, got {err:?}"
+        matches!(err, toolkit_http::HttpError::InvalidScheme { ref scheme, .. } if scheme == "http"),
+        "expected InvalidScheme for http, got {err:?}"
     );
 }
 
+// In a FIPS build the default is `require_tls: true`, so this holds only
+// outside FIPS.
+#[cfg(not(feature = "fips"))]
 #[tokio::test]
 async fn default_config_still_allows_plaintext_endpoint() {
     // `require_tls` defaults to `false` — existing in-mesh plaintext usage
