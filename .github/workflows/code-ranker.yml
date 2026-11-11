@@ -5,6 +5,7 @@ on:
       - '**/*.rs'
       - '**/*.md'
   push:
+    tags-ignore: ['**']
     paths:
       - '**/*.rs'
       - '**/*.md'

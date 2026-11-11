@@ -45,6 +45,11 @@ jobs:
     # failure. release-plz's docs mandate this: "the concurrency block cancels the
     # pending job if a new commit is pushed — we can't risk to skip a release." Two
     # concurrent publishes are harmless, since each publishes only what crates.io lacks.
+    # The release App's private key is a secret of `ci-trusted`, which only a push to main
+    # enters; any other run gets no key and falls back to GITHUB_TOKEN.
+    environment:
+      name: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && 'ci-trusted' || '' }}
+      deployment: false
     permissions:
       contents: write
       # release-plz resolves PR numbers and contributors for changelogs and releases.
@@ -112,13 +117,42 @@ jobs:
       # inform it. `cargo publish` still compiles every crate, so a crate that does not
       # build cannot be published.
 
+      # Own App budget, separate from the shared GITHUB_TOKEN pool (GitHub App per workflow family)
+      - name: Mint gears-rust-release app token
+        id: app
+        # Unset variable, or a fork/Dependabot run without secrets: skip and fall back to GITHUB_TOKEN.
+        if: >-
+          vars.GEARS_RELEASE_APP_CLIENT_ID != '' &&
+          github.actor != 'dependabot[bot]' &&
+          !github.event.pull_request.head.repo.fork
+        continue-on-error: true  # a bad key or missing install must never fail the job
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.GEARS_RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GEARS_RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: read
+      - name: Report API token source
+        env:
+          APP_TOKEN_SET: ${{ steps.app.outputs.token != '' }}
+          MINT_OUTCOME: ${{ steps.app.outcome }}
+          API_TOKEN: ${{ steps.app.outputs.token || github.token }}
+        run: |
+          if [ "$APP_TOKEN_SET" = true ]; then src=gears-rust-release; echo "::notice::GitHub API token: gears-rust-release app"
+          elif [ "$MINT_OUTCOME" = failure ]; then src=github-token; echo "::warning::gears-rust-release app token mint failed; using GITHUB_TOKEN"
+          else src=github-token; echo "::notice::GitHub API token: GITHUB_TOKEN (gears-rust-release app not configured or fork run)"; fi
+          # GET /rate_limit is free; one sample per job gives a per-token time series (see the API limits plan).
+          core=$(curl -fsS -m 10 -H "Authorization: Bearer $API_TOKEN" -H "Accept: application/vnd.github+json" \
+            https://api.github.com/rate_limit 2>/dev/null | tr -d ' \n' | sed -n 's/.*"core":{\([^}]*\)}.*/\1/p' | tr -d '"' | tr ',' ' ' | sed 's/:/=/g') || true
+          echo "RATE-APP ts=$(date -u +%Y-%m-%dT%H:%M:%SZ) token=$src workflow=$GITHUB_WORKFLOW job=$GITHUB_JOB ${core:-unavailable}"
+
       - name: release-plz release
         id: release-plz
         uses: release-plz/action@66b324fd6c72d05d2a08568492ecdd62bfb8a62b # v0.3.155
         with:
           command: release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ steps.app.outputs.token || secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
           CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
 
@@ -200,19 +234,49 @@ jobs:
           downloads-key: cargo-${{ hashFiles('**/Cargo.lock') }}
           downloads-restore-keys: cargo-
 
+      - name: Mint gears-rust-release app token
+        id: app
+        # Unset variable, or a fork/Dependabot run without secrets: skip and fall back to GITHUB_TOKEN.
+        if: >-
+          vars.GEARS_RELEASE_APP_CLIENT_ID != '' &&
+          github.actor != 'dependabot[bot]' &&
+          !github.event.pull_request.head.repo.fork
+        continue-on-error: true  # a bad key or missing install must never fail the job
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.GEARS_RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GEARS_RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Report API token source
+        env:
+          APP_TOKEN_SET: ${{ steps.app.outputs.token != '' }}
+          MINT_OUTCOME: ${{ steps.app.outcome }}
+          API_TOKEN: ${{ steps.app.outputs.token || github.token }}
+        run: |
+          if [ "$APP_TOKEN_SET" = true ]; then src=gears-rust-release; echo "::notice::GitHub API token: gears-rust-release app"
+          elif [ "$MINT_OUTCOME" = failure ]; then src=github-token; echo "::warning::gears-rust-release app token mint failed; using GITHUB_TOKEN"
+          else src=github-token; echo "::notice::GitHub API token: GITHUB_TOKEN (gears-rust-release app not configured or fork run)"; fi
+          # GET /rate_limit is free; one sample per job gives a per-token time series (see the API limits plan).
+          core=$(curl -fsS -m 10 -H "Authorization: Bearer $API_TOKEN" -H "Accept: application/vnd.github+json" \
+            https://api.github.com/rate_limit 2>/dev/null | tr -d ' \n' | sed -n 's/.*"core":{\([^}]*\)}.*/\1/p' | tr -d '"' | tr ',' ' ' | sed 's/:/=/g') || true
+          echo "RATE-APP ts=$(date -u +%Y-%m-%dT%H:%M:%SZ) token=$src workflow=$GITHUB_WORKFLOW job=$GITHUB_JOB ${core:-unavailable}"
+
       - name: release-plz release-pr
         uses: release-plz/action@66b324fd6c72d05d2a08568492ecdd62bfb8a62b # v0.3.155
         with:
           command: release-pr
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ steps.app.outputs.token || secrets.GITHUB_TOKEN }}
           # Share one build directory across release-plz tasks to save disk space.
           CARGO_TARGET_DIR: ${{ runner.temp }}/release-plz-target
 
   # Publish the Docker image + Helm chart for each released, publishable gear, in this
-  # same run. Driven by release-plz's `releases` output, NOT by tag pushes: release-plz
-  # creates its tags with the default GITHUB_TOKEN, which cannot trigger tag/`push`
-  # workflows, and a release of >3 crates is suppressed by GitHub anyway. Reading the
+  # same run. Driven by release-plz's `releases` output, NOT by tag pushes: GitHub
+  # suppresses tag/`push` events for a release of >3 crates anyway. Tags and the release
+  # PR are created with the gears-rust-release App token (GITHUB_TOKEN is only the
+  # fallback), so they DO trigger workflows: never add a `push: tags` / `release` /
+  # `create` trigger that publishes, or it would publish a second time. Reading the
   # output sidesteps both. (Regular gears are publish=true; examples and flight-control
   # are git_only — either way they appear in `releases`. The toolkit-platform umbrella
   # isn't a crate, so it's published via workflow_dispatch on publish-artifacts.yml.)
