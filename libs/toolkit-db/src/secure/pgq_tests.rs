@@ -910,6 +910,36 @@ fn a_scope_no_constraint_of_which_resolves_is_refused() {
     );
 }
 
+/// A resolvable empty branch cannot mask an unresolvable live branch.
+/// All-empty scopes still resolve through empty branches and return no rows.
+#[test]
+fn an_empty_branch_does_not_satisfy_the_live_scope_resolvability_gate() {
+    use toolkit_security::access_scope::{ScopeConstraint, ScopeFilter, pep_properties};
+    let dead = ScopeConstraint::new(vec![
+        ScopeFilter::eq(pep_properties::OWNER_TENANT_ID, uuid::Uuid::from_u128(1)),
+        ScopeFilter::in_uuids(pep_properties::RESOURCE_ID, vec![]),
+    ]);
+    let unresolved_live = ScopeConstraint::new(vec![ScopeFilter::in_uuids(
+        "department_id",
+        vec![uuid::Uuid::from_u128(2)],
+    )]);
+
+    let mixed = AccessScope::from_constraints(vec![dead.clone(), unresolved_live]);
+    let err = two_hop(&mixed).expect_err("the live branch does not resolve");
+    assert!(
+        matches!(
+            &err,
+            ScopeError::UnresolvedScopeProperty { element, property }
+                if *element == "a" && property == "department_id"
+        ),
+        "unexpected error: {err}"
+    );
+
+    let all_dead = AccessScope::from_constraints(vec![dead]);
+    assert!(all_dead.matches_nothing());
+    two_hop(&all_dead).expect("an entirely empty scope is served as no rows");
+}
+
 /// Policy 3 on the query path: `VertexOf` ties an entity to the graph *type*,
 /// but only the declaration says what the graph object really contains. A
 /// label the declaration does not register fails at build time, with a

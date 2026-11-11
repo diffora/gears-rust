@@ -49,7 +49,9 @@ pub fn type_resource() -> ResourceType {
 #[must_use]
 pub fn map_enforcer_err(error: &EnforcerError) -> DomainError {
     match error {
-        EnforcerError::Denied { .. } | EnforcerError::CompileFailed(_) => DomainError::AccessDenied,
+        EnforcerError::Denied { .. }
+        | EnforcerError::ScopeMatchesNothing
+        | EnforcerError::CompileFailed(_) => DomainError::AccessDenied,
         EnforcerError::EvaluationFailed(_) => DomainError::Unavailable {
             detail: "authorization evaluation failed".to_owned(),
         },

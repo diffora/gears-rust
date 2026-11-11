@@ -210,7 +210,9 @@ impl ManagementAuthorizer {
 
 fn map_enforcer_error(err: EnforcerError) -> AuthzError {
     match err {
-        EnforcerError::Denied { .. } | EnforcerError::CompileFailed(_) => AuthzError::Denied,
+        EnforcerError::Denied { .. }
+        | EnforcerError::ScopeMatchesNothing
+        | EnforcerError::CompileFailed(_) => AuthzError::Denied,
         EnforcerError::EvaluationFailed(e) => AuthzError::Unavailable(e.to_string()),
     }
 }

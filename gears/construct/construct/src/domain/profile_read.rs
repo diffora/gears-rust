@@ -320,7 +320,7 @@ fn policy_failure(err: EnforcerError) -> PolicyFailure {
                 .map(|details| format!(" ({details})"))
                 .unwrap_or_default()
         )),
-        EnforcerError::Denied { deny_reason: None } => {
+        EnforcerError::Denied { deny_reason: None } | EnforcerError::ScopeMatchesNothing => {
             PolicyFailure::Denied("the platform refuses the read".to_owned())
         }
         EnforcerError::CompileFailed(cause) => PolicyFailure::Uncompilable(format!(
@@ -639,6 +639,25 @@ mod tests {
         )
         .unwrap();
         assert!(both.unnamed, "one path without a category is enough");
+    }
+
+    #[test]
+    fn a_constraint_with_no_category_is_no_path_to_the_profile() {
+        let key = key();
+        let dead = path_to(key, &[]);
+        assert!(dead.matches_nothing());
+
+        // Alone it reaches nothing: the profile is not visible, never an empty grant.
+        assert_eq!(granted(&AccessScope::single(dead.clone()), key), None);
+        // Beside a live path it adds nothing and takes nothing away.
+        let live = path_to(key, &[Category::Skill]);
+        assert_eq!(
+            granted(
+                &AccessScope::from_constraints(vec![dead, live.clone()]),
+                key
+            ),
+            granted(&AccessScope::single(live), key)
+        );
     }
 
     #[test]

@@ -253,6 +253,10 @@ impl From<authz_resolver_sdk::EnforcerError> for DomainError {
                 tracing::warn!(deny_reason = ?deny_reason, "AuthZ denied access");
                 Self::Forbidden
             }
+            authz_resolver_sdk::EnforcerError::ScopeMatchesNothing => {
+                tracing::warn!("AuthZ refused: the permitted scope matches nothing");
+                Self::Forbidden
+            }
             authz_resolver_sdk::EnforcerError::CompileFailed(ref err) => {
                 tracing::warn!(error = %err, "AuthZ constraint compile failed - access denied");
                 Self::Forbidden

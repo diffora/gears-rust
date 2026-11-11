@@ -400,5 +400,23 @@ mod tests {
             None,
             facts
         ));
+        // An audit filter in a path that matches nothing (an empty set) admits nothing, so it
+        // does not deny a live admitting path; with no live path the facts are not admitted.
+        let empty_audit = || {
+            path(vec![
+                audit(),
+                ScopeFilter::in_uuids("resource_tenant_id", vec![]),
+            ])
+        };
+        assert!(scope_admits(
+            &AccessScope::from_constraints(vec![empty_audit(), path(vec![resource()])]),
+            None,
+            facts
+        ));
+        assert!(!scope_admits(
+            &AccessScope::from_constraints(vec![empty_audit()]),
+            None,
+            facts
+        ));
     }
 }

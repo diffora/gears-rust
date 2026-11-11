@@ -132,6 +132,7 @@ impl From<authz_resolver_sdk::EnforcerError> for DomainError {
             // @cpt-begin:cpt-cf-construct-algo-gear-foundation-map-errors:p1:inst-map-enforcer-denied
             // @cpt-begin:cpt-cf-construct-algo-gear-foundation-map-errors:p1:inst-map-enforcer-denied-return
             authz_resolver_sdk::EnforcerError::Denied { .. }
+            | authz_resolver_sdk::EnforcerError::ScopeMatchesNothing
             | authz_resolver_sdk::EnforcerError::CompileFailed(_) => Self::Forbidden(e.to_string()),
             // @cpt-end:cpt-cf-construct-algo-gear-foundation-map-errors:p1:inst-map-enforcer-denied-return
             // @cpt-end:cpt-cf-construct-algo-gear-foundation-map-errors:p1:inst-map-enforcer-denied

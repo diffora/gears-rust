@@ -125,6 +125,7 @@ impl From<authz_resolver_sdk::EnforcerError> for DomainError {
         tracing::error!(error = %e, "AuthZ scope resolution failed");
         match e {
             authz_resolver_sdk::EnforcerError::Denied { .. }
+            | authz_resolver_sdk::EnforcerError::ScopeMatchesNothing
             | authz_resolver_sdk::EnforcerError::CompileFailed(_) => Self::Forbidden,
             authz_resolver_sdk::EnforcerError::EvaluationFailed(_) => Self::InternalError,
         }

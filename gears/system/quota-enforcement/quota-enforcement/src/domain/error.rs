@@ -443,6 +443,8 @@ pub enum DomainError {
 impl DomainError {
     /// Closed reason token when the PDP permit carried no usable constraints.
     pub const CONSTRAINT_COMPILE_FAILED: &'static str = "CONSTRAINT_COMPILE_FAILED";
+    /// Closed reason token when the PDP permitted a scope that matches nothing.
+    pub const SCOPE_MATCHES_NOTHING: &str = "SCOPE_MATCHES_NOTHING";
     /// Closed reason token when a projection is registered but not configured.
     pub const PROJECTION_NOT_RESOLVABLE: &'static str = "PROJECTION_NOT_RESOLVABLE";
     /// Closed reason token when storage caught a subject outside the scope.
@@ -478,6 +480,9 @@ impl DomainError {
         match err {
             EnforcerError::Denied { deny_reason } => Self::PdpDenied {
                 reason: deny_reason.map(|r| r.error_code),
+            },
+            EnforcerError::ScopeMatchesNothing => Self::PdpDenied {
+                reason: Some(Self::SCOPE_MATCHES_NOTHING.to_owned()),
             },
             EnforcerError::CompileFailed(_) => Self::PdpDenied {
                 reason: Some(Self::CONSTRAINT_COMPILE_FAILED.to_owned()),

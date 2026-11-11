@@ -43,6 +43,12 @@ impl PolicyEnforcerAuthorizer {
     }
 }
 
+fn file_request(ctx: &SecurityContext, gts_file_type: &str) -> AccessRequest {
+    AccessRequest::new()
+        .resource_property(pep_properties::OWNER_TENANT_ID, ctx.subject_tenant_id())
+        .resource_property(GTS_FILE_TYPE_PROP, gts_file_type.to_owned())
+}
+
 #[async_trait]
 impl Authorizer for PolicyEnforcerAuthorizer {
     async fn authorize(
@@ -52,10 +58,21 @@ impl Authorizer for PolicyEnforcerAuthorizer {
         gts_file_type: &str,
         file_id: Option<Uuid>,
     ) -> Result<AccessScope, DomainError> {
-        let request = AccessRequest::new()
-            .resource_property(pep_properties::OWNER_TENANT_ID, ctx.subject_tenant_id())
-            .resource_property(GTS_FILE_TYPE_PROP, gts_file_type.to_owned());
+        let request = file_request(ctx, gts_file_type);
+        self.enforcer
+            .access_scope_with(ctx, &FILE_RESOURCE, action, file_id, &request)
+            .await
+            .map_err(|e| map_enforcer_error(&e))
+    }
 
+    async fn authorize_allow_empty(
+        &self,
+        ctx: &SecurityContext,
+        action: &str,
+        gts_file_type: &str,
+        file_id: Option<Uuid>,
+    ) -> Result<AccessScope, DomainError> {
+        let request = file_request(ctx, gts_file_type).allow_empty_scope(true);
         self.enforcer
             .access_scope_with(ctx, &FILE_RESOURCE, action, file_id, &request)
             .await
@@ -65,7 +82,9 @@ impl Authorizer for PolicyEnforcerAuthorizer {
 
 fn map_enforcer_error(e: &EnforcerError) -> DomainError {
     match e {
-        EnforcerError::Denied { .. } | EnforcerError::CompileFailed(_) => DomainError::Forbidden,
+        EnforcerError::Denied { .. }
+        | EnforcerError::ScopeMatchesNothing
+        | EnforcerError::CompileFailed(_) => DomainError::Forbidden,
         EnforcerError::EvaluationFailed(_) => DomainError::InternalError,
     }
 }

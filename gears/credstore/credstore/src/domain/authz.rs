@@ -35,11 +35,11 @@ pub mod actions {
 #[must_use]
 pub fn map_enforcer_err(err: EnforcerError) -> DomainError {
     match err {
-        EnforcerError::Denied { .. } | EnforcerError::CompileFailed(_) => {
-            DomainError::AccessDenied {
-                cause: Some(Box::new(err)),
-            }
-        }
+        EnforcerError::Denied { .. }
+        | EnforcerError::ScopeMatchesNothing
+        | EnforcerError::CompileFailed(_) => DomainError::AccessDenied {
+            cause: Some(Box::new(err)),
+        },
         EnforcerError::EvaluationFailed(source) => DomainError::ServiceUnavailable {
             detail: "authorization evaluation failed".to_owned(),
             retry_after: None,

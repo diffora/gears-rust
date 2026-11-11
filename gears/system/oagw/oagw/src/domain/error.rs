@@ -485,6 +485,11 @@ impl From<authz_resolver_sdk::EnforcerError> for DomainError {
                     detail: "access denied by policy".into(),
                 },
             },
+            // PEP-local access denial after successful compilation.
+            EnforcerError::ScopeMatchesNothing => Self::Forbidden {
+                reason: reason::permission::AUTHZ_DENIED.into(),
+                detail: "access denied: the permitted scope matches nothing".into(),
+            },
             EnforcerError::CompileFailed(_) => Self::Internal {
                 message: "authorization constraint compilation failed".to_string(),
             },

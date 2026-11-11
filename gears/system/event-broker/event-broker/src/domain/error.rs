@@ -436,6 +436,12 @@ impl From<authz_resolver_sdk::EnforcerError> for DomainError {
                     .unwrap_or_else(|| "access denied by policy".to_owned()),
                 resource: String::new(),
             },
+            // PEP-local access denial after successful compilation.
+            EnforcerError::ScopeMatchesNothing => DomainError::Forbidden {
+                code: ErrorCode::AuthzDenied,
+                message: "access denied: the permitted scope matches nothing".to_owned(),
+                resource: String::new(),
+            },
             EnforcerError::CompileFailed(e) => {
                 DomainError::Internal(format!("authz constraint compilation failed: {e}"))
             }

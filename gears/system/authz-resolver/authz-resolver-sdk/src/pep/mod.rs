@@ -11,7 +11,10 @@ use uuid::Uuid;
 pub mod compiler;
 pub mod enforcer;
 
-pub use compiler::{ConstraintCompileError, compile_to_access_scope};
+pub use compiler::{
+    CompileOptions, ConstraintCompileError, compile_to_access_scope,
+    compile_to_access_scope_with_options,
+};
 pub use enforcer::{AccessRequest, EnforcerError, PolicyEnforcer, ResourceType};
 
 /// Trait for types that can be converted into `serde_json::Value` for PDP

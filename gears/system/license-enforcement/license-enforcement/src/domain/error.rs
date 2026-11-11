@@ -96,7 +96,8 @@ impl From<toolkit_db::DbError> for DomainError {
 impl From<authz_resolver_sdk::EnforcerError> for DomainError {
     fn from(e: authz_resolver_sdk::EnforcerError) -> Self {
         match e {
-            authz_resolver_sdk::EnforcerError::Denied { .. } => Self::PermissionDenied,
+            authz_resolver_sdk::EnforcerError::Denied { .. }
+            | authz_resolver_sdk::EnforcerError::ScopeMatchesNothing => Self::PermissionDenied,
             // Fail closed as a deny, but log it: a permit whose constraints do
             // not compile is a PDP misconfiguration, not a decision.
             authz_resolver_sdk::EnforcerError::CompileFailed(e) => {

@@ -132,7 +132,8 @@ pub async fn access_scope(
         .access_scope_with(ctx, resource, action, None, &request)
         .await
         .map_err(|e| match e {
-            authz_resolver_sdk::EnforcerError::Denied { .. } => denial(e.to_string()),
+            authz_resolver_sdk::EnforcerError::Denied { .. }
+            | authz_resolver_sdk::EnforcerError::ScopeMatchesNothing => denial(e.to_string()),
             authz_resolver_sdk::EnforcerError::CompileFailed(ref compile_err) => {
                 // The compiler's diagnostic names PDP predicates and properties: an internal
                 // detail, not something the PDP told the caller. It stays in the log, and the

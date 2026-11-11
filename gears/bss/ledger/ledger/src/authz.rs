@@ -310,6 +310,7 @@ pub async fn access_scope(
         .await
         .map_err(|e| match e {
             authz_resolver_sdk::EnforcerError::Denied { .. }
+            | authz_resolver_sdk::EnforcerError::ScopeMatchesNothing
             | authz_resolver_sdk::EnforcerError::CompileFailed(_) => {
                 AuthzError::Denied(e.to_string())
             }

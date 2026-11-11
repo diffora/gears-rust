@@ -183,6 +183,9 @@ impl From<authz_resolver_sdk::EnforcerError> for DomainError {
                     None => r.error_code,
                 }),
             },
+            EnforcerError::ScopeMatchesNothing => Self::AuthorizationDenied {
+                reason: Some(EnforcerError::ScopeMatchesNothing.to_string()),
+            },
             EnforcerError::CompileFailed(err) => Self::AuthorizationDenied {
                 reason: Some(err.to_string()),
             },

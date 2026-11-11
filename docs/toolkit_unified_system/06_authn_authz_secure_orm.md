@@ -209,21 +209,83 @@ pub const DELETE: &str = "delete";
 
 ### PolicyEnforcer API
 
-Two entry points:
+`access_scope` requires PDP constraints and refuses empty scopes.
+`access_scope_with` accepts per-request options via `AccessRequest`:
 
 ```rust
-// Simple: always requires constraints from PDP
+// Point operations and permission gates refuse empty scopes by default.
 let scope = enforcer
     .access_scope(&ctx, &resource_type, action, resource_id)
     .await?;
-
-// Advanced: per-request overrides via AccessRequest
 let scope = enforcer
     .access_scope_with(&ctx, &resource_type, action, resource_id, &access_request)
     .await?;
+
+// LIST / search / aggregation that apply the whole scope to their query: an
+// authorized but empty scope is returned, so the query runs over an empty input.
+let scope = enforcer
+    .access_scope_with(
+        &ctx, &resource_type, action, None,
+        &AccessRequest::new().allow_empty_scope(true),
+    )
+    .await?;
 ```
 
-Both return `Result<AccessScope, EnforcerError>`. The `AccessScope` is then passed to `SecureConn` methods for SQL-level enforcement.
+Both methods return `Result<AccessScope, EnforcerError>`. The `AccessScope` is then passed to `SecureConn` methods for SQL-level enforcement. See [Permission gates and empty scopes](#permission-gates-and-empty-scopes) for the exact difference.
+
+### Permission gates and empty scopes
+
+Choose empty-scope handling by how the caller uses the returned scope. The action name alone does not select the mode: `access_scope` always uses `allow_empty_scope(false)`, including for a LIST action.
+
+| Caller | `allow_empty_scope` | Handling an empty scope |
+|---|---|---|
+| Point operation (GET / CREATE / UPDATE / DELETE) or ordinary action-level permission gate | Keep the default `false` | The enforcer returns `EnforcerError::ScopeMatchesNothing`; no manual `matches_nothing()` check is needed. |
+| LIST / search that applies the whole scope to its query | Set `true` | Pass the scope to the query; SQL `FALSE` (or a non-SQL contradiction) produces an empty result. No manual check is needed. |
+| Aggregation that applies the whole scope to its query | Set `true` | Run the scoped aggregation over empty input. Preserve backend semantics: an ungrouped `COUNT(*)` returns one row with `0`, not an empty list. |
+| Catalog gate for a global model or type catalog, where the scope is not applied to catalog rows | Set `true` | Explicitly check `scope.matches_nothing()` and return an empty list; otherwise apply the catalog's visibility rules. |
+
+`allow_empty_scope(true)` changes only whether a successfully compiled, permitted empty scope is returned. It is PEP-local, never sent to the PDP, and independent of `require_constraints`. PDP denials and constraint validation still apply. Never replace an empty scope with `allow_all()`, caller tenant/IDs, or an outer `constraints: []` in a PDP response (allow-all under `require_constraints(false)`). A normalized scope with empty `constraints()` that is not unconstrained is the correct empty scope.
+
+#### When to check `matches_nothing()`
+
+Use an explicit check when the consumer does not apply the scope directly to its query, as with a catalog gate. Illustrative example for a catalog method returning `Result<Vec<CatalogEntry>, DomainError>`:
+
+```rust
+let scope = self.enforcer
+    .access_scope_with(
+        ctx, &resources::CATALOG, actions::LIST, None,
+        &AccessRequest::new().allow_empty_scope(true),
+    )
+    .await?;
+
+if scope.matches_nothing() {
+    return Ok(Vec::new());
+}
+
+// Apply this global catalog's visibility rules.
+self.catalog.list_visible(ctx).await
+```
+
+For paginated catalogs, preserve the endpoint's empty-page format and query validation. For row-scoped queries, pass the whole scope to `SecureConn` instead of adding an early return; this also preserves aggregate semantics.
+
+`matches_nothing()` detects statically known emptiness: deny-all, or a scope whose every OR branch contained an empty `In` / `InGroup` / `InGroupSubtree` set. Such a scope is normalized to no live branches, so `matches_nothing()` and `is_deny_all()` give the same answer. It does not query the database or detect general logical contradictions. A `false` result does not prove that rows exist or that a particular row is authorized.
+
+Discarding `Ok(scope)` after `?` is valid only for action-level permission gates. Row access must enforce the scope even with the default `allow_empty_scope(false)`: a nonempty scope may cover another tenant, owner, or resource.
+
+#### Inspecting scope branches
+
+Every `AccessScope` is normalized, whether compiled or built by hand:
+
+- `constraints()` lists only the branches that may match, in order. A branch with an empty `In` / `InGroup` / `InGroupSubtree` set is removed whole, never narrowed to its other filters; general contradictions are not detected, and an empty `InTenantSubtree.descendant_status` disables the status filter rather than emptying the branch. Use it for enforcement and grant inspection (projections, tenant/ID checks, shape checks). If one OR branch is empty but another may match, the scope is not statically empty.
+- `original_constraints()` replays every compiled branch, removed ones included, in the original order (not the raw PDP JSON). Use it only for diagnostics or an explicit structural check; never to enforce access.
+- An all-empty scope is operationally deny-all but keeps its originals, and equality is structural: it is not `==` to `AccessScope::deny_all()`. Check `is_unconstrained()` separately: both allow-all and deny-all have no live branches.
+- `tenant_only()`, `tenant_and_owner()`, `ensure_owner()` and gear-local projections build a new scope from the live branches only; the source's originals are not carried over.
+
+The PEP compiler fully validates every PDP branch before normalization. Downstream checks (SecureORM property resolution, sibling placement, OData projection) see only live branches, so an all-empty scope lowers to `FALSE` without their entity-specific diagnostics. This is an accepted loss of diagnostics, never a widening of access. The invalid-branch policy is unchanged (an invalid branch is dropped; the request fails only if no branch compiles); strict rejection is tracked in [#5958](https://github.com/constructorfabric/gears-rust/issues/5958).
+
+The low-level `compile_to_access_scope` refuses an all-empty scope by default with `ConstraintCompileError::ScopeMatchesNothing`; opt in with `compile_to_access_scope_with_options(.., CompileOptions::new().allow_empty_scope(true))`.
+
+See [the full contract](../arch/authorization/DESIGN.md#permission-gates-and-empty-scopes) for projection helpers, INSERT checks, and consumer limitations.
 
 ### AccessRequest builder
 
@@ -240,7 +302,19 @@ let request = AccessRequest::new()
     .require_constraints(false)
     // Override tenant context
     .context_tenant_id(specific_tenant_id);
+
+// Scoped queries may preserve empty scopes; ordinary permission gates keep false.
+// Catalog gates may opt in with an explicit matches_nothing() check (see above).
+let list_request = AccessRequest::new().allow_empty_scope(true);
 ```
+
+### Empty constraints versus empty scopes
+
+With `decision: true`, missing `constraints` and `constraints: []` both mean no row-level restrictions were supplied. With the default `require_constraints(true)`, they cause `EnforcerError::CompileFailed`. Explicitly setting `require_constraints(false)` accepts them and produces an unconstrained scope (`allow_all()`), as in the [GET prefetch pattern](#get--prefetch-pattern). If constraints are supplied, they are still compiled and enforced. `predicates: []` inside a constraint remains malformed.
+
+This differs from a valid scope that matches no rows. `allow_empty_scope(true)` preserves that empty scope; it does not make missing constraints acceptable. Conversely, `require_constraints(false)` does not prevent `ScopeMatchesNothing` when supplied constraints compile to an all-empty scope and `allow_empty_scope` remains false.
+
+`in(id, [])`, `in_group(id, [])`, and `in_group_subtree(id, [])` are valid predicates that compile to SQL `FALSE`, never `IN ()`. Property, capability, tenant, and owner validation still applies; other OR branches may match. See [Permission gates and empty scopes](#permission-gates-and-empty-scopes) for PEP options and non-SQL handling.
 
 ## How AuthZ connects to the database: pep_prop
 
@@ -394,9 +468,12 @@ pub async fn list_users_page(
 ) -> Result<Page<User>, DomainError> {
     let conn = self.db.conn()?;
 
-    // PDP returns constraints → compiled to AccessScope
+    // Preserve empty scopes so an authorized LIST can return an empty page.
     let scope = self.policy_enforcer
-        .access_scope(ctx, &resources::USER, actions::LIST, None)
+        .access_scope_with(
+            ctx, &resources::USER, actions::LIST, None,
+            &AccessRequest::new().allow_empty_scope(true),
+        )
         .await?;
 
     // SecureConn applies scope as SQL WHERE clause
@@ -540,7 +617,12 @@ pub async fn list_users(
 ) -> ApiResult<JsonPage<UserDto>> {
     let secure_conn = db.sea_secure();
     // In production, scope comes from PolicyEnforcer (see CRUD patterns above)
-    let scope = enforcer.access_scope(&ctx, &resources::USER, actions::LIST, None).await?;
+    let scope = enforcer
+        .access_scope_with(
+            &ctx, &resources::USER, actions::LIST, None,
+            &AccessRequest::new().allow_empty_scope(true),
+        )
+        .await?;
     let users = secure_conn
         .find::<user::Entity>(&scope)
         .all(&secure_conn)
@@ -637,6 +719,8 @@ See [`11_database_patterns.md`](./11_database_patterns.md) for `DBRunner`/`Secur
 
 ### EnforcerError (AuthZ errors)
 
+`EnforcerError::ScopeMatchesNothing` means the PDP returned `decision: true` and constraint compilation succeeded, but the scope is statically known to match no resources and the caller kept `allow_empty_scope(false)`. This is a PEP-local access refusal, distinct from `Denied` (`decision: false`), and maps to 403 rather than an internal error. Do not catch it and continue the operation without a scope. Queries that should accept an empty scope opt in with `allow_empty_scope(true)` at the call site.
+
 Map `EnforcerError` to your domain error type:
 
 ```rust
@@ -646,8 +730,10 @@ impl From<EnforcerError> for DomainError {
     fn from(e: EnforcerError) -> Self {
         tracing::error!(error = %e, "AuthZ scope resolution failed");
         match e {
-            // PDP denied access or constraints failed to compile → 403
+            // PDP denied access, the permitted scope matches nothing, or
+            // constraints failed to compile → 403
             EnforcerError::Denied { .. }
+            | EnforcerError::ScopeMatchesNothing
             | EnforcerError::CompileFailed(_) => Self::Forbidden,
             // PDP unreachable or returned invalid response → 500
             EnforcerError::EvaluationFailed(_) => Self::InternalError,
@@ -656,7 +742,7 @@ impl From<EnforcerError> for DomainError {
 }
 ```
 
-This mapping follows the fail-closed principle: denial and compilation failures are access errors (403), while evaluation failures are infrastructure errors (500).
+This mapping follows the fail-closed principle: denials (including `ScopeMatchesNothing`) and compilation failures are access errors (403), while evaluation failures are infrastructure errors (500).
 
 ### ScopeError (ORM errors)
 
@@ -732,8 +818,10 @@ In tests, build scopes explicitly (`AccessScope::for_tenant(...)`, `AccessScope:
 - [ ] Create `PolicyEnforcer::new(authz)` once, clone into sub-services.
 - [ ] Define `ResourceType` constants with `supported_properties` for each resource.
 - [ ] Define action constants (`get`, `list`, `create`, `update`, `delete`).
-- [ ] Call `policy_enforcer.access_scope()` or `.access_scope_with()` in every service method.
-- [ ] Implement `From<EnforcerError>` for your domain error type.
+- [ ] Call `policy_enforcer.access_scope()` / `.access_scope_with()` in every point operation and ordinary action-level permission gate, keeping the default `allow_empty_scope(false)`.
+- [ ] Use `allow_empty_scope(true)` only for queries that apply the whole scope or catalog gates that return an empty list for an empty scope.
+- [ ] For catalog gates that opt in, explicitly check `scope.matches_nothing()` before returning catalog entries.
+- [ ] Implement `From<EnforcerError>` for your domain error type; map `ScopeMatchesNothing` to access denial (403).
 - [ ] Use `.authenticated()` + `.require_license_features::<License>([])` on protected `OperationBuilder` routes.
 - [ ] Use `.anonymous()` only for truly unauthenticated routes (health checks, OpenAPI spec).
 

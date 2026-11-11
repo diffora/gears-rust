@@ -261,6 +261,14 @@ pub async fn access_scope(
                     reason,
                 ))
             }
+            authz_resolver_sdk::EnforcerError::ScopeMatchesNothing => denied(pdp_denial(
+                ctx,
+                rt,
+                action,
+                resource_id,
+                owner_tenant_id,
+                e.to_string(),
+            )),
             authz_resolver_sdk::EnforcerError::CompileFailed(ref compile_err) => {
                 // The compiler diagnostic names PDP predicates and properties — an
                 // internal detail, not something the PDP told the caller. It goes

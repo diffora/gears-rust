@@ -296,11 +296,12 @@ pub fn split_page<T>(mut rows: Vec<T>, page_size: PageSize) -> (Vec<T>, bool) {
 /// never widens or narrows the scope the query applies.
 #[must_use]
 pub fn confined_to_subject(scope: &AccessScope, subject_tenant_id: Uuid) -> bool {
-    if scope.is_unconstrained() || scope.constraints().is_empty() {
+    let mut paths = scope.constraints().iter().peekable();
+    if scope.is_unconstrained() || paths.peek().is_none() {
         return false;
     }
     let own = ScopeValue::Uuid(subject_tenant_id);
-    scope.constraints().iter().all(|path| {
+    paths.all(|path| {
         path.filters().iter().any(|filter| {
             matches!(filter, ScopeFilter::Eq(_) | ScopeFilter::In(_))
                 && filter.property() == properties::RESOURCE_TENANT_ID

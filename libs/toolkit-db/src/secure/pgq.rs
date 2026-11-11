@@ -630,6 +630,8 @@ impl<G: PropertyGraph> PathBuilder<G> {
         if self.scope.is_unconstrained() || self.scope.is_deny_all() {
             return Ok(());
         }
+        // `constraints()` is normalized: statically empty branches are gone,
+        // and an all-empty scope returned early as deny-all above.
         let mut first_unresolved: Option<&str> = None;
         for constraint in self.scope.constraints() {
             match constraint

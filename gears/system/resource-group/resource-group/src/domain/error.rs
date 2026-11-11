@@ -259,6 +259,9 @@ impl From<EnforcerError> for DomainError {
                     |reason| format!("access denied by PDP: {reason:?}"),
                 ),
             },
+            EnforcerError::ScopeMatchesNothing => DomainError::AccessDenied {
+                message: "access denied: the permitted scope matches nothing".to_owned(),
+            },
             // A PDP that emits a native predicate whose capability this gear
             // never advertised (e.g. `in_tenant_subtree` — RG has no
             // `tenant_closure` projection) violates the capability

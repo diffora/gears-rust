@@ -158,6 +158,7 @@ name = "delivery"
 harness = false
 
 [dev-dependencies]
+authz-resolver-sdk = { workspace = true, features = ["test-util"] }
 # The crate itself with `test-utils`, as oagw does: every `tests/` binary gets
 # `test_support` (the in-process harness) with no `required-features`.
 cf-gears-event-broker = { path = ".", features = ["test-utils"] }

@@ -96,6 +96,10 @@ impl From<EnforcerError> for MutationError {
                 tracing::warn!(deny_reason = ?deny_reason, "AuthZ denied access");
                 Self::Forbidden
             }
+            EnforcerError::ScopeMatchesNothing => {
+                tracing::warn!("AuthZ refused: the permitted scope matches nothing");
+                Self::Forbidden
+            }
             EnforcerError::CompileFailed(ref err) => {
                 tracing::warn!(error = %err, "AuthZ constraint compile failed - access denied");
                 Self::Forbidden

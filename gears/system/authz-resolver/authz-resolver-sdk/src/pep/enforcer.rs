@@ -33,12 +33,18 @@ use crate::pep::compiler::{
 /// Error from the PEP enforcement flow.
 #[derive(Debug, thiserror::Error)]
 pub enum EnforcerError {
-    /// The PDP explicitly denied access.
+    /// The PDP explicitly denied access (`decision: false`).
     #[error("access denied by PDP")]
     Denied {
-        /// Optional deny reason from the PDP.
+        /// Optional deny reason from the PDP. Never synthesized by the PEP.
         deny_reason: Option<crate::models::DenyReason>,
     },
+
+    /// A permitted scope [`matches nothing`](AccessScope::matches_nothing) and
+    /// [`AccessRequest::allow_empty_scope`] is false. This PEP-local refusal
+    /// follows successful compilation; map it as an access denial.
+    #[error("access denied: the permitted scope matches nothing")]
+    ScopeMatchesNothing,
 
     /// The `AuthZ` evaluation RPC failed (transport/infrastructure error).
     #[error("authorization evaluation failed: {0}")]
@@ -49,13 +55,11 @@ pub enum EnforcerError {
     CompileFailed(#[from] ConstraintCompileError),
 }
 
-/// Per-request evaluation parameters for advanced authorization scenarios.
+/// Per-call options for [`PolicyEnforcer::access_scope_with()`]: ABAC properties,
+/// tenant context, optional constraints, and empty-scope handling.
 ///
-/// Used with [`PolicyEnforcer::access_scope_with()`] when the simple
-/// [`PolicyEnforcer::access_scope()`] defaults don't suffice (ABAC resource
-/// properties, custom tenant mode, barrier bypass, etc.).
-///
-/// All fields default to "not overridden" - only set what you need.
+/// Only [`Self::allow_empty_scope`] is PEP-local; other options shape the PDP
+/// request. Defaults apply unless overridden.
 ///
 /// # Examples
 ///
@@ -71,10 +75,12 @@ pub enum EnforcerError {
 ///         .resource_property(pep_properties::OWNER_TENANT_ID, target_tenant_id),
 /// ).await?;
 ///
-/// // Billing - ignore barriers (constrained scope)
+/// // Billing LIST: ignore barriers and apply even an empty scope to the query.
 /// let scope = enforcer.access_scope_with(
 ///     &ctx, &RESOURCE, "list", None,
-///     &AccessRequest::new().barrier_mode(BarrierMode::Ignore),
+///     &AccessRequest::new()
+///         .barrier_mode(BarrierMode::Ignore)
+///         .allow_empty_scope(true),
 /// ).await?;
 /// ```
 #[derive(Debug, Clone, Default)]
@@ -82,6 +88,8 @@ pub struct AccessRequest {
     resource_properties: HashMap<String, serde_json::Value>,
     tenant_context: Option<TenantContext>,
     require_constraints: Option<bool>,
+    /// PEP-local response handling; never sent to the PDP.
+    allow_empty_scope: bool,
 }
 
 impl AccessRequest {
@@ -160,6 +168,22 @@ impl AccessRequest {
     #[must_use]
     pub fn require_constraints(mut self, require: bool) -> Self {
         self.require_constraints = Some(require);
+        self
+    }
+
+    /// Return permitted statically empty scopes when enabled (default: false).
+    ///
+    /// Keep false for point operations and permission gates; refusal is
+    /// [`EnforcerError::ScopeMatchesNothing`]. Scoped queries may opt in and
+    /// execute over empty input; catalog gates must return an empty catalog.
+    ///
+    /// PEP-local, never sent to the PDP. Predicate validation, PDP denials and
+    /// [`Self::require_constraints`] are unaffected. Returned scopes are
+    /// normalized and retain [`AccessScope::original_constraints`]. The
+    /// low-level compiler uses [`CompileOptions::allow_empty_scope`](crate::pep::CompileOptions::allow_empty_scope).
+    #[must_use]
+    pub fn allow_empty_scope(mut self, allow: bool) -> Self {
+        self.allow_empty_scope = allow;
         self
     }
 }
@@ -510,10 +534,16 @@ impl PolicyEnforcer {
     /// Always sets `require_constraints=true`. PDP returns constraints for
     /// all CRUD operations (GET, LIST, UPDATE, DELETE, CREATE).
     ///
+    /// Refuses empty scopes. Use [`Self::access_scope_with`] and
+    /// [`AccessRequest::allow_empty_scope`] for queries that preserve them.
+    ///
     /// # Errors
     ///
+    /// - [`EnforcerError::Denied`] if the PDP denies
+    /// - [`EnforcerError::ScopeMatchesNothing`] if every OR branch of the
+    ///   permitted scope matches nothing
     /// - [`EnforcerError::EvaluationFailed`] if the PDP call fails
-    /// - [`EnforcerError::CompileFailed`] if constraint compilation fails (denied, missing, etc.)
+    /// - [`EnforcerError::CompileFailed`] if constraint compilation fails (missing, unsupported, etc.)
     pub async fn access_scope(
         &self,
         ctx: &SecurityContext,
@@ -537,10 +567,23 @@ impl PolicyEnforcer {
     /// When `false`, the PDP may return no constraints; the resulting scope
     /// is `allow_all()`. When `true`, empty constraints trigger a compile error.
     ///
+    /// [`AccessRequest::allow_empty_scope`] controls all-empty scopes after
+    /// validation: refuse with [`EnforcerError::ScopeMatchesNothing`] by default,
+    /// or return them for queries/catalog gates. The returned scope is always
+    /// normalized: [`AccessScope::constraints`] holds only live branches.
+    ///
+    /// Discarding `Ok(scope)` after `?` is valid only for action-level permission
+    /// gates. Row access must enforce the scope, which may cover another tenant
+    /// or owner.
+    ///
     /// # Errors
     ///
+    /// - [`EnforcerError::Denied`] if the PDP denies
+    /// - [`EnforcerError::ScopeMatchesNothing`] if, unless
+    ///   `allow_empty_scope` is set, every OR branch of the permitted scope
+    ///   matches nothing
     /// - [`EnforcerError::EvaluationFailed`] if the PDP call fails
-    /// - [`EnforcerError::CompileFailed`] if constraint compilation fails (denied, missing, etc.)
+    /// - [`EnforcerError::CompileFailed`] if constraint compilation fails (missing, unsupported, etc.)
     pub async fn access_scope_with(
         &self,
         ctx: &SecurityContext,
@@ -600,13 +643,25 @@ impl PolicyEnforcer {
             });
         }
 
-        Ok(compile_to_access_scope_with_negotiated_capabilities(
+        compile_to_access_scope_with_negotiated_capabilities(
             &response,
             require,
             resource.supported_properties,
             group_membership_type,
             &negotiated_capabilities,
-        )?)
+            request.allow_empty_scope,
+        )
+        .map_err(|err| match err {
+            ConstraintCompileError::ScopeMatchesNothing => {
+                tracing::debug!(
+                    resource = resource.name(),
+                    action,
+                    "PEP refused a permitted authorization scope statically known to match no resources"
+                );
+                EnforcerError::ScopeMatchesNothing
+            }
+            other => EnforcerError::CompileFailed(other),
+        })
     }
 }
 

@@ -169,7 +169,8 @@ pub enum AuthzDecision {
     /// gate (per-record attribution / query scope projection) admitted it.
     Permit,
     /// The gear denied the request: a PDP deny (`EnforcerError::Denied`), a
-    /// fail-closed compile failure (`EnforcerError::CompileFailed`), or a
+    /// permitted scope that matches nothing (`EnforcerError::ScopeMatchesNothing`),
+    /// a fail-closed compile failure (`EnforcerError::CompileFailed`), or a
     /// permit-with-constraints the post-permit gate rejected (e.g. cross-tenant
     /// attribution outside the granted scope).
     Deny,

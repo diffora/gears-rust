@@ -535,9 +535,11 @@ impl From<authz_resolver_sdk::EnforcerError> for DomainError {
     fn from(err: authz_resolver_sdk::EnforcerError) -> Self {
         use authz_resolver_sdk::EnforcerError;
         match err {
-            denied @ EnforcerError::Denied { .. } => Self::CrossTenantDenied {
-                cause: Some(Box::new(denied)),
-            },
+            denied @ (EnforcerError::Denied { .. } | EnforcerError::ScopeMatchesNothing) => {
+                Self::CrossTenantDenied {
+                    cause: Some(Box::new(denied)),
+                }
+            }
             EnforcerError::EvaluationFailed(source) => Self::ServiceUnavailable {
                 // Generic, non-leaky detail — `source` is the AuthZ
                 // Resolver SDK's transport error and can carry the

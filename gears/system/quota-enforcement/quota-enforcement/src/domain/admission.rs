@@ -273,9 +273,9 @@ fn validate_target_shape(target: AdmissionTarget) -> Result<(), DomainError> {
 /// The denial metric reason for a PEP error.
 const fn denial_reason(err: &EnforcerError) -> DenialReason {
     match err {
-        EnforcerError::Denied { .. } | EnforcerError::CompileFailed(_) => {
-            DenialReason::PermissionDenied
-        }
+        EnforcerError::Denied { .. }
+        | EnforcerError::ScopeMatchesNothing
+        | EnforcerError::CompileFailed(_) => DenialReason::PermissionDenied,
         EnforcerError::EvaluationFailed(_) => DenialReason::PdpUnavailable,
     }
 }

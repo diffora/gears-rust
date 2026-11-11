@@ -1015,6 +1015,26 @@ fn enforcer_denied_maps_to_access_denied() {
     );
 }
 
+// A permitted scope that matches nothing is an access denial, not an internal
+// error, and its message does not blame the PDP.
+#[test]
+fn enforcer_scope_matches_nothing_maps_to_access_denied() {
+    use authz_resolver_sdk::pep::EnforcerError;
+
+    let err: DomainError = EnforcerError::ScopeMatchesNothing.into();
+    match err {
+        DomainError::AccessDenied { message } => {
+            assert!(!message.contains("PDP"), "{message}");
+        }
+        other => panic!("Expected AccessDenied, got: {other:?}"),
+    }
+    let pdp: DomainError = EnforcerError::Denied { deny_reason: None }.into();
+    assert!(
+        matches!(&pdp, DomainError::AccessDenied { message } if message.contains("PDP")),
+        "a reasonless PDP deny keeps its origin: {pdp:?}"
+    );
+}
+
 // TC-ERR-02: EnforcerError::EvaluationFailed -> DomainError::InternalError
 #[test]
 fn enforcer_evaluation_failed_maps_to_internal_error() {

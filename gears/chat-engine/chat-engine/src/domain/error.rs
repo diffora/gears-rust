@@ -223,7 +223,7 @@ impl From<authz_resolver_sdk::pep::EnforcerError> for ChatEngineError {
     fn from(err: authz_resolver_sdk::pep::EnforcerError) -> Self {
         use authz_resolver_sdk::pep::EnforcerError;
         match err {
-            EnforcerError::Denied { .. } => Self::Forbidden {
+            EnforcerError::Denied { .. } | EnforcerError::ScopeMatchesNothing => Self::Forbidden {
                 reason: "authorization denied".to_string(),
             },
             EnforcerError::CompileFailed(cause) => {

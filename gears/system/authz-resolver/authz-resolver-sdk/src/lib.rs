@@ -53,6 +53,9 @@ pub mod models;
 pub mod pep;
 pub mod plugin_api;
 
+#[cfg(feature = "test-util")]
+pub mod test_support;
+
 /// REST (HTTP) projection of the [`AuthZResolverApi`] contract
 pub mod rest;
 

@@ -63,6 +63,8 @@ pub fn deny(resource: &ResourceType, err: &EnforcerError) -> DomainError {
     match err {
         // The decision point said no.
         EnforcerError::Denied { .. }
+        // The decision point permitted a scope that matches nothing.
+        | EnforcerError::ScopeMatchesNothing
         // The decision point could not be reached. Step 4 of the enforcement
         // algorithm: fail closed rather than proceed on an unknown verdict.
         | EnforcerError::EvaluationFailed { .. }
