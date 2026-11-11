@@ -26,6 +26,12 @@ inputs:
     description: Who to @-mention on failure. Empty means nobody gets pinged.
     required: false
     default: ''
+  github-token:
+    description: >-
+      Token for the issue API calls. Pass a GitHub App token to use its own
+      rate-limit budget.
+    required: false
+    default: ${{ github.token }}
 
 runs:
   using: composite
@@ -39,6 +45,7 @@ runs:
         DETAILS_FILE: ${{ inputs.details-file }}
         MENTION: ${{ inputs.mention }}
       with:
+        github-token: ${{ inputs.github-token }}
         script: |
           const fs = require('fs');
           const { owner, repo } = context.repo;
@@ -54,10 +61,19 @@ runs:
           // Find the open issue by its exact title. We use listForRepo, not
           // search, because search results can lag. It also returns PRs, so
           // skip those.
-          const candidates = await github.paginate(github.rest.issues.listForRepo, {
-            owner, repo, state: 'open', creator: 'github-actions[bot]', per_page: 100,
-          });
-          const open = candidates.filter((i) => !i.pull_request && i.title === title);
+          // Issues are created by the App bot or, before the switch to App
+          // tokens, by github-actions[bot]. Look up both so none is duplicated.
+          const creators = ['gears-rust-nightly[bot]', 'github-actions[bot]'];
+          const found = new Map();
+          for (const creator of creators) {
+            const list = await github.paginate(github.rest.issues.listForRepo, {
+              owner, repo, state: 'open', creator, per_page: 100,
+            });
+            for (const i of list) found.set(i.number, i);
+          }
+          const open = [...found.values()]
+            .filter((i) => !i.pull_request && i.title === title)
+            .sort((a, b) => a.number - b.number);
 
           if (result === 'success') {
             for (const issue of open) {

@@ -109,10 +109,15 @@ module.exports = async function updateNightlyStatus({ github, context, core }) {
 
   // Same lookup as .github/actions/nightly-issue: exact title, no label,
   // because creating a label needs rights we don't assume. PRs are skipped.
-  const candidates = await github.paginate(github.rest.issues.listForRepo, {
-    owner, repo, state: 'open', creator: 'github-actions[bot]', per_page: 100,
-  });
-  const existing = candidates
+  // The App bot creates it now; github-actions[bot] did before the switch.
+  const found = new Map();
+  for (const creator of ['gears-rust-nightly[bot]', 'github-actions[bot]']) {
+    const list = await github.paginate(github.rest.issues.listForRepo, {
+      owner, repo, state: 'open', creator, per_page: 100,
+    });
+    for (const i of list) found.set(i.number, i);
+  }
+  const existing = [...found.values()]
     .filter((i) => !i.pull_request && i.title === TITLE)
     .sort((a, b) => a.number - b.number)[0];
 

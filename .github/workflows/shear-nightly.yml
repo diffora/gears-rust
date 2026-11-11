@@ -167,6 +167,38 @@ jobs:
             fi
           } > "$RUNNER_TEMP/issue.md"
 
+      # Own App budget, separate from the shared GITHUB_TOKEN pool (GitHub App per workflow family)
+      - name: Mint gears-rust-nightly app token
+        id: app
+        # Unset variable, or a fork/Dependabot run without secrets: skip and fall back to GITHUB_TOKEN.
+        if: >-
+          !cancelled() &&
+          github.event_name == 'schedule' &&
+          vars.GEARS_NIGHTLY_APP_CLIENT_ID != '' &&
+          github.actor != 'dependabot[bot]' &&
+          !github.event.pull_request.head.repo.fork
+        continue-on-error: true  # a bad key or missing install must never fail the job
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.GEARS_NIGHTLY_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GEARS_NIGHTLY_APP_PRIVATE_KEY }}
+          permission-contents: read
+          permission-issues: write
+      - name: Report API token source
+        if: ${{ !cancelled() && github.event_name == 'schedule' }}
+        env:
+          APP_TOKEN_SET: ${{ steps.app.outputs.token != '' }}
+          MINT_OUTCOME: ${{ steps.app.outcome }}
+          API_TOKEN: ${{ steps.app.outputs.token || github.token }}
+        run: |
+          if [ "$APP_TOKEN_SET" = true ]; then src=gears-rust-nightly; echo "::notice::GitHub API token: gears-rust-nightly app"
+          elif [ "$MINT_OUTCOME" = failure ]; then src=github-token; echo "::warning::gears-rust-nightly app token mint failed; using GITHUB_TOKEN"
+          else src=github-token; echo "::notice::GitHub API token: GITHUB_TOKEN (gears-rust-nightly app not configured or fork run)"; fi
+          # GET /rate_limit is free; one sample per job gives a per-token time series (see the API limits plan).
+          core=$(curl -fsS -m 10 -H "Authorization: Bearer $API_TOKEN" -H "Accept: application/vnd.github+json" \
+            https://api.github.com/rate_limit 2>/dev/null | tr -d ' \n' | sed -n 's/.*"core":{\([^}]*\)}.*/\1/p' | tr -d '"' | tr ',' ' ' | sed 's/:/=/g') || true
+          echo "RATE-APP ts=$(date -u +%Y-%m-%dT%H:%M:%SZ) token=$src workflow=$GITHUB_WORKFLOW job=$GITHUB_JOB ${core:-unavailable}"
+
       - name: Open or update issue on nightly failure
         if: failure() && github.event_name == 'schedule'
         uses: ./.github/actions/nightly-issue
@@ -176,6 +208,7 @@ jobs:
           result: failure
           details-file: ${{ runner.temp }}/issue.md
           mention: ${{ env.SHEAR_ISSUE_MENTION }}
+          github-token: ${{ steps.app.outputs.token || github.token }}
 
       # Without this the issue outlives the breakage and stops meaning anything.
       - name: Close nightly issue on success
@@ -185,3 +218,4 @@ jobs:
           title: ${{ env.SHEAR_ISSUE_TITLE }}
           subject: '`cargo shear`'
           result: success
+          github-token: ${{ steps.app.outputs.token || github.token }}
