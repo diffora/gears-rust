@@ -31,28 +31,146 @@ use crate::pep::compiler::{
 };
 
 /// Error from the PEP enforcement flow.
+///
+/// Each variant is an outcome class: access was refused, the PDP could not be
+/// evaluated, or its constraints could not be compiled. Reasons for a refusal
+/// are open-ended and live in [`AccessDenial`]; every future refusal reason
+/// stays inside [`EnforcerError::AccessDenied`].
+///
+/// Marked `#[non_exhaustive]`: a new outcome class may be added. Handle the
+/// classes that need distinct treatment, then fall back to an internal failure
+/// for the rest, an unknown class included: stop the operation, report a
+/// generic internal error (HTTP 500) without the error's details, and never
+/// map an unknown class to an access denial, to PDP unavailability, or to a
+/// skipped item.
+///
+/// ```
+/// use authz_resolver_sdk::EnforcerError;
+///
+/// fn classify(err: &EnforcerError) -> &'static str {
+///     match err {
+///         EnforcerError::AccessDenied(_) => "denied",
+///         EnforcerError::EvaluationFailed(_) => "evaluation failed",
+///         EnforcerError::CompileFailed(_) => "compile failed",
+///         // An unknown outcome class is an internal failure.
+///         _ => "internal",
+///     }
+/// }
+/// # let _ = classify;
+/// ```
+///
+/// A match on the known classes alone does not compile outside this crate:
+///
+/// ```compile_fail,E0004
+/// use authz_resolver_sdk::EnforcerError;
+///
+/// fn classify(err: &EnforcerError) -> &'static str {
+///     match err {
+///         EnforcerError::AccessDenied(_) => "denied",
+///         EnforcerError::EvaluationFailed(_) => "evaluation failed",
+///         EnforcerError::CompileFailed(_) => "compile failed",
+///     }
+/// }
+/// # let _ = classify;
+/// ```
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum EnforcerError {
-    /// The PDP explicitly denied access (`decision: false`).
-    #[error("access denied by PDP")]
-    Denied {
-        /// Optional deny reason from the PDP. Never synthesized by the PEP.
-        deny_reason: Option<crate::models::DenyReason>,
-    },
-
-    /// A permitted scope [`matches nothing`](AccessScope::matches_nothing) and
-    /// [`AccessRequest::allow_empty_scope`] is false. This PEP-local refusal
-    /// follows successful compilation; map it as an access denial.
-    #[error("access denied: the permitted scope matches nothing")]
-    ScopeMatchesNothing,
+    /// Access is refused. [`AccessDenial`] says whether the PDP decided it or
+    /// the PEP refused a permitted scope; map every reason as an access denial.
+    #[error(transparent)]
+    AccessDenied(AccessDenial),
 
     /// The `AuthZ` evaluation RPC failed (transport/infrastructure error).
     #[error("authorization evaluation failed: {0}")]
     EvaluationFailed(#[from] CanonicalError),
 
     /// Constraint compilation failed (missing or unsupported constraints).
+    ///
+    /// Build this from a [`ConstraintCompileError`] with `From`, which turns
+    /// [`ConstraintCompileError::ScopeMatchesNothing`] into
+    /// [`AccessDenial::ScopeMatchesNothing`]; the enforcer never returns that
+    /// variant here.
     #[error("constraint compilation failed: {0}")]
-    CompileFailed(#[from] ConstraintCompileError),
+    CompileFailed(#[source] ConstraintCompileError),
+}
+
+/// Classifies a compile result once for every caller of `?` and the enforcer:
+/// an empty permitted scope is a refusal, every other compile error stays a
+/// compile failure. The match is exhaustive so a new compiler variant must be
+/// classified here.
+impl From<ConstraintCompileError> for EnforcerError {
+    fn from(err: ConstraintCompileError) -> Self {
+        match err {
+            ConstraintCompileError::ScopeMatchesNothing => {
+                Self::AccessDenied(AccessDenial::ScopeMatchesNothing)
+            }
+            err @ (ConstraintCompileError::ConstraintsRequiredButAbsent
+            | ConstraintCompileError::AllConstraintsFailed { .. }
+            | ConstraintCompileError::UnadvertisedCapabilities { .. }) => Self::CompileFailed(err),
+        }
+    }
+}
+
+impl EnforcerError {
+    /// Whether the PDP could not be reached or did not answer in time.
+    ///
+    /// True only for [`EnforcerError::EvaluationFailed`] carrying
+    /// [`CanonicalError::ServiceUnavailable`] or
+    /// [`CanonicalError::DeadlineExceeded`], including the enforcer's own
+    /// evaluation deadline. Any other evaluation failure (`Internal` among
+    /// them), a refusal and a compile failure are false.
+    ///
+    /// It describes the cause, not whether a retry is safe: that depends on
+    /// the operation and its idempotency. Recommended mapping for new or
+    /// updated handlers (existing consumers may keep legacy mappings):
+    ///
+    /// ```
+    /// use authz_resolver_sdk::EnforcerError;
+    ///
+    /// fn http_status(err: &EnforcerError) -> u16 {
+    ///     match err {
+    ///         EnforcerError::AccessDenied(_) => 403,
+    ///         EnforcerError::EvaluationFailed(_) if err.is_pdp_unavailable() => 503,
+    ///         // Other evaluation failures, compile failures and unknown
+    ///         // outcome classes: internal, without details on the wire.
+    ///         _ => 500,
+    ///     }
+    /// }
+    /// # let _ = http_status;
+    /// ```
+    #[must_use]
+    pub fn is_pdp_unavailable(&self) -> bool {
+        match self {
+            Self::EvaluationFailed(err) => matches!(
+                err,
+                CanonicalError::ServiceUnavailable { .. } | CanonicalError::DeadlineExceeded { .. }
+            ),
+            Self::AccessDenied(_) | Self::CompileFailed(_) => false,
+        }
+    }
+}
+
+/// Why access was refused ([`EnforcerError::AccessDenied`]).
+///
+/// Marked `#[non_exhaustive]`: new refusal reasons may be added without a new
+/// outcome class. A wildcard arm must treat an unknown reason as a refusal
+/// that carries no PDP deny reason.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum AccessDenial {
+    /// The PDP explicitly denied access (`decision: false`).
+    #[error("access denied by PDP")]
+    Pdp {
+        /// Optional deny reason from the PDP. Never synthesized by the PEP.
+        reason: Option<crate::models::DenyReason>,
+    },
+
+    /// A permitted scope [`matches nothing`](AccessScope::matches_nothing) and
+    /// [`AccessRequest::allow_empty_scope`] is false. This PEP-local refusal
+    /// follows successful compilation and carries no PDP deny reason.
+    #[error("access denied: the permitted scope matches nothing")]
+    ScopeMatchesNothing,
 }
 
 /// Per-call options for [`PolicyEnforcer::access_scope_with()`]: ABAC properties,
@@ -174,7 +292,7 @@ impl AccessRequest {
     /// Return permitted statically empty scopes when enabled (default: false).
     ///
     /// Keep false for point operations and permission gates; refusal is
-    /// [`EnforcerError::ScopeMatchesNothing`]. Scoped queries may opt in and
+    /// [`AccessDenial::ScopeMatchesNothing`]. Scoped queries may opt in and
     /// execute over empty input; catalog gates must return an empty catalog.
     ///
     /// PEP-local, never sent to the PDP. Predicate validation, PDP denials and
@@ -539,9 +657,9 @@ impl PolicyEnforcer {
     ///
     /// # Errors
     ///
-    /// - [`EnforcerError::Denied`] if the PDP denies
-    /// - [`EnforcerError::ScopeMatchesNothing`] if every OR branch of the
-    ///   permitted scope matches nothing
+    /// - [`EnforcerError::AccessDenied`] with [`AccessDenial::Pdp`] if the PDP denies
+    /// - [`EnforcerError::AccessDenied`] with [`AccessDenial::ScopeMatchesNothing`]
+    ///   if every OR branch of the permitted scope matches nothing
     /// - [`EnforcerError::EvaluationFailed`] if the PDP call fails
     /// - [`EnforcerError::CompileFailed`] if constraint compilation fails (missing, unsupported, etc.)
     pub async fn access_scope(
@@ -568,7 +686,7 @@ impl PolicyEnforcer {
     /// is `allow_all()`. When `true`, empty constraints trigger a compile error.
     ///
     /// [`AccessRequest::allow_empty_scope`] controls all-empty scopes after
-    /// validation: refuse with [`EnforcerError::ScopeMatchesNothing`] by default,
+    /// validation: refuse with [`AccessDenial::ScopeMatchesNothing`] by default,
     /// or return them for queries/catalog gates. The returned scope is always
     /// normalized: [`AccessScope::constraints`] holds only live branches.
     ///
@@ -578,10 +696,10 @@ impl PolicyEnforcer {
     ///
     /// # Errors
     ///
-    /// - [`EnforcerError::Denied`] if the PDP denies
-    /// - [`EnforcerError::ScopeMatchesNothing`] if, unless
-    ///   `allow_empty_scope` is set, every OR branch of the permitted scope
-    ///   matches nothing
+    /// - [`EnforcerError::AccessDenied`] with [`AccessDenial::Pdp`] if the PDP denies
+    /// - [`EnforcerError::AccessDenied`] with [`AccessDenial::ScopeMatchesNothing`]
+    ///   if, unless `allow_empty_scope` is set, every OR branch of the
+    ///   permitted scope matches nothing
     /// - [`EnforcerError::EvaluationFailed`] if the PDP call fails
     /// - [`EnforcerError::CompileFailed`] if constraint compilation fails (missing, unsupported, etc.)
     pub async fn access_scope_with(
@@ -638,9 +756,9 @@ impl PolicyEnforcer {
         // Check decision first: if denied, return error immediately
         // without attempting constraint compilation.
         if !response.decision {
-            return Err(EnforcerError::Denied {
-                deny_reason: response.context.deny_reason,
-            });
+            return Err(EnforcerError::AccessDenied(AccessDenial::Pdp {
+                reason: response.context.deny_reason,
+            }));
         }
 
         compile_to_access_scope_with_negotiated_capabilities(
@@ -651,16 +769,16 @@ impl PolicyEnforcer {
             &negotiated_capabilities,
             request.allow_empty_scope,
         )
-        .map_err(|err| match err {
-            ConstraintCompileError::ScopeMatchesNothing => {
+        .map_err(|err| {
+            let err = EnforcerError::from(err);
+            if matches!(err, EnforcerError::AccessDenied(AccessDenial::ScopeMatchesNothing)) {
                 tracing::debug!(
                     resource = resource.name(),
                     action,
                     "PEP refused a permitted authorization scope statically known to match no resources"
                 );
-                EnforcerError::ScopeMatchesNothing
             }
-            other => EnforcerError::CompileFailed(other),
+            err
         })
     }
 }

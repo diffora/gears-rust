@@ -11,7 +11,7 @@ For the full architectural design (AuthZEN model, predicate types, caching, depl
 - **Rule**: Derive `Scopable` on SeaORM entities with tenant/resource columns.
 - **Rule**: Use `PolicyEnforcer` from `authz-resolver-sdk` for all authorization decisions. Do not construct `AccessScope` manually in production code.
 - **Rule**: Every sensitive DB access MUST be covered by a PDP decision (via `PolicyEnforcer`). Exception: the approved prefetch-first flow for GET/UPDATE/DELETE may read with `AccessScope::allow_all()` before the PDP call, provided the required compensating checks are applied (see [GET prefetch pattern](#get--prefetch-pattern) and [UPDATE/DELETE prefetch + TOCTOU safety](#update--delete--prefetch--toctou-safety)).
-- **Rule**: Fail-closed — denied PDP decisions, unreachable PDP, and missing constraints all result in 403 Forbidden.
+- **Rule**: Fail-closed — no `EnforcerError`, including an unknown outcome class, lets the operation proceed. See [EnforcerError](#enforcererror-authz-errors) for the recommended HTTP mapping; existing consumers may keep legacy mappings.
 - **Rule**: Map `EnforcerError` to domain errors. Never expose PDP internals to the client.
 - **Rule**: Use `.authenticated()` on `OperationBuilder` for protected endpoints, `.anonymous()` for unauthenticated ones.
 - **Rule**: No plain SQL in handlers/services/repos. Raw SQL is allowed only in migration infrastructure. See [`11_database_patterns.md`](./11_database_patterns.md) for migration rules.
@@ -239,7 +239,7 @@ Choose empty-scope handling by how the caller uses the returned scope. The actio
 
 | Caller | `allow_empty_scope` | Handling an empty scope |
 |---|---|---|
-| Point operation (GET / CREATE / UPDATE / DELETE) or ordinary action-level permission gate | Keep the default `false` | The enforcer returns `EnforcerError::ScopeMatchesNothing`; no manual `matches_nothing()` check is needed. |
+| Point operation (GET / CREATE / UPDATE / DELETE) or ordinary action-level permission gate | Keep the default `false` | The enforcer returns `EnforcerError::AccessDenied(AccessDenial::ScopeMatchesNothing)`; no manual `matches_nothing()` check is needed. |
 | LIST / search that applies the whole scope to its query | Set `true` | Pass the scope to the query; SQL `FALSE` (or a non-SQL contradiction) produces an empty result. No manual check is needed. |
 | Aggregation that applies the whole scope to its query | Set `true` | Run the scoped aggregation over empty input. Preserve backend semantics: an ungrouped `COUNT(*)` returns one row with `0`, not an empty list. |
 | Catalog gate for a global model or type catalog, where the scope is not applied to catalog rows | Set `true` | Explicitly check `scope.matches_nothing()` and return an empty list; otherwise apply the catalog's visibility rules. |
@@ -719,30 +719,43 @@ See [`11_database_patterns.md`](./11_database_patterns.md) for `DBRunner`/`Secur
 
 ### EnforcerError (AuthZ errors)
 
-`EnforcerError::ScopeMatchesNothing` means the PDP returned `decision: true` and constraint compilation succeeded, but the scope is statically known to match no resources and the caller kept `allow_empty_scope(false)`. This is a PEP-local access refusal, distinct from `Denied` (`decision: false`), and maps to 403 rather than an internal error. Do not catch it and continue the operation without a scope. Queries that should accept an empty scope opt in with `allow_empty_scope(true)` at the call site.
+`EnforcerError` has three known outcome classes: `AccessDenied(AccessDenial)`, `EvaluationFailed` and `CompileFailed`. It is `#[non_exhaustive]`: handle the classes that need distinct treatment, then fall back to an internal failure for the rest, an unknown class included (HTTP 500, no details on the wire, the operation stops; an unknown class is never a denial, PDP unavailability or a skipped item). `AccessDenial` is `#[non_exhaustive]` and says why access was refused: `AccessDenial::Pdp { reason }` is the PDP's `decision: false` with its optional deny reason, and any other reason is a PEP-local refusal that carries no PDP reason. Keep an `AccessDenied(_)` arm for those.
 
-Map `EnforcerError` to your domain error type:
+`AccessDenial::ScopeMatchesNothing` means the PDP returned `decision: true` and constraint compilation succeeded, but the scope is statically known to match no resources and the caller kept `allow_empty_scope(false)`. This is a PEP-local access refusal, distinct from a PDP denial (`decision: false`), and maps to 403 rather than an internal error. Do not catch it and continue the operation without a scope. Queries that should accept an empty scope opt in with `allow_empty_scope(true)` at the call site.
+
+**Recommended mapping** for new or updated handlers. Existing consumers may keep legacy mappings (for example compile failures as 403, or every evaluation failure as 503) and are not migrated by this guidance.
+
+| Outcome | HTTP |
+|---|---|
+| `AccessDenied(_)` (any refusal reason) | 403 |
+| `EvaluationFailed(_)` where `is_pdp_unavailable()` (canonical `ServiceUnavailable` or `DeadlineExceeded`, including the enforcer's own evaluation deadline) | 503 |
+| Any other evaluation failure (`Internal` among them), `CompileFailed(_)`, an unknown outcome class | 500, no details on the wire |
+
+`EnforcerError::is_pdp_unavailable()` classifies the cause once in the SDK, so handlers do not inspect `CanonicalError` themselves. It is not `is_retryable`: whether a retry is safe depends on the operation and its idempotency.
+
+A generic example at the canonical error boundary (`MyResourceError` stands for your gear's `#[resource_error]` type):
 
 ```rust
 use authz_resolver_sdk::EnforcerError;
+use toolkit_canonical_errors::CanonicalError;
 
-impl From<EnforcerError> for DomainError {
-    fn from(e: EnforcerError) -> Self {
-        tracing::error!(error = %e, "AuthZ scope resolution failed");
-        match e {
-            // PDP denied access, the permitted scope matches nothing, or
-            // constraints failed to compile → 403
-            EnforcerError::Denied { .. }
-            | EnforcerError::ScopeMatchesNothing
-            | EnforcerError::CompileFailed(_) => Self::Forbidden,
-            // PDP unreachable or returned invalid response → 500
-            EnforcerError::EvaluationFailed(_) => Self::InternalError,
+fn authz_failure(err: &EnforcerError) -> CanonicalError {
+    tracing::warn!(error = %err, "authorization failed");
+    match err {
+        EnforcerError::AccessDenied(_) => MyResourceError::permission_denied()
+            .with_reason("ACCESS_DENIED")
+            .create(),
+        EnforcerError::EvaluationFailed(_) if err.is_pdp_unavailable() => {
+            CanonicalError::service_unavailable().create()
         }
+        // Other evaluation failures, compile failures and unknown outcome
+        // classes: the detail stays in the log, never on the wire.
+        _ => CanonicalError::internal("authorization failed").create(),
     }
 }
 ```
 
-This mapping follows the fail-closed principle: denials (including `ScopeMatchesNothing`) and compilation failures are access errors (403), while evaluation failures are infrastructure errors (500).
+Every mapping keeps the fail-closed principle: no outcome other than `Ok(scope)` lets the operation proceed.
 
 ### ScopeError (ORM errors)
 
@@ -821,7 +834,7 @@ In tests, build scopes explicitly (`AccessScope::for_tenant(...)`, `AccessScope:
 - [ ] Call `policy_enforcer.access_scope()` / `.access_scope_with()` in every point operation and ordinary action-level permission gate, keeping the default `allow_empty_scope(false)`.
 - [ ] Use `allow_empty_scope(true)` only for queries that apply the whole scope or catalog gates that return an empty list for an empty scope.
 - [ ] For catalog gates that opt in, explicitly check `scope.matches_nothing()` before returning catalog entries.
-- [ ] Implement `From<EnforcerError>` for your domain error type; map `ScopeMatchesNothing` to access denial (403).
+- [ ] Implement `From<EnforcerError>` for your domain error type; map every `AccessDenied(_)`, including `AccessDenial::ScopeMatchesNothing`, to access denial (403).
 - [ ] Use `.authenticated()` + `.require_license_features::<License>([])` on protected `OperationBuilder` routes.
 - [ ] Use `.anonymous()` only for truly unauthenticated routes (health checks, OpenAPI spec).
 

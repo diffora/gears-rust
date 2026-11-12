@@ -113,11 +113,7 @@ async fn pdp_scope_with<T>(
                 Err(denied)
             }
         },
-        Err(
-            err @ (EnforcerError::Denied { .. }
-            | EnforcerError::ScopeMatchesNothing
-            | EnforcerError::CompileFailed(_)),
-        ) => {
+        Err(err @ (EnforcerError::AccessDenied(_) | EnforcerError::CompileFailed(_))) => {
             metrics.record_pdp_decision(op, AuthzDecision::Deny, seconds);
             Err(DomainError::from(err))
         }
@@ -129,6 +125,12 @@ async fn pdp_scope_with<T>(
             metrics.record_pdp_failure(op, PdpFailureCause::Unreachable, seconds);
             Err(DomainError::from(err))
         } // @cpt-end:cpt-cf-usage-collector-algo-foundation-pdp-authorize:p2:inst-algo-pdp-failure-metrics
+        // An unknown outcome class is an internal failure: counted as one,
+        // never as a deny or an unreachable PDP.
+        Err(err) => {
+            metrics.record_pdp_failure(op, PdpFailureCause::Internal, seconds);
+            Err(DomainError::from(err))
+        }
     }
 }
 

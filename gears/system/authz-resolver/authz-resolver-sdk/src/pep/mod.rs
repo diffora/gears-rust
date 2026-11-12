@@ -15,7 +15,7 @@ pub use compiler::{
     CompileOptions, ConstraintCompileError, compile_to_access_scope,
     compile_to_access_scope_with_options,
 };
-pub use enforcer::{AccessRequest, EnforcerError, PolicyEnforcer, ResourceType};
+pub use enforcer::{AccessDenial, AccessRequest, EnforcerError, PolicyEnforcer, ResourceType};
 
 /// Trait for types that can be converted into `serde_json::Value` for PDP
 /// evaluation requests and predicate construction.

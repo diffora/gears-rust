@@ -7,7 +7,7 @@ use std::sync::{Arc, Once};
 use async_trait::async_trait;
 use authz_resolver_sdk::models::TenantMode;
 use authz_resolver_sdk::pep::{AccessRequest, ResourceType};
-use authz_resolver_sdk::{EnforcerError, PolicyEnforcer};
+use authz_resolver_sdk::{AccessDenial, EnforcerError, PolicyEnforcer};
 use futures::future::join_all;
 use serde_json::Value;
 use time::OffsetDateTime;
@@ -310,9 +310,9 @@ enum PolicyFailure {
 /// each category alike.
 fn policy_failure(err: EnforcerError) -> PolicyFailure {
     match err {
-        EnforcerError::Denied {
-            deny_reason: Some(reason),
-        } => PolicyFailure::Denied(format!(
+        EnforcerError::AccessDenied(AccessDenial::Pdp {
+            reason: Some(reason),
+        }) => PolicyFailure::Denied(format!(
             "the platform refuses the read: {}{}",
             reason.error_code,
             reason
@@ -320,13 +320,15 @@ fn policy_failure(err: EnforcerError) -> PolicyFailure {
                 .map(|details| format!(" ({details})"))
                 .unwrap_or_default()
         )),
-        EnforcerError::Denied { deny_reason: None } | EnforcerError::ScopeMatchesNothing => {
+        EnforcerError::AccessDenied(_) => {
             PolicyFailure::Denied("the platform refuses the read".to_owned())
         }
         EnforcerError::CompileFailed(cause) => PolicyFailure::Uncompilable(format!(
             "the platform's answer cannot be compiled: {cause}"
         )),
         other @ EnforcerError::EvaluationFailed(_) => PolicyFailure::Failed(other.into()),
+        // An unknown outcome class fails the read; it is never a refusal.
+        unknown => PolicyFailure::Failed(unknown.into()),
     }
 }
 

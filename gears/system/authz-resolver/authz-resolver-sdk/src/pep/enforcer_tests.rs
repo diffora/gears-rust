@@ -286,6 +286,7 @@ async fn evaluate_times_out_when_pdp_is_slow() {
         .expect_err("a PDP slower than the deadline must fail fast");
 
     assert!(matches!(err, EnforcerError::EvaluationFailed(_)));
+    assert!(err.is_pdp_unavailable(), "a timed-out PDP is unavailable");
     assert!(
         start.elapsed() < std::time::Duration::from_secs(1),
         "the deadline must bound the call to well under the PDP's response time"
@@ -650,7 +651,9 @@ async fn access_scope_denied_returns_denied_error() {
 
     assert!(matches!(
         result,
-        Err(EnforcerError::Denied { deny_reason: None })
+        Err(EnforcerError::AccessDenied(AccessDenial::Pdp {
+            reason: None
+        }))
     ));
 }
 
@@ -664,7 +667,9 @@ async fn access_scope_denied_with_reason() {
     let result = e.access_scope(&ctx, &TEST_RESOURCE, "get", None).await;
 
     match result {
-        Err(EnforcerError::Denied { deny_reason }) => {
+        Err(EnforcerError::AccessDenied(AccessDenial::Pdp {
+            reason: deny_reason,
+        })) => {
             let reason = deny_reason.expect("should have deny_reason");
             assert_eq!(reason.error_code, "INSUFFICIENT_PERMISSIONS");
             assert_eq!(reason.details.as_deref(), Some("Missing admin role"));
@@ -692,7 +697,9 @@ async fn access_scope_anonymous_denied_by_pdp() {
 
     assert!(matches!(
         result,
-        Err(EnforcerError::Denied { deny_reason: None })
+        Err(EnforcerError::AccessDenied(AccessDenial::Pdp {
+            reason: None
+        }))
     ));
 }
 
@@ -1197,7 +1204,12 @@ async fn all_empty_scope_is_refused_by_default_and_returned_when_allowed() {
                 )
                 .await;
             assert!(
-                matches!(gate, Err(EnforcerError::ScopeMatchesNothing)),
+                matches!(
+                    gate,
+                    Err(EnforcerError::AccessDenied(
+                        AccessDenial::ScopeMatchesNothing
+                    ))
+                ),
                 "{empty:?} require={require}: {gate:?}"
             );
 
@@ -1232,7 +1244,9 @@ async fn defaults_refuse_empty_scope_and_allow_flag_is_resettable() {
     assert!(matches!(
         pep.access_scope(&test_ctx(), &TEST_RESOURCE, "list", None)
             .await,
-        Err(EnforcerError::ScopeMatchesNothing)
+        Err(EnforcerError::AccessDenied(
+            AccessDenial::ScopeMatchesNothing
+        ))
     ));
     // Every request that does not end with the flag set is fail-closed,
     // including one where it was set and then reset.
@@ -1246,7 +1260,12 @@ async fn defaults_refuse_empty_scope_and_allow_flag_is_resettable() {
             .access_scope_with(&test_ctx(), &TEST_RESOURCE, "list", None, &request)
             .await;
         assert!(
-            matches!(result, Err(EnforcerError::ScopeMatchesNothing)),
+            matches!(
+                result,
+                Err(EnforcerError::AccessDenied(
+                    AccessDenial::ScopeMatchesNothing
+                ))
+            ),
             "{request:?}: {result:?}"
         );
     }
@@ -1416,9 +1435,9 @@ async fn pdp_denial_keeps_its_reason_on_both_paths_even_with_empty_sets() {
             .await,
     ] {
         match result {
-            Err(EnforcerError::Denied {
-                deny_reason: Some(reason),
-            }) => assert_eq!(reason.error_code, "NO_LIST"),
+            Err(EnforcerError::AccessDenied(AccessDenial::Pdp {
+                reason: Some(reason),
+            })) => assert_eq!(reason.error_code, "NO_LIST"),
             other => panic!("expected PDP denial with reason, got {other:?}"),
         }
     }
@@ -1440,7 +1459,12 @@ async fn reasonless_pdp_denial_stays_denied_and_differs_from_an_empty_scope() {
             .access_scope_with(&test_ctx(), &TEST_RESOURCE, "list", None, &request)
             .await;
         assert!(
-            matches!(denied, Err(EnforcerError::Denied { deny_reason: None })),
+            matches!(
+                denied,
+                Err(EnforcerError::AccessDenied(AccessDenial::Pdp {
+                    reason: None
+                }))
+            ),
             "a PDP deny is never reported as an empty scope: {denied:?}"
         );
     }
@@ -1448,7 +1472,12 @@ async fn reasonless_pdp_denial_stays_denied_and_differs_from_an_empty_scope() {
         .access_scope(&test_ctx(), &TEST_RESOURCE, "list", None)
         .await;
     assert!(
-        matches!(refused, Err(EnforcerError::ScopeMatchesNothing)),
+        matches!(
+            refused,
+            Err(EnforcerError::AccessDenied(
+                AccessDenial::ScopeMatchesNothing
+            ))
+        ),
         "a permitted empty scope is not a PDP deny: {refused:?}"
     );
 }
@@ -1487,7 +1516,9 @@ async fn empty_and_constraint_stays_malformed_on_both_paths() {
     assert!(matches!(
         pep.access_scope(&test_ctx(), &TEST_RESOURCE, "list", None)
             .await,
-        Err(EnforcerError::ScopeMatchesNothing)
+        Err(EnforcerError::AccessDenied(
+            AccessDenial::ScopeMatchesNothing
+        ))
     ));
     let scope = pep
         .access_scope_with(&test_ctx(), &TEST_RESOURCE, "list", None, &allow_empty())
@@ -1537,7 +1568,9 @@ async fn invalid_sibling_is_dropped_and_valid_empty_branch_decides() {
     assert!(matches!(
         pep.access_scope(&test_ctx(), &TEST_RESOURCE, "list", None)
             .await,
-        Err(EnforcerError::ScopeMatchesNothing)
+        Err(EnforcerError::AccessDenied(
+            AccessDenial::ScopeMatchesNothing
+        ))
     ));
     let scope = pep
         .access_scope_with(&test_ctx(), &TEST_RESOURCE, "list", None, &allow_empty())
@@ -1607,5 +1640,112 @@ async fn empty_descendant_status_is_not_an_empty_scope() {
             scope.constraints()[0].filters(),
             [toolkit_security::ScopeFilter::InTenantSubtree(_)]
         ));
+    }
+}
+
+// ── EnforcerError contract ───────────────────────────────────────
+
+#[test]
+fn compile_scope_matches_nothing_converts_to_local_denial() {
+    let err = EnforcerError::from(ConstraintCompileError::ScopeMatchesNothing);
+    assert!(
+        matches!(
+            err,
+            EnforcerError::AccessDenied(AccessDenial::ScopeMatchesNothing)
+        ),
+        "an empty permitted scope is an access refusal, got {err:?}"
+    );
+}
+
+#[test]
+fn other_compile_failures_stay_compile_failures_with_their_source() {
+    let err = EnforcerError::from(ConstraintCompileError::ConstraintsRequiredButAbsent);
+    assert!(
+        matches!(
+            err,
+            EnforcerError::CompileFailed(ConstraintCompileError::ConstraintsRequiredButAbsent)
+        ),
+        "got {err:?}"
+    );
+    let source = std::error::Error::source(&err).expect("compile failure keeps its cause");
+    assert!(
+        source
+            .downcast_ref::<ConstraintCompileError>()
+            .is_some_and(|e| matches!(e, ConstraintCompileError::ConstraintsRequiredButAbsent)),
+        "source is the compile error, got {source:?}"
+    );
+}
+
+#[test]
+fn denial_display_names_who_refused() {
+    let pdp = EnforcerError::AccessDenied(AccessDenial::Pdp { reason: None });
+    let pdp_with_reason = EnforcerError::AccessDenied(AccessDenial::Pdp {
+        reason: Some(crate::models::DenyReason {
+            error_code: "NO_LIST".to_owned(),
+            details: Some("missing role".to_owned()),
+        }),
+    });
+    let local = EnforcerError::AccessDenied(AccessDenial::ScopeMatchesNothing);
+
+    // The PDP's reason is structured data for the consumer to log
+    // deliberately; Display never echoes it.
+    assert_eq!(pdp.to_string(), "access denied by PDP");
+    assert_eq!(pdp_with_reason.to_string(), "access denied by PDP");
+    assert_eq!(
+        local.to_string(),
+        "access denied: the permitted scope matches nothing"
+    );
+}
+
+#[toolkit_canonical_errors::resource_error(toolkit_gts::gts_id!("cf.core.authz.evaluation.v1~"))]
+struct EvaluationResourceError;
+
+#[test]
+fn is_pdp_unavailable_only_for_an_unavailable_or_timed_out_evaluation() {
+    let cases = [
+        (
+            "service unavailable",
+            EnforcerError::EvaluationFailed(CanonicalError::service_unavailable().create()),
+            true,
+        ),
+        (
+            "deadline exceeded",
+            EnforcerError::EvaluationFailed(
+                EvaluationResourceError::deadline_exceeded("pdp too slow").create(),
+            ),
+            true,
+        ),
+        (
+            "internal",
+            EnforcerError::EvaluationFailed(CanonicalError::internal("pdp bug").create()),
+            false,
+        ),
+        (
+            "failed precondition",
+            EnforcerError::EvaluationFailed(
+                EvaluationResourceError::failed_precondition()
+                    .with_precondition_violation("pdp", "not configured", "STATE")
+                    .create(),
+            ),
+            false,
+        ),
+        (
+            "pdp denial",
+            EnforcerError::AccessDenied(AccessDenial::Pdp { reason: None }),
+            false,
+        ),
+        (
+            "local denial",
+            EnforcerError::AccessDenied(AccessDenial::ScopeMatchesNothing),
+            false,
+        ),
+        (
+            "compile failure",
+            EnforcerError::CompileFailed(ConstraintCompileError::ConstraintsRequiredButAbsent),
+            false,
+        ),
+    ];
+    for (case, err, unavailable) in cases {
+        assert_eq!(err.is_pdp_unavailable(), unavailable, "{case}");
     }
 }

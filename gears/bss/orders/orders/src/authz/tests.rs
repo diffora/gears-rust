@@ -1008,7 +1008,9 @@ fn a_permitted_scope_that_matches_nothing_is_a_denial_not_an_integration_fault()
         let raw = classify(
             requires_finite_ids,
             "read",
-            Err(EnforcerError::ScopeMatchesNothing),
+            Err(EnforcerError::AccessDenied(
+                AccessDenial::ScopeMatchesNothing,
+            )),
         );
         assert!(
             matches!(raw, Raw::Denied(None)),

@@ -82,9 +82,12 @@ impl Authorizer for PolicyEnforcerAuthorizer {
 
 fn map_enforcer_error(e: &EnforcerError) -> DomainError {
     match e {
-        EnforcerError::Denied { .. }
-        | EnforcerError::ScopeMatchesNothing
-        | EnforcerError::CompileFailed(_) => DomainError::Forbidden,
+        EnforcerError::AccessDenied(_) | EnforcerError::CompileFailed(_) => DomainError::Forbidden,
         EnforcerError::EvaluationFailed(_) => DomainError::InternalError,
+        // An unknown outcome class is an internal failure, never a denial.
+        unknown => {
+            tracing::error!(error = %unknown, "authz failed with an unknown outcome");
+            DomainError::InternalError
+        }
     }
 }

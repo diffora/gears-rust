@@ -415,7 +415,7 @@ impl From<event_broker_sdk::backend::BackendError> for DomainError {
     }
 }
 
-/// `EnforcerError::Denied` -> `Forbidden` with a generic `"AuthzDenied"` code;
+/// `EnforcerError::AccessDenied` -> `Forbidden` with a generic `"AuthzDenied"` code;
 /// call sites that need a specific `docs/openapi.yaml` code
 /// (`TopicNotAuthorized`, `EventTypeNotAuthorized`, `NotAuthorizedToProduce`,
 /// `TenantIdNotAuthorized`) overwrite `code` after this conversion
@@ -427,19 +427,19 @@ impl From<event_broker_sdk::backend::BackendError> for DomainError {
 /// mapping.
 impl From<authz_resolver_sdk::EnforcerError> for DomainError {
     fn from(err: authz_resolver_sdk::EnforcerError) -> Self {
-        use authz_resolver_sdk::EnforcerError;
+        use authz_resolver_sdk::{AccessDenial, EnforcerError};
         match err {
-            EnforcerError::Denied { deny_reason } => DomainError::Forbidden {
+            EnforcerError::AccessDenied(AccessDenial::Pdp { reason }) => DomainError::Forbidden {
                 code: ErrorCode::AuthzDenied,
-                message: deny_reason
+                message: reason
                     .and_then(|r| r.details)
                     .unwrap_or_else(|| "access denied by policy".to_owned()),
                 resource: String::new(),
             },
             // PEP-local access denial after successful compilation.
-            EnforcerError::ScopeMatchesNothing => DomainError::Forbidden {
+            EnforcerError::AccessDenied(local) => DomainError::Forbidden {
                 code: ErrorCode::AuthzDenied,
-                message: "access denied: the permitted scope matches nothing".to_owned(),
+                message: local.to_string(),
                 resource: String::new(),
             },
             EnforcerError::CompileFailed(e) => {
@@ -447,6 +447,11 @@ impl From<authz_resolver_sdk::EnforcerError> for DomainError {
             }
             EnforcerError::EvaluationFailed(e) => {
                 DomainError::Internal(format!("authz evaluation failed: {e}"))
+            }
+            // An unknown outcome class is an internal failure, never a denial.
+            unknown => {
+                tracing::error!(error = %unknown, "authz failed with an unknown outcome");
+                DomainError::Internal("authorization failed with an unknown outcome".to_owned())
             }
         }
     }

@@ -395,7 +395,7 @@ impl AuthZResolverApi for PermitEmptyConstraintsResolver {
 }
 
 /// PDP fake that denies every evaluation (`decision: false`), surfacing as
-/// `EnforcerError::Denied` (`deny`).
+/// `EnforcerError::AccessDenied` (`deny`).
 #[derive(Debug, Default)]
 pub struct DenyAllResolver;
 

@@ -1746,7 +1746,7 @@ All errors follow RFC 9457 Problem Details (`application/problem+json`) using th
 
 **Authentication** (Inbound, Client → Event Broker): Bearer token via `toolkit-security`.
 
-**Authorization**: Per-(resource, action) checks via the platform's `authz-resolver` framework — `PolicyEnforcer::access_scope_with(&ctx, &RESOURCE_TYPE, "action", resource_id, &req).await?`. The PEP returns either `EnforcerError::Denied` or an `AccessScope` containing constraint predicates (`Eq`, `In`, `InGroup`, `InGroupSubtree`) that the broker AND-merges and applies as read-side filters on subsequent queries.
+**Authorization**: Per-(resource, action) checks via the platform's `authz-resolver` framework — `PolicyEnforcer::access_scope_with(&ctx, &RESOURCE_TYPE, "action", resource_id, &req).await?`. The PEP returns either `EnforcerError::AccessDenied` or an `AccessScope` containing constraint predicates (`Eq`, `In`, `InGroup`, `InGroupSubtree`) that the broker AND-merges and applies as read-side filters on subsequent queries.
 
 **Permission grammar**: `<gts_pattern>:<action>` where `<gts_pattern>` is a valid GTS pattern — a bare base (e.g., `gts.cf.core.events.topic.v1~`, matches everything under it), a concrete identifier (e.g., `gts.cf.core.events.topic.v1~vendor.events.tenants.v1`), or a wildcard suffix (e.g., `gts.cf.core.events.topic.v1~vendor.audit.*`). Patterns let a single grant cover a family.
 

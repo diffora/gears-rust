@@ -97,11 +97,12 @@ For cases where `PolicyEnforcer` is not suitable:
 use authz_resolver_sdk::pep::{
     CompileOptions, compile_to_access_scope, compile_to_access_scope_with_options,
 };
-use authz_resolver_sdk::{AuthZResolverApi, EnforcerError, EvaluationRequest};
+use authz_resolver_sdk::{AccessDenial, AuthZResolverApi, EnforcerError, EvaluationRequest};
 use toolkit_security::PlatformSecurityContext;
 
-// Inside a function returning `Result<_, E>` where `E: From<EnforcerError>`
-// (and `From<ConstraintCompileError>` for the compile step below).
+// Inside a function returning `Result<_, E>` where `E: From<EnforcerError>`.
+// Lift compile errors with `EnforcerError::from`, which classifies
+// `ConstraintCompileError::ScopeMatchesNothing` as an access denial.
 
 // `request: EvaluationRequest` carries the caller as `request.subject` (built
 // from the caller's `SecurityContext`, as `PolicyEnforcer::build_request`
@@ -114,9 +115,9 @@ let response = authz
 
 // The low-level compiler does not check the decision: stop on a deny first.
 if !response.decision {
-    return Err(EnforcerError::Denied {
-        deny_reason: response.context.deny_reason,
-    }
+    return Err(EnforcerError::AccessDenied(AccessDenial::Pdp {
+        reason: response.context.deny_reason,
+    })
     .into());
 }
 ```
@@ -126,7 +127,8 @@ Only after that guard, compile the constraints in one of two modes:
 ```rust
 // Point operations and permission gates: the default refuses a scope whose
 // every compiled branch is empty with `ConstraintCompileError::ScopeMatchesNothing`.
-let scope = compile_to_access_scope(&response, true, supported_properties)?;
+let scope = compile_to_access_scope(&response, true, supported_properties)
+    .map_err(EnforcerError::from)?;
 ```
 
 ```rust
@@ -137,7 +139,8 @@ let scope = compile_to_access_scope_with_options(
     true,
     supported_properties,
     CompileOptions::new().allow_empty_scope(true),
-)?;
+)
+.map_err(EnforcerError::from)?;
 ```
 
 ## Models
@@ -194,16 +197,49 @@ Empty `In`, `InGroup`, and `InGroupSubtree` sets are valid and compile to SQL `F
 ## Error Handling
 
 ```rust
-use authz_resolver_sdk::pep::enforcer::EnforcerError;
+use authz_resolver_sdk::{AccessDenial, EnforcerError};
 
 match enforcer.access_scope(&ctx, &USER, "get", Some(id)).await {
     Ok(scope) => { /* use with SecureORM */ },
-    Err(EnforcerError::Denied { deny_reason }) => { /* PDP denied access */ },
-    Err(EnforcerError::ScopeMatchesNothing) => { /* permitted scope matches nothing: deny */ },
+    Err(EnforcerError::AccessDenied(AccessDenial::Pdp { reason })) => { /* PDP denied access */ },
+    Err(EnforcerError::AccessDenied(_)) => { /* PEP-local refusal, e.g. an empty scope: deny */ },
     Err(EnforcerError::EvaluationFailed(e)) => { /* PDP call failed */ },
     Err(EnforcerError::CompileFailed(e)) => { /* constraint compilation failed */ },
+    Err(e) => { /* unknown outcome class: internal failure (HTTP 500), stop */ },
 }
 ```
+
+`EnforcerError` and `AccessDenial` are both `#[non_exhaustive]`. Handle the
+outcome classes that need distinct treatment (`AccessDenied`,
+`EvaluationFailed`, `CompileFailed`), then fall back to an internal failure for
+the rest, an unknown class included: stop the operation, report a generic
+internal error (HTTP 500) without its details, and never map an unknown class
+to an access denial, to PDP unavailability, or to a skipped item.
+Every refusal reason stays inside `AccessDenied`: keep an `AccessDenied(_)` arm
+that maps any refusal as a denial carrying no PDP reason. Only
+`AccessDenial::Pdp` holds the PDP's `deny_reason`.
+
+Recommended HTTP mapping for new or updated handlers (existing consumers may
+keep legacy mappings and are not migrated):
+
+```rust
+use authz_resolver_sdk::EnforcerError;
+
+fn http_status(err: &EnforcerError) -> u16 {
+    match err {
+        EnforcerError::AccessDenied(_) => 403,
+        EnforcerError::EvaluationFailed(_) if err.is_pdp_unavailable() => 503,
+        // Other evaluation failures, compile failures and unknown outcome
+        // classes: internal, without details on the wire.
+        _ => 500,
+    }
+}
+```
+
+`is_pdp_unavailable()` is true only for an evaluation failure whose canonical
+category is `ServiceUnavailable` or `DeadlineExceeded` (including the
+enforcer's own evaluation deadline). It names the cause, not whether a retry is
+safe: that depends on the operation and its idempotency.
 
 ## Implementing a Plugin
 
@@ -229,15 +265,16 @@ impl AuthZResolverPluginClient for MyPdpPlugin {
 ### Permission gates and empty scopes
 
 `access_scope` and default `access_scope_with` refuse a permitted empty scope
-with `EnforcerError::ScopeMatchesNothing`; map it as an access denial.
+with `EnforcerError::AccessDenied(AccessDenial::ScopeMatchesNothing)`; map it as an
+access denial.
 Enable `AccessRequest::allow_empty_scope(true)` only for queries that apply the
 whole scope (preserving empty-input aggregate results), or catalog gates that
 return an empty list when `matches_nothing()` holds. The flag is PEP-local and
 independent of `require_constraints`; validation is unchanged.
 
 The low-level `compile_to_access_scope` has the same fail-closed default
-(`ConstraintCompileError::ScopeMatchesNothing`, which the enforcer maps to
-`EnforcerError::ScopeMatchesNothing`); opt in with
+(`ConstraintCompileError::ScopeMatchesNothing`, which `EnforcerError::from`
+maps to `AccessDenial::ScopeMatchesNothing`); opt in with
 `compile_to_access_scope_with_options(.., CompileOptions::new().allow_empty_scope(true))`.
 
 Every returned `AccessScope` is normalized:

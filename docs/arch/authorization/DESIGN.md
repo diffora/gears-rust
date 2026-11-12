@@ -751,11 +751,11 @@ For "my resources" endpoints (e.g., `GET /tasks/my`), PEP can either use a seman
 | Compiled scope | Default (`false`) | `true` |
 |---|---|---|
 | Has live branches | Normalized scope | Same |
-| All branches are empty | `EnforcerError::ScopeMatchesNothing` (403) | Empty scope with its originals |
+| All branches are empty | `EnforcerError::AccessDenied(AccessDenial::ScopeMatchesNothing)` (403) | Empty scope with its originals |
 
 PDP denials and validation failures retain their existing error handling. Invalid branches are discarded individually, so `[valid-empty, invalid]` is a valid empty scope; strict rejection is separate work in [#5958](https://github.com/constructorfabric/gears-rust/issues/5958).
 
-The low-level `compile_to_access_scope` also refuses empty scopes (`ConstraintCompileError::ScopeMatchesNothing`). Opt in with `compile_to_access_scope_with_options` and `CompileOptions::new().allow_empty_scope(true)`.
+The low-level `compile_to_access_scope` also refuses empty scopes (`ConstraintCompileError::ScopeMatchesNothing`; `EnforcerError::from` classifies it as `AccessDenial::ScopeMatchesNothing`). Opt in with `compile_to_access_scope_with_options` and `CompileOptions::new().allow_empty_scope(true)`.
 
 Keep the default for point operations and action gates. Opt in for:
 

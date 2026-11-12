@@ -84,6 +84,14 @@ pub enum ConstraintCompileError {
     ///
     /// This is a valid empty selection, mapped as an access refusal. Invalid
     /// siblings follow the usual discard policy.
+    ///
+    /// Not a compilation defect: compilation succeeded, and this is the
+    /// fail-closed refusal of the low-level API's default. Lift it with
+    /// `EnforcerError::from`, which classifies it as
+    /// [`EnforcerError::AccessDenied`](crate::pep::EnforcerError::AccessDenied)
+    /// with [`AccessDenial::ScopeMatchesNothing`](crate::pep::AccessDenial::ScopeMatchesNothing),
+    /// so `EnforcerError::CompileFailed` handlers never see it from the
+    /// enforcer.
     #[error(
         "the permitted scope matches nothing: every successfully compiled constraint has an empty set"
     )]

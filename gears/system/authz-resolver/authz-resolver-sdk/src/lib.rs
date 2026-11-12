@@ -73,7 +73,9 @@ pub use models::{
     Action, BarrierMode, Capability, DenyReason, EvaluationRequest, EvaluationRequestContext,
     EvaluationResponse, EvaluationResponseContext, Resource, Subject, TenantContext, TenantMode,
 };
-pub use pep::{AccessRequest, EnforcerError, IntoPropertyValue, PolicyEnforcer, ResourceType};
+pub use pep::{
+    AccessDenial, AccessRequest, EnforcerError, IntoPropertyValue, PolicyEnforcer, ResourceType,
+};
 pub use plugin_api::AuthZResolverPluginClient;
 // REST projection: base projection trait + HTTP binding builder (always), plus
 // the generated clients when `rest-client` is enabled.
