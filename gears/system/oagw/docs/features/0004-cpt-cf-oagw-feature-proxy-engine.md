@@ -190,8 +190,8 @@ Design constraints enforced: `cpt-cf-oagw-constraint-body-limit`, `cpt-cf-oagw-c
 **Output**: Authorized binding UUID, API-key configuration and optional bucket policy, or an error before forwarding. SDK preview returns only safe identifiers.
 
 1. [ ] - `p1` - Resolve the name within the caller's tenant and selected local parent, applying the use policy before disclosing row state - `inst-cred-resolve-1`
-2. [ ] - `p1` - Apply current ancestor constraints, enabled and plugin checks, and compare the entire selected server with the credential owner's approved endpoints - `inst-cred-resolve-2`
-3. [ ] - `p1` - Provide the selected reference to upstream auth and the binding UUID to the limiter. Consume the selector and guard final outbound headers. On failure, return the specified error - `inst-cred-resolve-3`
+2. [ ] - `p1` - For both proxy and preview, return 503 with administrative `Retry-After` before any secret read if the binding is disabled or suspended. Check the current ancestor policies, plugin and every endpoint against the owner's approvals - `inst-cred-resolve-2`
+3. [ ] - `p1` - Pass the reference and pinned CredStore record ID to upstream auth. For a limited binding, pass its UUID and current limit generation to the limiter. Consume the selector and check the final outbound headers before forwarding - `inst-cred-resolve-3`
 
 [ADR-0021](../ADR/0021-credential-bindings.md) defines the request header and when a key revocation takes effect.
 

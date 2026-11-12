@@ -536,7 +536,7 @@ Not applicable. Management API operations are CRUD against the selected reposito
 
 ### Security Considerations
 
-All management operations enforce bearer token authentication via `toolkit-auth` and tenant scoping via secure ORM. No credentials are stored directly — auth config references use `cred://` URIs resolved by `cred_store` at proxy time, not at management time. Management operations validate credential reference format but do not resolve or test credential accessibility.
+Management operations authenticate callers via `toolkit-auth` and use secure ORM to scope access by tenant. When an upstream write supplies an auth `secret_ref`, management checks its format and asks CredStore whether the caller can access it. The proxy reads the secret again when handling a request. For proposed [named credentials](../ADR/0021-credential-bindings.md), OAGW also pins and verifies the record ID. Emergency suspension needs no secret read. OAGW never stores secret values.
 
 ### Observability Considerations
 
