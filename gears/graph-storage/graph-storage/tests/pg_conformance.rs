@@ -995,6 +995,14 @@ pg_case!(
     conformance::a_backward_compatible_change_updates_the_type_in_place
 );
 pg_case!(
+    a_type_referencing_a_non_ancestor_gains_an_optional_property,
+    conformance::a_type_referencing_a_non_ancestor_gains_an_optional_property
+);
+pg_case!(
+    a_type_referencing_a_non_ancestor_still_refuses_a_breaking_change,
+    conformance::a_type_referencing_a_non_ancestor_still_refuses_a_breaking_change
+);
+pg_case!(
     an_incompatible_change_is_refused_with_its_location,
     conformance::an_incompatible_change_is_refused_with_its_location
 );

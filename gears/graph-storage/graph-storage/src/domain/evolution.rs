@@ -38,6 +38,7 @@ use serde_json::Value;
 use toolkit_macros::domain_model;
 
 use crate::domain::error::DomainError;
+use crate::domain::ontology::BASE_SCHEMAS;
 
 /// Both directional verdicts of one comparison, with the evidence for the one
 /// that gates admission.
@@ -159,13 +160,23 @@ pub fn decide(state: TypeChangeState, asked: Asked) -> Decision {
 /// composition is an intersection of accepted sets, and inclusion is monotone
 /// under intersection, so per-type verdicts compose (an ancestor's own change
 /// is decided on the ancestor's own row).
+///
+/// The base ontology resolves too, ancestor or not, exactly as it does when a
+/// registration compiles (see [`super::ontology::ChainValidator::compile`]): a type
+/// may reference a sibling family such as the provenance attribute, and a
+/// document with an unresolved `$ref` cannot be compared at all.
 pub fn compare(
     old: &Value,
     new: &Value,
     chain: impl IntoIterator<Item = (String, Value)>,
 ) -> Result<Comparison, DomainError> {
     let mut store = GtsStore::new();
-    for (type_id, schema) in chain {
+    let base = BASE_SCHEMAS.iter().filter_map(|(type_id, raw)| {
+        serde_json::from_str(raw)
+            .ok()
+            .map(|schema| ((*type_id).to_owned(), schema))
+    });
+    for (type_id, schema) in base.chain(chain) {
         store.register_schema(&type_id, &schema).map_err(|error| {
             DomainError::internal(format!(
                 "ancestor `{type_id}` is not a usable schema reference: {error}"
