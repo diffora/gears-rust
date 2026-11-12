@@ -277,7 +277,7 @@ Available dimension attributes:
 
 ### Standard property auto-mapping
 
-The `Scopable` derive macro automatically maps dimension columns to well-known PEP property names via `resolve_property()`:
+The `Scopable` derive generates one constant, `ScopableEntity::SCOPE: EntityScope<Column>`, with a field per dimension. `EntityScope::resolve_property()` maps the well-known PEP property names onto those fields:
 
 | Dimension attribute | PEP property name | Constant |
 |---------------------|-------------------|----------|
@@ -285,20 +285,23 @@ The `Scopable` derive macro automatically maps dimension columns to well-known P
 | `resource_col = "id"` | `"id"` | `pep_properties::RESOURCE_ID` |
 | `owner_col = "user_id"` | `"owner_id"` | `pep_properties::OWNER_ID` |
 
-This means if you declare `tenant_col = "tenant_id"`, the macro generates:
+`type_col` has no property name, so no scope can address it. For `tenant_col = "tenant_id", resource_col = "id", no_owner, no_type` the macro generates:
 
 ```rust
-fn resolve_property(property: &str) -> Option<Self::Column> {
-    match property {
-        "owner_tenant_id" => Some(Column::TenantId),
-        "id"              => Some(Column::Id),
-        // ...
-        _ => None,
-    }
+impl ScopableEntity for Entity {
+    const SCOPE: EntityScope<Self::Column> = EntityScope::Scoped(Dimensions {
+        tenant: Some(Column::TenantId),
+        resource: Some(Column::Id),
+        owner: None,
+        type_col: None,
+        custom: &[],
+    });
 }
 ```
 
-When the PDP returns a constraint like `In("owner_tenant_id", [uuid1, uuid2])`, `SecureConn` calls `resolve_property("owner_tenant_id")`, gets `Column::TenantId`, and generates `WHERE tenant_id IN (uuid1, uuid2)`.
+and `#[secure(unrestricted)]` generates `EntityScope::Unrestricted`. `Dimensions` has no `Default`, so a hand-written scope must name every dimension too.
+
+When the PDP returns a constraint like `In("owner_tenant_id", [uuid1, uuid2])`, `SecureConn` calls `E::SCOPE.resolve_property("owner_tenant_id")`, gets `Column::TenantId`, and generates `WHERE tenant_id IN (uuid1, uuid2)`.
 
 ### Custom properties with `pep_prop`
 
@@ -325,7 +328,7 @@ pub struct Model {
 }
 ```
 
-This adds `"city_id" => Some(Column::CityId)` to the generated `resolve_property()` match.
+This adds `("city_id", Column::CityId)` to the generated `custom` list, so `resolve_property("city_id")` returns `Column::CityId`.
 
 To use the custom property, include it in both `ResourceType.supported_properties` and the PDP policy:
 
@@ -352,7 +355,7 @@ PDP constraint: In("city_id", [uuid]) ← PDP returns constraint on this propert
          ↓
 PEP compiler: ScopeFilter::In("city_id", [uuid]) → AccessScope
          ↓
-SecureConn → build_scope_condition::<E>() → E::resolve_property("city_id")
+SecureConn → build_scope_condition::<E>() → E::SCOPE.resolve_property("city_id")
          ↓
 Column::CityId → WHERE city_id IN (uuid)
 ```
