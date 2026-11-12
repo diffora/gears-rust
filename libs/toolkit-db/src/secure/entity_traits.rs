@@ -116,7 +116,11 @@ impl<C: Copy + 'static> EntityScope<C> {
     /// Tenant, resource and owner columns, then the custom ones. The type
     /// column is not included, since no property resolves to it. A column two
     /// properties name appears twice. Empty for an unrestricted entity.
-    pub fn scope_columns(&self) -> impl Iterator<Item = C> + '_ {
+    ///
+    /// The iterator does not borrow `self`: it holds copies of the three
+    /// named columns and the `'static` custom list, so it outlives a
+    /// temporary such as `E::SCOPE`.
+    pub fn scope_columns(&self) -> impl Iterator<Item = C> + use<C> {
         let (named, custom) = match self {
             Self::Unrestricted => ([None; 3], &[][..]),
             Self::Scoped(dims) => ([dims.tenant, dims.resource, dims.owner], dims.custom),

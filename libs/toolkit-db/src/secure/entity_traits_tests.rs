@@ -207,3 +207,19 @@ fn an_undeclared_property_resolves_to_nothing() {
     assert!(scope.resolve_property(pep_properties::OWNER_ID).is_none());
     assert!(scope.resolve_property("unknown").is_none());
 }
+
+/// The column iterator does not borrow the scope: `E::SCOPE` is a temporary,
+/// so an iterator tied to it could not be bound and used afterwards.
+fn columns_of<E: ScopableEntity>() -> Vec<&'static str> {
+    let columns = E::SCOPE.scope_columns();
+    names(columns)
+}
+
+#[test]
+fn the_column_iterator_outlives_the_scope_temporary() {
+    assert_eq!(
+        columns_of::<derived::Entity>(),
+        ["tenant_id", "id", "owner_id", "department_id"]
+    );
+    assert!(columns_of::<unrestricted::Entity>().is_empty());
+}
