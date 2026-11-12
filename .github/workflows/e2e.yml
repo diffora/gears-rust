@@ -72,6 +72,9 @@ jobs:
         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
         with:
+          # git diff instead of the PR-files REST API: that call spends the shared
+          # GITHUB_TOKEN budget (1,000/h per repo) in the job-start burst.
+          token: ''
           filters: |
             docker:
               - 'testing/docker/**'
@@ -314,9 +317,10 @@ jobs:
           PYTEST_ADDOPTS: "--junitxml=${{ github.workspace }}/test-results/e2e/quota-enforcement.xml -o junit_suite_name=e2e-quota-enforcement"
         run: tools/scripts/with_rust_annotations.sh make e2e-local SUITE=quota-enforcement
 
-      # Self-managed OoP (loopback, no k8s) suite: builds flight-control + three
+      # Self-managed OoP (loopback, no k8s) suite: builds flight-control + four
       # oop_module gear binaries and orchestrates them as processes itself, so it
-      # bypasses run_e2e.py and runs via its own target.
+      # bypasses run_e2e.py and runs via its own target. Covers contract calls
+      # between gears over REST and over gRPC.
       - name: Run OoP (loopback) E2E tests
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         env:
@@ -374,10 +378,43 @@ jobs:
             ${{ github.workspace }}/testing/e2e/logs/**
             ${{ runner.home }}/.constructorfabric/logs/**
 
+      # Own App budget, separate from the shared GITHUB_TOKEN pool (GitHub App per workflow family)
+      - name: Mint gears-rust-nightly app token
+        id: app
+        # Unset variable, or a fork/Dependabot run without secrets: skip and fall back to GITHUB_TOKEN.
+        if: >-
+          !cancelled() &&
+          github.event_name == 'schedule' &&
+          vars.GEARS_NIGHTLY_APP_CLIENT_ID != '' &&
+          github.actor != 'dependabot[bot]' &&
+          !github.event.pull_request.head.repo.fork
+        continue-on-error: true  # a bad key or missing install must never fail the job
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.GEARS_NIGHTLY_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GEARS_NIGHTLY_APP_PRIVATE_KEY }}
+          permission-contents: read
+          permission-issues: write
+      - name: Report API token source
+        if: ${{ !cancelled() && github.event_name == 'schedule' }}
+        env:
+          APP_TOKEN_SET: ${{ steps.app.outputs.token != '' }}
+          MINT_OUTCOME: ${{ steps.app.outcome }}
+          API_TOKEN: ${{ steps.app.outputs.token || github.token }}
+        run: |
+          if [ "$APP_TOKEN_SET" = true ]; then src=gears-rust-nightly; echo "::notice::GitHub API token: gears-rust-nightly app"
+          elif [ "$MINT_OUTCOME" = failure ]; then src=github-token; echo "::warning::gears-rust-nightly app token mint failed; using GITHUB_TOKEN"
+          else src=github-token; echo "::notice::GitHub API token: GITHUB_TOKEN (gears-rust-nightly app not configured or fork run)"; fi
+          # GET /rate_limit is free; one sample per job gives a per-token time series (see the API limits plan).
+          core=$(curl -fsS -m 10 -H "Authorization: Bearer $API_TOKEN" -H "Accept: application/vnd.github+json" \
+            https://api.github.com/rate_limit 2>/dev/null | tr -d ' \n' | sed -n 's/.*"core":{\([^}]*\)}.*/\1/p' | tr -d '"' | tr ',' ' ' | sed 's/:/=/g') || true
+          echo "RATE-APP ts=$(date -u +%Y-%m-%dT%H:%M:%SZ) token=$src workflow=$GITHUB_WORKFLOW job=$GITHUB_JOB ${core:-unavailable}"
+
       - name: Create or update issue on nightly failure
         if: failure() && github.event_name == 'schedule'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
+          github-token: ${{ steps.app.outputs.token || github.token }}
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
@@ -455,3 +492,4 @@ jobs:
           title: Nightly E2E failed
           subject: Nightly E2E
           result: success
+          github-token: ${{ steps.app.outputs.token || github.token }}

@@ -88,7 +88,6 @@ def _start(home_dir: str, sidecars, namespace: str) -> subprocess.Popen:
         config_patch=lambda text, _env: _patch_restart_config(text, home_dir, sidecars, namespace),
         port=RESTART_PORT,
         health_path="/readyz",
-        health_timeout=30,
         log_suffix="event-broker-restart",
     )
     config_path = _prepare_config(env)

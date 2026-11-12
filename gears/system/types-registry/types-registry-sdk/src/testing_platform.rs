@@ -4,6 +4,16 @@
 //! [`MockTypesRegistry::seed_inventory`]. Mutations advance versions, dry runs discard
 //! changes, and idempotency keys replay operations. Type Schema materializations are
 //! resolved by `gts-rust`; tombstones retain them, and unresolvable document reads fail.
+//! Changed Type Schemas are validated with native GTS before storage; in-batch schema
+//! prerequisites settle first. Invalid schemas fail admission without replacing old state;
+//! the members of an in-batch cycle are refused as invalid and the candidates waiting on
+//! them are blocked by that dependency. Seeds deliberately bypass this validation.
+//! Publisher guards, history/compatibility, database locking and complete production
+//! graph-reason parity are not modeled.
+//!
+//! Instances are not validated against their Type Schema and neither wait on nor are
+//! blocked by in-batch schema candidates: a batch the registry refuses for an instance can
+//! succeed here. Assert instance admission against the registry's local client.
 //!
 //! Use [`Fault`] for delays and errors, [`MockTypesRegistry::reject`] and
 //! [`MockTypesRegistry::depends_on`] for admission rules, and [`ProtocolFault`] for
@@ -36,6 +46,7 @@ use crate::models::{
 };
 use crate::reason::aborted;
 
+mod admission;
 pub mod conformance;
 
 // configuration.
@@ -683,11 +694,7 @@ impl MockTypesRegistry {
                 resolver.invalidate();
                 entities
             };
-            let outcomes = op
-                .candidates
-                .iter()
-                .map(|c| decide(entities, admission, c))
-                .collect();
+            let outcomes = admission::decide_batch(entities, admission, &op.candidates);
             op.outcomes = Some(outcomes);
         }
         let mut operation = render(
@@ -736,9 +743,11 @@ fn decide(
     entities: &mut BTreeMap<String, Stored>,
     admission: &Admission,
     candidate: &Candidate,
-) -> Decided {
-    let failed =
-        |reason: Reason, message: &str| Decided::Failed(AdmissionFailure::new(reason, message));
+    readiness: admission::Readiness<'_>,
+) -> Option<Decided> {
+    let failed = |reason: Reason, message: &str| {
+        Some(Decided::Failed(AdmissionFailure::new(reason, message)))
+    };
     match candidate {
         Candidate::Register {
             gts_id,
@@ -755,13 +764,13 @@ fn decide(
                         .is_some_and(|s| s.lifecycle == LifecycleStatus::Active)
             });
             if let Some((_, dependency)) = missing {
-                return Decided::Failed(
+                return Some(Decided::Failed(
                     AdmissionFailure::new(
                         Reason::DependencyNotFound,
                         "a dependency is not registered",
                     )
                     .with_context(context::DEPENDENCY_ID, dependency),
-                );
+                ));
             }
             // A tombstone stays present: it is never recreated, and a revision of it is refused.
             let current = entities.get(gts_id.id());
@@ -775,9 +784,27 @@ fn decide(
                 }
                 (None, Some(_)) => failed(Reason::PreconditionFailed, "nothing to update"),
                 (Some(s), Some(_)) if s.content == *content => {
-                    Decided::Unchanged(s.resource_version)
+                    Some(Decided::Unchanged(s.resource_version))
                 }
                 (current, _) => {
+                    if gts_id.is_type() {
+                        match readiness {
+                            admission::Readiness::Waiting => return None,
+                            admission::Readiness::Failed(dependency) => {
+                                return Some(Decided::Failed(
+                                    AdmissionFailure::new(
+                                        Reason::BlockedByDependency,
+                                        "a selected schema prerequisite was refused",
+                                    )
+                                    .with_context(context::DEPENDENCY_ID, dependency),
+                                ));
+                            }
+                            admission::Readiness::Ready => {}
+                        }
+                        if let Err(error) = admission::validate_schema(entities, gts_id, content) {
+                            return failed(Reason::InvalidSchema, &error.to_string());
+                        }
+                    }
                     let version = current.map_or(1, |s| s.resource_version + 1);
                     entities.insert(
                         gts_id.id().to_owned(),
@@ -788,7 +815,7 @@ fn decide(
                             frozen: None,
                         },
                     );
-                    Decided::Succeeded(version)
+                    Some(Decided::Succeeded(version))
                 }
             }
         }
@@ -813,7 +840,7 @@ fn decide(
             stored.lifecycle = LifecycleStatus::Deleted;
             stored.resource_version += 1;
             stored.frozen = frozen;
-            Decided::Succeeded(stored.resource_version)
+            Some(Decided::Succeeded(stored.resource_version))
         }
     }
 }

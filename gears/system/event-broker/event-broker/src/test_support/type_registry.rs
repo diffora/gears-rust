@@ -12,11 +12,11 @@
 //! every id is validated as the GTS kind it claims to be.
 //!
 //! The documents are held by a `MockTypesRegistry` that also holds the
-//! broker's two base types, taken from the declarations `event-broker-sdk`
-//! links into this binary's GTS inventory, so every listed type schema is
-//! resolved the way `types-registry` resolves it. Nothing else from the
-//! inventory is held: a gear's own contract is never included. A test that
-//! needs it passes a registry holding it through
+//! broker's two base types (topic and event), taken from the
+//! declarations `event-broker-sdk` links into this binary's GTS inventory, so
+//! every listed type schema is resolved the way `types-registry` resolves it.
+//! Nothing else from the inventory is held: a gear's own contract is never
+//! included. A test that needs it passes a registry holding it through
 //! `EventBrokerHarnessBuilder::with_types_registry_client`.
 
 use std::collections::HashSet;
@@ -55,9 +55,9 @@ struct FixtureEventV1;
 
 /// A registry holding the broker's two base types (`TOPIC_BASE` and
 /// `EVENT_BASE`, as `event-broker-sdk` declares them), the `topics` instance
-/// documents (keyed by their `id`) and the `event_types` schema documents
-/// (keyed by their `$id`). Nothing else from this binary's GTS inventory is
-/// held, so a gear's own contract is never included.
+/// documents (keyed by their `id`) and the `event_types` schema documents (keyed
+/// by their `$id`). Nothing else from this binary's GTS inventory is held, so a
+/// gear's own contract is never included.
 ///
 /// # Panics
 ///

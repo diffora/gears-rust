@@ -393,7 +393,8 @@ impl MetadataService {
         // Reverse-hydrate the chained `type_id` for the page rows in
         // one batch call. The registry adapter resolves all uuids in a
         // single round-trip and the lookup below is a pure map read.
-        // Rows whose `schema_uuid` is no longer registered are an
+        // A since-deleted schema still names its rows. Rows whose
+        // `schema_uuid` the registry does not know at all are an
         // integrity-pipeline signal — operators see them on the
         // `am.metadata` warn line and the caller gets a loud
         // `Internal` (HTTP 500). We do NOT surface this through the
@@ -403,8 +404,10 @@ impl MetadataService {
         // definition here), and silently skipping the row would mask
         // a data-integrity drift behind a partial page.
         let uuids: Vec<Uuid> = page.items.iter().map(|r| r.schema_uuid).collect();
-        let id_by_uuid: HashMap<Uuid, GtsTypeId> =
-            self.schema_registry.resolve_ids_by_uuid(&uuids).await?;
+        let id_by_uuid: HashMap<Uuid, GtsTypeId> = self
+            .schema_registry
+            .resolve_ids_by_uuid(ctx, &uuids)
+            .await?;
 
         // Per-row schema-scoped authorization. Per PRD §1848 ("list
         // responses omit entries the actor is not permitted to read")
@@ -505,15 +508,13 @@ impl MetadataService {
         // Tenant existence + status guard runs BEFORE the registry call.
         let _tenant = self.resolve_visible_tenant(&scope, tenant_id).await?;
 
-        // Existence gate: registry resolves the policy AND signals
-        // unregistered. We don't need the policy on the GET path but
-        // the same RPC is the cheapest existence check (one round-trip
-        // serves both reads and writes). The error variant carries
-        // `type_id` verbatim so the canonical envelope can surface
-        // the requested id without re-parsing the path.
-        let _policy = self
-            .schema_registry
-            .resolve_inheritance_policy(parsed.as_gts())
+        // Existence gate: an unknown schema is the unified 404. A deleted
+        // schema keeps its identity, so the entry stored under it stays
+        // readable. The error variant carries `type_id` verbatim so the
+        // canonical envelope can surface the requested id without
+        // re-parsing the path.
+        self.schema_registry
+            .check_schema_retained(ctx, parsed.as_gts())
             .await?;
 
         // UUIDv5 derivation cached on `ParsedTypeId` (matches the
@@ -615,7 +616,7 @@ impl MetadataService {
 
         let _policy = self
             .schema_registry
-            .resolve_inheritance_policy(parsed.as_gts())
+            .resolve_inheritance_policy(ctx, parsed.as_gts())
             .await?;
 
         // GTS body validation. Runs AFTER the existence gate above so
@@ -623,7 +624,7 @@ impl MetadataService {
         // The registry's local-client cache amortizes the second
         // round-trip in the steady state.
         self.schema_registry
-            .validate_value(parsed.as_gts(), &value)
+            .validate_value(ctx, parsed.as_gts(), &value)
             .await?;
 
         let schema_uuid = parsed.uuid();
@@ -701,9 +702,9 @@ impl MetadataService {
 
         let _tenant = self.resolve_visible_tenant(&scope, tenant_id).await?;
 
-        let _policy = self
-            .schema_registry
-            .resolve_inheritance_policy(parsed.as_gts())
+        // An entry stored under a since-deleted schema stays removable.
+        self.schema_registry
+            .check_schema_retained(ctx, parsed.as_gts())
             .await?;
 
         let schema_uuid = parsed.uuid();
@@ -776,7 +777,7 @@ impl MetadataService {
         // here BEFORE any walk is attempted.
         let policy = self
             .schema_registry
-            .resolve_inheritance_policy(parsed.as_gts())
+            .resolve_inheritance_policy(ctx, parsed.as_gts())
             .await?;
 
         let schema_uuid = parsed.uuid();

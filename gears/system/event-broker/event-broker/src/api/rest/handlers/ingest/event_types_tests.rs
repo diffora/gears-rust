@@ -17,7 +17,7 @@
 use serde_json::json;
 use std::collections::BTreeSet;
 
-use crate::test_support::{EventBrokerHarness, StaticTypesRegistry};
+use crate::test_support::{EventBrokerHarness, StaticTypesRegistry, mapping_lines};
 
 #[tokio::test]
 async fn list_event_types_happy_path_returns_all_seeded_types() {
@@ -57,9 +57,7 @@ async fn list_event_types_happy_path_returns_all_seeded_types() {
                     "partition_key": "/tenant_id",
                     "data_schema": {
                         "allOf": [
-                            {
-                                "type": ["object", "null"],
-                            },
+                            { "type": ["object", "null"] },
                             { "type": ["object", "null"] },
                         ],
                     },
@@ -72,9 +70,7 @@ async fn list_event_types_happy_path_returns_all_seeded_types() {
                     "partition_key": "/tenant_id",
                     "data_schema": {
                         "allOf": [
-                            {
-                                "type": ["object", "null"],
-                            },
+                            { "type": ["object", "null"] },
                             { "type": ["object", "null"] },
                         ],
                     },
@@ -125,9 +121,7 @@ async fn list_event_types_filters_by_id() {
                 "partition_key": "/tenant_id",
                 "data_schema": {
                         "allOf": [
-                            {
-                                "type": ["object", "null"],
-                            },
+                            { "type": ["object", "null"] },
                             { "type": ["object", "null"] },
                         ],
                     },
@@ -177,9 +171,7 @@ async fn list_event_types_filters_by_topic() {
                 "partition_key": "/tenant_id",
                 "data_schema": {
                         "allOf": [
-                            {
-                                "type": ["object", "null"],
-                            },
+                            { "type": ["object", "null"] },
                             { "type": ["object", "null"] },
                         ],
                     },
@@ -298,6 +290,7 @@ async fn list_event_types_paginates_with_limit() {
 
 /// An unreadable spec cache is an outage, not an empty registry.
 #[tokio::test]
+#[tracing_test::traced_test]
 async fn listing_event_types_during_a_spec_cache_fault_answers_503() {
     let harness = EventBrokerHarness::builder()
         .with_type_registry(StaticTypesRegistry::of(json!([
@@ -320,9 +313,23 @@ async fn listing_event_types_during_a_spec_cache_fault_answers_503() {
             "type": "gts://gts.cf.core.errors.err.v1~cf.core.err.service_unavailable.v1~",
             "title": "Service Unavailable",
             "status": 503,
-            "detail": "database scope resolution failed",
+            "detail": "Service temporarily unavailable",
             "instance": "/event-broker/v1/event-types",
             "context": {},
         })
+    );
+    let logged = std::cell::RefCell::new(Vec::new());
+    logs_assert(|lines| {
+        *logged.borrow_mut() = mapping_lines(lines);
+        Ok(())
+    });
+    assert_eq!(
+        logged.into_inner(),
+        vec![
+            "WARN answering 503 with the generic body error=storage backend unavailable: \
+             database scope resolution failed: database error: Query Error: error returned \
+             from database: (code: 1) no such table: event_broker_spec_cache"
+                .to_owned()
+        ]
     );
 }

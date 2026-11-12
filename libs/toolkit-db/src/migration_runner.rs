@@ -21,13 +21,15 @@
 
 use sea_orm::{
     ConnectionTrait, DatabaseBackend, DatabaseConnection, DbErr, ExecResult, FromQueryResult,
-    Statement, TransactionTrait,
+    Statement,
 };
 use sea_orm_migration::MigrationTrait;
 use std::collections::HashSet;
 use thiserror::Error;
 use tracing::{debug, info};
 use xxhash_rust::xxh3::xxh3_64;
+
+use crate::tx_begin::SqliteBeginMode;
 
 /// Errors that can occur during migration execution.
 #[derive(Debug, Error)]
@@ -428,8 +430,8 @@ async fn run_gear_migrations(
         // Best-effort atomicity:
         // Try to wrap `up()` + history record into an explicit transaction.
         // Note: Some backends (or specific DDL) may auto-commit; this is still best-effort.
-        let txn = conn
-            .begin()
+        // Deferred on SQLite, whatever the database's `transaction_mode`, as before.
+        let txn = crate::tx_begin::begin(conn, None, None, SqliteBeginMode::Deferred)
             .await
             .map_err(|e| MigrationError::MigrationFailed {
                 gear: gear_name.to_owned(),

@@ -1,5 +1,5 @@
 //! Crate-local GTS declaration collectors for publishing a gear's own documents.
-//! Crate-root macros collect all linked declarations process-wide; `local` macros
+//! Crate-root declaration macros collect linked declarations process-wide; `local` macros
 //! additionally submit to the declaring crate's collector, using the same inputs.
 //!
 //! ```ignore

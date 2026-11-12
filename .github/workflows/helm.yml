@@ -52,3 +52,10 @@ jobs:
           helm template demo deploy/helm/toolkit-platform >/dev/null
           helm template demo deploy/helm/toolkit-platform \
             -f deploy/helm/toolkit-platform/values-dev.yaml >/dev/null
+
+      - name: Helm template (Flight Control database backends)
+        run: |
+          chart=apps/cf-gears-flight-control/deploy/helm/flight-control
+          helm template demo "$chart" >/dev/null
+          helm template demo "$chart" -f "$chart/values-postgres.yaml" >/dev/null
+          helm template demo "$chart" -f "$chart/values-mysql.yaml" >/dev/null

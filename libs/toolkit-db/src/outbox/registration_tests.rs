@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use sea_orm::{ConnectionTrait, DatabaseTransaction, DbBackend, Statement, TransactionTrait};
+use sea_orm::{ConnectionTrait, DatabaseTransaction, DbBackend, Statement};
 #[cfg(feature = "mysql")]
 use testcontainers::core::{ContainerPort, WaitFor};
 use testcontainers::{ImageExt, runners::AsyncRunner};
@@ -19,6 +19,7 @@ use tokio::time::Instant;
 use super::types::OutboxConfig;
 use super::{Outbox, outbox_migrations};
 use crate::migration_runner::run_migrations_for_testing;
+use crate::tx_begin::SqliteBeginMode;
 use crate::{ConnectOpts, Db, connect_db, connect_db_with_metric_callback};
 
 #[cfg(feature = "pg")]
@@ -58,7 +59,9 @@ async fn registration_observes_postgres_concurrent_commit_without_changing_defau
 
     // Pool size one makes the next transaction reuse the registration session.
     // Its default RR view must remain stable across another committed update.
-    let next = db.sea_internal().begin().await.unwrap();
+    let next = crate::tx_begin::begin(&db.sea_internal(), None, None, SqliteBeginMode::Deferred)
+        .await
+        .unwrap();
     let isolation: String = next
         .query_one_raw(Statement::from_string(
             DbBackend::Postgres,
@@ -149,7 +152,9 @@ async fn registration_preserves_metadata_after_mariadb_concurrent_commit() {
 
     // The registration override must not leak to the next transaction on this
     // one-connection pool. A default RR snapshot keeps the pre-update value.
-    let next = db.sea_internal().begin().await.unwrap();
+    let next = crate::tx_begin::begin(&db.sea_internal(), None, None, SqliteBeginMode::Deferred)
+        .await
+        .unwrap();
     assert_repeatable_read_snapshot(
         &db,
         &dsn,

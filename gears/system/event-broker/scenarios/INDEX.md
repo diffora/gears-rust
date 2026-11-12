@@ -96,6 +96,9 @@ Multiple consumer instances share a group by JOINing with the same `consumer_gro
 - [positive-1.2 - Publish sync (Prefer: wait=N)](producer/single/1.02-positive-publish-sync-wait-persisted.md) - `POST /v1/events` with `Prefer: wait=N` → `201 Created` after backend persist, `202 Accepted` if the wait elapses first.
 - [negative-1.5 — Read-only partition rejected](producer/single/1.05-negative-readonly-partition-rejected.md) — producer-supplied `partition` on publish → `400 Bad Request`; the backend assigns the backend partition itself.
 - [negative-1.6 - Malformed `Prefer: wait`](producer/single/1.06-negative-prefer-wait-malformed.md) - a non-numeric `Prefer: wait` value → `400 Bad Request`; parsed before the write path, so nothing is enqueued. A numeric over-cap value is **not** malformed - it clamps to the cap (see [single/1.02](producer/single/1.02-positive-publish-sync-wait-persisted.md)).
+- [negative-1.7 - Malformed trace_parent](producer/single/1.07-negative-invalid-trace-parent.md) - a `trace_parent` that is not a W3C traceparent → `400 Invalid Argument`; nothing is admitted.
+- [negative-1.8 - Event too large](producer/single/1.08-negative-event-too-large.md) - encoding over 60 KiB → `413 Content Too Large` (`event_too_large`); nothing is admitted.
+- [negative-1.9 - Partition key too long](producer/single/1.09-negative-partition-key-too-long.md) - resolved partition key over 1024 bytes → `400 Invalid Argument` (`partition_key_too_long`); nothing is admitted.
 
 #### producer/batch/ — `POST /v1/events:batch`
 - [positive-1.1 — Publish batch](producer/batch/1.01-positive-publish-batch.md) — `POST /v1/events:batch` → `202 Accepted`; one topic per batch, all-or-nothing.
@@ -106,7 +109,7 @@ Multiple consumer instances share a group by JOINing with the same `consumer_gro
 - [positive-1.1 — Register chained producer](producer/flows/1.01-positive-register-chained-producer.md) — `POST /v1/producers { mode: chained }` → `201` with `producer_id`.
 - [positive-1.2 — Register monotonic producer](producer/flows/1.02-positive-register-monotonic-producer.md) — `POST /v1/producers { mode: monotonic }` → `201`.
 - [positive-1.3 — Chained-mode sequence](producer/flows/1.03-positive-chained-mode-sequence.md) — `POST /v1/events` with `meta.producer_id` + `meta.previous/sequence`; broker deduplicates.
-- [positive-1.4 — Chain-head retry dedup](producer/flows/1.04-positive-chain-head-retry-dedup.md) — an exact retry of the current chain head returns `200` with an empty body; no second write. Dedup is chain-based (`previous`/`sequence`).
+- [positive-1.4 - Chain-head retry dedup](producer/flows/1.04-positive-chain-head-retry-dedup.md) - a resend at the current chain head (`meta.sequence == last_sequence`, whatever its `meta.previous`) returns `200` with an empty body; no second write. Dedup keys on `sequence`, not on the event `id`.
 - [positive-1.6 — Cursor recovery](producer/flows/1.06-positive-cursor-recovery.md) — `GET /v1/producers/{id}/cursors` → `{producer_id, client_agent, topics:[{topic, last_sequence}]}`; re-seeds the producer's chain per topic after desync.
 - [positive-1.7 — Chain reset](producer/flows/1.07-positive-chain-reset.md) — `POST /v1/producers/{id}:reset` → `200`; chain state cleared, audited.
 - [flow-1.9 — Desync recovery](producer/flows/1.09-flow-chained-producer-desync-recovery.md) — producer loses sequence state; first publish fails `412`; reads `/cursors`; reconciles counter; republishes successfully.
@@ -157,7 +160,7 @@ Multiple consumer instances share a group by JOINing with the same `consumer_gro
 
 #### consumer/flows/ — consumer-only end-to-end journeys
 - [flow-1.1 — Two-consumer rebalance](consumer/flows/1.01-flow-two-consumer-rebalance.md) — full inline transcript: consumer A holds all partitions; B joins; rebalance; both stream.
-- [flow-1.2 — PositionsNotSet recovery](consumer/flows/1.02-flow-positions-not-set-recovery.md) — SDK mis-SEEKs; broker returns `409`; SDK re-SEEKs and resumes.
+- [flow-1.2 - PositionsNotSet recovery](consumer/flows/1.02-flow-positions-not-set-recovery.md) - SDK mis-SEEKs; broker returns `409`; SDK re-JOINs, re-SEEKs and resumes.
 - [flow-1.3 — Path A consumer with DB](consumer/flows/1.03-flow-path-a-consumer-with-db.md) — consumer reads own DB → SEEK exact offset → stream → persist offset → reconnect resumes from correct position.
 - [flow-1.4 — Leave triggers gain then terminate](consumer/flows/1.04-flow-leave-triggers-gain-terminate.md) — B leaves; A gains B's partitions; A receives `control/terminal` and re-JOINs with the full assignment.
 
@@ -168,7 +171,7 @@ Multiple consumer instances share a group by JOINing with the same `consumer_gro
 - [positive-1.1 — List topics](topics/1.01-positive-list-topics.md) — `GET /v1/topics` → paged list of topic DTOs carrying `id`, `description`, `retention`.
 - [positive-1.2 — List topic segments](topics/1.02-positive-list-topic-segments.md) — `GET /v1/topics/segments?topic=...&partition=...` → segment manifest with RF/HWM per segment.
 - [positive-1.5 - Segments of an empty partition](topics/1.05-positive-segments-empty-partition.md) - `GET /v1/topics/segments?topic=...&partition=...` for a partition with no stored events → `200 OK` with `start_sequence: 0`, `end_sequence: 0`, null times and empty `segments[]`.
-- [positive-1.4 — List event types](topics/1.04-positive-list-event-types.md) — `GET /v1/event-types?topic=...` → paged list of event type registrations.
+- [positive-1.4 - List event types](topics/1.04-positive-list-event-types.md) - `GET /v1/event-types?$filter=topic eq '...'` → paged list of event type registrations.
 
 ---
 
@@ -193,7 +196,10 @@ Multiple consumer instances share a group by JOINing with the same `consumer_gro
 
 - [negative-1.3 — Schema validation failure](producer/single/1.03-negative-schema-validation-failure.md) — `event.data` fails JSON Schema → `422 Invalid Argument`.
 - [negative-1.5 — Read-only partition rejected](producer/single/1.05-negative-readonly-partition-rejected.md) — producer-supplied `partition` on publish → `400 Bad Request`; `partition` is consumer-facing/read-side only.
-- [negative-1.6 — Malformed `Prefer: wait`](producer/single/1.06-negative-prefer-wait-malformed.md) — a non-numeric `Prefer: wait` value → `400 Bad Request`; parsed before the write path, so nothing is enqueued.
+- [negative-1.6 - Malformed `Prefer: wait`](producer/single/1.06-negative-prefer-wait-malformed.md) - a non-numeric `Prefer: wait` value → `400 Bad Request`; parsed before the write path, so nothing is enqueued.
+- [negative-1.7 - Malformed trace_parent](producer/single/1.07-negative-invalid-trace-parent.md) - a `trace_parent` that is not a W3C traceparent → `400 Invalid Argument`; nothing is admitted.
+- [negative-1.8 - Event too large](producer/single/1.08-negative-event-too-large.md) - encoding over 60 KiB → `413 Content Too Large` (`event_too_large`); nothing is admitted.
+- [negative-1.9 - Partition key too long](producer/single/1.09-negative-partition-key-too-long.md) - resolved partition key over 1024 bytes → `400 Invalid Argument` (`partition_key_too_long`); nothing is admitted.
 - [negative-1.2 — Mixed-topic batch](producer/batch/1.02-negative-mixed-topic-batch.md) — batch events span different topics → `400 Invalid Argument`.
 - [negative-1.3 - Batch too large](producer/batch/1.03-negative-batch-too-large.md) - over 100 events or 1 MiB → `413 Content Too Large`.
 - [negative-1.4 — Batch late validation failure](producer/batch/1.04-negative-batch-late-validation-failure.md) — later invalid event rejects whole batch → `422 Invalid Argument`.
@@ -201,6 +207,8 @@ Multiple consumer instances share a group by JOINing with the same `consumer_gro
 - [negative-1.6 - Duplicate event id in batch](producer/batch/1.06-negative-batch-duplicate-event-id.md) - an `id` repeated within the batch → `400 Invalid Argument` (`duplicate_event_id`, `events[1].id`); nothing stored.
 - [negative-1.7 - Malformed run in batch](producer/batch/1.07-negative-batch-malformed-run.md) - chained run `[0->1, 2->3]` → `400 Invalid Argument` (`malformed_run`, `events[1].meta`); nothing stored, no head row.
 - [negative-1.8 - Batch sequence violation](producer/batch/1.08-negative-batch-sequence-violation.md) - a run behind the committed head → `412 Failed Precondition` naming `index`, `producer_id`, `topic`, `last_sequence`; nothing stored.
+- [negative-1.11 - Batch with an event too large](producer/batch/1.11-negative-batch-event-too-large.md) - one event over 60 KiB → `413 Content Too Large` (`event_too_large`, `events[1]`); nothing stored.
+- [negative-1.12 - Batch with a partition key too long](producer/batch/1.12-negative-batch-partition-key-too-long.md) - one partition key over 1024 bytes → `400 Invalid Argument` (`partition_key_too_long`, `events[1].partition_key`); nothing stored.
 - [negative-1.7 — Too many interests](consumer/subscriptions/1.07-negative-join-too-many-interests.md) — more than 64 interests in one JOIN → `400 Invalid Argument`.
 - [negative-1.6 — Invalid client_agent](consumer/groups/1.06-negative-invalid-client-agent.md) — non-ASCII or oversized `client_agent` → `400 Invalid Argument`.
 - [guardrail-1.7 — Stream requires multipart Accept](consumer/stream/1.07-guardrail-stream-accept-json-rejected.md) — `Accept: application/json` on `:stream` endpoint → `406 Invalid Argument`.
@@ -224,7 +232,7 @@ Multiple consumer instances share a group by JOINing with the same `consumer_gro
 
 ### Producer chain errors
 
-- [negative-1.5 — Chained sequence violation](producer/flows/1.05-negative-chained-sequence-violation.md) — `meta.previous` doesn't match broker's `last_sequence` → `412 Failed Precondition`; recover via `GET /v1/producers/{id}/cursors`.
+- [negative-1.5 - Chained sequence violation](producer/flows/1.05-negative-chained-sequence-violation.md) - a chained publish that neither advances the chain nor resends its head → `412 Failed Precondition`; recover via `GET /v1/producers/{id}/cursors`.
 - [negative-1.8 — Unknown producer](producer/flows/1.08-negative-unknown-producer.md) — `meta.producer_id` not registered or reaped → `404 Not Found` naming the producer.
 
 ### Consumer group errors

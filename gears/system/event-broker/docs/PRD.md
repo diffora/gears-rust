@@ -243,7 +243,7 @@ The Event Broker follows standard Gears module conventions. Module-specific depl
 - Storage backend plugin contract; first-party and vendor backends alike are plugins linked through a `backend::Provider`.
 - Per-(resource, action) authorization via the `authz-resolver` framework (4 resource types × 3 actions: `produce`, `consume`, `define`).
 - Persistent consumer-group registry (`event_broker_consumer_group`) with two exclusive provisioning paths (anonymous via REST, named via `types_registry`).
-- Per-event size limit (64 KiB combined headers + payload); per-batch limit (100 events / 1 MiB).
+- Per-event size limit (60 KiB combined headers + payload); partition-key cap (1024 bytes); per-batch limit (100 events / 1 MiB).
 - Cluster-mode failover with `DirectoryService` as source of truth for delivery-shard liveness.
 - Standalone and cluster deployment topologies; affinity-preferring dispatcher routing over instances that each handle every topic.
 - RFC 9457 Problem Details for all error responses with stable GTS type identifiers.
@@ -310,7 +310,7 @@ The system MUST accept single-event publish requests. The event MUST carry `id` 
 
 - [ ] `p1` - **ID**: `cpt-cf-evbk-fr-publish-batch`
 
-The system MUST accept batch publish via `POST /v1/events:batch`. A batch targets one topic and MAY carry events of several producer ids; it is validated per `(producer_id, topic)` run (rules in DESIGN §3.3 and ADR-0004). Hard limits: 100 events per batch, 1 MiB total payload, 64 KiB per event. The batch is atomic - if any event fails dedup validation, the entire batch is rejected and nothing is enqueued.
+The system MUST accept batch publish via `POST /v1/events:batch`. A batch targets one topic and MAY carry events of several producer ids; it is validated per `(producer_id, topic)` run (rules in DESIGN §3.3 and ADR-0004). Hard limits: 100 events per batch, 1 MiB total payload, 60 KiB per event. The batch is atomic - if any event fails dedup validation, the entire batch is rejected and nothing is enqueued.
 
 - **Rationale**: High-throughput producers benefit from batching; ingest cannot know an event's partition, so a batch is not bounded by one.
 - **Actors**: `cpt-cf-evbk-actor-module-dev-producer`
@@ -319,7 +319,7 @@ The system MUST accept batch publish via `POST /v1/events:batch`. A batch target
 
 - [ ] `p1` - **ID**: `cpt-cf-evbk-fr-producer-modes`
 
-The system MUST recognize three producer modes, declared at registration and validated against the fields set on each event: **chained** (`producer_id` + `previous` + `sequence`), **monotonic** (`producer_id` + `sequence` only), **stateless** (none). Chained mode MUST verify `event.previous == state.last_sequence` AND `event.sequence > state.last_sequence` against `event_broker_producer_sequence`; mismatched chains MUST surface as `412 SequenceViolation`. Monotonic mode MUST verify only `event.sequence > state.last_sequence`. Stateless mode MUST do no broker-side dedup. On `412 SequenceViolation` there are two cases. **(1) Transient async retry / duplicate** - resolved automatically with no human involvement: a duplicate is treated as success, and a benign reorder is re-driven from the broker's cursor. **(2) Genuine divergence** - e.g. the producer's local DB was restored from backup and its sequence regressed - which cannot be reconciled silently and MUST surface for **operator acknowledgement**; the operator reconciles against `GET /v1/producers/{producer_id}/cursors` (resume from `last_sequence + 1`) or rotates to a fresh `producer_id` to start a new chain.
+The system MUST recognize three producer modes, declared at registration and validated against the fields set on each event: **chained** (`producer_id` + `previous` + `sequence`), **monotonic** (`producer_id` + `sequence` only), **stateless** (none). Chained mode MUST admit an event when `event.previous == state.last_sequence` AND `event.sequence > state.last_sequence` against `event_broker_producer_sequence`, and MUST treat a resend of the head (`event.sequence == state.last_sequence`, whatever its `previous`) as a duplicate answered `200 OK`; in a batch run that contains the head, the events up to and including it are that duplicate and the events after it advance the chain; any other chained publish MUST surface as `412 SequenceViolation`. Monotonic mode MUST verify only `event.sequence > state.last_sequence`. Stateless mode MUST do no broker-side dedup. A duplicate needs no handling: it is success. On `412 SequenceViolation` there are two cases. **(1) Benign reorder** - resolved automatically with no human involvement: re-driven from the broker's cursor. **(2) Genuine divergence** - e.g. the producer's local DB was restored from backup and its sequence regressed - which cannot be reconciled silently and MUST surface for **operator acknowledgement**; the operator reconciles against `GET /v1/producers/{producer_id}/cursors` (resume from `last_sequence + 1`) or rotates to a fresh `producer_id` to start a new chain.
 
 - **Rationale**: Different producer profiles need different dedup guarantees; chain-of-custody is the broker-side primitive that supports all three without an event.id index.
 - **Actors**: `cpt-cf-evbk-actor-module-dev-producer`
@@ -492,7 +492,7 @@ All error responses MUST follow RFC 9457 Problem Details (`application/problem+j
 
 - [ ] `p1` - **ID**: `cpt-cf-evbk-nfr-event-size`
 
-Per-event hard size limit: 64 KiB combined headers + payload. Enforced at ingest before validation. Larger events MUST be split or referenced (referenced-payload mechanism is post-MVP).
+Per-event hard size limit: 60 KiB combined headers + payload, leaving 4 KiB of the 64 KiB outbox row for the outbox wrappers. Enforced at ingest right after the request is parsed, before the event type is looked up. The partition key an event resolves to is capped at 1024 bytes, since the ingest outbox row stores it beside the event. Larger events MUST be split or referenced (referenced-payload mechanism is post-MVP).
 
 #### Long-Poll Timeout
 
@@ -527,7 +527,7 @@ Absolute throughput is set by the chosen storage backend's transaction ceiling, 
 - **Per-event sustained throughput** SHOULD preserve at least `η = 0.4` of the backend's per-`(topic, partition)` transaction rate (the residual is ingest-outbox and dedup overhead).
 - **Batch publish** SHOULD coalesce at least `B = 20` events per backend transaction.
 
-These targets are measured under stated conditions: small payloads (≈1 KiB, not the 64 KiB ceiling), per single `(topic, partition)`, and at the **sustained** rate. Sustained throughput is distinct from the **accept** rate: the asynchronous publish path acknowledges at ingest-outbox-durability speed (higher, burst-absorbing), while sustained throughput is bounded by backend persistence; accept exceeding sustained grows outbox lag and MUST be bounded by lag, not by refusing the accept.
+These targets are measured under stated conditions: small payloads (≈1 KiB, not the 60 KiB ceiling), per single `(topic, partition)`, and at the **sustained** rate. Sustained throughput is distinct from the **accept** rate: the asynchronous publish path acknowledges at ingest-outbox-durability speed (higher, burst-absorbing), while sustained throughput is bounded by backend persistence; accept exceeding sustained grows outbox lag and MUST be bounded by lag, not by refusing the accept.
 
 *Illustrative*: against a storage backend rated at ≥5,000 transactions/sec, these factors yield roughly **2,000 events/sec** single-event and **100,000 events/sec** batched. Actual figures depend on backend and topology; the derivation is in DESIGN §3.6.
 

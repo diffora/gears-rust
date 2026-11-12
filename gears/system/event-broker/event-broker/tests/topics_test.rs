@@ -9,8 +9,9 @@ use std::time::Duration;
 
 use chrono::DateTime;
 use event_broker::test_support::{EventBrokerHarness, Json, StaticTypesRegistry};
+use event_broker_sdk::Sequence;
 use event_broker_sdk::backend::{Partition, TopicPartition, Wait};
-use event_broker_sdk::{Event, Sequence};
+use event_broker_sdk::models::Event;
 use gts::GtsInstanceId;
 use serde_json::{Value, json};
 
@@ -147,9 +148,7 @@ async fn list_event_types_of_a_topic_returns_a_paged_list() {
                 "partition_key": "/tenant_id",
                 "data_schema": {
                     "allOf": [
-                        {
-                            "type": ["object", "null"],
-                        },
+                        { "type": ["object", "null"] },
                         { "type": ["object", "null"] },
                     ],
                 },

@@ -17,9 +17,8 @@ use toolkit_http_proxy::{ProtocolPolicy, ProxyClient, Target, Transport, full_bo
 
 /// Forwarding to `addr` (`host:port`, no scheme) failed - the caller (design
 /// wise `forward.rs`) logs the real cause and maps every variant but
-/// [`ProxyError::BodyTooLarge`] to the "instance unreachable" `503`
-/// (design.md D10, distinct from "no instance registered");
-/// `BodyTooLarge` maps to `413` instead.
+/// [`ProxyError::BodyTooLarge`] to the generic `503`; `BodyTooLarge` maps to
+/// `413` instead.
 #[derive(Debug, thiserror::Error)]
 pub enum ProxyError {
     /// Peer-address resolution (literal parse or `tokio::net::lookup_host`)

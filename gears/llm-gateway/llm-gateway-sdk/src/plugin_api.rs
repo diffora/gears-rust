@@ -6,9 +6,10 @@
 //! It owns everything that differs per provider: translation (Open Responses ⇆
 //! provider-native format, without third-party provider SDKs), the provider
 //! call through the Outbound API Gateway, error and stop-reason normalization,
-//! and the call cost in AI credits from the model's pricing. At startup it
-//! registers its GTS plugin instance and publishes its provider settings
-//! schema (including pricing) in Type Registry.
+//! and the call cost in AI credits from the model's `cost` rates. At startup it
+//! registers its GTS plugin instance and publishes its provider type, derived
+//! from `gts.cf.genai.model.provider.v1~`, whose schema constrains the model's
+//! `provider_settings`, in Types Registry.
 //!
 //! Plugins register a scoped `ClientHub` entry under their GTS instance id
 //! ([`crate::gts::LlmGatewayProviderPluginSpecV1`]); the core resolves the
@@ -34,9 +35,9 @@ use crate::models::plugin::{ProviderCallCtx, ProviderPluginCapabilities};
 ///
 /// Covers the P1 surfaces the core delegates per request: create-response
 /// (sync and streaming) and embeddings. Every call receives a
-/// [`ProviderCallCtx`] carrying the resolved model info as the GTS-typed
-/// `ModelInfoV1` envelope and the optional provider API key, so the plugin
-/// needs no Model Registry or `CredStore` access of its own.
+/// [`ProviderCallCtx`] carrying the resolved `ModelInfoV1` and the optional
+/// provider API key, so the plugin needs no Model Registry or `CredStore`
+/// access of its own.
 ///
 /// Requests and responses are the same Open Responses–aligned SDK types the
 /// core uses. Every response carries [`crate::models::core::Usage`] with the

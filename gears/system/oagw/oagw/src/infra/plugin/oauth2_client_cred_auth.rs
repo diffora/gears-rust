@@ -4,8 +4,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::infra::ttl_cache::TtlCache;
-use toolkit_auth::oauth2::types::{ClientAuthMethod, SecretString};
-use toolkit_auth::oauth2::{OAuthClientConfig, fetch_token};
+use toolkit_auth::oauth2::types::SecretString;
+use toolkit_auth::oauth2::{ClientCredentials, OAuthClientConfig, TokenEndpoint, fetch_token};
 use url::Url;
 
 use crate::domain::plugin::{AuthContext, AuthPlugin, PluginError};
@@ -17,8 +17,7 @@ const TOKEN_EXPIRY_SAFETY_MARGIN: Duration = Duration::from_secs(30);
 
 /// Parsed configuration from `AuthContext::config`.
 struct OAuth2PluginConfig {
-    token_endpoint: Option<Url>,
-    issuer_url: Option<Url>,
+    endpoint: TokenEndpoint,
     client_id_ref: String,
     client_secret_ref: String,
     scopes: Vec<String>,
@@ -43,16 +42,20 @@ impl OAuth2PluginConfig {
             })
             .transpose()?;
 
-        if token_endpoint.is_some() && issuer_url.is_some() {
-            return Err(PluginError::InvalidConfig(
-                "token_endpoint and issuer_url are mutually exclusive".into(),
-            ));
-        }
-        if token_endpoint.is_none() && issuer_url.is_none() {
-            return Err(PluginError::InvalidConfig(
-                "one of token_endpoint or issuer_url must be set".into(),
-            ));
-        }
+        let endpoint = match (token_endpoint, issuer_url) {
+            (Some(url), None) => TokenEndpoint::Direct(url),
+            (None, Some(issuer)) => TokenEndpoint::Issuer(issuer),
+            (Some(_), Some(_)) => {
+                return Err(PluginError::InvalidConfig(
+                    "token_endpoint and issuer_url are mutually exclusive".into(),
+                ));
+            }
+            (None, None) => {
+                return Err(PluginError::InvalidConfig(
+                    "one of token_endpoint or issuer_url must be set".into(),
+                ));
+            }
+        };
 
         let client_id_ref = config
             .get("client_id_ref")
@@ -70,8 +73,7 @@ impl OAuth2PluginConfig {
             .unwrap_or_default();
 
         Ok(Self {
-            token_endpoint,
-            issuer_url,
+            endpoint,
             client_id_ref,
             client_secret_ref,
             scopes,
@@ -86,21 +88,39 @@ struct CachedToken {
     token: SecretString,
 }
 
-fn build_cache_key(ctx: &AuthContext, auth_method: ClientAuthMethod) -> String {
+/// How the plugin presents the resolved client secret to the token endpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecretAuthMethod {
+    /// `client_secret_basic`: `Authorization: Basic` header.
+    Basic,
+    /// `client_secret_post`: credentials in the form body.
+    Form,
+}
+
+impl SecretAuthMethod {
+    fn tag(self) -> &'static str {
+        match self {
+            Self::Form => "form",
+            Self::Basic => "basic",
+        }
+    }
+
+    fn credentials(self, secret: SecretString) -> ClientCredentials {
+        match self {
+            Self::Basic => ClientCredentials::SecretBasic(secret),
+            Self::Form => ClientCredentials::SecretPost(secret),
+        }
+    }
+}
+
+fn build_cache_key(ctx: &AuthContext, auth_method: SecretAuthMethod) -> String {
     format!(
         "{}:{}:{}:{}",
         ctx.security_context.subject_tenant_id(),
         ctx.security_context.subject_id(),
-        auth_method_tag(auth_method),
+        auth_method.tag(),
         hash_config(&ctx.config),
     )
-}
-
-fn auth_method_tag(method: ClientAuthMethod) -> &'static str {
-    match method {
-        ClientAuthMethod::Form => "form",
-        ClientAuthMethod::Basic => "basic",
-    }
 }
 
 fn hash_config(config: &HashMap<String, String>) -> u64 {
@@ -118,7 +138,7 @@ fn hash_config(config: &HashMap<String, String>) -> u64 {
 /// Auth plugin implementing the OAuth2 Client Credentials flow.
 pub struct OAuth2ClientCredAuthPlugin {
     credstore: Arc<dyn CredStoreClientV1>,
-    auth_method: ClientAuthMethod,
+    auth_method: SecretAuthMethod,
     http_config: Option<toolkit_http::HttpClientConfig>,
     cache: TtlCache<String, CachedToken>,
     cache_ttl: Duration,
@@ -129,7 +149,7 @@ impl OAuth2ClientCredAuthPlugin {
     #[must_use]
     pub fn new(
         credstore: Arc<dyn CredStoreClientV1>,
-        auth_method: ClientAuthMethod,
+        auth_method: SecretAuthMethod,
         cache_ttl: Duration,
         cache_capacity: usize,
     ) -> Self {
@@ -192,16 +212,16 @@ impl AuthPlugin for OAuth2ClientCredAuthPlugin {
             .resolve_secret(&ctx.security_context, &config.client_secret_ref)
             .await?;
 
-        let mut oauth_config = OAuthClientConfig {
-            token_endpoint: config.token_endpoint,
-            issuer_url: config.issuer_url,
-            client_id: client_id_str,
-            client_secret: SecretString::new(client_secret_str),
+        let oauth_config = OAuthClientConfig {
             scopes: config.scopes,
-            auth_method: self.auth_method,
-            ..Default::default()
+            http_config: self.http_config.clone(),
+            ..OAuthClientConfig::new(
+                config.endpoint,
+                client_id_str,
+                self.auth_method
+                    .credentials(SecretString::new(client_secret_str)),
+            )
         };
-        oauth_config.http_config = self.http_config.clone();
 
         let fetched = fetch_token(oauth_config)
             .await
@@ -238,9 +258,9 @@ impl AuthPlugin for OAuth2ClientCredAuthPlugin {
 // `libs/toolkit-http/src/client.rs`. The tests below stand up an `httpmock`
 // plaintext server and construct token clients via
 // `HttpClientConfig::for_testing()`, both of which carry
-// `TransportSecurity::AllowInsecureHttp`. Under `--features fips`,
-// `HttpClientBuilder::build()` fails closed with `HttpError::InsecureTransport`,
-// so this whole suite is unrunnable in that configuration and is gated out.
+// `TransportSecurity::AllowInsecureHttp`. Under `--features fips` that also
+// needs the FIPS crypto provider and the plaintext opt-in, which this suite
+// does not set up, so it is gated out there.
 #[cfg(test)]
 #[cfg(not(feature = "fips"))]
 mod tests {
@@ -307,7 +327,7 @@ mod tests {
     fn make_plugin(credstore: Arc<dyn CredStoreClientV1>) -> OAuth2ClientCredAuthPlugin {
         OAuth2ClientCredAuthPlugin::new(
             credstore,
-            ClientAuthMethod::Form,
+            SecretAuthMethod::Form,
             Duration::from_secs(3600),
             100,
         )
@@ -637,7 +657,7 @@ mod tests {
 
         let plugin = OAuth2ClientCredAuthPlugin::new(
             credstore,
-            ClientAuthMethod::Basic,
+            SecretAuthMethod::Basic,
             Duration::from_secs(3600),
             100,
         )
@@ -650,6 +670,36 @@ mod tests {
             ctx.headers.get("authorization").unwrap(),
             "Bearer tok-basic"
         );
+    }
+
+    #[tokio::test]
+    async fn form_auth_method_sends_credentials_in_body_without_basic_header() {
+        let credstore = Arc::new(MockCredStoreClient::with_secrets(default_creds()));
+        let server = MockServer::start();
+
+        let header_mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/token")
+                .header_exists("authorization");
+            then.status(500);
+        });
+        let mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/token")
+                .body_includes("client_id=my-client-id")
+                .body_includes("client_secret=my-client-secret");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(mock_token_response("tok-form", 3600));
+        });
+
+        let plugin = make_plugin(credstore);
+        let mut ctx = make_auth_ctx(make_config(&server));
+
+        plugin.authenticate(&mut ctx).await.unwrap();
+        mock.assert();
+        assert_eq!(header_mock.calls(), 0, "Form must not send a Basic header");
+        assert_eq!(ctx.headers.get("authorization").unwrap(), "Bearer tok-form");
     }
 
     // -----------------------------------------------------------------------

@@ -36,6 +36,7 @@ pub mod gear_db;
     reason = "general-purpose harness API surface, not all of it exercised yet"
 )]
 pub mod harness;
+pub mod log_capture;
 pub mod module_boot;
 #[allow(
     dead_code,
@@ -72,6 +73,7 @@ pub use gear_db::GearDb;
     reason = "general-purpose harness API surface, not all of it exercised yet"
 )]
 pub use harness::{EventBrokerHarness, EventBrokerHarnessBuilder};
+pub use log_capture::mapping_lines;
 #[allow(
     unused_imports,
     reason = "general-purpose harness API surface, not all of it exercised yet"
@@ -164,8 +166,9 @@ pub async fn standalone_event_broker_cluster() -> (Arc<ClientHub>, EventBrokerCl
     // standing in for the gear has to do the same.
     //
     // Skipping it does not fail here - `resolve` returns an *unbound stub* by
-    // design, deferring the error to first use - so the symptom is a `503 "no
-    // backend bound for profile"` on an unrelated request much later.
+    // design, deferring the error to first use - so the symptom is a `503` on
+    // an unrelated request much later, its cause ("no backend bound for
+    // profile") only in the server log.
     let (mut handle, bound) = ClusterWiring::from_config(Arc::clone(&hub), &config, &providers)
         .await
         .expect("standalone provider wires cleanly");

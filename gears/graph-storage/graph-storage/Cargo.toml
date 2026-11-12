@@ -1,6 +1,6 @@
 [package]
 name = "cf-gears-graph-storage"
-version = "0.3.0"
+version = "0.3.2"
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
@@ -95,7 +95,10 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 toolkit-db = { workspace = true, features = ["pg", "sqlite"] }
 # The real registry, seeded from this crate's inventory: one bad entry would stop
 # its startup, and the platform with it (`tests/types_registry.rs`).
-types-registry = { workspace = true }
+# Path-only on purpose: the registry is not a (transitive) normal dependency of
+# this crate, so release-plz need not publish it first, and a versioned dev-dep
+# would fail `cargo publish` (`make check-release-config`, docs/RELEASING.md).
+types-registry = { package = "cf-gears-types-registry", path = "../../system/types-registry/types-registry" }
 types-registry-sdk = { workspace = true }
 # Drives the gear's own axum router in-process: the REST cases send real
 # requests through it rather than calling the handlers as functions.

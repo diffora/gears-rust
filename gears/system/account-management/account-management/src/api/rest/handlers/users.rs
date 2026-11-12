@@ -216,7 +216,7 @@ mod tests;
 ///
 /// Surfaces a canonical `Problem` envelope. Notable codes:
 /// `validation` (400 — tenant not in `Active` status; empty /
-/// whitespace-only username; oversized fields; GTS schema rejection;
+/// whitespace-only username; invalid fixed SDK DTO fields;
 /// provider-side validation), `cross_tenant_denied` (403), tenant
 /// `not_found` (404), `idp_unavailable` (503),
 /// `idp_unsupported_operation` (501).
@@ -255,8 +255,7 @@ pub async fn create_user(
 ///
 /// Surfaces a canonical `Problem` envelope. Notable codes:
 /// `validation` (400 — empty patch; explicit `null` on `username`;
-/// username all-whitespace / oversized; profile field oversized or GTS
-/// schema rejection; rejected password; unknown field on the body;
+/// username all-whitespace / oversized; invalid fixed SDK DTO fields; rejected password; unknown field on the body;
 /// provider-side validation; tenant not in `Active` status),
 /// `cross_tenant_denied` (403), tenant or user `not_found` (404 — the
 /// `IdP` reports the target user absent, which — unlike `DELETE` — is

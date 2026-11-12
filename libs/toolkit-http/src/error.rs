@@ -116,14 +116,57 @@ pub enum HttpError {
         reason: String,
     },
 
-    /// Insecure transport (`AllowInsecureHttp`) was configured but the binary
-    /// was built with `--features fips`, which mandates `TlsOnly`.
+    /// The outbound proxy is misconfigured or refused the `CONNECT` tunnel.
+    /// Replies of a proxy to plain HTTP requests are ordinary responses.
     ///
-    /// Emitted from `HttpClientBuilder::build()` under `cfg(feature = "fips")`.
-    /// The variant exists on all builds so callers can write a single `match`
-    /// arm, but it is only ever returned when the `fips` feature is active.
-    #[error("insecure transport (AllowInsecureHttp) is not permitted under FIPS")]
-    InsecureTransport,
+    /// [`ProxyErrorKind::InvalidUrl`], [`UnsupportedScheme`] and
+    /// [`AuthRequired`] are not retried: retrying a bad proxy URL or rejected
+    /// credentials repeats the same failure (and can lock the proxy account).
+    /// [`TunnelRejected`] is retried like a transport error.
+    ///
+    /// [`UnsupportedScheme`]: ProxyErrorKind::UnsupportedScheme
+    /// [`AuthRequired`]: ProxyErrorKind::AuthRequired
+    /// [`TunnelRejected`]: ProxyErrorKind::TunnelRejected
+    #[error("proxy '{proxy}': {kind}")]
+    #[non_exhaustive]
+    Proxy {
+        /// What went wrong.
+        kind: ProxyErrorKind,
+        /// Proxy URL with credentials removed.
+        proxy: String,
+    },
+}
+
+/// Classification of [`HttpError::Proxy`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ProxyErrorKind {
+    /// Not a usable URL: unencoded `@`, `/`, `?` or `#` in the credentials,
+    /// an empty host or a port out of range.
+    InvalidUrl,
+    /// A scheme other than `http` or `https`, e.g. SOCKS.
+    UnsupportedScheme,
+    /// The proxy answered `CONNECT` with `407 Proxy Authentication Required`.
+    AuthRequired,
+    /// The proxy answered `CONNECT` with another non-success status (e.g. 403,
+    /// 502, 503) or with a reply that is not valid HTTP. Retried, since a 5xx
+    /// from a proxy is often temporary; hyper-util does not expose the status.
+    TunnelRejected,
+}
+
+impl std::fmt::Display for ProxyErrorKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::InvalidUrl => {
+                "invalid proxy URL (check host and port; percent-encode reserved characters in credentials)"
+            }
+            Self::UnsupportedScheme => {
+                "unsupported proxy scheme, only http:// and https:// are supported"
+            }
+            Self::AuthRequired => "proxy authentication required (407)",
+            Self::TunnelRejected => "proxy rejected the CONNECT request",
+        })
+    }
 }
 
 impl From<hyper::Error> for HttpError {

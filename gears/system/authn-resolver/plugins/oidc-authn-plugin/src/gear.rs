@@ -1,11 +1,14 @@
 //! Oidc `AuthN` resolver plugin gear registration.
 //!
 //! This gear integrates the `OidcAuthNPlugin` with `ToolKit` runtime by:
-//! 1. Reading plugin runtime configuration from `server.yaml`.
-//! 2. Registering a plugin instance in types-registry (GTS metadata).
-//! 3. Registering the scoped plugin client in `ClientHub`.
+//! 1. Reading plugin runtime configuration from `server.yaml` (`init`).
+//! 2. Declaring its plugin instance, built from the configuration, for GTS
+//!    publication (`gts_publication(...)`); the runtime publishes it until admitted, before
+//!    `init`.
+//! 3. Registering the scoped plugin client in `ClientHub` in `init`, for the
+//!    admitted instance.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -14,23 +17,67 @@ use opentelemetry::global;
 use toolkit::Gear;
 use toolkit::context::GearCtx;
 use toolkit::gts::PluginV1;
+use toolkit::gts_publication::GtsPublicationInputs;
 use tracing::{info, warn};
-use types_registry_sdk::{RegisterResult, TypesRegistryClient};
+use types_registry_sdk::GtsId;
 
 use crate::config::{INSTANCE_SUFFIX, OidcAuthNGearConfig};
+use crate::domain::authenticate::OidcAuthNPlugin;
 use crate::domain::metrics::AuthNMetrics;
 use crate::infra::runtime::build_oidc_authn_plugin;
 
 /// `ToolKit` gear responsible for wiring oidc-authn plugin into runtime.
 ///
-/// `authn-resolver` dependency is required so plugin schema is already registered
-/// in types-registry before this gear registers plugin instance metadata.
+/// `AuthN` Resolver publishes the shared plugin schema from its SDK declarations;
+/// this gear publishes only its configured instance.
 #[toolkit::gear(
     name = "oidc-authn-plugin",
-    deps = [types_registry, authn_resolver]
+    gts_publication(entities = Self::plugin_instance),
 )]
 #[derive(Default)]
-pub struct OidcAuthNPluginGear;
+pub struct OidcAuthNPluginGear {
+    plugin: OnceLock<Arc<OidcAuthNPlugin>>,
+}
+
+impl OidcAuthNPluginGear {
+    /// The resolved configuration of `gears.oidc-authn-plugin.config`.
+    fn resolved(
+        cfg: anyhow::Result<OidcAuthNGearConfig>,
+    ) -> anyhow::Result<crate::config::ResolvedGearConfig> {
+        cfg.map_err(|error| {
+            anyhow::anyhow!(
+                "failed to load oidc-authn-plugin configuration from gears.oidc-authn-plugin.config: {error}"
+            )
+        })?
+        .resolve()
+    }
+
+    /// The plugin instance for `vendor` and the configured priority.
+    fn registration(vendor: &str, priority: u32) -> anyhow::Result<(GtsId, serde_json::Value)> {
+        let instance_id = AuthNResolverPluginSpecV1::gts_make_instance_id(INSTANCE_SUFFIX);
+        let instance = PluginV1::<AuthNResolverPluginSpecV1> {
+            id: instance_id.clone(),
+            vendor: vendor.to_owned(),
+            priority: normalize_priority(priority),
+            properties: AuthNResolverPluginSpecV1,
+        };
+        Ok((
+            GtsId::try_new(instance_id.as_ref())?,
+            serde_json::to_value(&instance)?,
+        ))
+    }
+
+    /// The publication's config-only documents: the plugin instance.
+    fn plugin_instance(
+        inputs: &GtsPublicationInputs<'_>,
+    ) -> anyhow::Result<Vec<(GtsId, serde_json::Value)>> {
+        let cfg = Self::resolved(inputs.config().map_err(anyhow::Error::from))?;
+        Ok(vec![Self::registration(
+            &cfg.plugin.vendor,
+            cfg.plugin.priority,
+        )?])
+    }
+}
 
 #[async_trait]
 impl Gear for OidcAuthNPluginGear {
@@ -38,60 +85,33 @@ impl Gear for OidcAuthNPluginGear {
         let meter = global::meter(Self::MODULE_NAME);
         let metrics = Arc::new(AuthNMetrics::new(&meter));
 
-        let cfg: OidcAuthNGearConfig = ctx.config().map_err(|error| {
-            anyhow::anyhow!(
-                "failed to load oidc-authn-plugin configuration from gears.oidc-authn-plugin.config: {error}"
-            )
-        })?;
-        let cfg = cfg.resolve()?;
+        let cfg = Self::resolved(ctx.config().map_err(anyhow::Error::from))?;
         let plugin_config = cfg.plugin;
-        let vendor = plugin_config.vendor.clone();
-        let gts_priority = normalize_priority(plugin_config.priority);
 
         let http_client = build_http_client(
             cfg.request_timeout,
             cfg.custom_ca_certificate_paths.as_slice(),
         )?;
 
-        let issuer_trust = cfg.issuer_trust;
-
         let plugin = Arc::new(build_oidc_authn_plugin(
             cfg.jwt_validation,
-            issuer_trust,
+            cfg.issuer_trust,
             plugin_config,
             http_client,
             metrics,
         ));
 
-        // GTS types-registry registration for metadata discovery.
-        // Performed before ClientHub registration so that a GTS failure (the
-        // more likely error path — network I/O, serialization) does not leave
-        // partially-applied side effects in the in-memory ClientHub.
-        let instance_id = AuthNResolverPluginSpecV1::gts_make_instance_id(INSTANCE_SUFFIX);
-        let instance = PluginV1::<AuthNResolverPluginSpecV1> {
-            id: instance_id.clone(),
-            vendor: vendor.clone(),
-            priority: gts_priority,
-            properties: AuthNResolverPluginSpecV1,
-        };
+        self.plugin
+            .set(Arc::clone(&plugin))
+            .map_err(|_| anyhow::anyhow!("{} gear already initialized", Self::MODULE_NAME))?;
 
-        let registry = ctx.client_hub().get::<dyn TypesRegistryClient>()?;
-        let instance_json = serde_json::to_value(&instance)?;
-        let results = registry.register(vec![instance_json]).await?;
-        RegisterResult::ensure_all_ok(&results)?;
-
-        // Register plugin in ClientHub using the canonical GTS instance-id
-        // scope consumed by authn-resolver runtime lookup. Placed after GTS
-        // registration to avoid orphaned hub entries if GTS fails.
+        // The runtime admitted the instance (`plugin_instance`) before `init`:
+        // register the scoped plugin client under the same canonical GTS
+        // instance-id scope, the one authn-resolver looks up.
         plugin
             .register(&ctx.client_hub())
             .map_err(|e| anyhow::anyhow!("{e}"))?;
-
-        info!(
-            instance_id = %instance_id,
-            vendor = %vendor,
-            priority = gts_priority,
-        );
+        info!("oidc AuthN plugin admitted and bound");
         Ok(())
     }
 }
@@ -142,44 +162,5 @@ fn build_http_client(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn normalize_priority_passes_through_small_values() {
-        assert_eq!(normalize_priority(0), 0);
-        assert_eq!(normalize_priority(100), 100);
-    }
-
-    #[test]
-    fn normalize_priority_passes_through_i16_max_boundary() {
-        assert_eq!(normalize_priority(i16::MAX as u32), i16::MAX);
-    }
-
-    #[test]
-    fn normalize_priority_clamps_values_exceeding_i16_max() {
-        assert_eq!(normalize_priority(i16::MAX as u32 + 1), i16::MAX);
-        assert_eq!(normalize_priority(u32::MAX), i16::MAX);
-    }
-
-    #[test]
-    fn build_http_client_reports_missing_custom_ca_bundle() {
-        let missing_bundle_path = std::env::temp_dir()
-            .join(format!(
-                "oidc-authn-plugin-missing-ca-dir-{}",
-                std::process::id()
-            ))
-            .join("custom-root-ca.pem")
-            .to_string_lossy()
-            .into_owned();
-        let error = build_http_client(Duration::from_secs(5), &[missing_bundle_path])
-            .expect_err("missing custom CA bundle should fail client construction");
-
-        assert!(
-            error
-                .to_string()
-                .contains("failed to read custom CA certificate bundle"),
-            "error should identify missing custom CA bundle: {error}"
-        );
-    }
-}
+#[path = "gear_tests.rs"]
+mod gear_tests;

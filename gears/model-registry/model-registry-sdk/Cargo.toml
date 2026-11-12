@@ -1,7 +1,7 @@
 [package]
 name = "cf-gears-model-registry-sdk"
 description = "SDK for the Model Registry: API traits, models, and error definitions"
-version = "0.1.14"
+version = "0.2.0"
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
@@ -25,6 +25,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 schemars = { workspace = true, features = ["chrono04"] }
 toolkit-security = { workspace = true }
+toolkit-canonical-errors = { workspace = true }
 toolkit-odata = { workspace = true }
+toolkit-odata-macros = { workspace = true }
 toolkit-gts = { workspace = true }
 gts = { workspace = true }

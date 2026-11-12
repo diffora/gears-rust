@@ -5,8 +5,8 @@
 ToolKit gears call internal vendor REST services secured with OAuth2 Client Credentials.
 Each gear gets:
 
-- `client_id`, `client_secret`
-- `token_endpoint` or `issuer_url`
+- `client_id` and credentials: a client secret or, for `private_key_jwt`, a signing key
+- a token endpoint URL or an OIDC issuer URL
 - `scopes` list
 
 The platform HTTP client is `toolkit-http::HttpClient` (hyper + tower), which already provides retry with exponential backoff and jitter, OTel tracing, concurrency limiting, TLS-only transport, and a preconfigured `HttpClientConfig::token_endpoint()` profile.
@@ -35,7 +35,7 @@ OAuth2 Client Credentials exchange is implemented as a custom token source that 
 - `get().await` prevents callers from accidentally using expired tokens
 - shutdown cancels in-flight refresh requests via `tokio::select!`
 - token endpoint HTTP calls reuse `toolkit-http::HttpClient` — retries, timeouts, rate limiting, OTel tracing, and TLS are handled by the existing tower stack; no duplicate implementation needed
-- `HttpClientConfig::token_endpoint()` already configures conservative retry (transport errors, timeout, 429 only) appropriate for token acquisition
+- `HttpClientConfig::token_endpoint()` already configures conservative retry (transport errors, timeout, 429 only) appropriate for token acquisition. With `private_key_jwt` the retry policy is cleared, because a retry would resend a single-use assertion; the token watcher retries instead, signing a new assertion each time
 - outbound auth layer is a standard tower layer, composable with the existing `HttpClient` middleware
 - no `reqwest` or `ring` in `toolkit-auth`
 
@@ -52,13 +52,14 @@ All components are implemented in `libs/toolkit-auth/src/oauth2/` and `libs/tool
 
 | Gear | Path | Public type | Description |
 |--------|------|-------------|-------------|
-| `config` | `oauth2/config.rs` | `OAuthClientConfig` | Configuration struct with `token_endpoint` / `issuer_url` (mutually exclusive), credentials, scopes, refresh policy, and optional `HttpClientConfig` override. `Debug` redacts `client_secret`. |
-| `types` | `oauth2/types.rs` | `ClientAuthMethod`, `SecretString` | Auth method enum (`Basic` / `Form`). `SecretString` re-exported from `toolkit-utils` (backed by `Zeroizing<String>`). |
-| `error` | `oauth2/error.rs` | `TokenError` | `#[non_exhaustive]` error enum: `Http`, `HttpStatus`, `InvalidResponse`, `UnsupportedTokenType`, `ConfigError`, `Unavailable`, `Shutdown`, `InvalidTokenLifetime`. All variants are secret-safe. |
+| `config` | `oauth2/config.rs` | `OAuthClientConfig`, `TokenEndpoint` | Configuration struct built with `OAuthClientConfig::new(endpoint, client_id, credentials)`; scopes, extra headers, refresh policy and the optional `HttpClientConfig` override have defaults and are set with struct update syntax. `TokenEndpoint` is `Direct(url)` or `Issuer(url)` (OIDC discovery). `Debug` redacts credentials and header values. |
+| `credentials` | `oauth2/credentials.rs` | `ClientCredentials`, `PrivateKeyJwt`, `RsaJwsAlg` | Client authentication method together with its credential: `SecretBasic` (`client_secret_basic`), `SecretPost` (`client_secret_post`), `PrivateKeyJwt` (RFC 7523 `private_key_jwt`, ES256 / RS256 / PS256). Assertions are signed per request through the `toolkit-security` crypto facade (`toolkit_security::jwt::encode`), never by jsonwebtoken's signer. |
+| `types` | `oauth2/types.rs` | `SecretString` | `SecretString` re-exported from `toolkit-utils` (backed by `Zeroizing<String>`). |
+| `error` | `oauth2/error.rs` | `TokenError` | `#[non_exhaustive]` error enum: `Http`, `HttpStatus`, `InvalidResponse`, `UnsupportedTokenType`, `ConfigError`, `ClientAssertion`, `Unavailable`, `Shutdown`, `InvalidTokenLifetime`. All variants are secret-safe. |
 | `token` | `oauth2/token.rs` | `TokenProvider` | Handle for obtaining bearer tokens. `Clone + Send + Sync`. Background refresh via in-house `token_watcher::TokenWatcher`. Lock-free reads via `ArcSwap`. Synchronous `new()` performs no network I/O; async `get()` awaits shared acquisition, `invalidate()` clears the cache and awaits replacement, and `shutdown()` cancels and joins the worker. |
 | `layer` | `oauth2/layer.rs` | `BearerAuthLayer` | Tower `Layer` + `Service` that injects `Authorization: Bearer <token>` (or custom header) into outbound requests. |
 | `builder_ext` | `oauth2/builder_ext.rs` | `HttpClientBuilderExt` | Extension trait on `toolkit_http::HttpClientBuilder` providing `.with_bearer_auth(token)` and `.with_bearer_auth_header(token, header_name)`. |
-| `discovery` | `oauth2/discovery.rs` | *(crate-internal)* | One-time OIDC discovery: fetches `{issuer_url}/.well-known/openid-configuration` and extracts `token_endpoint`. |
+| `discovery` | `oauth2/discovery.rs` | *(crate-internal)* | One-time OIDC discovery: fetches `{issuer}/.well-known/openid-configuration` for `TokenEndpoint::Issuer` and extracts `token_endpoint`. |
 | `token_watcher` | `oauth2/token_watcher.rs` | *(crate-internal)* | Background refresh loop with jitter, exponential backoff, input validation, and shutdown support. Stores the latest `CachedToken` in `ArcSwap` for lock-free reads. |
 | `source` | `oauth2/source.rs` | *(crate-internal)* | `OAuthTokenSource` that exchanges client credentials for an access token via `toolkit-http::HttpClient`. |
 

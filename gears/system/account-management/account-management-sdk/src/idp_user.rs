@@ -146,16 +146,12 @@ impl IdpTenantContext {
     }
 }
 
-/// Profile-minimal payload accepted by
-/// [`IdpPluginClient::provision_user`].
+/// Fixed create-user command accepted by [`IdpPluginClient::provision_user`].
 ///
-/// Shape mirrors the published `gts.cf.core.am.user.v1~` projection
-/// minus the `IdP`-issued `id` (the provider assigns it on success).
-/// The structural contract (field shapes, `minLength` / `maxLength`,
-/// `format`) is owned by the JSON Schema referenced above; the AM
-/// service layer validates instances against that schema at runtime
-/// via the GTS Types Registry — see
-/// `cf-account-management::domain::gts_validation::validate_new_user_payload_via_gts`.
+/// [`Self::validate`] checks the SDK's profile-field contract without a user identity
+/// or a registry read. The resource schema describes the resulting User, not this
+/// command. The AM service normalizes usernames after authorization/tenant checks;
+/// the provider assigns the identity and owns credential policy.
 #[derive(Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct IdpNewUser {

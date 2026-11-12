@@ -23,6 +23,8 @@ use crate::models::{
     RegistrationOutcome, Validator,
 };
 
+mod admission;
+
 const DRAFT: &str = "http://json-schema.org/draft-07/schema#";
 
 const BASE: &str = gts_id!("cf.core.conformance.base.v1~");
@@ -64,6 +66,7 @@ pub async fn run(client: &dyn PlatformTypesRegistryApi) {
     c.requests_out_of_range_are_refused().await;
     c.an_idempotency_key_binds_one_request().await;
     c.dry_runs_preview_without_allocating_versions().await;
+    c.schema_admission().await;
 }
 
 // fixtures.

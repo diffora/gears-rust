@@ -31,17 +31,16 @@ use toolkit_security::SecurityContext;
 use event_broker_sdk as sdk;
 use sdk::EventBrokerError;
 use sdk::api::{
-    AssignedPartition, ControlCode, EventBrokerApi, FrameStream, IngestOutcome, JoinRequest,
+    Ack, AssignedPartition, ControlCode, EventBrokerApi, FrameStream, IngestOutcome, JoinRequest,
     PartitionPosition, ProducerCursors, ProducerMode, SeekPosition, SeekResult,
-    SubscriptionAssignment, SubscriptionInterest, TopicCursors, WireEvent, WireFrame,
+    SubscriptionAssignment, SubscriptionInterest, TopicCursors, WireFrame,
 };
 use sdk::ids::{ConsumerGroupId, ProducerId, SubscriptionId};
 use sdk::models::{
-    ConsumerGroup, ConsumerGroupKind, ConsumerGroupQuery, CreateConsumerGroupRequest, Event,
-    EventType, Page, PartitionAssignment, PartitionRange, ResetScope, Subscription, Topic,
-    TopicSegment,
+    ConsumerGroup, ConsumerGroupKind, ConsumerGroupQuery, CreateConsumerGroupRequest, EventType,
+    Page, PartitionAssignment, PartitionRange, ResetScope, Subscription, Topic, TopicSegment,
 };
-use sdk::sequence::Sequence;
+use sdk::{EventV1, StoredPosition};
 
 use crate::domain::delivery::{
     DeliveryService, JoinRequest as DomainJoinRequest, SeekPosition as DomainSeekPosition,
@@ -56,10 +55,11 @@ use crate::domain::ingest::{
 };
 use crate::domain::model::{
     BarrierMode as DomainBarrierMode, ConsumerGroup as DomainConsumerGroup,
-    ConsumerGroupCreateInput, ConsumerGroupKind as DomainConsumerGroupKind, Event as DomainEvent,
-    FilterSpec, Interest, Meta, Subscription as DomainSubscription,
+    ConsumerGroupCreateInput, ConsumerGroupFilter, ConsumerGroupKind as DomainConsumerGroupKind,
+    Event as DomainEvent, FilterSpec, Interest, Meta, Subscription as DomainSubscription,
     TenantTraversalDepth as DomainDepth, Topic as DomainTopic, TopicSegmentManifest,
 };
+use crate::domain::paging::{PageCursor, PageLimit, PageRequest};
 use crate::domain::producer_reset::ProducerResetScope;
 use crate::domain::streaming::frames::{
     ControlCode as DomainControlCode, Frame, Position as DomainPosition,
@@ -104,6 +104,48 @@ fn consumer_group_id(gts: &GtsInstanceId) -> Result<ConsumerGroupId, EventBroker
 
 // -- SDK -> domain (inbound requests) -----------------------------------------
 
+impl From<ConsumerGroupKind> for DomainConsumerGroupKind {
+    fn from(kind: ConsumerGroupKind) -> Self {
+        match kind {
+            ConsumerGroupKind::Anonymous => DomainConsumerGroupKind::Anonymous,
+            ConsumerGroupKind::Named => DomainConsumerGroupKind::Named,
+        }
+    }
+}
+
+/// The groups a listing keeps; each id parses as `get_consumer_group`'s does.
+impl TryFrom<&ConsumerGroupQuery> for ConsumerGroupFilter {
+    type Error = DomainError;
+
+    fn try_from(query: &ConsumerGroupQuery) -> Result<Self, Self::Error> {
+        Ok(ConsumerGroupFilter {
+            ids: query
+                .ids
+                .iter()
+                .map(|id| parse_consumer_group_id(&id.to_gts()))
+                .collect::<Result<_, _>>()?,
+            kind: query.kind.map(Into::into),
+        })
+    }
+}
+
+/// The page a listing takes: no `limit` is the REST default, and `0` is
+/// rejected; a `cursor` is a token from an earlier page of this client.
+impl TryFrom<&ConsumerGroupQuery> for PageRequest {
+    type Error = DomainError;
+
+    fn try_from(query: &ConsumerGroupQuery) -> Result<Self, Self::Error> {
+        let limit = match query.limit {
+            None => PageLimit::default(),
+            Some(raw) => PageLimit::try_from(raw)?,
+        };
+        Ok(match &query.cursor {
+            None => PageRequest::first(limit),
+            Some(token) => PageRequest::at(token.parse::<PageCursor>()?, limit),
+        })
+    }
+}
+
 /// Producer dedup mode; a stateless producer is never registered and has no id
 /// to return, so it is rejected here - the same rejection the REST client
 /// raises before touching the wire.
@@ -121,37 +163,63 @@ impl TryFrom<ProducerMode> for DomainProducerMode {
     }
 }
 
-/// SDK `Event` -> domain `PublishRequest`, mirroring `ingest::dto`'s
-/// `TryFrom<PublishEventRequest>`: envelope-field validation first, then the
-/// GTS type parse, so a mis-encoded `source`/`subject` is reported for that
-/// reason even when the type is also unregistered.
-impl TryFrom<&Event> for PublishRequest {
+/// SDK `EventV1` -> domain `PublishRequest`. It first refuses what
+/// [`EventV1::check_publishable`] refuses, then mirrors `ingest::dto`'s
+/// `TryFrom<PublishEventRequest>`: envelope-field validation, then the GTS type
+/// parse, so a malformed `source`/`subject`/`trace_parent` is reported for that
+/// reason even when the type is also unregistered. A `meta.version` past the
+/// domain's `i32` is refused last.
+impl TryFrom<&EventV1> for PublishRequest {
     type Error = EventBrokerError;
 
-    fn try_from(event: &Event) -> Result<Self, Self::Error> {
-        sdk::validate::source(&event.source)
+    fn try_from(event: &EventV1) -> Result<Self, Self::Error> {
+        event.check_publishable()?;
+        // `check_publishable` already refused a missing source; the type still holds an
+        // `Option`.
+        let Some(source) = event.source() else {
+            return Err(EventBrokerError::InvalidEventField {
+                field: "source",
+                detail: "required".to_owned(),
+            });
+        };
+        sdk::validate::source(source)
             .map_err(DomainError::from)
             .map_err(to_sdk_err)?;
-        sdk::validate::subject(&event.subject)
+        sdk::validate::subject(event.subject())
             .map_err(DomainError::from)
             .map_err(to_sdk_err)?;
-        let r#type = parse_type_id(&event.type_id).map_err(to_sdk_err)?;
+        if let Some(trace_parent) = event.trace_parent() {
+            PublishRequest::check_trace_parent(trace_parent).map_err(to_sdk_err)?;
+        }
+        let r#type = parse_type_id(event.event_type()).map_err(to_sdk_err)?;
+        let meta = event
+            .meta()
+            .map(|meta| {
+                let version = i32::try_from(meta.version).map_err(|_| {
+                    EventBrokerError::InvalidEventField {
+                        field: "meta",
+                        detail: "version out of range".to_owned(),
+                    }
+                })?;
+                Ok::<_, EventBrokerError>(Meta {
+                    version,
+                    producer_id: meta.producer_id.unwrap_or_default(),
+                    previous: meta.previous,
+                    sequence: meta.sequence.unwrap_or(0),
+                })
+            })
+            .transpose()?;
         Ok(PublishRequest {
-            id: event.id,
+            id: event.id(),
             r#type,
-            tenant_id: event.tenant_id,
-            source: event.source.clone(),
-            subject: event.subject.clone(),
-            subject_type: event.subject_type.clone(),
-            occurred_at: event.occurred_at,
-            trace_parent: event.trace_parent.clone(),
-            data: event.data.clone().unwrap_or(serde_json::Value::Null),
-            meta: event.meta.as_ref().map(|m| Meta {
-                version: i32::from(m.version),
-                producer_id: m.producer_id.unwrap_or_default(),
-                previous: m.previous,
-                sequence: m.sequence.unwrap_or(0),
-            }),
+            tenant_id: event.tenant_id(),
+            source: source.to_owned(),
+            subject: event.subject().to_owned(),
+            subject_type: event.subject_type().clone(),
+            occurred_at: event.occurred_at(),
+            trace_parent: event.trace_parent().map(str::to_owned),
+            data: event.data().cloned().unwrap_or(serde_json::Value::Null),
+            meta,
         })
     }
 }
@@ -264,6 +332,18 @@ impl From<BatchAck> for IngestOutcome {
         match ack {
             BatchAck::Accepted => IngestOutcome::Accepted,
             BatchAck::Duplicate => IngestOutcome::Duplicate,
+        }
+    }
+}
+
+/// A synchronous publish answers as REST does: `Persisted` for `201`, `Accepted` for a
+/// `202` whose wait ended first (the events stay admitted), `Duplicate` for `200`.
+impl From<SyncPublishAck> for IngestOutcome {
+    fn from(ack: SyncPublishAck) -> Self {
+        match ack {
+            SyncPublishAck::Stored => IngestOutcome::Persisted,
+            SyncPublishAck::TimedOut => IngestOutcome::Accepted,
+            SyncPublishAck::Duplicate => IngestOutcome::Duplicate,
         }
     }
 }
@@ -417,11 +497,13 @@ impl From<TopicSegmentManifest> for TopicSegment {
 
 /// Domain stream `Frame` -> SDK `WireFrame`. A struct/enum remap, not the byte
 /// encoding the transports do - the consumer runtime reads `WireFrame`s
-/// directly here.
-impl From<Frame> for WireFrame {
-    fn from(frame: Frame) -> Self {
-        match frame {
-            Frame::Event(event) => WireFrame::Event(WireEvent::from(*event)),
+/// directly here. Only an event frame can fail: when its `EventV1` conversion does.
+impl TryFrom<Frame> for WireFrame {
+    type Error = EventBrokerError;
+
+    fn try_from(frame: Frame) -> Result<Self, EventBrokerError> {
+        Ok(match frame {
+            Frame::Event(event) => WireFrame::Event(EventV1::try_from(*event)?),
             Frame::Heartbeat { at } => WireFrame::Heartbeat {
                 at: at.to_rfc3339(),
             },
@@ -444,31 +526,67 @@ impl From<Frame> for WireFrame {
                 positions: positions.into_iter().map(Into::into).collect(),
                 reason: reason.map(|r| r.as_wire().to_owned()),
             },
-        }
+        })
     }
 }
 
-/// A delivered domain `Event` -> the stream's `WireEvent`. Delivery always
-/// stamps `partition`/`sequence`/`sequence_time`, so their absence would be a
-/// bug; they fall back rather than panic (`sequence_time` to `occurred_at`).
-impl From<DomainEvent> for WireEvent {
-    fn from(event: DomainEvent) -> Self {
-        WireEvent {
-            id: event.id,
-            type_id: event.r#type,
-            tenant_id: event.tenant_id,
-            subject: event.subject,
-            subject_type: event.subject_type,
-            partition: event
-                .partition
-                .map(|p| u32::try_from(p).unwrap_or_default())
-                .unwrap_or_default(),
-            sequence: event.sequence.unwrap_or(Sequence::NONE),
-            occurred_at: event.occurred_at,
+/// A delivered domain `Event` -> the stream's `EventV1`, built through the SDK
+/// builder and stamped with its position. Delivery always stamps `partition` and
+/// `sequence`, so their absence would be a bug; an event missing either, or whose
+/// partition does not fit `u32`, is handed over unstamped rather than at a made-up
+/// position, and the consumer skips it. A missing `sequence_time` takes
+/// `occurred_at`. A `trace_parent` that is not a W3C traceparent is dropped with a
+/// warning: an event stored before ingest checked the field can carry one, and it
+/// is optional telemetry, so it must not stop the consumer. A JSON `null` `data` is
+/// a body-less event.
+impl TryFrom<DomainEvent> for EventV1 {
+    type Error = EventBrokerError;
+
+    /// # Errors
+    ///
+    /// [`EventBrokerError::Transport`] when the builder refuses an envelope member.
+    /// Ingest admitted the event under the rules the builder mirrors, so a refusal
+    /// means the two disagree; the error names the field, never its value.
+    fn try_from(event: DomainEvent) -> Result<Self, EventBrokerError> {
+        let trace_parent = match event.trace_parent {
+            Some(trace_parent) if PublishRequest::check_trace_parent(&trace_parent).is_err() => {
+                tracing::warn!(
+                    event_id = %event.id,
+                    type_id = %event.r#type,
+                    "a delivered event carries a malformed trace_parent; delivering it without one"
+                );
+                None
+            }
+            trace_parent => trace_parent,
+        };
+        let builder = if event.data.is_null() {
+            EventV1::builder_without_data(event.r#type)
+        } else {
+            EventV1::builder_for(event.r#type, event.data)
+        };
+        let builder = builder
+            .id(event.id)
+            .tenant_id(event.tenant_id)
+            .source(event.source)
+            .subject(event.subject)
+            .subject_type_id(event.subject_type)
+            .occurred_at(event.occurred_at);
+        let builder = match trace_parent {
+            Some(trace_parent) => builder.trace_parent(trace_parent),
+            None => builder,
+        };
+        let built = builder.build().map_err(|err| {
+            EventBrokerError::Transport(format!("stream event frame broke an envelope rule: {err}"))
+        })?;
+        let partition = event.partition.and_then(|p| u32::try_from(p).ok());
+        let (Some(partition), Some(sequence)) = (partition, event.sequence) else {
+            return Ok(built);
+        };
+        Ok(built.stamp_position(StoredPosition {
+            partition,
+            sequence,
             sequence_time: event.sequence_time.unwrap_or(event.occurred_at),
-            trace_parent: event.trace_parent,
-            data: event.data,
-        }
+        }))
     }
 }
 
@@ -505,57 +623,57 @@ impl EventBrokerApi for LocalBroker {
         Ok(ProducerId(registration.id))
     }
 
+    /// `Ack::Persisted { within }` holds the answer as the REST `Prefer: wait` path
+    /// does, for `within` capped by the broker's `publish.max_wait_secs`: `Persisted`
+    /// once the backend stores the event, `Accepted` when the wait ends first,
+    /// `Duplicate` at once for a resend.
     async fn publish(
         &self,
         ctx: &SecurityContext,
-        event: &Event,
+        event: &EventV1,
+        ack: Ack,
     ) -> Result<IngestOutcome, EventBrokerError> {
-        let ack = self
-            .ingest
-            .publish_event(ctx, PublishRequest::try_from(event)?)
-            .await
-            .map_err(to_sdk_err)?;
-        Ok(ack.into())
+        let request = PublishRequest::try_from(event)?;
+        match ack {
+            Ack::Accepted => self
+                .ingest
+                .publish_event(ctx, request)
+                .await
+                .map(IngestOutcome::from),
+            Ack::Persisted { within } => self
+                .ingest
+                .publish_event_sync(ctx, request, within)
+                .await
+                .map(IngestOutcome::from),
+        }
+        .map_err(to_sdk_err)
     }
 
-    /// Holds until the backend stores the event or the broker's configured
-    /// `Prefer: wait=N` ceiling elapses, mirroring the REST `Prefer: wait`
-    /// path: `Persisted` once stored, `Accepted` on timeout (the event stays
-    /// enqueued), `Duplicate` for an idempotent resend. An in-process caller
-    /// sets no bound, so it asks to wait as long as the broker allows
-    /// (`Duration::MAX`, which the ingest service clamps to its cap).
-    async fn publish_sync(
-        &self,
-        ctx: &SecurityContext,
-        event: &Event,
-    ) -> Result<IngestOutcome, EventBrokerError> {
-        let ack = self
-            .ingest
-            .publish_event_sync(ctx, PublishRequest::try_from(event)?, Duration::MAX)
-            .await
-            .map_err(to_sdk_err)?;
-        Ok(match ack {
-            SyncPublishAck::Stored => IngestOutcome::Persisted,
-            SyncPublishAck::TimedOut => IngestOutcome::Accepted,
-            SyncPublishAck::Duplicate => IngestOutcome::Duplicate,
-        })
-    }
-
+    /// `Ack::Persisted { within }` holds the answer for the batch as a whole, as
+    /// [`publish`](Self::publish) does for one event.
     async fn publish_batch(
         &self,
         ctx: &SecurityContext,
-        events: &[Event],
+        events: &[EventV1],
+        ack: Ack,
     ) -> Result<IngestOutcome, EventBrokerError> {
         let requests = events
             .iter()
             .map(PublishRequest::try_from)
             .collect::<Result<Vec<_>, _>>()?;
-        let ack = self
-            .ingest
-            .publish_batch(ctx, requests)
-            .await
-            .map_err(to_sdk_err)?;
-        Ok(ack.into())
+        match ack {
+            Ack::Accepted => self
+                .ingest
+                .publish_batch(ctx, requests)
+                .await
+                .map(IngestOutcome::from),
+            Ack::Persisted { within } => self
+                .ingest
+                .publish_batch_sync(ctx, requests, within)
+                .await
+                .map(IngestOutcome::from),
+        }
+        .map_err(to_sdk_err)
     }
 
     async fn get_producer_cursors(
@@ -614,28 +732,24 @@ impl EventBrokerApi for LocalBroker {
         ctx: &SecurityContext,
         query: ConsumerGroupQuery,
     ) -> Result<Page<ConsumerGroup>, EventBrokerError> {
-        // The service returns the tenant-scoped set unpaginated; the REST layer
-        // applies `$filter`/pagination. SIMPLIFICATION: this honours `limit`
-        // by truncation and returns a single page - `filter`/`orderby`/`cursor`
-        // are not applied here.
-        let groups = self
+        let filter = ConsumerGroupFilter::try_from(&query).map_err(to_sdk_err)?;
+        let request = PageRequest::try_from(&query).map_err(to_sdk_err)?;
+        let mut groups = self
             .delivery
             .list_consumer_groups(ctx)
             .await
             .map_err(to_sdk_err)?;
-        let mut items = groups
-            .into_iter()
-            .map(ConsumerGroup::try_from)
-            .collect::<Result<Vec<_>, _>>()?;
-        let limit = query
-            .limit
-            .unwrap_or_else(|| u32::try_from(items.len()).unwrap_or(u32::MAX));
-        items.truncate(limit as usize);
+        groups.retain(|group| filter.matches(group));
+        let page = request.page(groups, |group| group.id.to_string());
         Ok(Page {
-            items,
-            next_cursor: None,
-            prev_cursor: None,
-            limit,
+            items: page
+                .items
+                .into_iter()
+                .map(ConsumerGroup::try_from)
+                .collect::<Result<Vec<_>, _>>()?,
+            next_cursor: page.next.map(|cursor| cursor.to_string()),
+            prev_cursor: page.prev.map(|cursor| cursor.to_string()),
+            limit: page.limit.into(),
         })
     }
 
@@ -704,10 +818,11 @@ impl EventBrokerApi for LocalBroker {
     ) -> Result<FrameStream, EventBrokerError> {
         let stream = self.delivery.stream(ctx, id.0).await.map_err(to_sdk_err)?;
         // The domain stream is infallible (`Item = Frame`); each frame becomes
-        // one `Ok(WireFrame)` for the SDK's `Result`-carrying stream.
-        Ok(Box::pin(tokio_stream::StreamExt::map(stream, |frame| {
-            Ok(WireFrame::from(frame))
-        })))
+        // one `Result<WireFrame>` item of the SDK's stream.
+        Ok(Box::pin(tokio_stream::StreamExt::map(
+            stream,
+            WireFrame::try_from,
+        )))
     }
 
     async fn seek(

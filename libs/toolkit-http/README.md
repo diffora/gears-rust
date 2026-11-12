@@ -27,7 +27,7 @@ HTTP client library for ToolKit, built on hyper and tower.
 ### Basic GET request
 
 ```rust
-use cf_toolkit_http::HttpClient;
+use toolkit_http::HttpClient;
 use std::time::Duration;
 
 let client = HttpClient::builder()
@@ -47,7 +47,7 @@ let data: MyResponse = client
 ### POST with form body
 
 ```rust
-use cf_toolkit_http::HttpClient;
+use toolkit_http::HttpClient;
 use std::time::Duration;
 
 let client = HttpClient::builder()
@@ -100,13 +100,16 @@ let data: MyResponse = client
 | `redirect` | Same-origin, 10 max | Redirect policy with security controls (see below) |
 | `pool_idle_timeout` | 90s | Idle connection timeout (None to disable) |
 | `pool_max_idle_per_host` | 32 | Max idle connections per host |
-| `transport` | `TlsOnly` | Transport security mode (`TlsOnly` or `AllowInsecureHttp` for testing) |
+| `transport` | `TlsOnly` with `fips`, `AllowInsecureHttp` otherwise | Transport security mode; `deny_insecure_http()` enforces TLS. Under `fips`, selecting `AllowInsecureHttp` is an explicit opt-in and `build()` logs a warning |
 | `tls_roots` | WebPki | TLS root certificate source |
+| `extra_root_certs` | none | Extra trust anchors added to `tls_roots` |
+| `connect_timeout` | none | Bound on DNS + TCP connect + proxy `CONNECT` + TLS handshake |
+| `outbound_proxy` | `None` | Forward proxy: `None`, `FromEnv` or `Explicit` |
 
 ### Configuration presets
 
 ```rust
-use cf_toolkit_http::{HttpClientBuilder, HttpClientConfig};
+use toolkit_http::{HttpClientBuilder, HttpClientConfig};
 
 // Minimal: no retry, no rate limit, 10s timeout
 let client = HttpClientBuilder::with_config(HttpClientConfig::minimal()).build()?;
@@ -124,6 +127,93 @@ let client = HttpClientBuilder::with_config(HttpClientConfig::for_testing()).bui
 let client = HttpClientBuilder::with_config(HttpClientConfig::sse()).build()?;
 ```
 
+## Private CA
+
+Extra trust anchors are added to the store chosen by `tls_roots`; nothing in
+the OS store changes. `add_root_certificates_pem` fails on a bundle that is
+not PEM or holds no certificate; a certificate that is not valid DER fails
+`build()`. With `TlsRootConfig::Native`, an empty or unreadable OS store is
+an error only when no extra roots are given; otherwise the extra roots alone
+are trusted.
+
+```rust
+use toolkit_http::HttpClient;
+
+let pem = std::fs::read("/etc/ssl/private-ca.pem")?;
+let client = HttpClient::builder()
+    .add_root_certificates_pem(&pem)?
+    .build()?;
+```
+
+`WebPki` (the default) ships Mozilla's roots and ignores the OS store. Code
+moving from `reqwest`, which verifies through the OS, should use the OS store
+to keep trusting OS-installed roots. `reqwest` also follows the proxy
+environment variables by default; set `OutboundProxy::FromEnv` to keep that
+(OS proxy settings on macOS and Windows are not read):
+
+```rust
+use toolkit_http::{HttpClient, OutboundProxy, TlsRootConfig};
+
+let client = HttpClient::builder()
+    .tls_roots(TlsRootConfig::Native)
+    .outbound_proxy(OutboundProxy::FromEnv)
+    .build()?;
+```
+
+## Outbound proxy
+
+```rust
+use toolkit_http::{ExplicitProxy, HttpClient, OutboundProxy};
+
+// HTTPS_PROXY / HTTP_PROXY / ALL_PROXY / NO_PROXY, upper or lower case
+let client = HttpClient::builder()
+    .outbound_proxy(OutboundProxy::FromEnv)
+    .build()?;
+
+let client = HttpClient::builder()
+    .outbound_proxy(
+        ExplicitProxy::all("http://user:pass@proxy.internal:3128")
+            .with_no_proxy("localhost, .svc.cluster.local, 10.0.0.0/8"),
+    )
+    .build()?;
+```
+
+- HTTPS goes through a `CONNECT` tunnel. TLS runs end to end with the
+  destination, so `tls_roots`, extra roots and FIPS hardening still apply.
+- `https://` proxies get TLS on the proxy hop too, verified with the same
+  roots (add the proxy's CA with `add_root_certificates_pem` if private). The
+  client certificate from `client_auth` is never sent to the proxy.
+- `CONNECT` carries the client's `User-Agent`.
+- Plain HTTP (only with `AllowInsecureHttp`) is forwarded in absolute form.
+  The proxy's own replies to it (a `407`, a `502`) come back as ordinary
+  responses, not as `HttpError::Proxy`.
+- Credentials in the proxy URL (percent-encode reserved characters, `@`
+  included) are sent
+  as `Basic` `Proxy-Authorization` to the proxy only. With an `http://` proxy
+  they travel in cleartext, even under `TlsOnly`/FIPS; use an `https://`
+  proxy to avoid that. They are redacted in `Debug` output and errors.
+- A `407` on `CONNECT` (HTTPS destinations) fails with `HttpError::Proxy`
+  (`AuthRequired`) and is not retried:
+  repeated bad logins can lock the proxy account. Any other refusal of
+  `CONNECT` (`TunnelRejected`, e.g. a 403 or a 503) is retried like a
+  transport error, since a 5xx from a proxy is often temporary.
+- `FromEnv` reads the environment once, at `build()`:
+  - `HTTPS_PROXY` for HTTPS destinations, `HTTP_PROXY` for plain HTTP, and
+    `ALL_PROXY` for either when its own variable is unset or empty;
+    `NO_PROXY` lists hosts to reach directly.
+  - Of each pair, the upper case variable wins when it is set, even to an
+    empty value. (curl does the opposite: it prefers lower case.)
+  - Only the variables that will be used are checked. `HTTP_PROXY` is not
+    used under `TlsOnly`. A SOCKS `ALL_PROXY` does not fail the build when
+    every scheme in use has its own variable: `HTTPS_PROXY` under `TlsOnly`,
+    both `HTTPS_PROXY` and `HTTP_PROXY` when plain HTTP is allowed.
+  - In a CGI process (`REQUEST_METHOD` set) the variables are ignored
+    (httpoxy).
+- Not supported: SOCKS, OS proxy settings, auth schemes other than `Basic`.
+  A SOCKS proxy or a malformed proxy URL (bad host or port, unencoded
+  reserved characters in credentials) fails `build()`, also when it comes
+  from the environment.
+
 ## Redirect Security
 
 By default, `toolkit-http` follows redirects with security protections:
@@ -138,7 +228,7 @@ By default, `toolkit-http` follows redirects with security protections:
 ### Redirect policies
 
 ```rust
-use cf_toolkit_http::{HttpClient, RedirectConfig};
+use toolkit_http::{HttpClient, RedirectConfig};
 
 // Default: same-origin only (most secure)
 let client = HttpClient::builder().build()?;
@@ -191,6 +281,7 @@ All operations return `HttpError`:
 | `Tls` | No | TLS certificate/setup error |
 | `Overloaded` | No | Concurrency limit reached (fail-fast) |
 | `ServiceClosed` | No | Internal service failure (buffer worker died) |
+| `Proxy` | Depends on `kind` | `InvalidUrl`, `UnsupportedScheme`, `AuthRequired` (407): no. `TunnelRejected` (other `CONNECT` refusals): yes, like `Transport` |
 
 ## License
 

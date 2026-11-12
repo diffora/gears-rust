@@ -245,3 +245,105 @@ async fn pre_warm_exhausts_budget_on_persistent_transient() {
         "error message must surface the underlying status, got: {msg}",
     );
 }
+
+// ---- types-registry publication ----
+
+/// The publication is config-only: the runtime builds it before any `init`,
+/// without `CredStore` or Keycloak.
+mod publication {
+    use account_management_sdk::IdpPluginSpecV1;
+    use serde_json::{Value, json};
+    use toolkit::ConfigProvider;
+    use toolkit::gts::PluginV1;
+    use toolkit::gts_publication::{GtsManifest, GtsPublicationCapability as _};
+
+    use crate::module::KeycloakIdpPluginGear;
+
+    struct Config(Value);
+
+    impl ConfigProvider for Config {
+        fn get_gear_config(&self, _gear: &str) -> Option<&Value> {
+            Some(&self.0)
+        }
+    }
+
+    fn instance(priority: i16) -> (String, Value) {
+        let (id, content) = PluginV1::<IdpPluginSpecV1>::build_registration(
+            "cf.builtin.keycloak_idp.plugin.v1",
+            "keycloak",
+            priority,
+        )
+        .expect("plugin instance serializes");
+        (id.as_ref().to_owned(), content)
+    }
+
+    /// Only the knobs of the instance; no Keycloak section, no secret.
+    fn manifest(config: &Value) -> GtsManifest {
+        KeycloakIdpPluginGear
+            .descriptor()
+            .build_gts_manifest(&Config(json!({ "config": config })))
+            .expect("manifest")
+    }
+
+    #[test]
+    fn the_manifest_is_the_configured_instance_without_any_secret() {
+        assert_eq!(
+            manifest(&json!({ "priority": 10 })).documents(),
+            [instance(10)]
+                .map(|(id, document)| (types_registry_sdk::GtsId::try_new(&id).unwrap(), document))
+        );
+        assert_eq!(
+            manifest(&json!({})).documents(),
+            [instance(50)]
+                .map(|(id, document)| (types_registry_sdk::GtsId::try_new(&id).unwrap(), document)),
+            "defaults"
+        );
+    }
+
+    #[test]
+    fn a_disabled_plugin_publishes_nothing() {
+        assert!(manifest(&json!({ "enabled": false })).is_empty());
+    }
+
+    /// The gear's whole configuration node, or none at all.
+    struct GearNode(Option<Value>);
+
+    impl ConfigProvider for GearNode {
+        fn get_gear_config(&self, _gear: &str) -> Option<&Value> {
+            self.0.as_ref()
+        }
+    }
+
+    /// Publication and `init` read `enabled` alike: no configuration section
+    /// keeps the plugin disabled, as before publication existed; a present
+    /// section enables it unless it says `enabled: false`.
+    #[test]
+    fn publication_and_init_agree_on_enabled() {
+        let cases = [
+            ("no gear node", None, false),
+            ("no config section", Some(json!({})), false),
+            ("empty config section", Some(json!({ "config": {} })), true),
+            (
+                "disabled explicitly",
+                Some(json!({ "config": { "enabled": false } })),
+                false,
+            ),
+        ];
+        for (case, node, enabled) in cases {
+            let provider = GearNode(node);
+            let published = !KeycloakIdpPluginGear
+                .descriptor()
+                .build_gts_manifest(&provider)
+                .expect("manifest")
+                .is_empty();
+            let init = toolkit::gear_config_or_default::<
+                crate::config::KeycloakIdpPluginEnabledProbe,
+            >(&provider, "keycloak-idp-plugin")
+            .expect("init probe")
+            .enabled;
+
+            assert_eq!(published, enabled, "publication: {case}");
+            assert_eq!(init, enabled, "init: {case}");
+        }
+    }
+}

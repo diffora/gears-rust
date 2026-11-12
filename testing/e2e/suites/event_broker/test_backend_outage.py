@@ -32,6 +32,7 @@ from .conftest import (
     TRACE_ID,
     SseFrameReader,
     _SIDECARS,
+    _await_log_line,
     _derived_event_type,
     _topic_instance,
     patch_backend,
@@ -117,10 +118,10 @@ async def test_a_server_started_with_its_backend_down_serves_once_it_is_up(test_
             config_patch=lambda text, _env: _patch(text, home_dir, [sidecar]),
             port=OUTAGE_PORT,
             health_path="/healthz",
-            health_timeout=60,
             log_suffix="event-broker-outage",
         )
         config_path = _prepare_config(env)
+        log_offset = _log_path(env).stat().st_size if _log_path(env).exists() else 0
         proc = subprocess.Popen(
             [os.environ["E2E_BINARY"], "--config", str(config_path), "run"],
             cwd=str(PROJECT_ROOT),
@@ -154,12 +155,13 @@ async def test_a_server_started_with_its_backend_down_serves_once_it_is_up(test_
                     "type": "gts://gts.cf.core.errors.err.v1~cf.core.err.service_unavailable.v1~",
                     "title": "Service Unavailable",
                     "status": 503,
-                    "detail": f"topic '{TOPIC}' is not provisioned on its storage backend yet",
+                    "detail": "Service temporarily unavailable",
                     "instance": "/event-broker/v1/events",
                     "trace_id": TRACE_ID,
                     "context": {},
                 },
             )
+            _await_log_line(env, f"topic '{TOPIC}' is not provisioned on its storage backend yet", log_offset)
 
         _docker("start", sidecar.container_id)
         sidecar._wait_ready()
@@ -259,7 +261,6 @@ async def test_sync_publish_times_out_to_202_when_the_backend_is_down(test_env):
             config_patch=lambda text, _env: _patch(text, home_dir, [sidecar]),
             port=OUTAGE_PORT,
             health_path="/healthz",
-            health_timeout=60,
             log_suffix="event-broker-outage-sync",
         )
         config_path = _prepare_config(env)

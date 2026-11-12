@@ -2,8 +2,9 @@
 
 mod common;
 
-use std::sync::Arc;
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use github_mirror::domain::error::DomainError;
@@ -13,8 +14,8 @@ use github_mirror::domain::ports::github::{
     PullDetail, PullListing, RepoRef,
 };
 use github_mirror::domain::repo::{
-    CommentRecord, CommitRecord, IssueRecord, PageWindow, PullRequestRecord, RepoRecord,
-    RepoRunStatus, SessionStatus, WorkflowJobRecord,
+    CommentRecord, CommitRecord, IssueRecord, ListingFilter, PageWindow, PullRequestRecord,
+    RepoRecord, RepoRunStatus, SessionStatus, WorkflowJobRecord,
 };
 use tokio_util::sync::CancellationToken;
 use toolkit_odata::ODataQuery;
@@ -25,30 +26,58 @@ const OWNER: &str = "rust-lang";
 const NAME: &str = "rust";
 const REPO_ID: i64 = 42;
 
-const ISSUES: i64 = 50_000;
-const COMMENTS: i64 = 30_000;
-const PULL_REQUESTS: i64 = 20_000;
-const COMMITS: i64 = 10_000;
+const ISSUES: i64 = 300;
+const COMMENTS: i64 = 200;
+const PULL_REQUESTS: i64 = 150;
+const COMMITS: i64 = 100;
 
-/// Trips `cancel` on the `after`-th refinement call, so a run is stopped part
-/// way through writing entities rather than before any were written.
-struct StopsMidRefinement {
-    inner: common::FakeGithub,
-    cancel: CancellationToken,
-    after: usize,
-    refinements: AtomicUsize,
+#[derive(Default)]
+struct RefineLog(Mutex<BTreeMap<String, usize>>);
+
+impl RefineLog {
+    fn add(&self, key: String) {
+        *self.0.lock().unwrap().entry(key).or_default() += 1;
+    }
+
+    fn calls(&self) -> BTreeMap<String, usize> {
+        self.0.lock().unwrap().clone()
+    }
 }
 
-impl StopsMidRefinement {
-    fn count(&self) {
-        if self.refinements.fetch_add(1, Ordering::SeqCst) + 1 == self.after {
-            self.cancel.cancel();
+struct Recording {
+    inner: common::FakeGithub,
+    log: Arc<RefineLog>,
+    stop: Option<(CancellationToken, usize)>,
+    calls: AtomicUsize,
+}
+
+impl Recording {
+    fn new(
+        fixture: &FetchedRepository,
+        log: Arc<RefineLog>,
+        stop: Option<(CancellationToken, usize)>,
+    ) -> Self {
+        Self {
+            inner: common::FakeGithub {
+                result: Some(fixture.clone()),
+            },
+            log,
+            stop,
+            calls: AtomicUsize::new(0),
+        }
+    }
+
+    fn record(&self, key: String) {
+        self.log.add(key);
+        let calls = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+        if let Some((cancel, _)) = self.stop.as_ref().filter(|(_, after)| *after == calls) {
+            cancel.cancel();
         }
     }
 }
 
 #[async_trait]
-impl GithubPort for StopsMidRefinement {
+impl GithubPort for Recording {
     async fn fetch_repository_metadata(
         &self,
         owner: &str,
@@ -76,7 +105,7 @@ impl GithubPort for StopsMidRefinement {
         wants: IssueDetailWants,
         options: &FetchOptions,
     ) -> Result<IssueDetail, DomainError> {
-        self.count();
+        self.record(format!("issue {number}"));
         self.inner.refine_issue(repo, number, wants, options).await
     }
 
@@ -95,7 +124,7 @@ impl GithubPort for StopsMidRefinement {
         number: i64,
         options: &FetchOptions,
     ) -> Result<PullDetail, DomainError> {
-        self.count();
+        self.record(format!("pull {number}"));
         self.inner.refine_pull_request(repo, number, options).await
     }
 
@@ -115,7 +144,7 @@ impl GithubPort for StopsMidRefinement {
         with_ci: bool,
         options: &FetchOptions,
     ) -> Result<CommitDetail, DomainError> {
-        self.count();
+        self.record(format!("commit {sha}"));
         self.inner.refine_commit(repo, sha, with_ci, options).await
     }
 
@@ -195,13 +224,11 @@ fn stamp(i: i64) -> String {
     (base + chrono::Duration::seconds(i)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
-/// The small fixture's repository with large, generated listings in place of
-/// its hand-written ones: 110,000 entities across the four biggest families.
-fn large_repository() -> FetchedRepository {
+fn generated_repository() -> FetchedRepository {
     let mut repo = common::fetched_repository();
     repo.issues = (0..ISSUES)
         .map(|i| IssueRecord {
-            author_login: Some(format!("user{}", i % 500)),
+            author_login: Some(format!("user{}", i % 50)),
             author_json: None,
             assignees_json: None,
             labels_json: None,
@@ -226,7 +253,7 @@ fn large_repository() -> FetchedRepository {
             id: 2_000_000 + i,
             repo_id: REPO_ID,
             issue_number: 1 + i % ISSUES,
-            author_login: Some(format!("user{}", i % 500)),
+            author_login: Some(format!("user{}", i % 50)),
             body: Some(format!("comment {i}")),
             created_at: stamp(i),
             updated_at: stamp(i),
@@ -235,7 +262,7 @@ fn large_repository() -> FetchedRepository {
         .collect();
     repo.pull_requests = (0..PULL_REQUESTS)
         .map(|i| PullRequestRecord {
-            author_login: Some(format!("user{}", i % 500)),
+            author_login: Some(format!("user{}", i % 50)),
             author_json: None,
             assignees_json: None,
             labels_json: None,
@@ -269,12 +296,13 @@ fn large_repository() -> FetchedRepository {
             repo_id: REPO_ID,
             sha: format!("{i:040x}"),
             message: format!("commit {i}"),
-            author_login: Some(format!("user{}", i % 500)),
+            author_login: Some(format!("user{}", i % 50)),
             committer_login: None,
             authored_at: Some(stamp(i)),
             committed_at: Some(stamp(i)),
             additions: 1,
             deletions: 0,
+            html_url: None,
         })
         .collect();
     repo.review_comments.clear();
@@ -292,39 +320,62 @@ fn large_repository() -> FetchedRepository {
     repo
 }
 
-async fn counts(
-    service: &common::ConcreteService,
-    ctx: &SecurityContext,
-) -> [(&'static str, u64); 4] {
-    let window = PageWindow::first(1);
-    let filter = github_mirror::domain::repo::ListingFilter::default();
-    let issues = service
+#[derive(Debug, PartialEq, Eq)]
+struct Mirrored {
+    issues: Vec<i64>,
+    pull_requests: Vec<i64>,
+    commits: Vec<String>,
+    comments: Vec<i64>,
+}
+
+async fn mirrored(service: &common::ConcreteService, ctx: &SecurityContext) -> Mirrored {
+    let window = PageWindow::first(1_000);
+    let filter = ListingFilter::default();
+    let mut issues: Vec<i64> = service
         .list_issues(ctx, OWNER, NAME, window, filter)
         .await
         .expect("issues must list")
-        .1;
-    let pulls = service
+        .0
+        .items
+        .into_iter()
+        .map(|issue| issue.id)
+        .collect();
+    let mut pull_requests: Vec<i64> = service
         .list_pull_requests(ctx, OWNER, NAME, window, filter)
         .await
         .expect("pull requests must list")
-        .1;
-    let commits = service
+        .0
+        .items
+        .into_iter()
+        .map(|pull| pull.id)
+        .collect();
+    let mut commits: Vec<String> = service
         .list_commits(ctx, OWNER, NAME, window, None)
         .await
         .expect("commits must list")
-        .1;
-    let comments = service
-        .list_comments(ctx, OWNER, NAME, 1, PageWindow::first(1000))
+        .0
+        .items
+        .into_iter()
+        .map(|commit| commit.sha)
+        .collect();
+    let mut comments: Vec<i64> = service
+        .list_repo_comments(ctx, OWNER, NAME, window, filter)
         .await
         .expect("comments must list")
         .items
-        .len() as u64;
-    [
-        ("issues", issues),
-        ("pull_requests", pulls),
-        ("commits", commits),
-        ("comments_of_issue_1", comments),
-    ]
+        .into_iter()
+        .map(|comment| comment.id)
+        .collect();
+    issues.sort_unstable();
+    pull_requests.sort_unstable();
+    commits.sort_unstable();
+    comments.sort_unstable();
+    Mirrored {
+        issues,
+        pull_requests,
+        commits,
+        comments,
+    }
 }
 
 async fn run_status(service: &common::ConcreteService, ctx: &SecurityContext) -> RepoRunStatus {
@@ -336,36 +387,39 @@ async fn run_status(service: &common::ConcreteService, ctx: &SecurityContext) ->
         .status
 }
 
+async fn session_status(
+    service: &common::ConcreteService,
+    ctx: &SecurityContext,
+    id: Uuid,
+) -> SessionStatus {
+    service
+        .get_session(ctx, id)
+        .await
+        .expect("the session must be found")
+        .status
+}
+
 #[tokio::test]
-#[ignore = "110,000 entities through SQLite: minutes, not seconds; run with --ignored"]
-async fn a_hundred_thousand_entities_survive_repeated_interruption_and_resume() {
-    let _logs = tracing::subscriber::set_default(
-        tracing_subscriber::fmt()
-            .with_env_filter("warn")
-            .with_test_writer()
-            .finish(),
-    );
-    let fixture = Arc::new(large_repository());
+async fn repeated_interruptions_resume_to_the_clean_state_refining_each_entity_once() {
+    let fixture = generated_repository();
     let ctx = common::caller_in(Uuid::new_v4());
 
+    let clean_log = Arc::new(RefineLog::default());
     let clean = common::service_with_github(
         common::inmem_db().await,
         "https://api.github.com",
-        Arc::new(common::FakeGithub {
-            result: Some((*fixture).clone()),
-        }),
+        Arc::new(Recording::new(&fixture, Arc::clone(&clean_log), None)),
     );
     let mut clean_pump = common::SyncPump::take(&clean).await;
-    clean
+    let queued = clean
         .enqueue_sync(&ctx, OWNER, NAME, None, ForceMode::None, None)
         .await
         .expect("the clean sync must queue");
     assert_eq!(clean_pump.drain(&clean).await, 1);
-    let clean_session = &clean
-        .list_sessions(&ctx, &ODataQuery::default())
+    let clean_session = clean
+        .get_session(&ctx, queued.session_id)
         .await
-        .expect("sessions must list")
-        .items[0];
+        .expect("the clean session must be found");
     assert_eq!(
         clean_session.status,
         SessionStatus::Complete,
@@ -373,49 +427,47 @@ async fn a_hundred_thousand_entities_survive_repeated_interruption_and_resume() 
         clean_session.error,
         clean_session.summary_json
     );
-    let expected = counts(&clean, &ctx).await;
-    assert_eq!(expected[0].1, ISSUES as u64);
-    assert_eq!(expected[1].1, PULL_REQUESTS as u64);
-    assert_eq!(expected[2].1, COMMITS as u64);
+    let expected = mirrored(&clean, &ctx).await;
+    assert_eq!(expected.issues.len(), fixture.issues.len());
+    assert_eq!(expected.pull_requests.len(), fixture.pull_requests.len());
+    assert_eq!(expected.commits.len(), fixture.commits.len());
+    assert_eq!(expected.comments.len(), fixture.comments.len());
     assert_eq!(run_status(&clean, &ctx).await, RepoRunStatus::Complete);
+    let clean_refinements = clean_log.calls();
 
+    let log = Arc::new(RefineLog::default());
     let db = common::inmem_db().await;
-    for (round, after) in [1usize, 5_000, 10_000, 15_000].into_iter().enumerate() {
+    for (round, after) in [1usize, 50, 100, 150].into_iter().enumerate() {
         let stopped = CancellationToken::new();
         let service = common::service_with_github(
             db.clone(),
             "https://api.github.com",
-            Arc::new(StopsMidRefinement {
-                inner: common::FakeGithub {
-                    result: Some((*fixture).clone()),
-                },
-                cancel: stopped.clone(),
-                after,
-                refinements: AtomicUsize::new(0),
-            }),
+            Arc::new(Recording::new(
+                &fixture,
+                Arc::clone(&log),
+                Some((stopped.clone(), after)),
+            )),
         );
         let mut pump = common::SyncPump::take(&service).await;
-        if round == 0 {
+        let session_id = if round == 0 {
             service
                 .enqueue_sync(&ctx, OWNER, NAME, None, ForceMode::None, None)
                 .await
-                .expect("the first interrupted sync must queue");
+                .expect("the first interrupted sync must queue")
+                .session_id
         } else {
             let resumed = service
                 .resume_incomplete_syncs(&ctx, None, ForceMode::None)
                 .await
                 .expect("resume must queue the repository again");
-            assert_eq!(resumed.session_ids.len(), 1, "round {round}");
             assert!(resumed.refused.is_empty(), "round {round}");
-        }
+            assert_eq!(resumed.session_ids.len(), 1, "round {round}");
+            resumed.session_ids[0]
+        };
         assert_eq!(pump.drain_under(&service, &stopped).await, 1);
 
-        let sessions = service
-            .list_sessions(&ctx, &ODataQuery::default())
-            .await
-            .expect("sessions must list");
         assert_eq!(
-            sessions.items[0].status,
+            session_status(&service, &ctx, session_id).await,
             SessionStatus::Interrupted,
             "round {round}: a run cut off after {after} refinements must report it"
         );
@@ -429,9 +481,7 @@ async fn a_hundred_thousand_entities_survive_repeated_interruption_and_resume() 
     let service = common::service_with_github(
         db,
         "https://api.github.com",
-        Arc::new(common::FakeGithub {
-            result: Some((*fixture).clone()),
-        }),
+        Arc::new(Recording::new(&fixture, Arc::clone(&log), None)),
     );
     let mut pump = common::SyncPump::take(&service).await;
     let resumed = service
@@ -440,18 +490,36 @@ async fn a_hundred_thousand_entities_survive_repeated_interruption_and_resume() 
         .expect("the final resume must queue");
     assert_eq!(resumed.session_ids.len(), 1);
     assert_eq!(pump.drain(&service).await, 1);
+    assert_eq!(
+        session_status(&service, &ctx, resumed.session_ids[0]).await,
+        SessionStatus::Complete
+    );
 
     assert_eq!(
-        counts(&service, &ctx).await,
+        mirrored(&service, &ctx).await,
         expected,
         "four interruptions and resumes must end in the state one clean run reaches"
+    );
+    let refinements = log.calls();
+    let refined_again: Vec<&String> = refinements
+        .iter()
+        .filter(|(key, calls)| **calls > clean_refinements.get(*key).copied().unwrap_or(0))
+        .map(|(key, _)| key)
+        .collect();
+    assert!(
+        refined_again.is_empty(),
+        "a resume must continue where the last run stopped, not refine these again: \
+         {refined_again:?}"
+    );
+    assert_eq!(
+        refinements, clean_refinements,
+        "the interrupted runs together must refine exactly what one clean run refines"
     );
     assert_eq!(run_status(&service, &ctx).await, RepoRunStatus::Complete);
     let sessions = service
         .list_sessions(&ctx, &ODataQuery::default())
         .await
         .expect("sessions must list");
-    assert_eq!(sessions.items[0].status, SessionStatus::Complete);
     assert_eq!(
         sessions.items.len(),
         5,

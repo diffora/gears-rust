@@ -192,7 +192,7 @@ impl TenantName {
 /// wider than the structural contract: neither the published
 /// `gts.cf.core.am.tenant.v1~` schema's `minLength: 1` nor the DB
 /// `CHECK (length(name) BETWEEN 1 AND 255)` rejects `"   "`. Callers
-/// run this BEFORE the GTS check so the schema bounds apply to the
+/// run this BEFORE the SDK DTO check so the fixed bounds apply to the
 /// value that is actually persisted.
 ///
 /// # Errors

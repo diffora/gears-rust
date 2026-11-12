@@ -1,6 +1,6 @@
 [package]
 name = "cf-gears-account-management-sdk"
-version = "0.8.3"
+version = "0.9.1"
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
@@ -88,6 +88,7 @@ toolkit-security = { workspace = true }
 toolkit = { workspace = true }
 toolkit-gts = { workspace = true }
 schemars = { workspace = true }
+email_address = { workspace = true }
 
 # `time` carries `MetadataEntry::updated_at` in the metadata SDK
 # module. The workspace pin already enables `serde` / `formatting` /

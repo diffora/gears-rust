@@ -20,7 +20,9 @@ Run it with: make e2e-usage-collector
 from __future__ import annotations
 
 import os
+import tempfile
 import uuid
+from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -161,7 +163,7 @@ def pytest_collection_modifyitems(items):
 
     Session setup keeps its own bounds and its own diagnostics: READY_TIMEOUT
     (60s) and DOCKER_TIMEOUT (120s) in `lib/sidecars.py`, `health_timeout`
-    (15s) in the orchestrator. Those report *what* stalled; a pytest-timeout
+    (SERVER_STARTUP_TIMEOUT_SECS in `lib/budgets.py`) in the orchestrator. Those report *what* stalled; a pytest-timeout
     kill mid-setup only dumps stacks.
 
     An explicit @pytest.mark.timeout on a test wins — that is how the
@@ -199,20 +201,36 @@ def _patch_config(config_text: str, env) -> str:
 
 
 @pytest.fixture(scope="session")
-def gear_test_env() -> GearTestEnv:
-    return GearTestEnv(
-        config_path=CONFIG,
-        config_patch=_patch_config,
-        port=SERVER_PORT,
-        env={"RUST_LOG": os.environ.get(
-            "RUST_LOG",
-            "info,cf_gears_usage_collector=debug,"
-            f"{_BACKEND_CFG['log_crate']}=debug",
-        )},
-        sidecars=[SIDECAR()],
-        # Backend-suffixed so the two runs do not overwrite each other's log.
-        log_suffix=f"usage-collector-{BACKEND}",
-    )
+def gear_test_env() -> Iterator[GearTestEnv]:
+    """The server's environment, with a home of its own.
+
+    The SQLite databases (the types registry among them) live under the server
+    home. `~/.cf-gears` is shared with the development configurations, and a
+    stale registry left there by another branch can refuse startup, so each run
+    gets a fresh temporary home. The explicit `APP__SERVER__HOME_DIR` wins over
+    an inherited one (the orchestrator merges `env` over `os.environ`). Only
+    this directory is removed, after `test_env`, which depends on this
+    fixture, has stopped the server.
+    """
+    with tempfile.TemporaryDirectory(
+        prefix=f"cf-gears-e2e-usage-collector-{BACKEND}-"
+    ) as home:
+        yield GearTestEnv(
+            config_path=CONFIG,
+            config_patch=_patch_config,
+            port=SERVER_PORT,
+            env={
+                "APP__SERVER__HOME_DIR": home,
+                "RUST_LOG": os.environ.get(
+                    "RUST_LOG",
+                    "info,cf_gears_usage_collector=debug,"
+                    f"{_BACKEND_CFG['log_crate']}=debug",
+                ),
+            },
+            sidecars=[SIDECAR()],
+            # Backend-suffixed so the two runs do not overwrite each other's log.
+            log_suffix=f"usage-collector-{BACKEND}",
+        )
 
 
 # ── HTTP helpers ──────────────────────────────────────────────────────────

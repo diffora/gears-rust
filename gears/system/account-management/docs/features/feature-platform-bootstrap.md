@@ -168,6 +168,12 @@ Bootstrap is triggered by the `AccountManagementGear` lifecycle rather than an e
 
 **Input**: independent `root_tenant_type` contract plus `bootstrap_config` (`root_id`, `root_name`, `root_tenant_metadata`, and saga policy)
 
+After mandatory root-type preflight, local preflight checks raw `root_name` against
+the SDK's 1–255 Unicode-scalar bound and caps opaque metadata size before insert or
+IdP calls. Bootstrap persists the name unchanged; configuration also rejects empty
+or whitespace-only names. Local checks have no optional-registry bypass and do not
+read the Tenant resource schema. Root-type eligibility remains registry-backed.
+
 **Output**: Result — `success` (root tenant visible in `active` status with self-closure row), `clean_failure` (no AM or IdP root state retained; safe to retry), or `ambiguous_failure` (provisioning row persists, awaits reaper)
 
 **Steps**:

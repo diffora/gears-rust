@@ -18,13 +18,15 @@ use crate::domain::{AuthNResolverLocalClient, Service};
 /// 1. Discovers plugin instances via types-registry
 /// 2. Routes requests to the selected plugin based on vendor configuration
 ///
-/// The `AuthNResolverPluginSpecV1` schema itself reaches `types-registry`
-/// automatically via the `toolkit-gts` link-time inventory — no per-init
-/// registration is needed. Plugin discovery is lazy: happens on first API
-/// call after types-registry is ready.
+/// The registry is consumed, not linked: `PlatformTypesRegistryApi` is the registry's own
+/// local client where the registry runs in this process, and its resolving REST client
+/// otherwise. This gear publishes the SDK's `AuthNResolverPluginSpecV1` schema
+/// (`gts_publication(...)`), admitted before any application `init`. Plugin discovery is lazy:
+/// it happens on the first API call, after every plugin bound its client in `init`.
+#[toolkit::consumes(contract = types_registry_sdk::PlatformTypesRegistryApi, from = "types-registry")]
 #[toolkit::gear(
     name = "authn-resolver",
-    deps = [types_registry],
+    gts_publication(crates = [authn_resolver_sdk]),
 )]
 pub(crate) struct AuthNResolver {
     service: OnceLock<Arc<Service>>,
@@ -53,7 +55,8 @@ impl Gear for AuthNResolver {
             .set(svc.clone())
             .map_err(|_| anyhow::anyhow!("{} gear already initialized", Self::MODULE_NAME))?;
 
-        // Register client in ClientHub
+        // Register client in ClientHub. Its plugin instances are admitted before
+        // this `init` and bound before anything is served, so no gate is needed.
         let api: Arc<dyn AuthNResolverClient> = Arc::new(AuthNResolverLocalClient::new(svc));
         hub.register::<dyn AuthNResolverClient>(Arc::clone(&api));
 
@@ -67,3 +70,8 @@ impl Gear for AuthNResolver {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[path = "gear_tests.rs"]
+mod gear_tests;

@@ -9,7 +9,7 @@ gdl_version = "1.0"
 # from source.
 
 gear(
-    deps = ["types-registry"],
+    deps = [],
     source = git(url = "https://github.com/constructorfabric/gears-rust", path = "gears/system/tenant-resolver/plugins/static-tr-plugin"),
     maturity = "preview",
     name = "Static Tenant Resolver Plugin",

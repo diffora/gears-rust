@@ -69,6 +69,58 @@ The GTS identifier types the models use (`GtsId`, `GtsTypeId`, `GtsInstanceId`,
 `GtsIdPattern`, `GtsIdSegment`) are re-exported, so building a request needs no direct
 `gts` dependency.
 
+## Payload validation
+
+`TypeSchema::compile_payload_validator()` compiles a reusable `gts::PayloadValidator`
+from the registry's materialized schema. Select `content` and `resolved_schema`;
+traits, origin and provenance are not needed. The SDK neither builds a `GtsStore`
+nor resolves schemas again, and compilation and validation make no registry calls.
+
+```rust,no_run
+use toolkit_security::SecurityContext;
+use types_registry_sdk::{
+    EntityField, FieldSelection, GtsTypeId, Projection, ReadOptions,
+    TypesRegistryApi, TypesRegistryApiExt,
+};
+
+async fn validate_records(
+    registry: &dyn TypesRegistryApi,
+    caller: &SecurityContext,
+    type_id: &GtsTypeId,
+    payloads: &[serde_json::Value],
+) -> anyhow::Result<()> {
+    let schema = registry.get_type_schema(caller, type_id, ReadOptions {
+        projection: Projection::Select(FieldSelection::with(&[
+            EntityField::Content,
+            EntityField::ResolvedSchema,
+        ])),
+        ..ReadOptions::default()
+    }).await?;
+    let validator = schema.compile_payload_validator()?;
+    for payload in payloads {
+        validator.validate(payload)?;
+    }
+    Ok(())
+}
+```
+
+`CompilePayloadValidatorError::MissingField` identifies an unselected required field;
+`InvalidContent` rejects a selected non-object authored document, including JSON null.
+`Upstream` preserves `gts::CompilePayloadValidatorError` and its error source; it is
+also exported as `GtsCompilePayloadValidatorError` for typed matching without a direct
+`gts` dependency. `PayloadValidator` and `PayloadValidationError` are re-exported too.
+Only the authored leaf's boolean `x-gts-abstract: true` makes it abstract; an inherited
+flag in `resolved_schema` does not. Other schema-admission checks are not repeated.
+
+Validation uses native GTS dialect, format, regex and reference-keyword rules. It checks
+reference syntax/patterns (`GtsRefValidation::None`), not target presence or validity.
+Every referenced schema resource must be present in the materialized schema; unresolved
+external resources fail compilation. Lossy reference inlining can change verdicts relative
+to store-based validation. Selected null `resolved_schema` is an upstream compilation
+error, while boolean schemas retain their native meaning. Payloads are not modified and
+defaults are not inserted. Consumers choose freshness, lifecycle and availability policy,
+and construct their own payload envelopes; existing consumers migrate separately in T38.
+
 **Intermediate AM topology (implemented for the current execution slice).** An embedded
 registry configured `mode: legacy_only` keeps only the legacy client and v1 routes for RG:
 it registers neither new API locally, routes neither, runs no seeding or admission over a
@@ -219,7 +271,7 @@ replaces it, even when longer. Unknown fields, wrong types, zero values,
 maximum as the `publish-gts` deadline) fail startup before any publication writes, naming the
 gear and the config path. The policy applies per publication, alike for a local and a
 remote registry; the registry client's URL, HTTP timeout and retries stay in
-`consumer_wiring.types-registry`. Publication reuses the gear's own client view and settings.
+`clients.consumes.types-registry`. Publication reuses the gear's own client view and settings.
 Deployment jobs use the same validation and tuning; `--registry` changes only the endpoint
 and must respect `require_tls`. Custom `publisher = ...` adapters provide
 the same `Publication` shape: `from_manifest(registry, name, version, &[(GtsId, JsonDocument)])`,
@@ -500,11 +552,27 @@ event carries `reconcile_id` directly.
 ## Testing (`test-util`)
 
 - `testing_platform::MockTypesRegistry` implements both contracts in memory. Seed it
-  (`seed`, `Seed`, `seed_inventory`) or write through the contract; Type Schema documents
-  resolve with `gts-rust` as admission does. `Fault` delays or fails calls, `reject` and
+  (`seed`, `Seed`, `seed_inventory`) or write through the contract. Changed Type Schemas
+  pass native GTS schema, derivation and trait validation before content or versions change;
+  malformed candidates return `InvalidSchema`. Unordered batches wait for selected schema
+  prerequisites; refused prerequisites block their dependents without supplying their old
+  revisions. Independent candidates may still succeed, and dry runs validate against a
+  disposable copy. Managed schemas must fully materialize, matching the real registry's
+  rejection of unresolved/circular schema resources. `Fault` delays or fails calls, `reject` and
   `depends_on` steer admission, `strict()` panics on an unexpected call, and `calls`,
   `reads` and `submissions` record what happened. `install` registers it in a `ClientHub`
   under both contracts.
+- `seed` and `Seed` deliberately bypass admission for fixtures, including invalid schemas.
+  Explicit call faults and admission refusals retain precedence; lifecycle, precondition,
+  unchanged and idempotent-replay behavior is preserved. An unrelated invalid seed cannot
+  poison valid admission. The members of an in-batch schema cycle are refused as
+  `invalid_schema` and the candidates waiting on them are `blocked_by_dependency`, as in the
+  registry. The mock does not reproduce publisher guards, database locking,
+  compatibility/history checks or every production graph failure classification.
+- Instances are admitted without validating their payload against their Type Schema and
+  without waiting on, or being blocked by, in-batch schema candidates. A batch the registry
+  refuses (an invalid payload, an instance of a type refused in the same batch) can succeed
+  on the mock: assert instance admission against the registry's local client.
 - `testing_platform::conformance::run` holds the contract checks that the mock, the
   registry's local client and the REST client over TCP all pass.
 

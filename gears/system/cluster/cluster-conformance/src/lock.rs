@@ -137,24 +137,25 @@ pub async fn scenario_lock_003(backend: Arc<dyn DistributedLockBackend>, time: T
 /// returns `LockExpired`.
 pub async fn scenario_lock_005(backend: Arc<dyn DistributedLockBackend>, time: TimeControl) {
     time.begin();
-    let ttl = Duration::from_millis(200);
+    let ttl = time.lease(Duration::from_millis(200));
     let guard = backend
         .try_lock("m", ttl)
         .await
         .expect("SC-LOCK-005: acquire must succeed");
-    // Advance partway into the lease and renew — must succeed. Only 50 ms of the
-    // 200 ms lease is elapsed (not 150) so ~150 ms of margin remains for
-    // scheduling and the database round trip under `Real`; leaving just 50 ms
-    // let a loaded CI runner expire the lease before `renew` landed, flaking the
-    // test (PGR-D5). This still verifies pre-expiry renewal.
-    time.elapse(Duration::from_millis(50)).await;
+    // Advance partway into the lease and renew — must succeed. Only a quarter of
+    // the lease is elapsed so the rest is margin for scheduling and the backend
+    // round trips under `Real`, where `time.lease` also scales the lease up:
+    // a 200 ms lease with 150 ms of margin still expired before `renew` landed
+    // on a loaded CI runner (PGR-D5, and again on the Redis CAS lock). This
+    // still verifies pre-expiry renewal.
+    time.elapse_lease(Duration::from_millis(50)).await;
     guard
-        .renew(Duration::from_millis(200))
+        .renew(ttl)
         .await
         .expect("SC-LOCK-005: renew before expiry must succeed");
     // Let the lock fully expire (well past the TTL so a reaper-driven backend
     // has reclaimed it under `Real`).
-    time.elapse(Duration::from_millis(400)).await;
+    time.elapse_lease(Duration::from_millis(400)).await;
     let err = guard
         .renew(Duration::from_millis(100))
         .await
@@ -170,7 +171,9 @@ pub async fn scenario_lock_005(backend: Arc<dyn DistributedLockBackend>, time: T
 /// persists until its TTL lapses (ADR-002: TTL is the only safety net).
 pub async fn scenario_lock_007(backend: Arc<dyn DistributedLockBackend>, time: TimeControl) {
     time.begin();
-    let ttl = Duration::from_millis(200);
+    // Scaled under `Real`: the re-acquire below must land inside the lease, and
+    // a loaded runner's round trips used up a plain 200 ms one.
+    let ttl = time.lease(Duration::from_millis(200));
     let guard = backend
         .try_lock("m", ttl)
         .await
@@ -184,7 +187,7 @@ pub async fn scenario_lock_007(backend: Arc<dyn DistributedLockBackend>, time: T
         "SC-LOCK-007: dropping a guard must not eagerly release the lock (got {still_held:?})"
     );
     // After the TTL lapses the lock becomes acquirable again.
-    time.elapse(Duration::from_millis(400)).await;
+    time.elapse_lease(Duration::from_millis(400)).await;
     assert!(
         poll_try_lock(&backend, "m", ttl, time).await,
         "SC-LOCK-007: lock must be acquirable after TTL lapses post-drop"

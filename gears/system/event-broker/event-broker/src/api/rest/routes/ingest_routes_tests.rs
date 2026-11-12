@@ -98,6 +98,12 @@ fn the_single_publish_route_declares_its_full_response_list() {
                     .to_owned()
             ),
             (
+                413,
+                "application/problem+json",
+                "EventTooLarge - the event's encoding is over the 60 KiB per-event limit."
+                    .to_owned()
+            ),
+            (
                 422,
                 "application/problem+json",
                 "SchemaViolation - the event `data` does not satisfy the event type's \
@@ -165,7 +171,8 @@ fn the_batch_route_declares_its_full_response_list() {
                 413,
                 "application/problem+json",
                 "BatchTooLarge (more events than the configured max) or BatchPayloadTooLarge \
-                 (total payload over the configured byte ceiling)"
+                 (total payload over the configured byte ceiling), or EventTooLarge (an event's \
+                 encoding over the 60 KiB per-event limit)"
                     .to_owned()
             ),
             (

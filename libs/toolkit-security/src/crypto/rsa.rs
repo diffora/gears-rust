@@ -1,11 +1,21 @@
-//! RSA verification through the same provider as TLS. PKCS#1 is used only
-//! to serialize public integers; it does not perform cryptographic operations.
+//! RSA signing and verification through the same provider as TLS. PKCS#1 and
+//! PKCS#8 are used only to parse and serialize key structure; they perform no
+//! cryptographic operations.
 
-use pkcs1::der::Encode;
+use std::sync::Arc;
+
+// pkcs1 0.7 and pkcs8 0.11 sit on different `der` majors; each needs its own.
+use pkcs1::der::{Decode as _, Encode};
+use pkcs8::der::Decode as _;
+use pkcs8::{ObjectIdentifier, PrivateKeyInfoRef};
 use rustls::SignatureScheme;
-use rustls::pki_types::alg_id;
+use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer, alg_id};
+use rustls::sign::SigningKey;
 
 use super::{CryptoError, backend};
+
+const RSA_ENCRYPTION: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.1");
+const PAIRWISE_MESSAGE: &[u8] = b"toolkit-security RSA key consistency";
 
 /// RSA signature algorithms supported by the platform's RSA JWKS provider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,6 +56,146 @@ impl RsaAlgorithm {
             Self::PssSha384 => SignatureScheme::RSA_PSS_SHA384,
             Self::PssSha512 => SignatureScheme::RSA_PSS_SHA512,
         }
+    }
+}
+
+/// An RSA signing key owned by the configured OS backend.
+///
+/// Imported from unencrypted PKCS#8 (`rsaEncryption`, two primes) with the
+/// same modulus and exponent limits as [`verify_rsa_components`]. The backend
+/// key is checked by a sign/verify round trip on import. No key generation:
+/// keys are provisioned externally.
+#[derive(Clone)]
+pub struct RsaKeyPair {
+    inner: Arc<dyn SigningKey>,
+    modulus: Vec<u8>,
+    public_exponent: Vec<u8>,
+}
+
+impl std::fmt::Debug for RsaKeyPair {
+    /// Shows the modulus size only; the private half never leaves the backend.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RsaKeyPair")
+            .field("modulus_bits", &modulus_bits(&self.modulus))
+            .finish_non_exhaustive()
+    }
+}
+
+impl RsaKeyPair {
+    /// Import PKCS#8 DER with algorithm `rsaEncryption` (absent or NULL
+    /// parameters). RSASSA-PSS-restricted and multi-prime keys are rejected.
+    ///
+    /// # Errors
+    /// Returns an error for unsupported encodings, a modulus outside
+    /// 2048–8192 bits, a key the backend rejects or that fails the pairwise
+    /// check, and an unavailable backend.
+    pub fn from_pkcs8(bytes: &[u8]) -> Result<Self, CryptoError> {
+        Self::from_pkcs8_with_provider(bytes, backend::provider()?)
+    }
+
+    /// Import an unencrypted PKCS#8 PEM document (`-----BEGIN PRIVATE KEY-----`)
+    /// with the same checks as [`Self::from_pkcs8`] and the same strict
+    /// RFC 7468 decoding as [`EcdsaP256KeyPair::from_pkcs8_pem`](super::signature::EcdsaP256KeyPair::from_pkcs8_pem).
+    ///
+    /// # Errors
+    /// Returns an error for a different PEM label, including PKCS#1
+    /// `RSA PRIVATE KEY` and `ENCRYPTED PRIVATE KEY`, for a non-conforming
+    /// encapsulation, and for every [`Self::from_pkcs8`] failure.
+    pub fn from_pkcs8_pem(pem: &str) -> Result<Self, CryptoError> {
+        super::with_pkcs8_pem(pem, Self::from_pkcs8)
+    }
+
+    pub(super) fn from_pkcs8_with_provider(
+        bytes: &[u8],
+        provider: &rustls::crypto::CryptoProvider,
+    ) -> Result<Self, CryptoError> {
+        let pki = PrivateKeyInfoRef::from_der(bytes).map_err(|_| CryptoError::InvalidKey)?;
+        // Only rsaEncryption: never drop RSASSA-PSS key constraints.
+        if pki.algorithm.oid != RSA_ENCRYPTION
+            || pki
+                .algorithm
+                .parameters
+                .is_some_and(|params| params != pkcs8::der::asn1::AnyRef::NULL)
+        {
+            return Err(CryptoError::InvalidKey);
+        }
+        let rsa = pkcs1::RsaPrivateKey::from_der(pki.private_key.as_bytes())
+            .map_err(|_| CryptoError::InvalidKey)?;
+        if rsa.other_prime_infos.is_some() {
+            return Err(CryptoError::InvalidKey);
+        }
+        let modulus = rsa.modulus.as_bytes();
+        let public_exponent = rsa.public_exponent.as_bytes();
+        validate_components(modulus, public_exponent)?;
+        let inner = provider
+            .key_provider
+            .load_private_key(PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
+                bytes.to_vec(),
+            )))
+            .map_err(|_| CryptoError::InvalidKey)?;
+        let key = Self {
+            inner,
+            modulus: modulus.to_vec(),
+            public_exponent: public_exponent.to_vec(),
+        };
+        let algorithm = RsaAlgorithm::Pkcs1Sha256;
+        let signature = key.sign(algorithm, PAIRWISE_MESSAGE)?;
+        verify_with_provider(
+            provider,
+            algorithm,
+            &key.modulus,
+            &key.public_exponent,
+            PAIRWISE_MESSAGE,
+            &signature,
+        )
+        // A signature that does not verify means the backend key does not
+        // match the PKCS#8 public components; anything else is a backend gap.
+        .map_err(|error| match error {
+            CryptoError::InvalidSignature => CryptoError::InvalidKey,
+            other => other,
+        })?;
+        Ok(key)
+    }
+
+    /// Return the modulus `n` as an unsigned big-endian integer without
+    /// leading zeros (the JWK `n` member before base64url).
+    #[must_use]
+    pub fn modulus(&self) -> &[u8] {
+        &self.modulus
+    }
+
+    /// Return the public exponent `e` in the same encoding as [`Self::modulus`].
+    #[must_use]
+    pub fn public_exponent(&self) -> &[u8] {
+        &self.public_exponent
+    }
+
+    /// Sign the message (not prehashed) with the exact algorithm requested.
+    /// The signature is as long as the modulus.
+    ///
+    /// # Errors
+    /// Returns `UnsupportedAlgorithm` if the backend does not offer that
+    /// scheme for this key, `MessageTooLong` past the portable length limit,
+    /// and `SigningFailed` for a native failure or a malformed signature.
+    pub fn sign(&self, algorithm: RsaAlgorithm, message: &[u8]) -> Result<Vec<u8>, CryptoError> {
+        if message.len() > u32::MAX as usize {
+            return Err(CryptoError::MessageTooLong);
+        }
+        let signer = self
+            .inner
+            .choose_scheme(&[algorithm.scheme()])
+            .ok_or(CryptoError::UnsupportedAlgorithm)?;
+        // A backend must never substitute a different scheme.
+        if signer.scheme() != algorithm.scheme() {
+            return Err(CryptoError::UnsupportedAlgorithm);
+        }
+        let signature = signer
+            .sign(message)
+            .map_err(|_| CryptoError::SigningFailed)?;
+        if signature.len() != self.modulus.len() {
+            return Err(CryptoError::SigningFailed);
+        }
+        Ok(signature)
     }
 }
 
@@ -118,7 +268,7 @@ fn validate_components(n: &[u8], e: &[u8]) -> Result<(), CryptoError> {
     if n.len() > 1024 || e.len() > 5 {
         return Err(CryptoError::InvalidKey);
     }
-    let modulus_bits = n.len() * 8 - n[0].leading_zeros() as usize;
+    let modulus_bits = modulus_bits(n);
     let exponent = e
         .iter()
         .fold(0u64, |value, byte| (value << 8) | u64::from(*byte));
@@ -131,6 +281,12 @@ fn validate_components(n: &[u8], e: &[u8]) -> Result<(), CryptoError> {
         return Err(CryptoError::InvalidKey);
     }
     Ok(())
+}
+
+/// Bit length of a canonical (no leading zero byte) big-endian integer.
+fn modulus_bits(n: &[u8]) -> usize {
+    n.first()
+        .map_or(0, |first| n.len() * 8 - first.leading_zeros() as usize)
 }
 
 #[cfg(test)]

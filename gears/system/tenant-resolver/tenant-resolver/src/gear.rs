@@ -17,13 +17,15 @@ use crate::domain::{Service, TenantResolverLocalClient};
 /// 1. Discovers plugin instances via types-registry
 /// 2. Routes requests to the selected plugin based on vendor configuration
 ///
-/// The `TenantResolverPluginSpecV1` schema itself reaches `types-registry`
-/// automatically via the `toolkit-gts` link-time inventory — no per-init
-/// registration is needed. Plugin discovery is lazy: happens on first API
-/// call after types-registry is ready.
+/// The registry is consumed, not linked: `PlatformTypesRegistryApi` is the registry's own
+/// local client where the registry runs in this process, and its resolving REST client
+/// otherwise. This gear publishes the SDK's `TenantResolverPluginSpecV1` schema before
+/// application `init`. Plugin discovery is lazy: it happens on the first API call,
+/// after every local plugin has bound its admitted instance in `init`.
+#[toolkit::consumes(contract = types_registry_sdk::PlatformTypesRegistryApi, from = "types-registry")]
 #[toolkit::gear(
     name = "tenant-resolver",
-    deps = [types_registry],
+    gts_publication(crates = [tenant_resolver_sdk]),
 )]
 pub(crate) struct TenantResolver {
     service: OnceLock<Arc<Service>>,
@@ -59,3 +61,8 @@ impl Gear for TenantResolver {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[path = "gear_tests.rs"]
+mod gear_tests;

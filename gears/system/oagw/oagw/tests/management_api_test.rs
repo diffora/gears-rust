@@ -1,6 +1,6 @@
 //! Skipped under `--features fips`: `AppHarness` wires its token HTTP client
-//! via `HttpClientConfig::for_testing()` (plaintext), which `toolkit-http`
-//! rejects with `HttpError::InsecureTransport` under FIPS — see PR #1985.
+//! via `HttpClientConfig::for_testing()` (plaintext) against plaintext mocks
+//! and does not install the FIPS crypto provider.
 
 #![cfg(not(feature = "fips"))]
 

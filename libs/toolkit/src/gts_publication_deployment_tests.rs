@@ -258,12 +258,12 @@ async fn deployment_preserves_each_publishers_consumer_wiring() {
     let registry = Arc::new(RemoteRegistry::default());
     *REGISTRY.lock() = Some(Arc::clone(&registry));
     let config = PublicationConfig(json!({
-        "base-publisher": {"config": {"consumer_wiring": {"registry": {
+        "base-publisher": {"clients": {"consumes": {"registry": {
             "endpoint": "https://pod-registry.example",
             "timeout": "2s", "require_tls": true,
             "retry": {"max_attempts": 2}
         }}}},
-        "derived-publisher": {"config": {"consumer_wiring": {"registry": {
+        "derived-publisher": {"clients": {"consumes": {"registry": {
             "timeout": "7s", "require_tls": false,
             "retry": {"max_attempts": 5}
         }}}}
@@ -299,7 +299,7 @@ async fn deployment_rejects_invalid_consumer_wiring_before_publication() {
     let registry = Arc::new(RemoteRegistry::default());
     *REGISTRY.lock() = Some(Arc::clone(&registry));
     let config = PublicationConfig(json!({
-        "base-publisher": {"config": {"consumer_wiring": {"registry": {
+        "base-publisher": {"clients": {"consumes": {"registry": {
             "require_tls": "not-a-boolean"
         }}}}
     }));
@@ -327,7 +327,7 @@ async fn deployment_rejects_plaintext_before_wiring_any_publishers_credential() 
     // The second publisher requires TLS: even the first must not receive the
     // job's credential before all transport policies have been checked.
     let config = PublicationConfig(json!({
-        "derived-publisher": {"config": {"consumer_wiring": {"registry": {
+        "derived-publisher": {"clients": {"consumes": {"registry": {
             "require_tls": true
         }}}}
     }));
@@ -345,6 +345,58 @@ async fn deployment_rejects_plaintext_before_wiring_any_publishers_credential() 
     assert!(registry.token.lock().is_none());
     assert!(registry.tunings.lock().is_empty());
     assert!(registry.admitted.lock().is_empty());
+}
+
+#[tokio::test]
+async fn gear_client_defaults_do_not_drop_the_jobs_tls_requirement() {
+    let _serial = SERIAL.lock().await;
+    let registry = Arc::new(RemoteRegistry::default());
+    *REGISTRY.lock() = Some(Arc::clone(&registry));
+    // `defaults` alone makes the gear's wiring apply; it says nothing about
+    // TLS and must not clear the job's requirement.
+    let config = PublicationConfig(json!({
+        "base-publisher": {"clients": {"defaults": {"timeout": "2s"}}}
+    }));
+    let error = publish(
+        &[&BASE_PUB],
+        &config,
+        "http://registry.example:8080",
+        &tls_job(),
+        Duration::from_secs(10),
+        &tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("requires TLS"), "{error:#}");
+    assert!(registry.token.lock().is_none());
+    assert!(registry.tunings.lock().is_empty());
+}
+
+#[tokio::test]
+async fn a_publishers_wiring_cannot_turn_off_the_jobs_tls_requirement() {
+    let _serial = SERIAL.lock().await;
+    let registry = Arc::new(RemoteRegistry::default());
+    *REGISTRY.lock() = Some(Arc::clone(&registry));
+    let config = PublicationConfig(json!({
+        "base-publisher": {"clients": {"consumes": {"registry": {
+            "timeout": "2s", "require_tls": false
+        }}}}
+    }));
+    let report = publish(
+        &[&BASE_PUB],
+        &config,
+        ENDPOINT,
+        &tls_job(),
+        Duration::from_secs(10),
+        &tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert!(report.succeeded(), "{report}");
+    let observed = registry.tunings.lock().clone();
+    assert_eq!(observed.len(), 1);
+    assert_eq!(observed[0].require_tls, Some(true));
+    assert_eq!(observed[0].timeout, Some(Duration::from_secs(2)));
 }
 
 fn assert_pending_diagnostic(report: &GtsDeploymentReport) {
@@ -403,6 +455,13 @@ async fn deployment_cancellation_preserves_the_last_pending_diagnostic() {
     assert!(!report.succeeded());
     assert_eq!(*registry.admitted.lock(), [BASE]);
     assert_pending_diagnostic(&report);
+}
+
+/// A job that requires TLS for every publisher.
+fn tls_job() -> ClientTuning {
+    let mut job = tuning();
+    job.require_tls = Some(true);
+    job
 }
 
 fn tuning() -> ClientTuning {

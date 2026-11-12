@@ -19,12 +19,12 @@ use crate::domain::ports::github::{
     PullListing, RateLimitQuota, RepoRef, SHARED_CACHE_PARTITION,
 };
 use crate::domain::repo::{
-    BranchRecord, CheckRunRecord, CommentRecord, CommitCommentRecord, CommitFileRecord,
-    CommitRecord, CommitStatusRecord, ContributorRecord, DeploymentRecord, IssueEventRecord,
-    IssueReactionRecord, IssueRecord, IssueTimelineEventRecord, LabelRecord, MilestoneRecord,
-    PullRequestCommitRecord, PullRequestFileRecord, PullRequestRecord, ReleaseRecord, RepoRecord,
-    ReviewCommentRecord, ReviewRecord, ReviewThreadRecord, TagRecord, WorkflowJobRecord,
-    WorkflowRunRecord,
+    ArtifactRecord, BranchRecord, CheckRunRecord, CommentRecord, CommitCommentRecord,
+    CommitFileRecord, CommitRecord, CommitStatusRecord, ContributorRecord, DeploymentRecord,
+    IssueEventRecord, IssueReactionRecord, IssueRecord, IssueTimelineEventRecord, LabelRecord,
+    MilestoneRecord, PullRequestCommitRecord, PullRequestFileRecord, PullRequestRecord,
+    ReleaseRecord, RepoRecord, ReviewCommentRecord, ReviewRecord, ReviewThreadRecord, TagRecord,
+    WorkflowJobRecord, WorkflowRecord, WorkflowRunRecord,
 };
 use crate::domain::scope::InlineCommentSnippets;
 use crate::domain::sync::telemetry::{GithubApi, RequestOutcome, SessionTelemetry, TelemetryEntry};
@@ -1774,6 +1774,43 @@ struct GhWorkflowRunsPage {
 }
 
 #[derive(Debug, Deserialize)]
+struct GhArtifactWorkflowRun {
+    id: Option<i64>,
+    head_branch: Option<String>,
+    head_sha: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GhArtifact {
+    id: i64,
+    name: String,
+    size_in_bytes: i64,
+    expired: bool,
+    created_at: Option<String>,
+    updated_at: Option<String>,
+    expires_at: Option<String>,
+    workflow_run: Option<GhArtifactWorkflowRun>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GhArtifactsPage {
+    artifacts: Vec<GhArtifact>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GhWorkflow {
+    id: i64,
+    name: String,
+    path: String,
+    state: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GhWorkflowsPage {
+    workflows: Vec<GhWorkflow>,
+}
+
+#[derive(Debug, Deserialize)]
 struct GhPullFile {
     filename: String,
     /// The file's unified diff; GitHub omits it for very large diffs.
@@ -1936,6 +1973,7 @@ struct GhCommit {
     author: Option<GhActor>,
     #[serde(default, deserialize_with = "actor_or_none")]
     committer: Option<GhActor>,
+    html_url: Option<String>,
 }
 
 fn repository_record(r: GhRepository) -> RepoRecord {
@@ -2417,6 +2455,35 @@ fn workflow_run_record(repo_id: i64, w: GhWorkflowRun) -> WorkflowRunRecord {
     }
 }
 
+fn workflow_record(repo_id: i64, w: GhWorkflow) -> WorkflowRecord {
+    WorkflowRecord {
+        id: w.id,
+        repo_id,
+        name: w.name,
+        path: w.path,
+        state: w.state,
+    }
+}
+
+fn artifact_record(repo_id: i64, a: GhArtifact) -> ArtifactRecord {
+    let (workflow_run_id, head_branch, head_sha) = a
+        .workflow_run
+        .map_or((None, None, None), |r| (r.id, r.head_branch, r.head_sha));
+    ArtifactRecord {
+        id: a.id,
+        repo_id,
+        name: a.name,
+        size_in_bytes: a.size_in_bytes,
+        expired: a.expired,
+        workflow_run_id,
+        head_branch,
+        head_sha,
+        created_at: a.created_at,
+        updated_at: a.updated_at,
+        expires_at: a.expires_at,
+    }
+}
+
 fn pull_request_file_record(
     repo_id: i64,
     pull_number: i64,
@@ -2471,6 +2538,8 @@ const REVIEW_THREAD_PAGES: usize = 20;
 const MAX_REDIRECTS: usize = 10;
 
 const WORKFLOW_RUN_PAGES: usize = 10;
+
+const ARTIFACT_PAGES: usize = 10;
 
 fn review_threads_variables(
     owner: &str,
@@ -2565,6 +2634,7 @@ fn pull_request_commit_record(
         committer_login: c.committer.map(|a| a.login),
         authored_at: c.commit.author.and_then(|p| p.date),
         committed_at: c.commit.committer.and_then(|p| p.date),
+        html_url: c.html_url,
     }
 }
 
@@ -2700,6 +2770,7 @@ fn commit_record(repo_id: i64, c: GhCommit) -> CommitRecord {
         committed_at: c.commit.committer.and_then(|p| p.date),
         additions: 0,
         deletions: 0,
+        html_url: c.html_url,
     }
 }
 
@@ -3407,7 +3478,7 @@ impl GithubPort for GithubClient {
         Ok(listing)
     }
 
-    /// Workflow runs and deployments; jobs are per run, see
+    /// Workflow runs, deployments and artifacts; jobs are per run, see
     /// [`Self::refine_workflow_run`].
     async fn list_actions(
         &self,
@@ -3423,6 +3494,18 @@ impl GithubPort for GithubClient {
             return Ok(ActionsListing::default());
         }
 
+        let workflows = match self
+            .get_json_all_wrapped(
+                &format!("/repos/{owner}/{name}/actions/workflows?per_page={FIRST_PAGE_SIZE}"),
+                options,
+                |page: GhWorkflowsPage| page.workflows,
+            )
+            .await
+        {
+            Ok(workflows) => workflows,
+            Err(DomainError::NotFound | DomainError::AccessLost(_)) => Vec::new(),
+            Err(error) => return Err(error),
+        };
         let runs = self
             .get_json_newest_wrapped(
                 &format!("/repos/{owner}/{name}/actions/runs?per_page={FIRST_PAGE_SIZE}"),
@@ -3437,8 +3520,25 @@ impl GithubPort for GithubClient {
                 options,
             )
             .await?;
+        let artifacts = match self
+            .get_json_newest_wrapped(
+                &format!("/repos/{owner}/{name}/actions/artifacts?per_page={FIRST_PAGE_SIZE}"),
+                options,
+                ARTIFACT_PAGES,
+                |page: GhArtifactsPage| page.artifacts,
+            )
+            .await
+        {
+            Ok(artifacts) => artifacts,
+            Err(DomainError::NotFound | DomainError::AccessLost(_)) => Vec::new(),
+            Err(error) => return Err(error),
+        };
 
         Ok(ActionsListing {
+            workflows: workflows
+                .into_iter()
+                .map(|w| workflow_record(repo_id, w))
+                .collect(),
             workflow_runs: runs
                 .into_iter()
                 .map(|w| workflow_run_record(repo_id, w))
@@ -3446,6 +3546,10 @@ impl GithubPort for GithubClient {
             deployments: deployments
                 .into_iter()
                 .map(|d| deployment_record(repo_id, d))
+                .collect(),
+            artifacts: artifacts
+                .into_iter()
+                .map(|a| artifact_record(repo_id, a))
                 .collect(),
         })
     }

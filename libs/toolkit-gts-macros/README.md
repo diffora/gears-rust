@@ -10,6 +10,10 @@ Proc-macros backing the [`cf-gears-toolkit-gts`](../toolkit-gts/README.md) crate
   process-wide inventory, and — for derived unit structs
   (`base = ParentStruct`) — auto-emits `impl Default` so generic helpers
   can construct the marker without the caller re-spelling the type.
+- **`#[gts_type_schema_template(...)]`** — generation-only wrapper around
+  `struct_to_gts_schema`. Emits the schema implementation and accessors without
+  inventory registration or declaration provenance; no crate collector is needed.
+  Consumers access it through `toolkit_gts::gts_type_schema_template`.
 - **`gts_instance! { … }`** — function-like macro for **typed** Instance
   declarations. Takes a single struct literal `Struct { id: "<full>", … }`,
   optionally preceded by `#[gts_static(NAME)]`. Upstream rewrites the

@@ -21,9 +21,19 @@ pub enum PortError {
     /// The dependency failed or answered unusably.
     #[error("dependency unavailable: {0}")]
     Unavailable(String),
+    /// The dependency broke its contract or refused the request deterministically:
+    /// repeating the same request cannot cure it.
+    #[error("dependency failed internally: {0}")]
+    Internal(String),
     /// The dependency does not know (or will not show) the subject.
     #[error("not found: {0}")]
     NotFound(String),
+    /// The request caller could not authenticate to the dependency.
+    #[error("dependency requires authentication")]
+    Unauthenticated,
+    /// The dependency refused the request caller's access.
+    #[error("dependency denied the caller's access")]
+    PermissionDenied,
 }
 
 /// Tenant hierarchy reads, always under the caller's context.
@@ -152,11 +162,25 @@ impl Subtree {
     }
 }
 
+/// Identity of a type-catalog read.
+#[domain_model]
+#[derive(Clone, Copy)]
+pub enum TypeCatalogScope<'a> {
+    /// Startup validates configured built-ins as a platform operation.
+    Platform,
+    /// Policy management reads under the original request's identity.
+    Caller(&'a SecurityContext),
+}
+
 /// Lookup of concrete type identifiers, used at validation time only.
 #[async_trait]
 pub trait TypeCatalogPort: Send + Sync {
     /// The subset of `ids` the types registry knows.
-    async fn known_types(&self, ids: &[String]) -> Result<HashSet<String>, PortError>;
+    async fn known_types(
+        &self,
+        scope: TypeCatalogScope<'_>,
+        ids: &[String],
+    ) -> Result<HashSet<String>, PortError>;
 }
 
 /// An assignment with the id of its bundle's active version. Carries no

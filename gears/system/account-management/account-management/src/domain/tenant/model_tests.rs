@@ -88,12 +88,8 @@ fn empty_update_is_empty() {
 // `suspend_tenant` / `unsuspend_tenant` and the integration tests for
 // the soft-delete flow.
 
-// `validate_tenant_name` was deleted in favour of
-// `domain::gts_validation::validate_tenant_name_via_gts` (the
-// resource-group `validate_metadata_via_gts` pattern). The schema-
-// driven path is exercised through service-level tests that wire a
-// `MockTypesRegistryClient` with the `gts.cf.core.am.tenant.v1~`
-// schema registered.
+// Fixed name bounds live in the SDK DTO contract; this model helper
+// owns service whitespace normalization only.
 
 #[test]
 fn verify_tenant_name_rejects_empty_and_all_whitespace() {

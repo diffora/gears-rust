@@ -36,7 +36,12 @@ pub fn gts_declarations() -> Vec<(String, String)> {
         .map(|id| {
             (
                 (*id).to_owned(),
-                json!({ "$id": format!("gts://{id}") }).to_string(),
+                json!({
+                    "$id": format!("gts://{id}"),
+                    "$schema": "http://json-schema.org/draft-07/schema#",
+                    "type": "object"
+                })
+                .to_string(),
             )
         })
         .collect()

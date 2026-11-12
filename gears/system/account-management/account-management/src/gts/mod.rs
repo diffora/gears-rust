@@ -1,8 +1,8 @@
-//! Account-management's link-time GTS content.
+//! Account-management's GTS declarations and configured schema templates.
 //!
-//! Everything declared here reaches `types-registry` automatically through the
-//! process-wide `toolkit-gts` inventory — no registration code in
-//! [`crate::gear::AccountManagementGear::init`] is needed. One file per
-//! content kind keeps this directory navigable (permissions today).
+//! Permissions use the crate-local inventory. The root tenant-type template
+//! only generates a schema; the startup manifest publishes its configured ID
+//! and traits instead of adding an unconditional inventory declaration.
 
 mod permissions;
+pub mod root_type;

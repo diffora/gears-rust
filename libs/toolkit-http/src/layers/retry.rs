@@ -361,7 +361,14 @@ async fn drain_response_body(
 /// Extract retry trigger from an error
 fn get_retry_trigger(err: &HttpError) -> RetryTrigger {
     match err {
-        HttpError::Transport(_) => RetryTrigger::TransportError,
+        // A refused `CONNECT` is often a temporary 5xx from the proxy (the
+        // destination is down or overloaded), so it is retried like a
+        // transport error. A bad proxy URL or a 407 is not.
+        HttpError::Transport(_)
+        | HttpError::Proxy {
+            kind: crate::error::ProxyErrorKind::TunnelRejected,
+            ..
+        } => RetryTrigger::TransportError,
         HttpError::Timeout(_) => RetryTrigger::Timeout,
         // DeadlineExceeded, ServiceClosed, and other errors are not retryable
         _ => RetryTrigger::NonRetryable,

@@ -25,7 +25,10 @@ succeed, it closes.
   for the inner service to become ready. The layer works on a tonic `Channel` and on an HTTP
   client stack alike.
 
-A client adds the breaker with one `.layer(...)`.
+The generated contract clients in `toolkit-contract` put this layer in front of every attempt they
+send, per endpoint, when built through wiring (`#[toolkit::consumes]`, `#[toolkit::provides]`, or a
+resolving client); a client built from `ClientConfig::new()` has none unless given one. Hand-written
+clients can add it with one `.layer(...)`.
 
 ## Observers and metrics
 

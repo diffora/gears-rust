@@ -15,9 +15,8 @@ pub struct OagwConfig {
     /// Allow plaintext HTTP upstreams (and HTTP token endpoints) for the
     /// proxy. Default: `false`.
     ///
-    /// **FIPS:** rejected at startup by [`OagwConfig::validate`] under
-    /// `--features fips`; cleartext upstream token endpoints would otherwise
-    /// be refused by `toolkit-http` on the first proxied request.
+    /// **FIPS:** allowed under `--features fips` as an explicit opt-in to
+    /// plaintext; `toolkit-http` logs a warning for the token-endpoint client.
     #[serde(default)]
     pub allow_http_upstream: bool,
     /// TTL in seconds for cached OAuth2 access tokens.
@@ -320,14 +319,6 @@ impl OagwConfig {
             return Err(format!(
                 "proxy_cache.max_entries must be at most {PROXY_CACHE_MAX_ENTRIES_MAX}, got {max_entries}"
             ));
-        }
-        #[cfg(feature = "fips")]
-        if self.allow_http_upstream {
-            return Err(
-                "allow_http_upstream=true is not permitted under --features fips \
-                 (cleartext upstream token endpoints would be rejected by toolkit-http)"
-                    .to_owned(),
-            );
         }
         Ok(())
     }
@@ -676,19 +667,13 @@ mod tests {
         assert!(err.contains("got 1000001"), "{err}");
     }
 
-    #[cfg(feature = "fips")]
+    /// Plaintext upstreams are a deployment opt-in, in FIPS builds too.
     #[test]
-    fn validate_rejects_allow_http_upstream_under_fips() {
+    fn validate_accepts_allow_http_upstream() {
         let config = OagwConfig {
             allow_http_upstream: true,
             ..Default::default()
         };
-        let err = config
-            .validate()
-            .expect_err("allow_http_upstream=true must be rejected under --features fips");
-        assert!(
-            err.contains("allow_http_upstream"),
-            "error must mention the offending field, got: {err}"
-        );
+        assert_eq!(config.validate(), Ok(()));
     }
 }

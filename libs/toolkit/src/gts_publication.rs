@@ -78,8 +78,10 @@
 //! `gears.<gear>.config.gts_publication` sets the policy of one publishing gear
 //! ([`GtsPublicationOptions`]); the typed gear configuration does not see it. The
 //! registry client itself — its URL, HTTP timeout and HTTP retries — stays in
-//! `gears.<gear>.config.consumer_wiring.<provider>`. Publication reuses the gear's
-//! own client view and transport settings. Publication policy applies locally and remotely.
+//! `gears.<gear>.clients.consumes.<provider>`. Each consuming gear has its own
+//! client view, remote registry proxy and tuning. A publisher that also explicitly
+//! consumes the registry contract reuses that gear's client. Publication policy
+//! remains per gear for both local and remote registries.
 
 use std::fmt;
 use std::future::Future;
@@ -243,7 +245,7 @@ pub fn check_ownership<'a>(
 /// from typed gear config ([`crate::config::GTS_PUBLICATION_CONFIG_KEY`]) and
 /// excluded from [`GtsManifest`], so policy changes do not affect ownership.
 /// Applies per publication, with local or shared remote clients alike; client
-/// URL, HTTP timeout and HTTP retries remain in `consumer_wiring`.
+/// URL, HTTP timeout and HTTP retries remain in `clients.consumes`.
 ///
 /// `timeout` caps the budget from `publish` and never extends a caller's deadline.
 /// At most [`MAX_PUBLICATION_BUDGET`] (10 minutes), the same bound as a deployment

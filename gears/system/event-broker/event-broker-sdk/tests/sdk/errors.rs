@@ -530,7 +530,7 @@ fn top_level_event_broker_errors_have_full_canonical_representation() {
             json!({
                 "type": "gts://gts.cf.core.errors.err.v1~cf.core.err.invalid_argument.v1~",
                 "title": "Invalid Argument",
-                "status": 400,
+                "status": 413,
                 "detail": "Request validation failed",
                 "instance": "/v1/event-broker/test",
                 "trace_id": "trace-123",
@@ -538,16 +538,11 @@ fn top_level_event_broker_errors_have_full_canonical_representation() {
                     "field_violations": [
                         {
                             "field": "batch.count",
-                            "description": "batch too large; count=101; max_count=100",
-                            "reason": reasons::BATCH_TOO_LARGE
-                        },
-                        {
-                            "field": "batch.bytes",
-                            "description": "batch too large; bytes=2048; max_bytes=1024",
+                            "description": "batch too large: 101 events (max 100)",
                             "reason": reasons::BATCH_TOO_LARGE
                         }
                     ],
-                    "resource_type": resources::EVENT
+                    "resource_type": resources::REQUEST
                 }
             }),
         ),

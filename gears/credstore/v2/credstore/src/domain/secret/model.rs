@@ -356,9 +356,13 @@ pub enum DeleteVerification {
     /// again in the verification transaction; `debts` is the recorded
     /// `purge`.
     Retried { debts: Vec<CleanupDebt> },
-    /// The row was still there but its version no longer satisfies the
-    /// delete's precondition: nothing was deleted.
+    /// The row was still there and the scope admits it, but its version no
+    /// longer satisfies the delete's precondition: nothing was deleted.
     PreconditionFailed,
+    /// The row is still there but the scope does not admit it, whatever its
+    /// version: nothing was deleted. The caller answers it like the
+    /// `NotFound` of `SecretRepo::delete_by_id`.
+    NotFound,
 }
 
 /// Result of [`crate::domain::secret::repo::SecretRepo::heal_failed_creates`].

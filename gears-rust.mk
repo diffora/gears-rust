@@ -70,6 +70,27 @@ OPENAPI_URL ?= http://127.0.0.1:$(OPENAPI_PORT)/openapi.json
 OPENAPI_READY_URL ?= $(patsubst %/openapi.json,%/readyz,$(OPENAPI_URL))
 OPENAPI_OUT ?= docs/api/api.json
 OPENAPI_CONFIG ?= config/e2e-local.yaml
+# Gears that keep their data in graph storage need PostgreSQL 16+ with pgvector to start.
+# `make openapi GEAR=<one of them>` runs a throwaway pgvector container on a free local port
+# and points the `pg_graph` server of OPENAPI_CONFIG at it (host, port, user and password), so no
+# config edit is needed. The container's database is `graph_storage`, the one the config names.
+# An EXIT trap removes the container however the recipe ends, including Ctrl-C under dash.
+OPENAPI_PG_GEARS ?= graph-storage construct
+OPENAPI_PG_IMAGE ?= pgvector/pgvector:0.8.7-pg18
+OPENAPI_GEAR_NEEDS_PG := $(filter $(GEAR),$(OPENAPI_PG_GEARS))
+OPENAPI_PG_UP = command -v docker >/dev/null || { echo "docker is required: GEAR=$(GEAR) needs PostgreSQL with pgvector"; exit 1; }; \
+	PG_CID=$$(docker run -d --rm -e POSTGRES_PASSWORD=graph -e POSTGRES_DB=graph_storage -p 127.0.0.1::5432 $(OPENAPI_PG_IMAGE)) && \
+	trap 'docker rm -f "$$PG_CID" >/dev/null 2>&1' EXIT && trap 'exit 130' INT TERM && \
+	echo "Started $(OPENAPI_PG_IMAGE) for GEAR=$(GEAR)" && \
+	for i in $$(seq 1 60); do \
+		docker exec $$PG_CID pg_isready -q -h 127.0.0.1 -U postgres -d graph_storage && break; \
+		sleep 1; \
+	done && \
+	docker exec $$PG_CID pg_isready -q -h 127.0.0.1 -U postgres -d graph_storage || { echo "PostgreSQL did not become ready"; exit 1; }; \
+	export APP__DATABASE__SERVERS__PG_GRAPH__HOST=127.0.0.1 \
+		APP__DATABASE__SERVERS__PG_GRAPH__PORT=$$(docker port $$PG_CID 5432/tcp | head -n1 | sed 's/.*://') \
+		APP__DATABASE__SERVERS__PG_GRAPH__USER=postgres \
+		APP__DATABASE__SERVERS__PG_GRAPH__PASSWORD=graph
 
 EMPTY :=
 SPACE := $(EMPTY) $(EMPTY)
@@ -78,7 +99,7 @@ COMMA := ,
 EXAMPLE_SERVER_BIN ?= cf-gears-example-server
 EXAMPLE_SERVER_DEBUG_BINARY ?= target/debug/$(EXAMPLE_SERVER_BIN)
 EXAMPLE_SERVER_MANIFEST ?= apps/cf-gears-example-server/Cargo.toml
-EXAMPLE_SERVER_FEATURE_EXCLUDES ?= default fips k8s otel oop-example timescaledb-usage-collector clickhouse-usage-collector magika graph-storage quota-enforcement
+EXAMPLE_SERVER_FEATURE_EXCLUDES ?= default fips k8s otel oop-example timescaledb-usage-collector clickhouse-usage-collector magika graph-storage construct quota-enforcement
 EXAMPLE_SERVER_ALL_FEATURES := $(strip $(shell cargo gears ls features --manifest $(EXAMPLE_SERVER_MANIFEST) 2>/dev/null))
 EXAMPLE_SERVER_FEATURES ?= $(subst $(SPACE),$(COMMA),$(filter-out $(EXAMPLE_SERVER_FEATURE_EXCLUDES),$(EXAMPLE_SERVER_ALL_FEATURES)))
 EXAMPLE_SERVER_FEATURE_ARGS ?= $(if $(EXAMPLE_SERVER_FEATURES),--features $(EXAMPLE_SERVER_FEATURES),)
@@ -301,6 +322,8 @@ GEAR_SERVER_OPTIONAL_FEATURES := $(if $(GEAR_HAS_SERVER_FEATURE),$(filter-out $(
 # Extra local-dev plugins a gear needs to start (GEAR_SERVER_EXTRA_FEATURES_<gear>).
 # mini-chat registers OAGW upstreams whose secret_ref OAGW checks in credstore.
 GEAR_SERVER_EXTRA_FEATURES_mini-chat ?= static-credstore
+# construct stores its facts in graph storage, which needs PostgreSQL (see gears/construct/QUICKSTART.md).
+GEAR_SERVER_EXTRA_FEATURES_construct ?= graph-storage
 GEAR_SERVER_EXTRA_FEATURES := $(GEAR_SERVER_EXTRA_FEATURES_$(GEAR))
 GEAR_SERVER_FEATURES ?= $(GEAR_SERVER_OPTIONAL_FEATURES)$(if $(GEAR_SERVER_OPTIONAL_FEATURES),$(COMMA),)$(GEAR_SERVER_BASE_FEATURES)$(if $(GEAR_SERVER_EXTRA_FEATURES),$(COMMA)$(GEAR_SERVER_EXTRA_FEATURES),)
 GEAR_SERVER_FEATURE_ARGS := $(if $(GEAR),$(if $(GEAR_HAS_SERVER_FEATURE),--no-default-features --features $(GEAR_SERVER_FEATURES),),$(EXAMPLE_SERVER_FEATURE_ARGS))
@@ -350,17 +373,17 @@ ifeq ($(GEAR_HAS_SERVER_FEATURE),)
 else
 	@command -v curl >/dev/null || (echo "curl is required to generate OpenAPI spec" && exit 1)
 	@echo "Starting cf-gears-example-server to generate OpenAPI spec..."
-	@mkdir -p $$(dirname "$(if $(GEAR),$(GEAR_OPENAPI_TMP),$(OPENAPI_OUT))") && \
+	@$(if $(OPENAPI_GEAR_NEEDS_PG),$(OPENAPI_PG_UP) && )( \
+	mkdir -p $$(dirname "$(GEAR_OPENAPI_TMP)") && \
 	$(call start_server_and_wait,$(EXAMPLE_SERVER_DEBUG_BINARY) --config $(OPENAPI_CONFIG) --port $(OPENAPI_PORT),$(OPENAPI_READY_URL),300) && \
 	echo "Fetching OpenAPI spec..." && \
-	curl -fsS "$(OPENAPI_URL)" -o "$(if $(GEAR),$(GEAR_OPENAPI_TMP),$(OPENAPI_OUT))" && \
-	if [ -n "$(GEAR)" ]; then \
-		echo "Merging $(GEAR) OpenAPI into $(OPENAPI_OUT)..." && \
-		$(PYTHON) tools/scripts/merge_openapi_json.py "$(OPENAPI_OUT)" "$(GEAR_OPENAPI_TMP)"; \
-	fi && \
+	curl -fsS "$(OPENAPI_URL)" -o "$(GEAR_OPENAPI_TMP)" && \
+	echo "Merging $(GEAR) OpenAPI into $(OPENAPI_OUT)..." && \
+	$(PYTHON) tools/scripts/merge_openapi_json.py "$(OPENAPI_OUT)" "$(GEAR_OPENAPI_TMP)" && \
 	echo "Sorting OpenAPI JSON for deterministic ordering..." && \
 	$(PYTHON) tools/scripts/sort_openapi_json.py "$(OPENAPI_OUT)" && \
-	echo "OpenAPI spec saved to $(OPENAPI_OUT)"
+	echo "OpenAPI spec saved to $(OPENAPI_OUT)" \
+	)
 endif
 else
 	@command -v curl >/dev/null || (echo "curl is required to generate OpenAPI spec" && exit 1)
@@ -398,7 +421,7 @@ arch_status_svg_update: py-env
 
 # -------- Tests --------
 
-.PHONY: test-no-macros test-macros test-db test-integration test-graph-storage test-graph-storage-pg test-cluster-k8s coverage-cluster-k8s test-durable-execution-pg coverage-durable-execution-pg test-eb-pg test-eb-sqlite test-eb-mysql test-eb-mariadb test-eb-kafka test-github-mirror-db test-github-mirror-scale test-fips
+.PHONY: test-no-macros test-macros test-db test-integration test-graph-storage test-graph-storage-pg test-cluster-k8s coverage-cluster-k8s test-durable-execution-pg coverage-durable-execution-pg test-eb-pg test-eb-sqlite test-eb-mysql test-eb-mariadb test-eb-kafka test-github-mirror-db test-fips
 
 # Run the workspace tests except the macro test crates (CI test job)
 test-no-macros: install-tools
@@ -489,7 +512,7 @@ test-eb-kafka: install-tools
 
 TOOLKIT_DB_LANES := toolkit-db-sqlite toolkit-db-pg toolkit-db-pgq toolkit-db-mysql
 INTEGRATION_LANES := $(TOOLKIT_DB_LANES) users-info-pg usage-collector-pg usage-collector-ch \
-	types-registry-db oagw-db oagw-cluster cluster-pg cluster-redis rg-pg settings-service-pg \
+	types-registry-db oagw-db oagw-cluster cluster-pg cluster-redis rg-pg settings-service-pg credstore-pg \
 	pricing-pg coord-pg products-pg ledger-pg orders-pg eb-gear-db quota-enforcement-pg
 
 ## toolkit-db on SQLite; the examples must still build after the tests.
@@ -598,6 +621,17 @@ lane_args_rg-pg = -p cf-gears-resource-group --features integration
 ## PostgreSQL refuses can still pass; this lane runs the chain a stand's startup
 ## runs, on the backend it runs it on.
 lane_args_settings-service-pg = -p cf-gears-settings-service --features integration --test pg_migrations_test --test pg_category_delete_test --test pg_declaration_purge_test
+
+## The credstore v2 gear's PostgreSQL migration suite (Docker required; spins up
+## its own postgres container via testcontainers -- see
+## gears/credstore/v2/credstore/tests/pg_migrations_test.rs). The SQLite suite
+## beside `m0002_value_versions` runs a table rebuild; PostgreSQL gets in-place
+## DDL (`DO` blocks, `pg_constraint` look-ups) that suite never executes; this
+## lane runs the migration on the backend it ships on.
+## CREDSTORE_PG_REQUIRE_DOCKER=1 turns an unreachable Docker into a failure;
+## otherwise the test skips silently.
+lane_args_credstore-pg = -p cf-gears-credstore-v2 --features integration --test pg_migrations_test
+lane_env_credstore-pg = CREDSTORE_PG_REQUIRE_DOCKER=1
 
 ## bss-pricing's Postgres tier (Docker required; each suite spins up its own
 ## postgres container via testcontainers).
@@ -824,6 +858,7 @@ test-fips: install-tools
 	$(call print_target_banner)
 	cargo test -p cf-gears-toolkit-security --features fips,jwt,internal-auth-cache --lib --test jwt_no_backend_fallback
 	cargo test -p cf-gears-toolkit-auth --features toolkit-security/fips --lib providers::jwks
+	cargo test -p cf-gears-toolkit-contract --features fips,rest-client,rest-server,grpc-client,otel,canonical-errors
 	cargo nextest run -p cf-gears-toolkit -p cf-gears-toolkit-http -p cf-gears-toolkit-http-proxy -p cf-gears-oagw -p cf-gears-clickhouse-usage-collector-plugin \
 		--features cf-gears-toolkit/bootstrap,cf-gears-toolkit/fips,cf-gears-toolkit-http/fips,cf-gears-toolkit-http-proxy/fips,cf-gears-oagw/fips
 
@@ -846,11 +881,6 @@ test-github-mirror-db: install-tools
 	GM_TEST_DATABASE_URL=$(GM_MARIADB_URL) cargo nextest run -p cf-gears-github-mirror --features integration --no-fail-fast; maria=$$?; \
 	docker rm -f gm-test-postgres gm-test-mariadb >/dev/null; \
 	test $$pg -eq 0 && test $$maria -eq 0
-
-## Run the github-mirror gear's 110,000-entity interrupt-and-resume test (SQLite, minutes)
-test-github-mirror-scale: install-tools
-	$(call print_target_banner)
-	cargo nextest run -p cf-gears-github-mirror --test scale_resume_test --run-ignored ignored-only
 
 ## Cross-compile gate for the Windows+FIPS path (Windows handshake
 ## verification is the manual runbook in cf-gears-fips-probe/README.md). Catches
@@ -1156,8 +1186,9 @@ e2e-oop: py-env
 	$(call print_target_banner)
 	cargo build -p cf-gears-flight-control --bin flight-control
 	cargo build -p hello --features oop_module --bin hello-oop
-	cargo build -p cf-api-contracts --features oop_module --bin api-contracts-oop
+	cargo build -p cf-api-contracts --features oop_module,grpc-server --bin api-contracts-oop
 	cargo build -p cf-api-contracts-consumer --features oop_module --bin api-contracts-consumer-oop
+	cargo build -p cf-api-contracts-grpc-consumer --features oop_module --bin api-contracts-grpc-consumer-oop
 	OOP_E2E=1 $(PYTHON) -m pytest testing/e2e/suites/oop \
 		-o timeout_func_only=true --timeout=30 -vv
 

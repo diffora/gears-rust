@@ -1,7 +1,7 @@
 [package]
 name = "cf-gears-event-broker"
 description = "Event Broker: Ingest/Delivery/Dispatcher composite module (deployment-topology skeleton)"
-version = "0.5.2"
+version = "0.6.1"
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
@@ -21,9 +21,12 @@ autobins = false
 # harness's own deps (`memory-event-broker-plugin`, `types-registry-sdk`,
 # `sea-orm-migration`, `tokio-util`) are already regular dependencies; the
 # router-driving side modules (`request`/`response`) additionally need `http`
-# + `tower`, and the fixtures need `types-registry-sdk`'s `test-util`, so the
-# feature pulls those in (they are otherwise dev-only).
-test-utils = ["dep:http", "dep:tower", "dep:schemars", "types-registry-sdk/test-util"]
+# + `tower`, and the fixtures need `types-registry-sdk`'s `test-util` and, for
+# the macro-declared event template, `schemars`, so the feature pulls those in
+# (they are otherwise dev-only). It also turns on the SDK's `test-util`, so the
+# SDK's integration tests, which dev-depend on this feature, reach its outbox
+# drain hooks.
+test-utils = ["dep:http", "dep:tower", "dep:schemars", "types-registry-sdk/test-util", "event-broker-sdk/test-util"]
 # Gates the engine-matrix tests (`tests/*_backends_test.rs`), which need a
 # Docker daemon for their PostgreSQL and MySQL servers (or the servers
 # `EB_TEST_POSTGRES_URL` / `EB_TEST_MYSQL_URL` name), so a default `cargo test`
@@ -118,7 +121,7 @@ toolkit-http-proxy = { workspace = true }
 # through SecureORM (`toolkit_db::secure`); raw connections are never held by
 # gear code. `toolkit_db::outbox` (same crate) backs the ingest-side
 # transactional outbox (design.md D5) - the same generic library the SDK's
-# client-side `ProducerOutbox` already uses, here on the opposite
+# client-side `OutboxProducer` already uses, here on the opposite
 # (server-enqueue) side.
 sea-orm = { workspace = true }
 sea-orm-migration = { workspace = true }

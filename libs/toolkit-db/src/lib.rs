@@ -1,4 +1,6 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+// Every top-level transaction begins in `tx_begin::begin`; see this crate's clippy.toml.
+#![deny(clippy::disallowed_methods)]
 //! `ToolKit` Database abstraction crate.
 //!
 //! This crate provides a unified interface for working with different databases
@@ -104,7 +106,13 @@ mod db_provider;
 mod pool_opts;
 #[cfg(feature = "sqlite")]
 mod sqlite;
+#[cfg(all(test, feature = "sqlite"))]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod sqlite_memory_pool_tests;
 mod tx_begin;
+#[cfg(all(test, feature = "integration", any(feature = "pg", feature = "mysql")))]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tx_begin_live_tests;
 
 // Re-export important types from new gears
 pub use config::{DbConnConfig, GlobalDatabaseConfig, PoolCfg};
@@ -455,11 +463,14 @@ impl DbHandle {
                 // Strict, as in a gear's `params`: a typo must not silently leave writers deferred.
                 let transaction_mode = options::sqlite_pragma::transaction_mode(&pairs)?;
 
-                // Build pool options with shared trait
-                let o = SqlitePoolOptions::new().apply(&opts);
-
                 // Apply SQLite pragmas using typed `sqlx` connect options (no raw SQL).
                 let is_memory = is_memory_dsn(&clean_dsn);
+
+                // Build pool options with shared trait
+                let mut o = SqlitePoolOptions::new().apply(&opts);
+                if is_memory {
+                    o = sqlite::keep_memory_connections(o);
+                }
                 let mut conn_opts = sqlx::sqlite::SqliteConnectOptions::from_str(&clean_dsn)?;
 
                 let journal_mode = if let Some(mode) = &pragmas.journal_mode {
@@ -581,9 +592,14 @@ impl DbHandle {
         &self.sea
     }
 
-    /// Whether [`Db`]'s `SQLite` transactions that may write begin with `BEGIN IMMEDIATE`.
-    pub(crate) fn sqlite_begin_immediate(&self) -> bool {
-        self.sqlite_begin_immediate
+    /// How [`Db`]'s `SQLite` transactions begin: `BEGIN IMMEDIATE` for those that may write when
+    /// the database is configured with `transaction_mode=immediate`.
+    pub(crate) fn sqlite_begin_mode(&self) -> tx_begin::SqliteBeginMode {
+        if self.sqlite_begin_immediate {
+            tx_begin::SqliteBeginMode::Immediate
+        } else {
+            tx_begin::SqliteBeginMode::Deferred
+        }
     }
 
     // --- Advisory locks ---

@@ -78,7 +78,9 @@ impl TokenProvider {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use super::super::credentials::ClientCredentials;
     use super::*;
+    use crate::oauth2::TokenEndpoint;
     use httpmock::prelude::*;
     use std::time::Duration;
     use url::Url;
@@ -86,16 +88,17 @@ mod tests {
     /// Build a test config pointing at the given mock server.
     fn test_config(server: &MockServer) -> OAuthClientConfig {
         OAuthClientConfig {
-            token_endpoint: Some(
-                Url::parse(&format!("http://localhost:{}/token", server.port())).unwrap(),
-            ),
-            client_id: "test-client".into(),
-            client_secret: SecretString::new("test-secret"),
             http_config: Some(toolkit_http::HttpClientConfig::for_testing()),
             // Use short durations for tests.
             jitter_max: Duration::from_millis(0),
             min_refresh_period: Duration::from_millis(100),
-            ..Default::default()
+            ..OAuthClientConfig::new(
+                TokenEndpoint::Direct(
+                    Url::parse(&format!("http://localhost:{}/token", server.port())).unwrap(),
+                ),
+                "test-client",
+                ClientCredentials::SecretBasic(SecretString::new("test-secret")),
+            )
         }
     }
 
@@ -138,16 +141,14 @@ mod tests {
     /// Invalid configuration fails synchronously before acquisition starts.
     #[tokio::test]
     async fn new_validates_config() {
-        let cfg = OAuthClientConfig {
-            token_endpoint: Some(Url::parse("https://a.example.com/token").unwrap()),
-            issuer_url: Some(Url::parse("https://b.example.com").unwrap()),
-            client_id: "test-client".into(),
-            client_secret: SecretString::new("test-secret"),
-            ..Default::default()
-        };
+        let cfg = OAuthClientConfig::new(
+            TokenEndpoint::Direct(Url::parse("https://a.example.com/token").unwrap()),
+            "test-client",
+            ClientCredentials::SecretBasic(SecretString::new("")),
+        );
         let err = TokenProvider::new(cfg).unwrap_err();
         assert!(
-            matches!(err, TokenError::ConfigError(ref msg) if msg.contains("mutually exclusive")),
+            matches!(err, TokenError::ConfigError(ref msg) if msg.contains("client_secret")),
             "expected ConfigError, got: {err}"
         );
     }
@@ -253,13 +254,16 @@ mod tests {
         });
 
         let cfg = OAuthClientConfig {
-            issuer_url: Some(Url::parse(&format!("http://localhost:{}", server.port())).unwrap()),
-            client_id: "test-client".into(),
-            client_secret: SecretString::new("test-secret"),
             http_config: Some(toolkit_http::HttpClientConfig::for_testing()),
             jitter_max: Duration::from_millis(0),
             min_refresh_period: Duration::from_millis(100),
-            ..Default::default()
+            ..OAuthClientConfig::new(
+                TokenEndpoint::Issuer(
+                    Url::parse(&format!("http://localhost:{}", server.port())).unwrap(),
+                ),
+                "test-client",
+                ClientCredentials::SecretBasic(SecretString::new("test-secret")),
+            )
         };
 
         let token = TokenProvider::new(cfg).unwrap();
@@ -291,13 +295,16 @@ mod tests {
         });
 
         let cfg = OAuthClientConfig {
-            issuer_url: Some(Url::parse(&format!("http://localhost:{}", server.port())).unwrap()),
-            client_id: "test-client".into(),
-            client_secret: SecretString::new("test-secret"),
             http_config: Some(toolkit_http::HttpClientConfig::for_testing()),
             jitter_max: Duration::from_millis(0),
             min_refresh_period: Duration::from_millis(100),
-            ..Default::default()
+            ..OAuthClientConfig::new(
+                TokenEndpoint::Issuer(
+                    Url::parse(&format!("http://localhost:{}", server.port())).unwrap(),
+                ),
+                "test-client",
+                ClientCredentials::SecretBasic(SecretString::new("test-secret")),
+            )
         };
 
         let token = TokenProvider::new(cfg).unwrap();

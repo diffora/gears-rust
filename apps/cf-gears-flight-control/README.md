@@ -80,3 +80,70 @@ flight-control --config <path> --print-config
 
 A ready-to-run dev config (the `static-authn` default) lives at
 `config/flight-control.yaml`.
+
+## Helm component databases
+
+The Flight Control binary includes SQLite, PostgreSQL and MySQL/MariaDB drivers.
+Choose the database separately for each database-consuming component through the
+standard ToolKit configuration in chart values:
+
+- `config.data.database.servers.<name>` declares a named connection with `engine:
+  sqlite`, `postgres` or `mysql`. MariaDB uses `engine: mysql` and port 3306.
+- `config.data.gears.<component>.database.server` selects that connection.
+  Component fields such as `dbname`, `pool` and credentials can override connection
+  defaults, so components can share a server or use different servers and engines.
+- SQLite's `file`/`path` belongs to the component. When switching a component to
+  PostgreSQL/MySQL, remove any inherited SQLite `file`/`path` with `null` in the
+  override values.
+
+Currently `types-registry` is the database-consuming component in this composition.
+The chart defaults to SQLite at `/app/data/types-registry/types_registry.db`, with
+no external database dependency. This is pod-local storage; mount persistent storage
+at `/app/data` through `extraVolumes`/`extraVolumeMounts` to retain it across pod
+replacement. Keep SQLite deployments at one replica; use an external server for a
+shared catalogue across replicas.
+
+For PostgreSQL, install with the checked-in override after provisioning the database,
+user and Kubernetes Secret `flight-control-postgres` with key `password`:
+
+```bash
+helm install flight-control apps/cf-gears-flight-control/deploy/helm/flight-control \
+  -f apps/cf-gears-flight-control/deploy/helm/flight-control/values-postgres.yaml
+```
+
+For MySQL or MariaDB, use `values-mysql.yaml` instead and create Secret
+`flight-control-mysql` with key `password`. Change the example host to the actual
+MySQL/MariaDB service. The chart connects to existing database servers; it does not
+install them or create their databases/users.
+
+For example, this values override binds only the registry to PostgreSQL:
+
+```yaml
+config:
+  data:
+    database:
+      servers:
+        postgres:
+          engine: postgres
+          host: postgres.default.svc.cluster.local
+          port: 5432
+          user: flight_control
+          password: "${TYPES_REGISTRY_DB_PASSWORD}"
+    gears:
+      types-registry:
+        database:
+          server: postgres
+          dbname: flight_control
+          file: null
+```
+
+Supply password environment variables through `extraEnv[].valueFrom.secretKeyRef`
+as shown in the override files. Each component can use its own variable and Secret.
+The ConfigMap contains environment placeholders, not passwords. Optional
+`secrets[]` entries create chart-managed Secrets; their contents and `config.data`
+participate in rollout checksums. For externally managed Secrets, restart the pods
+after rotating credentials.
+
+Database connections use the standard toolkit connection fields above; the chart has
+no chart-specific database values. Local YAML examples under `config/` continue to use
+SQLite.

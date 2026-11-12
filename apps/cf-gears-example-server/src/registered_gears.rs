@@ -9,6 +9,8 @@ use api_egress as _;
 use api_gateway as _;
 use authn_resolver as _;
 use authz_resolver as _;
+#[cfg(feature = "construct")]
+use construct as _;
 #[cfg(feature = "credstore")]
 use credstore as _;
 #[cfg(all(feature = "file-parser", not(feature = "oop-example")))]

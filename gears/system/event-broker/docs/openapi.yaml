@@ -95,9 +95,12 @@ paths:
               $ref: "#/components/headers/PreferenceApplied"
         "400":
           description: >-
-            Validation error - a read-only/unknown field on the body, a
-            chained/monotonic mode invariant violated, or a malformed
-            `Prefer: wait` value (not a non-negative whole number of seconds).
+            Validation error (read-only/unknown field, malformed `trace_parent`,
+            a chained/monotonic mode invariant violated, etc.), the event's
+            resolved partition key over 1024 bytes in its JSON string form
+            (reason `partition_key_too_long`, field `events[0].partition_key`;
+            the key itself is not echoed), or a malformed `Prefer: wait` value
+            (not a non-negative whole number of seconds).
           content:
             application/problem+json:
               schema:
@@ -109,7 +112,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Problem"
         "404":
-          description: Topic or event type not registered.
+          description: Topic, event type or producer not registered.
           content:
             application/problem+json:
               schema:
@@ -122,6 +125,17 @@ paths:
             `description` reads `index=0 producer_id=<id> topic=<topic>
             last_sequence=<n>`, the committed head last, so the producer can resync
             (re-read `GET /v1/producers/{id}/cursors`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "413":
+          description: >-
+            EventTooLarge - the event's encoding is over the 60 KiB (61,440-byte)
+            per-event limit, checked after the envelope field checks (`source`,
+            `subject`, `trace_parent`, `type`) and before the event type is
+            resolved. An `event_too_large` field violation on `events[0]`, whose
+            description gives the measured bytes and the limit. Nothing is written.
           content:
             application/problem+json:
               schema:
@@ -220,17 +234,22 @@ paths:
               $ref: "#/components/headers/PreferenceApplied"
         "400":
           description: >-
-            Validation error, or a batch run rule broken - each a
-            `field_violations` entry naming the event by its position:
+            Validation error, or a batch run rule broken. An envelope field
+            violation (for example a malformed `trace_parent`) names the bare
+            field, as on `POST /v1/events`, and rejects the whole batch. A run
+            rule violation is a `field_violations` entry:
             `empty_batch` (no events; field `events`), `duplicate_event_id` (an
             `id` repeated within the batch; field `events[<index>].id`, the
             repeat), `malformed_run` (a chained run's events do not link - every
             event has `sequence > previous` and each after the first has
             `previous` equal to the prior event's `sequence` - or a monotonic
             run's sequences do not strictly increase; field
-            `events[<index>].meta`, the first offending event). A malformed
-            `Prefer: wait` value (not a non-negative whole number of seconds) is
-            also `400`. The run rules are checked before any chain state is read.
+            `events[<index>].meta`, the first offending event). The run rules are
+            checked before any chain state is read. An event whose resolved
+            partition key is over 1024 bytes in its JSON string form is a
+            `partition_key_too_long` field violation on
+            `events[<index>].partition_key`. A malformed `Prefer: wait` value
+            (not a non-negative whole number of seconds) is also `400`.
           content:
             application/problem+json:
               schema:
@@ -242,7 +261,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Problem"
         "404":
-          description: Topic or event type not registered.
+          description: Topic, event type or producer not registered.
           content:
             application/problem+json:
               schema:
@@ -260,7 +279,12 @@ paths:
               schema:
                 $ref: "#/components/schemas/Problem"
         "413":
-          description: BatchTooLarge (more events than the configured max) or BatchPayloadTooLarge (total payload over the configured byte ceiling)
+          description: >-
+            A `batch_too_large` field violation on `batch.count` (more events than
+            the configured max) or `batch.bytes` (total payload over the
+            configured byte ceiling), or an `event_too_large` field violation on
+            `events[<index>]` (an event's encoding over the 60 KiB per-event
+            limit). Nothing is enqueued.
           content:
             application/problem+json:
               schema:

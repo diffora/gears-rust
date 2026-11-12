@@ -32,7 +32,14 @@ fn gid(id: &str) -> GtsId {
 }
 
 fn doc(id: &str) -> (GtsId, Value) {
-    (gid(id), json!({ "title": id, "secret": SENTINEL }))
+    (
+        gid(id),
+        json!({
+            "$id": format!("gts://{id}"),
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object", "title": id, "secret": SENTINEL
+        }),
+    )
 }
 
 fn publisher(name: &str) -> PublisherContext {

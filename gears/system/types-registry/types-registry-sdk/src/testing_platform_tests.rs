@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use toolkit_canonical_errors::CanonicalError;
+use toolkit_gts::gts_id;
 use toolkit_security::{PlatformSecurityContext, SecurityContext};
 
 use super::{Call, Fault, MockTypesRegistry, Seed};
@@ -100,6 +101,14 @@ async fn traits(fake: &MockTypesRegistry, id: &str) -> Result<Value, CanonicalEr
         EntityLookup::Found { entity, .. } => Ok(entity.effective_traits.expect("selected")),
         other => panic!("{id}: {other:?}"),
     }
+}
+
+fn schema(id: &str) -> Value {
+    json!({
+        "$id": format!("gts://{id}"),
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object"
+    })
 }
 
 fn create(id: &str, content: Value) -> RegisterItem {
@@ -308,7 +317,7 @@ async fn a_rule_delays_then_fails_and_the_attempt_is_still_recorded() {
     );
     let started = tokio::time::Instant::now();
 
-    register(&fake, "k", vec![create(TOY, json!({}))])
+    register(&fake, "k", vec![create(TOY, schema(TOY))])
         .await
         .expect_err("fails");
 
@@ -366,7 +375,7 @@ async fn admission_rejects_and_waits_on_dependencies_as_told() {
     let items = register(
         &fake,
         "first",
-        vec![create(TOY, json!({})), create(OTHER, json!({}))],
+        vec![create(TOY, schema(TOY)), create(OTHER, schema(OTHER))],
     )
     .await
     .expect("accepted");
@@ -382,10 +391,146 @@ async fn admission_rejects_and_waits_on_dependencies_as_told() {
     assert_eq!(failure(1).context(context::DEPENDENCY_ID), Some(BASE));
 
     fake.seed(BASE, base(&tier()));
-    let items = register(&fake, "second", vec![create(OTHER, json!({}))])
+    let items = register(&fake, "second", vec![create(OTHER, schema(OTHER))])
         .await
         .expect("accepted");
     assert_eq!(items[0].outcome.status(), CandidateStatus::Succeeded);
+}
+
+#[tokio::test]
+async fn a_failed_revision_blocks_transitive_dependents_without_poisoning_independent_writes() {
+    const INDEPENDENT: &str = gts_id!("cf.test.pkg.independent.v1~");
+    let fake = MockTypesRegistry::new().completing_after(0);
+    fake.seed(gts_id!("cf.test.pkg.invalid.v1~"), json!({"type": 42}));
+    let mut middle = schema(TOY);
+    middle["properties"] = json!({"nested": {"$ref": format!("gts://{BASE}")}});
+    for item in register(
+        &fake,
+        "initial",
+        vec![create(BASE, schema(BASE)), create(TOY, middle)],
+    )
+    .await
+    .expect("initial schemas")
+    {
+        assert_eq!(item.outcome.status(), CandidateStatus::Succeeded);
+    }
+    let before = get(
+        &fake,
+        &[key(BASE)],
+        Projection::Select(FieldSelection::full()),
+    )
+    .await
+    .expect("old snapshot")
+    .remove(0);
+    fake.reject(BASE, AdmissionFailureReason::PublisherMismatch);
+    let mut outer = schema(OTHER);
+    outer["properties"] = json!({"nested": {"$ref": format!("gts://{TOY}")}});
+    let mut bad_revision = create(BASE, json!({"type": 42}));
+    bad_revision.expected_resource_version = Some(1);
+    let items = register(
+        &fake,
+        "mixed",
+        vec![
+            create(OTHER, outer),
+            bad_revision,
+            create(INDEPENDENT, schema(INDEPENDENT)),
+        ],
+    )
+    .await
+    .expect("mixed batch");
+    for (item, expected) in items[..2].iter().zip([
+        AdmissionFailureReason::BlockedByDependency,
+        AdmissionFailureReason::PublisherMismatch,
+    ]) {
+        assert_eq!(
+            AdmissionFailure::from_canonical(item.outcome.error().expect("refused"))
+                .expect("admission error")
+                .reason,
+            expected
+        );
+    }
+    assert_eq!(items[2].outcome.status(), CandidateStatus::Succeeded);
+    assert!(fake.content(OTHER).is_none());
+    assert_eq!(fake.content(INDEPENDENT), Some(schema(INDEPENDENT)));
+    let after = get(
+        &fake,
+        &[key(BASE)],
+        Projection::Select(FieldSelection::full()),
+    )
+    .await
+    .expect("unchanged snapshot")
+    .remove(0);
+    let (
+        EntityLookup::Found {
+            entity: before,
+            etag: before_etag,
+        },
+        EntityLookup::Found {
+            entity: after,
+            etag: after_etag,
+        },
+    ) = (before, after)
+    else {
+        panic!("the previous schema must remain present");
+    };
+    assert_eq!(after, before);
+    assert_eq!(after_etag, before_etag);
+}
+
+#[tokio::test]
+async fn faults_and_explicit_admission_rules_precede_native_validation_and_replay_stays_fixed() {
+    let fake = MockTypesRegistry::new().completing_after(0);
+    fake.reject(TOY, AdmissionFailureReason::PublisherMismatch);
+    fake.inject(Fault::on(Call::Register).first(1).fail(unavailable()));
+    let invalid = create(TOY, json!({"type": 42}));
+    let error = register(&fake, "same", vec![invalid.clone()])
+        .await
+        .expect_err("call fault");
+    assert!(matches!(error, CanonicalError::ServiceUnavailable { .. }));
+    let first = register(&fake, "same", vec![invalid.clone()])
+        .await
+        .expect("receipt");
+    fake.reject(TOY, AdmissionFailureReason::InvalidSchema);
+    let replay = register(&fake, "same", vec![invalid])
+        .await
+        .expect("replayed receipt");
+    for items in [first, replay] {
+        assert_eq!(
+            AdmissionFailure::from_canonical(items[0].outcome.error().expect("refused"))
+                .expect("admission error")
+                .reason,
+            AdmissionFailureReason::PublisherMismatch
+        );
+    }
+    assert!(fake.content(TOY).is_none());
+    fake.depends_on(OTHER, BASE);
+    let items = register(
+        &fake,
+        "dependency",
+        vec![create(OTHER, json!({"type": 42}))],
+    )
+    .await
+    .expect("dependency refusal");
+    assert_eq!(
+        AdmissionFailure::from_canonical(items[0].outcome.error().expect("refused"))
+            .expect("admission error")
+            .reason,
+        AdmissionFailureReason::DependencyNotFound
+    );
+}
+
+#[tokio::test]
+async fn seed_bypass_retains_unchanged_semantics_for_intentionally_invalid_content() {
+    let fake = MockTypesRegistry::new().completing_after(0);
+    let content = json!({"type": 42});
+    fake.seed(TOY, content.clone());
+    let mut same = create(TOY, content.clone());
+    same.expected_resource_version = Some(1);
+    let items = register(&fake, "unchanged", vec![same])
+        .await
+        .expect("unchanged receipt");
+    assert_eq!(items[0].outcome.status(), CandidateStatus::Unchanged);
+    assert_eq!(fake.content(TOY), Some(content));
 }
 
 // strict mode.
@@ -431,7 +576,7 @@ async fn reads_and_registrations_are_recorded_in_order() {
     register(
         &fake,
         "k",
-        vec![create(TOY, json!({})), create(OTHER, json!({}))],
+        vec![create(TOY, schema(TOY)), create(OTHER, schema(OTHER))],
     )
     .await
     .expect("accepted");
@@ -515,7 +660,7 @@ async fn all_platform_methods_record_refused_calls_without_request_contexts() {
     PlatformTypesRegistryApi::list_entities(&fake, &ctx(), ListEntitiesRequest::default())
         .await
         .expect_err("list refusal");
-    register(&fake, "k", vec![create(TOY, json!({}))])
+    register(&fake, "k", vec![create(TOY, schema(TOY))])
         .await
         .expect_err("registration refusal");
     fake.delete_entities(

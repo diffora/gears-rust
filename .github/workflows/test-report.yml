@@ -34,6 +34,37 @@ jobs:
     runs-on: ${{ (vars.GEARS_FORCE_GITHUB_HOSTED == 'true' || github.repository != 'constructorfabric/gears-rust' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || 'gears-small' }}
     timeout-minutes: 10
     steps:
+      # Own App budget, separate from the shared GITHUB_TOKEN pool (GitHub App per workflow family)
+      - name: Mint gears-rust-ci app token
+        id: app
+        # Unset variable, or a fork/Dependabot run without secrets: skip and fall back to GITHUB_TOKEN.
+        if: >-
+          vars.GEARS_CI_APP_CLIENT_ID != '' &&
+          github.actor != 'dependabot[bot]' &&
+          !github.event.pull_request.head.repo.fork
+        continue-on-error: true  # a bad key or missing install must never fail the job
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.GEARS_CI_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GEARS_CI_APP_PRIVATE_KEY }}
+          permission-contents: read
+          permission-actions: read
+          permission-checks: write
+      - name: Report API token source
+        shell: bash
+        env:
+          APP_TOKEN_SET: ${{ steps.app.outputs.token != '' }}
+          MINT_OUTCOME: ${{ steps.app.outcome }}
+          API_TOKEN: ${{ steps.app.outputs.token || github.token }}
+        run: |
+          if [ "$APP_TOKEN_SET" = true ]; then src=gears-rust-ci; echo "::notice::GitHub API token: gears-rust-ci app"
+          elif [ "$MINT_OUTCOME" = failure ]; then src=github-token; echo "::warning::gears-rust-ci app token mint failed; using GITHUB_TOKEN"
+          else src=github-token; echo "::notice::GitHub API token: GITHUB_TOKEN (gears-rust-ci app not configured or fork run)"; fi
+          # GET /rate_limit is free; one sample per job gives a per-token time series (see the API limits plan).
+          core=$(curl -fsS -m 10 -H "Authorization: Bearer $API_TOKEN" -H "Accept: application/vnd.github+json" \
+            https://api.github.com/rate_limit 2>/dev/null | tr -d ' \n' | sed -n 's/.*"core":{\([^}]*\)}.*/\1/p' | tr -d '"' | tr ',' ' ' | sed 's/:/=/g') || true
+          echo "RATE-APP ts=$(date -u +%Y-%m-%dT%H:%M:%SZ) token=$src workflow=$GITHUB_WORKFLOW job=$GITHUB_JOB ${core:-unavailable}"
+
       # One check per artifact that exists: a test job that was skipped (path
       # filters) uploads nothing and so gets no check, rather than a
       # "0 tests passed" one. A report that exists but holds no tests is a
@@ -47,7 +78,7 @@ jobs:
         id: plan
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app.outputs.token || github.token }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
@@ -127,6 +158,7 @@ jobs:
         if: steps.plan.outputs.paths != ''
         uses: mikepenz/action-junit-report@4a26df3e2ae132254ba12a53f65a388d0961e786 # v6.7.0
         with:
+          token: ${{ steps.app.outputs.token || github.token }}
           report_paths: ${{ steps.plan.outputs.paths }}
           check_name: ${{ steps.plan.outputs.names }}
           commit: ${{ github.event.workflow_run.head_sha }}
@@ -159,7 +191,7 @@ jobs:
       - name: Name failing tests in check titles
         if: ${{ !cancelled() && steps.plan.outputs.paths != '' }}
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app.outputs.token || github.token }}
           REPO: ${{ github.repository }}
           SHA: ${{ github.event.workflow_run.head_sha }}
           PATHS: ${{ steps.plan.outputs.paths }}
@@ -207,7 +239,13 @@ jobs:
                   call("PATCH", f"{api}/check-runs/{run['id']}",
                        {"output": {"title": title[:250], "summary": run["output"]["summary"] or title}})
               except (urllib.error.URLError, TimeoutError) as exc:
-                  print(f"::warning::could not retitle check {name!r}: {exc}")
+                  # Keep the rate-limit headers: they tell primary from secondary limits.
+                  detail = ""
+                  if isinstance(exc, urllib.error.HTTPError):
+                      keys = ("x-ratelimit-limit", "x-ratelimit-remaining", "x-ratelimit-used",
+                              "x-ratelimit-reset", "x-ratelimit-resource", "retry-after")
+                      detail = " " + " ".join(f"{k}={exc.headers.get(k)}" for k in keys if exc.headers.get(k))
+                  print(f"::warning::could not retitle check {name!r}: {exc}{detail}")
                   continue
               print(f"{name}: {title}")
 

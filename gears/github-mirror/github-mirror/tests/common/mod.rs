@@ -25,17 +25,17 @@ use github_mirror::domain::repo::{
 use github_mirror::domain::service::{Service, ServiceConfig, SyncJob};
 use github_mirror::infra::storage::migrations::Migrator;
 use github_mirror::infra::storage::sea_orm_repo::{
-    SeaOrmActiveSyncRepository, SeaOrmBranchRepository, SeaOrmCheckRunRepository,
-    SeaOrmCommentRepository, SeaOrmCommitCommentRepository, SeaOrmCommitFileRepository,
-    SeaOrmCommitRepository, SeaOrmCommitStatusRepository, SeaOrmContributorRepository,
-    SeaOrmConversationRepository, SeaOrmDeploymentRepository, SeaOrmEntityFingerprintRepository,
-    SeaOrmIssueEventRepository, SeaOrmIssueReactionRepository, SeaOrmIssueRepository,
-    SeaOrmIssueTimelineRepository, SeaOrmLabelRepository, SeaOrmMilestoneRepository,
-    SeaOrmPullRequestCommitRepository, SeaOrmPullRequestFileRepository,
+    SeaOrmActiveSyncRepository, SeaOrmArtifactRepository, SeaOrmBranchRepository,
+    SeaOrmCheckRunRepository, SeaOrmCommentRepository, SeaOrmCommitCommentRepository,
+    SeaOrmCommitFileRepository, SeaOrmCommitRepository, SeaOrmCommitStatusRepository,
+    SeaOrmContributorRepository, SeaOrmConversationRepository, SeaOrmDeploymentRepository,
+    SeaOrmEntityFingerprintRepository, SeaOrmIssueEventRepository, SeaOrmIssueReactionRepository,
+    SeaOrmIssueRepository, SeaOrmIssueTimelineRepository, SeaOrmLabelRepository,
+    SeaOrmMilestoneRepository, SeaOrmPullRequestCommitRepository, SeaOrmPullRequestFileRepository,
     SeaOrmPullRequestRepository, SeaOrmReleaseRepository, SeaOrmRepoRepository,
     SeaOrmRepoSyncStatusRepository, SeaOrmReviewCommentRepository, SeaOrmReviewRepository,
     SeaOrmReviewThreadRepository, SeaOrmSyncSessionRepository, SeaOrmSyncWatermarkRepository,
-    SeaOrmSyncWriter, SeaOrmTagRepository, SeaOrmWorkflowJobRepository,
+    SeaOrmSyncWriter, SeaOrmTagRepository, SeaOrmWorkflowJobRepository, SeaOrmWorkflowRepository,
     SeaOrmWorkflowRunRepository,
 };
 use toolkit::api::canonical_prelude::CanonicalError;
@@ -385,8 +385,10 @@ impl GithubPort for FakeGithub {
     ) -> Result<ActionsListing, DomainError> {
         let f = self.fixture()?;
         Ok(ActionsListing {
+            workflows: Vec::new(),
             workflow_runs: f.workflow_runs.clone(),
             deployments: f.deployments.clone(),
+            artifacts: Vec::new(),
         })
     }
 
@@ -559,6 +561,8 @@ pub fn service_with_deadline(
         Arc::new(SeaOrmCommitCommentRepository::new(Arc::clone(&db))),
         Arc::new(SeaOrmIssueEventRepository::new(Arc::clone(&db))),
         Arc::new(SeaOrmDeploymentRepository::new(Arc::clone(&db))),
+        Arc::new(SeaOrmArtifactRepository::new(Arc::clone(&db))),
+        Arc::new(SeaOrmWorkflowRepository::new(Arc::clone(&db))),
         Arc::new(SeaOrmPullRequestCommitRepository::new(Arc::clone(&db))),
         Arc::new(SeaOrmCommitStatusRepository::new(Arc::clone(&db))),
         Arc::new(SeaOrmWorkflowJobRepository::new(Arc::clone(&db))),
@@ -776,6 +780,7 @@ pub fn fetched_repository() -> FetchedRepository {
                 committed_at: Some("2026-08-19T00:00:00Z".to_owned()),
                 additions: 0,
                 deletions: 0,
+                html_url: None,
             },
             CommitRecord {
                 repo_id: 42,
@@ -787,6 +792,7 @@ pub fn fetched_repository() -> FetchedRepository {
                 committed_at: Some("2026-08-20T00:00:00Z".to_owned()),
                 additions: 0,
                 deletions: 0,
+                html_url: None,
             },
         ],
         comments: vec![CommentRecord {
@@ -991,6 +997,7 @@ pub fn fetched_repository() -> FetchedRepository {
             committer_login: Some("ivan".to_owned()),
             authored_at: Some("2026-08-20T00:00:00Z".to_owned()),
             committed_at: Some("2026-08-20T00:00:00Z".to_owned()),
+            html_url: None,
         }],
         commit_statuses: vec![CommitStatusRecord {
             id: 121,

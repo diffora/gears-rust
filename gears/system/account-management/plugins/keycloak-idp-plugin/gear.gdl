@@ -9,7 +9,7 @@ gdl_version = "1.0"
 # are read from source.
 
 gear(
-    deps = ["credstore", "types-registry"],
+    deps = ["credstore"],
     source = git(url = "https://github.com/constructorfabric/gears-rust", path = "gears/system/account-management/plugins/keycloak-idp-plugin"),
     maturity = "preview",
     name = "Keycloak IdP Plugin",

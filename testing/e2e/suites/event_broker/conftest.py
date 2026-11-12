@@ -25,6 +25,7 @@ import asyncio
 import json
 import os
 import tempfile
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -33,7 +34,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from lib.orchestrator import GearTestEnv
+from lib.orchestrator import GearTestEnv, _log_path
 from lib.sidecars import KafkaSidecar, MariaDbSidecar, MySqlSidecar, PostgresSidecar
 
 # ── Constants ─────────────────────────────────────────────────────────────
@@ -116,15 +117,26 @@ PREFILL_INGEST_TIMEOUT = 30.0
 # the session. RETENTION_SEGMENT_EVENTS old events fill exactly one storage
 # segment on the backends that expire whole segments (the backend block below
 # sets their segment size to it), so every backend removes exactly those.
+# Its age bound, TOPIC_RETENTION_AGE_S, is longer than the other age-bounded
+# topics' RETENTION_DURATION_S: its test reads one event after the old ones
+# aged out, and that read needs room before the event ages out too.
 TOPIC_RETENTION = "gts.cf.core.events.topic.v1~cf.e2e.event_broker.retention.v1"
 EVENT_TYPE_RETENTION = "gts.cf.core.events.event.v1~cf.e2e.event_broker.retention.v1~"
 RETENTION_DURATION_S = 8
+TOPIC_RETENTION_AGE_S = 12
 RETENTION_SEGMENT_EVENTS = 1000
 
-# Drained topic: the same age bound as TOPIC_RETENTION, for the test that lets
-# every stored event age out and checks "latest" still names the last one.
+# Drained topic: RETENTION_DURATION_S, for the test that lets every stored
+# event age out and checks "latest" still names the last one.
 TOPIC_DRAIN = "gts.cf.core.events.topic.v1~cf.e2e.event_broker.drain.v1"
 EVENT_TYPE_DRAIN = "gts.cf.core.events.event.v1~cf.e2e.event_broker.drain.v1~"
+
+# Slow-publish topic: RETENTION_DURATION_S, for the test that publishes one
+# batch for longer than that and reads it back whole. A topic of its own: a
+# stream seeked to "earliest" on a topic holding other tests' events is sent
+# `control:progress` frames for them.
+TOPIC_SLOW_PUBLISH = "gts.cf.core.events.topic.v1~cf.e2e.event_broker.slow_publish.v1"
+EVENT_TYPE_SLOW_PUBLISH = "gts.cf.core.events.event.v1~cf.e2e.event_broker.slow_publish.v1~"
 
 # Byte-bounded topic: RETENTION_BYTES per partition and the default age, so
 # only the byte bound removes anything during the session.
@@ -140,6 +152,12 @@ TOPIC_PROGRESS = "gts.cf.core.events.topic.v1~cf.e2e.event_broker.progress.v1"
 EVENT_TYPE_PROGRESS = "gts.cf.core.events.event.v1~cf.e2e.event_broker.progress.v1~"
 PROGRESS_DRIFT_THRESHOLD = 500
 PROGRESS_MIN_INTERVAL_S = 1
+
+# Keyed topic: its event type partitions on `/data/k`, a member a publisher sets,
+# so a test can send a partition key over the broker's 1024-byte cap.
+TOPIC_KEYED = "gts.cf.core.events.topic.v1~cf.e2e.event_broker.keyed.v1"
+EVENT_TYPE_KEYED = "gts.cf.core.events.event.v1~cf.e2e.event_broker.keyed.v1~"
+KEYED_POINTER = "/data/k"
 
 # Shared xfail marker for tests that require real auth enforcement.
 # The standalone config sets ``auth_disabled: true``; these tests document the
@@ -167,14 +185,17 @@ _TOPIC_PARTITIONS = {
     TOPIC_FRESH: 1,
     TOPIC_RETENTION: 1,
     TOPIC_DRAIN: 1,
+    TOPIC_SLOW_PUBLISH: 1,
     TOPIC_BYTES: 1,
     TOPIC_PROGRESS: 1,
+    TOPIC_KEYED: 1,
 }
 
 # Topics bounded tighter than the default retention: their `retention` block.
 _TOPIC_RETENTION = {
-    TOPIC_RETENTION: {"duration": f"{RETENTION_DURATION_S}s"},
+    TOPIC_RETENTION: {"duration": f"{TOPIC_RETENTION_AGE_S}s"},
     TOPIC_DRAIN: {"duration": f"{RETENTION_DURATION_S}s"},
+    TOPIC_SLOW_PUBLISH: {"duration": f"{RETENTION_DURATION_S}s"},
     TOPIC_BYTES: {"size_bytes": RETENTION_BYTES},
 }
 
@@ -189,6 +210,20 @@ def group_seek_positions(entries) -> dict:
             {"partition": e["partition"], "value": e["value"]}
         )
     return out
+
+
+def _await_log_line(env: GearTestEnv, text: str, offset: int = 0) -> None:
+    """Waits for `text` in the server log written after byte `offset`: a 503
+    body names no cause, so the log line is what tells which one fired."""
+    deadline = time.monotonic() + 10
+    while True:
+        with open(_log_path(env), encoding="utf-8", errors="replace") as fh:
+            fh.seek(offset)
+            log = fh.read()
+        if text in log:
+            return
+        assert time.monotonic() < deadline, f"{text!r} not in the server log: {log[-2000:]}"
+        time.sleep(0.2)
 
 
 def _topic_instance(topic_id: str) -> dict:
@@ -217,6 +252,36 @@ def _derived_event_type(type_id: str, topic_id: str) -> dict:
         "allOf": [
             {"$ref": "gts://gts.cf.core.events.event.v1~"},
             {"type": "object", "properties": {"data": {"type": ["object", "null"]}}},
+        ],
+    }
+
+
+def _keyed_event_type(type_id: str, topic_id: str) -> dict:
+    """An event type partitioned on ``data.k`` (``KEYED_POINTER``).
+
+    Registration admits a pointer only to a member the schema declares, so its
+    ``data`` declares ``k`` as a string; that is narrower than the base.
+    """
+    return {
+        "$id": f"gts://{type_id}",
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "x-gts-traits": {
+            "topic": topic_id,
+            "allowed_subject_types": [SUBJECT_TYPE],
+            "partition_key": KEYED_POINTER,
+        },
+        "type": "object",
+        "allOf": [
+            {"$ref": "gts://gts.cf.core.events.event.v1~"},
+            {
+                "type": "object",
+                "properties": {
+                    "data": {
+                        "type": ["object", "null"],
+                        "properties": {"k": {"type": "string"}},
+                    }
+                },
+            },
         ],
     }
 
@@ -272,10 +337,14 @@ _EXTRA_ENTITIES = [
     _derived_event_type(EVENT_TYPE_RETENTION, TOPIC_RETENTION),
     _topic_instance(TOPIC_DRAIN),
     _derived_event_type(EVENT_TYPE_DRAIN, TOPIC_DRAIN),
+    _topic_instance(TOPIC_SLOW_PUBLISH),
+    _derived_event_type(EVENT_TYPE_SLOW_PUBLISH, TOPIC_SLOW_PUBLISH),
     _topic_instance(TOPIC_BYTES),
     _derived_event_type(EVENT_TYPE_BYTES, TOPIC_BYTES),
     _topic_instance(TOPIC_PROGRESS),
     _derived_event_type(EVENT_TYPE_PROGRESS, TOPIC_PROGRESS),
+    _topic_instance(TOPIC_KEYED),
+    _keyed_event_type(EVENT_TYPE_KEYED, TOPIC_KEYED),
 ]
 
 _TEMP_HOME = tempfile.mkdtemp(prefix="cf-gears-e2e-event-broker-")
@@ -489,7 +558,6 @@ def gear_test_env() -> GearTestEnv:
         config_patch=_patch_config,
         port=SERVER_PORT,
         health_path="/readyz",
-        health_timeout=30,
         env={"RUST_LOG": os.environ.get("RUST_LOG", "info,event_broker=debug")},
         sidecars=backend_sidecars(),
         log_suffix="event-broker",
@@ -558,8 +626,10 @@ _TOPIC_EVENT_TYPES = {
     TOPIC_FRESH: EVENT_TYPE_FRESH,
     TOPIC_RETENTION: EVENT_TYPE_RETENTION,
     TOPIC_DRAIN: EVENT_TYPE_DRAIN,
+    TOPIC_SLOW_PUBLISH: EVENT_TYPE_SLOW_PUBLISH,
     TOPIC_BYTES: EVENT_TYPE_BYTES,
     TOPIC_PROGRESS: EVENT_TYPE_PROGRESS,
+    TOPIC_KEYED: EVENT_TYPE_KEYED,
 }
 
 

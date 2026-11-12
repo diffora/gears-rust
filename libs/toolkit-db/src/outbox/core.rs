@@ -4,7 +4,6 @@ use std::sync::{Arc, OnceLock};
 use dashmap::DashMap;
 use sea_orm::{
     ConnectionTrait, DatabaseConnection, DatabaseExecutor, DbBackend, FromQueryResult, Statement,
-    TransactionTrait,
 };
 use tokio::sync::{Notify, RwLock};
 
@@ -19,6 +18,7 @@ use super::types::{OutboxConfig, OutboxError, OutboxMessageId};
 use super::wake::Wake;
 use crate::Db;
 use crate::secure::{SeaOrmRunner, TxConfig, TxIsolationLevel};
+use crate::tx_begin::SqliteBeginMode;
 
 /// Per-partition notify map shared between sequencer and processors.
 type PartitionNotifyMap = Arc<HashMap<i64, Arc<Notify>>>;
@@ -554,7 +554,8 @@ impl Outbox {
         debug_assert_eq!(backend, statements.backend());
 
         if let Some(c) = Self::conn_requiring_composite_write_tx(runner) {
-            let txn = c.begin().await?;
+            // MySQL only, so the SQLite begin mode does not apply.
+            let txn = crate::tx_begin::begin(c, None, None, SqliteBeginMode::Deferred).await?;
             let exec = DatabaseExecutor::Transaction(&txn);
             let ids =
                 Self::insert_batch_on_conn(&exec, statements, partition_ids, items, trace).await?;
@@ -619,7 +620,8 @@ impl Outbox {
         debug_assert_eq!(backend, statements.backend());
 
         if let Some(c) = Self::conn_requiring_composite_write_tx(runner) {
-            let txn = c.begin().await?;
+            // MySQL only, so the SQLite begin mode does not apply.
+            let txn = crate::tx_begin::begin(c, None, None, SqliteBeginMode::Deferred).await?;
             let store = OutboxStore::new(statements);
             let incoming_id = store
                 .exec_insert_body_and_incoming(
@@ -701,8 +703,14 @@ impl Outbox {
         scope: &super::dead_letter::DeadLetterScope,
         timeout: std::time::Duration,
     ) -> Result<Vec<super::dead_letter::DeadLetterMessage>, OutboxError> {
-        super::dead_letter::dead_letter_replay(db.as_seaorm(), self.statements(), scope, timeout)
-            .await
+        super::dead_letter::dead_letter_replay(
+            db.as_seaorm(),
+            db.sqlite_begin_mode(),
+            self.statements(),
+            scope,
+            timeout,
+        )
+        .await
     }
 
     /// Transition claimed dead letters to `resolved`.
@@ -739,7 +747,13 @@ impl Outbox {
         db: &(impl crate::secure::DBRunner + Sync),
         scope: &super::dead_letter::DeadLetterScope,
     ) -> Result<u64, OutboxError> {
-        super::dead_letter::dead_letter_discard(db.as_seaorm(), self.statements(), scope).await
+        super::dead_letter::dead_letter_discard(
+            db.as_seaorm(),
+            db.sqlite_begin_mode(),
+            self.statements(),
+            scope,
+        )
+        .await
     }
 
     /// Delete terminal-state dead letters (`resolved` + `discarded`).
