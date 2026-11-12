@@ -161,25 +161,33 @@ pub fn decide(state: TypeChangeState, asked: Asked) -> Decision {
 /// under intersection, so per-type verdicts compose (an ancestor's own change
 /// is decided on the ancestor's own row).
 ///
-/// The base ontology resolves too, ancestor or not, exactly as it does when a
-/// registration compiles (see [`super::ontology::ChainValidator::compile`]): a type
-/// may reference a sibling family such as the provenance attribute, and a
-/// document with an unresolved `$ref` cannot be compared at all.
+/// The base ontology resolves too, ancestor or not, as it does when a
+/// registration compiles (see [`super::ontology::ChainValidator::compile`]): a
+/// type may reference a sibling family such as the provenance attribute, and a
+/// document with an unresolved `$ref` cannot be compared at all. A base type
+/// the chain already carries keeps its stored definition: the comparison is
+/// about what the database holds, and a second, different copy of one id would
+/// be refused by the store.
 pub fn compare(
     old: &Value,
     new: &Value,
     chain: impl IntoIterator<Item = (String, Value)>,
 ) -> Result<Comparison, DomainError> {
     let mut store = GtsStore::new();
-    let base = BASE_SCHEMAS.iter().filter_map(|(type_id, raw)| {
-        serde_json::from_str(raw)
-            .ok()
-            .map(|schema| ((*type_id).to_owned(), schema))
-    });
-    for (type_id, schema) in base.chain(chain) {
+    let mut definitions: Vec<(String, Value)> = chain.into_iter().collect();
+    for (type_id, raw) in BASE_SCHEMAS {
+        if definitions.iter().any(|(carried, _)| carried == type_id) {
+            continue;
+        }
+        let schema = serde_json::from_str(raw).map_err(|error| {
+            DomainError::internal(format!("base schema `{type_id}` does not parse: {error}"))
+        })?;
+        definitions.push(((*type_id).to_owned(), schema));
+    }
+    for (type_id, schema) in definitions {
         store.register_schema(&type_id, &schema).map_err(|error| {
             DomainError::internal(format!(
-                "ancestor `{type_id}` is not a usable schema reference: {error}"
+                "schema `{type_id}` is not a usable reference: {error}"
             ))
         })?;
     }
@@ -598,5 +606,15 @@ mod tests {
         );
         assert!(reason.contains("$.payload adds required"), "{reason}");
         assert!(reason.contains("and 1 more"), "{reason}");
+    }
+
+    #[test]
+    fn a_stored_base_definition_wins_over_the_embedded_one() {
+        let (base_id, raw) = BASE_SCHEMAS[0];
+        let mut stored: Value = serde_json::from_str(raw).expect("base schema parses");
+        stored["description"] = json!("an older revision of the base type");
+        let old = json!({ "$id": "gts://gts.acme.gs._.x.v1~", "type": "object" });
+        compare(&old, &old, [(base_id.to_owned(), stored)])
+            .expect("a differing stored base definition is not registered twice");
     }
 }
