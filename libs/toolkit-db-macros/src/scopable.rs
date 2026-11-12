@@ -137,7 +137,8 @@ fn validate_config(config: &SecureConfig, input: &DeriveInput) -> syn::Result<()
             || config.owner_col.is_some()
             || config.no_owner.is_some()
             || config.type_col.is_some()
-            || config.no_type.is_some();
+            || config.no_type.is_some()
+            || !config.pep_props.is_empty();
 
         if has_other {
             return Err(syn::Error::new(

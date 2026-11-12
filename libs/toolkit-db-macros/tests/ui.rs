@@ -37,6 +37,7 @@ fn ui() {
     t.compile_fail("tests/ui/err_pep_reserved_owner_id.rs");
     t.compile_fail("tests/ui/err_pep_duplicate_property.rs");
     t.compile_fail("tests/ui/err_unrestricted_with_pep.rs");
+    t.compile_fail("tests/ui/err_pep_before_unrestricted.rs");
 
     // Error cases: a column name that is not an identifier is reported, not a panic
     t.compile_fail("tests/ui/err_dimension_column_empty.rs");
