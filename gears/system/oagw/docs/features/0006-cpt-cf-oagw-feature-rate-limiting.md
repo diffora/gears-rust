@@ -68,6 +68,8 @@ Prevents abuse, cost overruns, and protects external service agreements. Maintai
 
 ### Rate-Limited Proxy Request
 
+**Proposed named requests** add a per-credential, per-replica request bucket between the existing upstream and route checks. One admitted request or streaming handshake costs one unit in this bucket. The [ADR-0021 limit contract](../ADR/0021-credential-bindings.md#request-limits) defines burst, debits, headers, and cleanup.
+
 - [ ] `p2` - **ID**: `cpt-cf-oagw-flow-rate-limited-proxy`
 
 **Actor**: `cpt-cf-oagw-actor-app-developer`

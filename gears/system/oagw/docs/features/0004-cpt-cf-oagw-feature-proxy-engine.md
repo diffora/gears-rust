@@ -12,6 +12,7 @@
   - [Proxy HTTP Request](#proxy-http-request)
 - [3. Processes / Business Logic (CDSL)](#3-processes--business-logic-cdsl)
   - [Alias Resolution](#alias-resolution)
+  - [Credential Resolution](#credential-resolution)
   - [Route Matching](#route-matching)
   - [Plugin Chain Execution](#plugin-chain-execution)
   - [Header Transformation](#header-transformation)
@@ -163,6 +164,8 @@ Design constraints enforced: `cpt-cf-oagw-constraint-body-limit`, `cpt-cf-oagw-c
 
 **Output**: Resolved `UpstreamConfig` or error
 
+**Planned named requests** ([ADR-0021](../ADR/0021-credential-bindings.md)): take alias and route candidates from the authoritative admission snapshot, apply the same visibility, disable and route rules, and retain the selected local parent and ancestor provenance for `cpt-cf-oagw-algo-credential-resolution`. The cache description below applies to omitted-selector proxy traffic.
+
 **With the proxy configuration cache** (a database and `proxy_cache.enabled: true`; `cpt-cf-oagw-algo-obs-proxy-config-cache`): step 1 reads the alias section, keyed by the alias and the tenant chain. A hit runs no query; a miss runs step 1's query and stores its rows as they are (disabled and not-visible upstreams included), or an empty list. Steps 2–6 run on every request, unchanged. An alias that fails validation answers *not found* without a read and without a cache entry.
 
 **Steps**:
@@ -177,6 +180,20 @@ Design constraints enforced: `cpt-cf-oagw-constraint-body-limit`, `cpt-cf-oagw-c
 5. [x] - `p1` - **IF** a disabled match was recorded - `inst-alias-4b1-ret`
    1. [x] - `p1` - **RETURN** error: upstream disabled (503 LinkUnavailable) - `inst-alias-4b1a`
 6. [x] - `p1` - **RETURN** error: upstream not found for alias (404 RouteNotFound) - `inst-alias-5`
+
+### Credential Resolution
+
+- [ ] `p1` - **ID**: `cpt-cf-oagw-algo-credential-resolution`
+
+**Input**: Authorized invoke context, single validated selector, selected upstream and route, applicable ancestor policies and selected server from the same admission view.
+
+**Output**: Authorized binding UUID, API-key configuration and optional bucket policy, or an error before forwarding. SDK preview returns only safe identifiers.
+
+1. [ ] - `p1` - Resolve the name within the caller's tenant and selected local parent, applying the use policy before disclosing row state - `inst-cred-resolve-1`
+2. [ ] - `p1` - Apply current ancestor constraints, enabled and plugin checks, and compare the entire selected server with the credential owner's approved endpoints - `inst-cred-resolve-2`
+3. [ ] - `p1` - Provide the selected reference to upstream auth and the binding UUID to the limiter. Consume the selector and guard final outbound headers. On failure, return the specified error - `inst-cred-resolve-3`
+
+See [ADR-0021](../ADR/0021-credential-bindings.md) for the wire contract and revocation boundary.
 
 ### Route Matching
 

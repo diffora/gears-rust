@@ -202,6 +202,12 @@ The system **MUST** provide CRUD operations for upstream configurations. Each up
 - **Rationale**: Upstreams are the fundamental configuration unit — every proxy request targets an upstream.
 - **Actors**: `cpt-cf-oagw-actor-platform-operator`, `cpt-cf-oagw-actor-tenant-admin`
 
+#### Explicit Credential Selection
+
+- [ ] `p1` - **ID**: `cpt-cf-oagw-fr-credential-bindings`
+
+**Proposed.** A tenant **MUST** be able to send the same request to the same upstream and route using either of two named API keys. OAGW must authorize the specified key and apply its optional request-count limit alongside the destination limits. Failure to use the specified key must end the request. Omitting the selector preserves existing upstream auth. The consumer chooses the account and owns token accounting and spend. See [ADR-0021](ADR/0021-credential-bindings.md).
+
 #### Route Management
 
 - [ ] `p1` - **ID**: `cpt-cf-oagw-fr-route-mgmt`

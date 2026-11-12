@@ -55,11 +55,13 @@ This design satisfies the requirements for centralized outbound traffic manageme
 | Configuration layering | `cpt-cf-oagw-fr-config-layering` | Upstream < Route < Tenant merge priority |
 | Alias resolution | `cpt-cf-oagw-fr-alias-resolution` | Path-based routing with alias shadowing |
 | Credential isolation | `cpt-cf-oagw-nfr-credential-isolation` | Auth via `cred_store` references, no direct secret storage |
+| Explicit credential selection (proposed) | `cpt-cf-oagw-fr-credential-bindings` | Authorize and limit the requested key under the destination's existing policies |
 | Optional persistence | `cpt-cf-oagw-fr-config-persistence` | Database repositories when configured, in-memory otherwise; fail-fast on an unusable database |
 | ToolKit integration | Gears middleware | Single-executable deployment, trait-based DI, secure ORM |
 
 **Architecture Decision Records**:
 
+- `cpt-cf-oagw-adr-credential-bindings` — [Proposed tenant-local named API keys](ADR/0021-credential-bindings.md)
 - `cpt-cf-oagw-adr-component-architecture` — Single gear with internal trait-based service isolation
 - `cpt-cf-oagw-adr-request-routing` — Path-based routing with alias resolution
 - `cpt-cf-oagw-adr-plugin-system` — Three plugin types with deterministic execution order
@@ -244,6 +246,7 @@ classDiagram
 
 **Key Domain Entities**:
 
+- **Credential binding** (proposed, `gts.cf.core.oagw.credential.v1~`): A tenant-owned child of one local upstream. Its UUID identifies a named API-key reference and its optional per-replica request limit. The upstream supplies the auth plugin and injection policy. See [ADR-0021](ADR/0021-credential-bindings.md) and the [schema](schemas/credential.v1.schema.json).
 - **Upstream** (`gts.cf.core.oagw.upstream.v1~`): Tenant-scoped root configuration object representing an external service. Unique per `(tenant_id, alias)`. Contains server endpoints, auth config, rate limits, CORS, headers, and plugin bindings.
 - **Route** (`gts.cf.core.oagw.route.v1~`): Belongs to an upstream. Defines match rules (HTTP path/method; gRPC service/method matching is planned for Phase 3 — no gRPC proxy code path is currently implemented or reachable), priority, and route-level overrides for rate limits, CORS, and plugins.
 - **Plugin** (`gts.cf.core.oagw.{type}_plugin.v1~`): Custom tenant-defined Starlark plugins stored in `oagw_plugin`. Named (built-in) plugins are resolved via in-process registry and not persisted.
@@ -799,6 +802,8 @@ Header may be stripped by intermediaries. For critical error handling, clients s
 
 #### Proxy Request Flow
 
+**Proposed named path:** after proxy invocation authorization, [alias resolution](features/0004-cpt-cf-oagw-feature-proxy-engine.md#alias-resolution) uses current configuration for the selected alias and route. The [tenant config merge](features/0005-cpt-cf-oagw-feature-tenant-hierarchy.md#hierarchical-config-merge) retains the owners and enforced ancestor constraints. [Credential resolution](features/0004-cpt-cf-oagw-feature-proxy-engine.md#credential-resolution) authorizes the named binding and its destination before auth. Check its bucket between the upstream and route buckets. [ADR-0021](ADR/0021-credential-bindings.md#request-sequence-and-sdk) specifies the sequence; the diagram below shows the existing path.
+
 ```mermaid
 sequenceDiagram
     participant C as Client
@@ -1061,3 +1066,4 @@ Structured JSON logs to stdout, ingested by centralized logging system (e.g., EL
 | [0018 Optional Persistence](./ADR/0018-optional-persistence.md) | `cpt-cf-oagw-db-schema` |
 | [0019 Upstream Proxy Engine](./ADR/0019-upstream-proxy-engine.md) | `cpt-cf-oagw-tech-dependencies`, `cpt-cf-oagw-seq-proxy-flow` |
 | [0020 Proxy Configuration Cache](./ADR/0020-proxy-config-cache.md) | `cpt-cf-oagw-tech-dependencies`, `cpt-cf-oagw-seq-proxy-flow` |
+| [0021 Explicit Credential Bindings](./ADR/0021-credential-bindings.md) (proposed) | `cpt-cf-oagw-fr-credential-bindings`, `cpt-cf-oagw-seq-proxy-flow` |

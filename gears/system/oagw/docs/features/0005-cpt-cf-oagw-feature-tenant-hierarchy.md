@@ -210,6 +210,8 @@ Enables partner/customer hierarchies where partners share upstream access with c
 
 **Output**: Effective configuration with all merge strategies applied across all three layers
 
+**Planned for named credentials**: retain the selected parent, applicable auth owner and effective enforced-ancestor information with this merge result. Use the same authoritative view for the credential lookup. A local selector cannot override sticky ancestor auth; validate the selected server against the binding owner's approved endpoint set before using its reference. The [ADR-0021 ownership table](../ADR/0021-credential-bindings.md#ownership-and-sharing) specifies the absent-auth case, runtime grants, and local-only visibility.
+
 **Steps**:
 1. [x] - `p2` - Initialize effective config from root ancestor's upstream (if shared) — absent fields default to null/unset - `inst-merge-1`
 2. [x] - `p2` - Apply route-level overrides: **IF** matched route has field-level config, overlay onto effective upstream base — route config takes priority over upstream base per `cpt-cf-oagw-fr-config-layering` (upstream base < route < tenant); route-level sharing follows the same `private`/`inherit`/`enforce` semantics as upstream-level sharing - `inst-merge-2`
