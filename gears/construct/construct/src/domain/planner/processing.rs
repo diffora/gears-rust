@@ -372,10 +372,10 @@ impl Processing {
     }
 
     /// Takes what a subject told an agent through the planner, the checks, Admission and the writer, under the
-    /// caller's own context and scope. The steps before the write end by `deadlines.before_write`, and nothing is
-    /// stored when they run out. The write ends by `deadlines.answer`; one it cuts after the plan was sent answers
-    /// unavailable with its result unknown, never that nothing changed. A conflict plans again on a new read while
-    /// time is left, at most `max_reruns` times.
+    /// processing context and scope of the message's tenant. The steps before the write end by
+    /// `deadlines.before_write`, and nothing is stored when they run out. The write ends by `deadlines.answer`; one it
+    /// cuts after the plan was sent answers unavailable with its result unknown, never that nothing changed. A conflict
+    /// plans again on a new read while time is left, at most `max_reruns` times.
     ///
     /// # Errors
     ///
