@@ -210,7 +210,7 @@ Enables partner/customer hierarchies where partners share upstream access with c
 
 **Output**: Effective configuration with all merge strategies applied across all three layers
 
-**Planned for named credentials**: retain the selected parent, applicable auth owner and effective enforced-ancestor information with this merge result. Use the same authoritative view for the credential lookup. A local selector cannot override sticky ancestor auth; validate the selected server against the binding owner's approved endpoint set before using its reference. The [ADR-0021 ownership table](../ADR/0021-credential-bindings.md#ownership-and-sharing) specifies the absent-auth case, runtime grants, and local-only visibility.
+**Planned for named credentials.** The merge keeps the selected parent, the upstream that owns the effective auth, and any ancestor policy that enforces it. OAGW looks up the binding in the same snapshot. Before fetching its secret, OAGW checks that the binding owner approved every endpoint in the selected server. The [ownership table](../ADR/0021-credential-bindings.md#ownership-and-sharing) covers missing ancestor auth, the caller's permissions and which names a tenant can see.
 
 **Steps**:
 1. [x] - `p2` - Initialize effective config from root ancestor's upstream (if shared) — absent fields default to null/unset - `inst-merge-1`

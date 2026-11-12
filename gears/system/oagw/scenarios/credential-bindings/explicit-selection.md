@@ -1,6 +1,6 @@
 # Explicit credential selection (planned)
 
-These scenarios specify [ADR-0021](../../docs/ADR/0021-credential-bindings.md). Run store-dependent cases against the same backends as the four-level alias suite. Use a recording mock provider, a CredStore spy and a controlled clock. No provider credentials are needed.
+Use the same storage backends as the four-level alias tests, a mock provider that records requests, a CredStore spy and a controlled clock. The expected behavior comes from [ADR-0021](../../docs/ADR/0021-credential-bindings.md).
 
 ## Two accounts on one route
 
@@ -16,7 +16,7 @@ Create four same-alias layers and exercise the ADR truth table, including a visi
 
 ## Request counts
 
-Set A to 1/minute, give B capacity, and hold time fixed. First A reaches the mock, second A returns a gateway 429 with retry guidance, B succeeds. Exhaust the upstream shared pool and repeat with B: upstream rejection occurs before B is debited. Separately exhaust the route: earlier successful debits stand. Verify success header aggregation, refilling, independence across tenants, reset on a rate change, unchanged capacity on secret rotation, and fresh UUID/bucket after delete/re-create. A provider-generated 429 remains upstream-sourced and produces exactly one call.
+Give A one request per minute and B enough capacity for two. Hold the clock still. The first request with A reaches the mock. OAGW rejects the second with 429 and retry guidance. A request with B still succeeds. Next, exhaust the shared upstream bucket and try B again. Check that B keeps its remaining capacity. In a separate test, exhaust the route bucket: the upstream and credential buckets should still count the attempt. Verify response headers, refill, tenant isolation, reset after a rate change and preserved capacity after rotation. Delete and recreate a name and check that it gets a new UUID and bucket. Finally, have the provider return 429. The caller must see the upstream error source, and the mock must record exactly one call.
 
 ## Storage and registry
 
@@ -24,6 +24,6 @@ Race two creates for the same normalized name; exactly one succeeds. Race parent
 
 ## Two replicas and rollback
 
-With a shared DB, exercise named proxy and preview on replica B, then miss on an unknown name. Create it on A and verify B sees it on next admission. Drop change notifications; rotate, disable, delete or change the parent's policy on A and repeat on B after each acknowledged commit. New admissions use the current configuration or fail before forwarding. On failed/slow authoritative reads, observe the documented availability failure at the read deadline, even if B has an old alias/route cache entry. On a binding delete verify local counter cleanup and remote cleanup after delivery of the change event.
+Point replicas A and B at the same database. On B, proxy and preview a named credential, then look up a name that does not exist. Create that name on A. B must find it on the next request. Drop change notifications, then rotate, disable or delete a credential, or change its parent policy on A. After A reports success, send a fresh request to B. It must use the new configuration or refuse to forward. Make B's database read fail or exceed its deadline and expect 503, even if B has cached the old alias and route. After deleting a binding, check local counter cleanup. Deliver the change event and check cleanup on the other replica.
 
 With an old and a capable replica behind the same ingress, keep named admission closed. The negative control is an old replica that would strip the selector and send D. Verify at the mock that the release procedure sends no named request to that replica, including SDK paths. After the last old replica and writer have left, enable selectors and verify A/B. For rollback, block new named traffic, drain it and fence registry writers before reintroducing the old version. Omitted-selector traffic must still use D.

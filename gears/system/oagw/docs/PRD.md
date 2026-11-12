@@ -206,7 +206,7 @@ The system **MUST** provide CRUD operations for upstream configurations. Each up
 
 - [ ] `p1` - **ID**: `cpt-cf-oagw-fr-credential-bindings`
 
-**Proposed.** A tenant **MUST** be able to send the same request to the same upstream and route using either of two named API keys. OAGW must authorize the specified key and apply its optional request-count limit alongside the destination limits. Failure to use the specified key must end the request. Omitting the selector preserves existing upstream auth. The consumer chooses the account and owns token accounting and spend. See [ADR-0021](ADR/0021-credential-bindings.md).
+**Proposed.** A tenant **MUST** be able to use either of two named API keys for the same upstream and route. The consumer chooses the account and tracks token usage and spend. OAGW checks that the caller can use the key and applies its optional request limit alongside the destination limits. If OAGW cannot use the requested key, it returns an error. If the caller omits the selector, OAGW uses the upstream's existing auth configuration. See [ADR-0021](ADR/0021-credential-bindings.md).
 
 #### Route Management
 

@@ -164,7 +164,7 @@ Design constraints enforced: `cpt-cf-oagw-constraint-body-limit`, `cpt-cf-oagw-c
 
 **Output**: Resolved `UpstreamConfig` or error
 
-**Planned named requests** ([ADR-0021](../ADR/0021-credential-bindings.md)): take alias and route candidates from the authoritative admission snapshot, apply the same visibility, disable and route rules, and retain the selected local parent and ancestor provenance for `cpt-cf-oagw-algo-credential-resolution`. The cache description below applies to omitted-selector proxy traffic.
+**Planned.** When a caller names a credential, OAGW reads the alias and route candidates from one current snapshot. It applies the usual visibility, enabled-state and route rules, then passes the selected local upstream and its ancestor policies to `cpt-cf-oagw-algo-credential-resolution`. Requests without a selector use the cache described below. See [ADR-0021](../ADR/0021-credential-bindings.md).
 
 **With the proxy configuration cache** (a database and `proxy_cache.enabled: true`; `cpt-cf-oagw-algo-obs-proxy-config-cache`): step 1 reads the alias section, keyed by the alias and the tenant chain. A hit runs no query; a miss runs step 1's query and stores its rows as they are (disabled and not-visible upstreams included), or an empty list. Steps 2–6 run on every request, unchanged. An alias that fails validation answers *not found* without a read and without a cache entry.
 
@@ -193,7 +193,7 @@ Design constraints enforced: `cpt-cf-oagw-constraint-body-limit`, `cpt-cf-oagw-c
 2. [ ] - `p1` - Apply current ancestor constraints, enabled and plugin checks, and compare the entire selected server with the credential owner's approved endpoints - `inst-cred-resolve-2`
 3. [ ] - `p1` - Provide the selected reference to upstream auth and the binding UUID to the limiter. Consume the selector and guard final outbound headers. On failure, return the specified error - `inst-cred-resolve-3`
 
-See [ADR-0021](../ADR/0021-credential-bindings.md) for the wire contract and revocation boundary.
+[ADR-0021](../ADR/0021-credential-bindings.md) defines the request header and when a key revocation takes effect.
 
 ### Route Matching
 

@@ -802,7 +802,7 @@ Header may be stripped by intermediaries. For critical error handling, clients s
 
 #### Proxy Request Flow
 
-**Proposed named path:** after proxy invocation authorization, [alias resolution](features/0004-cpt-cf-oagw-feature-proxy-engine.md#alias-resolution) uses current configuration for the selected alias and route. The [tenant config merge](features/0005-cpt-cf-oagw-feature-tenant-hierarchy.md#hierarchical-config-merge) retains the owners and enforced ancestor constraints. [Credential resolution](features/0004-cpt-cf-oagw-feature-proxy-engine.md#credential-resolution) authorizes the named binding and its destination before auth. Check its bucket between the upstream and route buckets. [ADR-0021](ADR/0021-credential-bindings.md#request-sequence-and-sdk) specifies the sequence; the diagram below shows the existing path.
+When a caller names a credential, the proxy first checks permission to invoke. It then [resolves the alias and route](features/0004-cpt-cf-oagw-feature-proxy-engine.md#alias-resolution) from current configuration. The [tenant config merge](features/0005-cpt-cf-oagw-feature-tenant-hierarchy.md#hierarchical-config-merge) keeps track of who owns the effective auth and which ancestor policies apply. Before fetching the key, the proxy [checks the binding and destination](features/0004-cpt-cf-oagw-feature-proxy-engine.md#credential-resolution). It checks the credential's request limit between the upstream and route limits. [ADR-0021](ADR/0021-credential-bindings.md#request-sequence-and-sdk) describes this proposed path. The diagram below shows how requests work today.
 
 ```mermaid
 sequenceDiagram
