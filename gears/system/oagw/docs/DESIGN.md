@@ -55,13 +55,12 @@ This design satisfies the requirements for centralized outbound traffic manageme
 | Configuration layering | `cpt-cf-oagw-fr-config-layering` | Upstream < Route < Tenant merge priority |
 | Alias resolution | `cpt-cf-oagw-fr-alias-resolution` | Path-based routing with alias shadowing |
 | Credential isolation | `cpt-cf-oagw-nfr-credential-isolation` | Auth via `cred_store` references, no direct secret storage |
-| Explicit credential selection (proposed) | `cpt-cf-oagw-fr-credential-bindings` | Authorize and limit the requested key under the destination's existing policies |
+| Named upstream credentials (proposed) | `cpt-cf-oagw-fr-upstream-credentials` | Authorize and limit the requested key under the destination's existing policies |
 | Optional persistence | `cpt-cf-oagw-fr-config-persistence` | Database repositories when configured, in-memory otherwise; fail-fast on an unusable database |
 | ToolKit integration | Gears middleware | Single-executable deployment, trait-based DI, secure ORM |
 
 **Architecture Decision Records**:
 
-- `cpt-cf-oagw-adr-credential-bindings` — [Proposed tenant-local named API keys](ADR/0021-credential-bindings.md)
 - `cpt-cf-oagw-adr-component-architecture` — Single gear with internal trait-based service isolation
 - `cpt-cf-oagw-adr-request-routing` — Path-based routing with alias resolution
 - `cpt-cf-oagw-adr-plugin-system` — Three plugin types with deterministic execution order
@@ -82,6 +81,7 @@ This design satisfies the requirements for centralized outbound traffic manageme
 - `cpt-cf-oagw-adr-optional-persistence` — Opt-in database persistence with in-memory fallback, using the storage schema from the start
 - `cpt-cf-oagw-adr-upstream-proxy-engine` — Upstream forwarding through the in-house `toolkit-http-proxy` engine instead of the Pingora bridge
 - `cpt-cf-oagw-adr-proxy-config-cache` — Per-replica cache of the proxy lookup with a database; each write evicts only the entries it affects, on every replica through a cluster change log, with a TTL backstop (proposed until its benchmark)
+- `cpt-cf-oagw-adr-upstream-credentials` — [Proposed tenant-local named API keys](ADR/0021-upstream-credentials.md)
 
 ### 1.3 Architecture Layers
 
@@ -246,9 +246,9 @@ classDiagram
 
 **Key Domain Entities**:
 
-- **Credential binding** (proposed, `gts.cf.core.oagw.credential.v1~`): A tenant-owned child of one local upstream. Its UUID identifies a named API-key reference and its optional per-replica request limit. The upstream supplies the auth plugin and injection policy. See [ADR-0021](ADR/0021-credential-bindings.md) and the [schema](schemas/credential.v1.schema.json).
 - **Upstream** (`gts.cf.core.oagw.upstream.v1~`): Tenant-scoped root configuration object representing an external service. Unique per `(tenant_id, alias)`. Contains server endpoints, auth config, rate limits, CORS, headers, and plugin bindings.
 - **Route** (`gts.cf.core.oagw.route.v1~`): Belongs to an upstream. Defines match rules (HTTP path/method; gRPC service/method matching is planned for Phase 3 — no gRPC proxy code path is currently implemented or reachable), priority, and route-level overrides for rate limits, CORS, and plugins.
+- **Upstream credential** (proposed, `gts.cf.core.oagw.credential.v1~`): A tenant-owned child of one local upstream. Its UUID identifies a named API-key reference and its optional per-replica request limit. The upstream supplies the auth plugin and injection policy. See [ADR-0021](ADR/0021-upstream-credentials.md) and the [schema](schemas/credential.v1.schema.json).
 - **Plugin** (`gts.cf.core.oagw.{type}_plugin.v1~`): Custom tenant-defined Starlark plugins stored in `oagw_plugin`. Named (built-in) plugins are resolved via in-process registry and not persisted.
 
 #### Upstream Schema
@@ -802,7 +802,7 @@ Header may be stripped by intermediaries. For critical error handling, clients s
 
 #### Proxy Request Flow
 
-When a caller names a credential, the proxy first checks permission to invoke. It then [resolves the alias and route](features/0004-cpt-cf-oagw-feature-proxy-engine.md#alias-resolution) from current configuration. The [tenant config merge](features/0005-cpt-cf-oagw-feature-tenant-hierarchy.md#hierarchical-config-merge) keeps track of who owns the effective auth and which ancestor policies apply. Before fetching the key, the proxy [checks the binding and destination](features/0004-cpt-cf-oagw-feature-proxy-engine.md#credential-resolution). It checks the credential's request limit between the upstream and route limits. [ADR-0021](ADR/0021-credential-bindings.md#request-sequence-and-sdk) describes this proposed path. The diagram below shows how requests work today.
+When a caller names a credential, the proxy checks invoke permission and resolves the alias, route and parent policies through the ADR-0020 cache. It reads the tenant-local credential from the primary store, checks use permission, state and destination eligibility, and debits upstream, credential and route limits before fetching the secret. Parent-policy freshness follows the cache; credential state does not use stale fallback. [ADR-0021](ADR/0021-upstream-credentials.md#request-sequence-and-sdk) describes this proposed path. The diagram below shows how requests work today.
 
 ```mermaid
 sequenceDiagram
@@ -1066,4 +1066,4 @@ Structured JSON logs to stdout, ingested by centralized logging system (e.g., EL
 | [0018 Optional Persistence](./ADR/0018-optional-persistence.md) | `cpt-cf-oagw-db-schema` |
 | [0019 Upstream Proxy Engine](./ADR/0019-upstream-proxy-engine.md) | `cpt-cf-oagw-tech-dependencies`, `cpt-cf-oagw-seq-proxy-flow` |
 | [0020 Proxy Configuration Cache](./ADR/0020-proxy-config-cache.md) | `cpt-cf-oagw-tech-dependencies`, `cpt-cf-oagw-seq-proxy-flow` |
-| [0021 Explicit Credential Bindings](./ADR/0021-credential-bindings.md) (proposed) | `cpt-cf-oagw-fr-credential-bindings`, `cpt-cf-oagw-seq-proxy-flow` |
+| [0021 Named Upstream Credentials](./ADR/0021-upstream-credentials.md) (proposed) | `cpt-cf-oagw-fr-upstream-credentials`, `cpt-cf-oagw-seq-proxy-flow` |

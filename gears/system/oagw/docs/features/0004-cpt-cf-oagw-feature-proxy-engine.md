@@ -164,7 +164,7 @@ Design constraints enforced: `cpt-cf-oagw-constraint-body-limit`, `cpt-cf-oagw-c
 
 **Output**: Resolved `UpstreamConfig` or error
 
-**Planned.** When a caller names a credential, OAGW reads the alias and route candidates from one current snapshot. It applies the usual visibility, enabled-state and route rules, then passes the selected local upstream and its ancestor policies to `cpt-cf-oagw-algo-credential-resolution`. Requests without a selector use the cache described below. See [ADR-0021](../ADR/0021-credential-bindings.md).
+**Planned.** Named requests use the ADR-0020 cache for alias, route and parent policies, then read the selected local credential live. Usual visibility and route checks still apply. Pass the resolved parent policies to `cpt-cf-oagw-algo-credential-resolution`. See [ADR-0021](../ADR/0021-upstream-credentials.md).
 
 **With the proxy configuration cache** (a database and `proxy_cache.enabled: true`; `cpt-cf-oagw-algo-obs-proxy-config-cache`): step 1 reads the alias section, keyed by the alias and the tenant chain. A hit runs no query; a miss runs step 1's query and stores its rows as they are (disabled and not-visible upstreams included), or an empty list. Steps 2–6 run on every request, unchanged. An alias that fails validation answers *not found* without a read and without a cache entry.
 
@@ -185,15 +185,15 @@ Design constraints enforced: `cpt-cf-oagw-constraint-body-limit`, `cpt-cf-oagw-c
 
 - [ ] `p1` - **ID**: `cpt-cf-oagw-algo-credential-resolution`
 
-**Input**: Authorized invoke context, single validated selector, selected upstream and route, applicable ancestor policies and selected server from the same admission view.
+**Input**: Authorized invoke context, single validated selector, selected upstream and route, applicable ancestor policies and server from the routing cache.
 
-**Output**: Authorized binding UUID, API-key configuration and optional bucket policy, or an error before forwarding. SDK preview returns only safe identifiers.
+**Output**: Authorized credential UUID, API-key configuration and optional bucket policy, or an error before forwarding. SDK preview returns only safe identifiers.
 
-1. [ ] - `p1` - Resolve the name within the caller's tenant and selected local parent, applying the use policy before disclosing row state - `inst-cred-resolve-1`
-2. [ ] - `p1` - For both proxy and preview, return 503 with administrative `Retry-After` before any secret read if the binding is disabled or suspended. Check the current ancestor policies, plugin and every endpoint against the owner's approvals - `inst-cred-resolve-2`
-3. [ ] - `p1` - Pass the reference and pinned CredStore record ID to upstream auth. For a limited binding, pass its UUID and current limit generation to the limiter. Consume the selector and check the final outbound headers before forwarding - `inst-cred-resolve-3`
+1. [ ] - `p1` - Check use at credential type/owner scope, then read the current row by caller tenant, selected local upstream UUID and name. Check its UUID before disclosing state. Refuse unsupported scopes. Do not cache rows or misses - `inst-cred-resolve-1`
+2. [ ] - `p1` - For proxy and preview, check enabled state, then suspension (503), then cached ancestor constraints, auth compatibility and every destination against the owner's approvals (403). Runtime use requires no ancestor management grant - `inst-cred-resolve-2`
+3. [ ] - `p1` - Preview returns safe IDs without secrets, debits or forwarding. Proxy handles preflight without a debit, then checks upstream, credential and route limits before CredStore. Pass the pin to auth and the generation to the limiter. Keep attempt debits on later failure and check final outbound headers - `inst-cred-resolve-3`
 
-[ADR-0021](../ADR/0021-credential-bindings.md) defines the request header and when a key revocation takes effect.
+[ADR-0021](../ADR/0021-upstream-credentials.md) defines the request header and when a key revocation takes effect.
 
 ### Route Matching
 

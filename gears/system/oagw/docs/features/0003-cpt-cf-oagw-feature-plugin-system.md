@@ -191,7 +191,7 @@ Adheres to `cpt-cf-oagw-principle-plugin-immutable` (plugins immutable after cre
 - Plugin reference does not resolve (named not in registry, UUID not in `oagw_plugin`)
 - Plugin type mismatch (e.g., auth plugin in guard/transform binding)
 - Position not contiguous from 0
-- OAGW rejects attempts to attach auth to a route. The upstream chooses the plugin, header name and prefix. [ADR-0021](../ADR/0021-credential-bindings.md) proposes letting the caller name a binding on that upstream to specify which API key the plugin should use.
+- Auth on routes is unsupported: the proxy uses upstream auth and ignores route auth references today; rejecting this configuration is planned in [#4974](https://github.com/constructorfabric/gears-rust/issues/4974). The upstream chooses the plugin, header name and prefix. [ADR-0021](../ADR/0021-upstream-credentials.md) proposes letting the caller name a credential on that upstream to specify which API key the plugin should use.
 
 **Steps**:
 1. [x] - `p1` - Actor sends POST or PUT for upstream/route with plugin bindings in request body - `inst-bind-1`

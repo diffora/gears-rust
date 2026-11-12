@@ -536,7 +536,7 @@ Not applicable. Management API operations are CRUD against the selected reposito
 
 ### Security Considerations
 
-Management operations authenticate callers via `toolkit-auth` and use secure ORM to scope access by tenant. When an upstream write supplies an auth `secret_ref`, management checks its format and asks CredStore whether the caller can access it. The proxy reads the secret again when handling a request. For proposed [named credentials](../ADR/0021-credential-bindings.md), OAGW also pins and verifies the record ID. Emergency suspension needs no secret read. OAGW never stores secret values.
+Management operations authenticate callers via `toolkit-auth` and use secure ORM to scope access by tenant. When an upstream write supplies an auth `secret_ref`, management checks its format and asks CredStore whether the caller can access it. The proxy reads the secret again when handling a request. For proposed [named credentials](../ADR/0021-upstream-credentials.md), OAGW also pins and verifies the record ID. The credential resource uses create/read/override/delete/use actions. Operational suspend/resume remain available when CRUD is disabled, in REST and the new SDK; suspension needs no secret read. OAGW never stores secret values.
 
 ### Observability Considerations
 
