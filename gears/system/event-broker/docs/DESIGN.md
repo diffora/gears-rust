@@ -816,7 +816,7 @@ through `backend_routing` ([feature 0005 §2.2](features/0005-backend-registry-a
 
 **ID**: `cpt-cf-evbk-component-cluster-capabilities`
 
-The event broker consumes the platform-level cluster system module (see `modules/system/cluster/docs/DESIGN.md`). The module exposes four independent primitives, each as a versioned facade struct:
+The event broker consumes the platform-level cluster system module (see `modules/system/cluster/docs/DESIGN.md`) through `cluster-sdk`, with no `deps = [cluster]` edge in its GDL (`deps = []`). A host that runs the event broker must therefore link the `cluster` gear itself (co-located, as the standalone deployment does) or enable `cluster-sdk/grpc-client` to reach a remote one; without either, `EventBrokerCluster::resolve` returns an unbound cache and readiness reports the misconfiguration. The module exposes four independent primitives, each as a versioned facade struct:
 
 - **`ClusterCacheV1`** — KV with TTL, version-based CAS, and watch notifications. Methods: `get`, `put`, `delete`, `contains`, `put_if_absent`, `compare_and_swap`, `watch`, `watch_prefix`.
 - **`LeaderElectionV1`** — leader election with TTL and renewal config.
