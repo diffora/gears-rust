@@ -38,7 +38,7 @@ use serde_json::Value;
 use toolkit_macros::domain_model;
 
 use crate::domain::error::DomainError;
-use crate::domain::ontology::BASE_SCHEMAS;
+use crate::domain::ontology;
 
 /// Both directional verdicts of one comparison, with the evidence for the one
 /// that gates admission.
@@ -164,26 +164,15 @@ pub fn decide(state: TypeChangeState, asked: Asked) -> Decision {
 /// The base ontology resolves too, ancestor or not, as it does when a
 /// registration compiles (see [`super::ontology::ChainValidator::compile`]): a
 /// type may reference a sibling family such as the provenance attribute, and a
-/// document with an unresolved `$ref` cannot be compared at all. A base type
-/// the chain already carries keeps its stored definition: the comparison is
-/// about what the database holds, and a second, different copy of one id would
-/// be refused by the store.
+/// document with an unresolved `$ref` cannot be compared at all. Both places
+/// build the set with [`ontology::resolvable_definitions`].
 pub fn compare(
     old: &Value,
     new: &Value,
     chain: impl IntoIterator<Item = (String, Value)>,
 ) -> Result<Comparison, DomainError> {
     let mut store = GtsStore::new();
-    let mut definitions: Vec<(String, Value)> = chain.into_iter().collect();
-    for (type_id, raw) in BASE_SCHEMAS {
-        if definitions.iter().any(|(carried, _)| carried == type_id) {
-            continue;
-        }
-        let schema = serde_json::from_str(raw).map_err(|error| {
-            DomainError::internal(format!("base schema `{type_id}` does not parse: {error}"))
-        })?;
-        definitions.push(((*type_id).to_owned(), schema));
-    }
+    let definitions = ontology::resolvable_definitions(chain)?;
     for (type_id, schema) in definitions {
         store.register_schema(&type_id, &schema).map_err(|error| {
             DomainError::internal(format!(
@@ -609,12 +598,30 @@ mod tests {
     }
 
     #[test]
-    fn a_stored_base_definition_wins_over_the_embedded_one() {
-        let (base_id, raw) = BASE_SCHEMAS[0];
+    fn a_stored_base_definition_decides_the_verdict() {
+        let (base_id, raw) = ontology::BASE_SCHEMAS[0];
+        // The stored copy accepts strings only; the embedded one is an object
+        // schema. `old` resolves through the base type, `new` is the string
+        // schema itself: they agree only if the stored copy is the one used.
         let mut stored: Value = serde_json::from_str(raw).expect("base schema parses");
-        stored["description"] = json!("an older revision of the base type");
-        let old = json!({ "$id": "gts://gts.acme.gs._.x.v1~", "type": "object" });
-        compare(&old, &old, [(base_id.to_owned(), stored)])
+        stored = json!({
+            "$id": stored["$id"].clone(),
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "string"
+        });
+        let old = json!({
+            "$id": "gts://gts.acme.gs._.x.v1~",
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "$ref": format!("gts://{base_id}")
+        });
+        let new = json!({
+            "$id": "gts://gts.acme.gs._.x.v1~",
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "string"
+        });
+        let comparison = compare(&old, &new, [(base_id.to_owned(), stored)])
             .expect("a differing stored base definition is not registered twice");
+        assert_eq!(comparison.backward, CompatibilityVerdict::Compatible);
+        assert_eq!(comparison.forward, CompatibilityVerdict::Compatible);
     }
 }

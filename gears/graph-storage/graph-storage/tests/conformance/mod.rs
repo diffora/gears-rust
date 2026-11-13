@@ -2100,36 +2100,21 @@ pub async fn an_incompatible_change_is_refused_with_its_location(
     assert_eq!(stored.revision, 1);
 }
 
-/// A type whose payload references the provenance attribute — a sibling
-/// family, never an ancestor — with the given extra properties and
-/// required list.
-fn referencing_revision(extra: &serde_json::Value, required: &[&str]) -> TypeRegistration {
-    let mut properties = serde_json::json!({
-        "name": { "type": "string" },
-        "origin": {
-            "$ref": format!("gts://{}", graph_storage_sdk::gts::PROVENANCE_ATTRIBUTE_TYPE)
-        }
+/// The evolving requirement with a payload property that references the
+/// provenance attribute — a sibling family, never an ancestor.
+fn referencing_revision(
+    with_owner: bool,
+    without_priority: bool,
+    required: &[&str],
+) -> TypeRegistration {
+    let mut properties = requirement_properties(&["proposed", "approved"], with_owner, false);
+    properties["origin"] = serde_json::json!({
+        "$ref": format!("gts://{}", graph_storage_sdk::gts::PROVENANCE_ATTRIBUTE_TYPE)
     });
-    if let (Some(target), Some(added)) = (properties.as_object_mut(), extra.as_object()) {
-        target.extend(added.clone());
+    if without_priority && let Some(map) = properties.as_object_mut() {
+        map.remove("priority");
     }
-    TypeRegistration {
-        type_id: EVOLVING.to_owned(),
-        schema: serde_json::json!({
-            "$id": format!("gts://{EVOLVING}"),
-            "$schema": "http://json-schema.org/draft-07/schema#",
-            "type": "object",
-            "allOf": [
-                { "$ref": format!("gts://{OWNED_FAMILY}") },
-                { "type": "object", "properties": { "payload": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": properties,
-                    "required": required
-                } } }
-            ]
-        }),
-    }
+    requirement_revision(&properties, required, &["/payload/status"])
 }
 
 /// A `$ref` to a type outside the chain does not stop the comparison: adding an
@@ -2141,18 +2126,18 @@ pub async fn a_type_referencing_a_non_ancestor_gains_an_optional_property(
     let scope = AccessScope::for_tenant(tenant);
     let ctx = ctx(tenant, &scope, None);
     let mut types = ontology_batch();
-    types.push(referencing_revision(&serde_json::json!({}), &["name"]));
+    types.push(referencing_revision(false, false, &["key", "statement"]));
     store
         .register_types(&ctx, types)
         .await
         .expect("the type registers");
 
-    let edited = referencing_revision(
-        &serde_json::json!({ "nickname": { "type": "string" } }),
-        &["name"],
-    );
     let registered = store
-        .register_types_with(&ctx, vec![edited], update_options())
+        .register_types_with(
+            &ctx,
+            vec![referencing_revision(true, false, &["key", "statement"])],
+            update_options(),
+        )
         .await
         .expect("an optional property is admitted on a type with a non-ancestor reference");
     let updated = registered
@@ -2175,26 +2160,15 @@ pub async fn a_type_referencing_a_non_ancestor_still_refuses_a_breaking_change(
     let scope = AccessScope::for_tenant(tenant);
     let ctx = ctx(tenant, &scope, None);
     let mut types = ontology_batch();
-    types.push(referencing_revision(
-        &serde_json::json!({ "nickname": { "type": "string" } }),
-        &["name"],
-    ));
+    types.push(referencing_revision(true, false, &["key", "statement"]));
     store
         .register_types(&ctx, types)
         .await
         .expect("the type registers");
 
-    let mut removed = referencing_revision(&serde_json::json!({}), &["name"]);
-    removed.schema["allOf"][1]["properties"]["payload"]["properties"]
-        .as_object_mut()
-        .expect("properties is an object")
-        .remove("nickname");
     let breaking = [
-        removed,
-        referencing_revision(
-            &serde_json::json!({ "nickname": { "type": "string" } }),
-            &["name", "nickname"],
-        ),
+        referencing_revision(true, true, &["key", "statement"]),
+        referencing_revision(true, false, &["key", "statement", "owner"]),
     ];
     for candidate in breaking {
         let error = store
