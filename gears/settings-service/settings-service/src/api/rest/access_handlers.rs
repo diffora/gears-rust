@@ -221,9 +221,6 @@ pub async fn clear_access(
     // @cpt-begin:cpt-cf-settings-service-flow-tenant-access-clear:p1:inst-ta-clear-3
     let chains = service.authorized_hierarchy_chains(&actor, target).await?;
     // @cpt-end:cpt-cf-settings-service-flow-tenant-access-clear:p1:inst-ta-clear-3
-    // Asked before the write: a failure to decide must not follow a committed
-    // change. A known refusal masks; any other failure stops here.
-    let may_unmask = may_read_pii(&enforcer, &ctx).await?;
     let if_match = if_match(&headers).map(str::to_owned);
     let readout = {
         let service = Arc::clone(&service);
@@ -241,8 +238,8 @@ pub async fn clear_access(
     };
     service.evict(&key, target).await?;
     // @cpt-begin:cpt-cf-settings-service-flow-tenant-access-clear:p1:inst-ta-clear-9
-    let pii = readout.stored.is_some() && may_unmask;
-    Ok(with_etag(&readout, &ctx, pii))
+    // Clearing removes the stored row, so there is no setter identity to unmask.
+    Ok(with_etag(&readout, &ctx, false))
     // @cpt-end:cpt-cf-settings-service-flow-tenant-access-clear:p1:inst-ta-clear-9
 }
 
