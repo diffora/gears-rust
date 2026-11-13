@@ -191,8 +191,9 @@ async def test_409_failed_precondition_envelope(api):
 async def test_412_sequence_violation_envelope(api):
     """scenario: errors/1.06-negative-412-sequence-violation.md
 
-    A chained producer whose ``meta.previous`` does not match the broker's
-    stored ``last_sequence`` gets a 412.
+    A chained publish that neither advances the chain (its ``meta.previous``
+    is not the broker's stored ``last_sequence``) nor resends the chain head
+    gets a 412.
     """
     async with api() as client:
         reg_resp = await client.post(
@@ -203,7 +204,7 @@ async def test_412_sequence_violation_envelope(api):
         producer_id = reg_resp.json()["id"]
 
         tenant_id = str(uuid.uuid4())
-        # Publish first event normally (no meta → monotonic, or just let it work).
+        # Publish the chain's first event (previous 0, sequence 1).
         first_resp = await client.post(
             "/events",
             json={
@@ -238,7 +239,7 @@ async def test_412_sequence_violation_envelope(api):
                 "meta": {
                     "version": 1,
                     "producer_id": producer_id,
-                    "previous": 999,  # wrong — broker has last_sequence=1
+                    "previous": 999,  # wrong - broker has last_sequence=1
                     "sequence": 1000,
                 },
             },
@@ -319,7 +320,7 @@ async def test_500_internal_error_envelope(api):
         "type": "gts://gts.cf.core.errors.err.v1~cf.core.err.internal.v1~",
         "title": "Internal",
         "status": 500,
-        "detail": body["detail"],
+        "detail": "An internal error occurred. Please retry later.",
         "instance": body["instance"],
         "trace_id": TRACE_ID,
         "context": body["context"],

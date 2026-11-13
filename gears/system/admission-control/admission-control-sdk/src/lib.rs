@@ -15,6 +15,9 @@
 #![forbid(unsafe_code)]
 #![deny(rust_2018_idioms)]
 
+// The gate owns and publishes these declarations before application init.
+toolkit_gts::declare_gts_inventory!();
+
 pub mod api;
 pub mod error;
 pub mod gts;
@@ -29,6 +32,7 @@ pub use api::AdmissionClientV1;
 pub use error::{AdmissionError, AdmissionResourceError};
 pub use gts::{
     ADMISSION_CONTROL_RESOURCE, AUDIT_TOPIC_ID, AdmissionEnginePluginSpecV1, REFUSAL_EVENT_TYPE,
+    RefusalEventV1,
 };
 pub use models::{
     Admission, AdmissionRequest, FailureCondition, IDENTIFIER_MAX_LEN, PROPERTY_MAX_DEPTH,

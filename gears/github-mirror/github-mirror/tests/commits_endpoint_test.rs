@@ -42,6 +42,7 @@ fn commit_record(sha: &str, committed_at: &str, message: &str) -> CommitRecord {
         committed_at: Some(committed_at.to_owned()),
         additions: 5,
         deletions: 1,
+        html_url: Some(format!("https://ghe.example/acme/widget/commit/{sha}")),
     }
 }
 
@@ -162,6 +163,10 @@ async fn commits_are_listed_newest_first() {
     assert_eq!(items.len(), 2);
     assert_eq!(items[0]["sha"], "bbb222");
     assert_eq!(items[0]["commit"]["message"], "newer");
+    assert_eq!(
+        items[0]["html_url"],
+        "https://ghe.example/acme/widget/commit/bbb222"
+    );
     assert_eq!(items[1]["sha"], "aaa111");
 }
 

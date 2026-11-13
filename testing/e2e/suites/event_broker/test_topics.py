@@ -1,4 +1,4 @@
-"""Topic introspection scenarios (topics/1.01-1.04).
+"""Topic introspection scenarios (topics/1.01-1.05).
 
 All tests are read-only.  The pre-provisioned topics injected into the
 session-scoped server at startup (``TOPIC_STREAM``, ``TOPIC_LONGPOLL``,
@@ -13,9 +13,11 @@ import pytest
 
 from .conftest import (
     EVENT_TYPE_STREAM,
+    SUBJECT_TYPE,
     TOPIC_LONGPOLL,
     TOPIC_PREFILLED,
     TOPIC_STREAM,
+    TOPIC_STRICT,
     TRACE_ID,
 )
 
@@ -66,6 +68,24 @@ async def test_list_topic_segments_returns_manifest(api):
     assert isinstance(body["segments"], list)
 
 
+async def test_segments_of_an_empty_partition_report_an_empty_manifest(api):
+    """scenario: topics/1.05-positive-segments-empty-partition.md"""
+    # TOPIC_STRICT only ever sees publishes the broker refuses, so it stores no events.
+    async with api() as client:
+        resp = await client.get(f"/topics/segments?topic={TOPIC_STRICT}&partition=0")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body == {
+        "topic": TOPIC_STRICT,
+        "partition": 0,
+        "start_sequence": 0,
+        "end_sequence": 0,
+        "start_time": None,
+        "end_time": None,
+        "segments": [],
+    }
+
+
 async def test_segments_for_unknown_topic_returns_404(api):
     """scenario: topics/1.03-negative-segments-unknown-topic.md"""
     unknown = "gts.cf.core.events.topic.v1~cf.e2e.event_broker.nonexistent.v1"
@@ -92,22 +112,27 @@ async def test_segments_for_unknown_topic_returns_404(api):
 async def test_list_event_types_returns_paged_list(api):
     """scenario: topics/1.04-positive-list-event-types.md"""
     async with api() as client:
-        resp = await client.get(f"/event-types?topic={TOPIC_STREAM}")
+        resp = await client.get(
+            "/event-types", params={"$filter": f"topic eq '{TOPIC_STREAM}'"}
+        )
     assert resp.status_code == 200
-    body = resp.json()
-    assert "items" in body
-    assert "page_info" in body
-    ids = {item["id"] for item in body["items"]}
-    assert EVENT_TYPE_STREAM in ids
-    # Each item has the documented fields.
-    happy_et = next(i for i in body["items"] if i["id"] == EVENT_TYPE_STREAM)
-    assert happy_et == {
-        "id": EVENT_TYPE_STREAM,
-        "topic": TOPIC_STREAM,
-        "description": happy_et["description"],
-        "allowed_subject_types": happy_et["allowed_subject_types"],
-        "partition_key": happy_et["partition_key"],
-        "data_schema": happy_et["data_schema"],
+    assert resp.json() == {
+        "items": [
+            {
+                "id": EVENT_TYPE_STREAM,
+                "topic": TOPIC_STREAM,
+                "description": None,
+                "allowed_subject_types": [SUBJECT_TYPE],
+                "partition_key": "/tenant_id",
+                "data_schema": {
+                    "allOf": [
+                        {"type": ["object", "null"]},
+                        {"type": ["object", "null"]},
+                    ]
+                },
+            }
+        ],
+        "page_info": {"next_cursor": None, "prev_cursor": None, "limit": 25},
     }
 
 

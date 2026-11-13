@@ -274,8 +274,11 @@ impl<A: WorkerAction> WorkerTask<A> {
             let cancel = self.cancel.clone();
             let pass = async {
                 match self.panic_policy {
+                    // `execute` is `fn -> impl Future`, so an implementor may
+                    // panic before returning its future; `catch_unwind` only
+                    // covers polling, so the call must happen inside it.
                     PanicPolicy::CatchAndRetry => {
-                        AssertUnwindSafe(self.action.execute(&self.cancel))
+                        AssertUnwindSafe(async { self.action.execute(&self.cancel).await })
                             .catch_unwind()
                             .await
                     }
@@ -1177,6 +1180,50 @@ mod tests {
         assert_eq!(count.load(Ordering::SeqCst), 4);
         // 3 errors: backoff 10ms + 20ms + 40ms = 70ms minimum
         assert!(start.elapsed() >= Duration::from_millis(70));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_worker_outlives_a_hundred_failed_passes_in_a_row() {
+        use crate::bulkhead::{BackoffConfig, Bulkhead, BulkheadConfig, ConcurrencyLimit};
+        use crate::poker::poker;
+        let cancel = CancellationToken::new();
+        // 10 ms doubled leaves the range of `Duration` at the 72nd failure.
+        let bulkhead = Bulkhead::new(
+            "test",
+            BulkheadConfig {
+                semaphore: ConcurrencyLimit::Unlimited,
+                backoff: BackoffConfig {
+                    initial: Duration::from_millis(10),
+                    max: Duration::from_secs(1),
+                    multiplier: 2.0,
+                    jitter: 0.0,
+                },
+            },
+        );
+        let mut results: Vec<Result<Directive, String>> =
+            (0..100).map(|i| Err(format!("e{i}"))).collect();
+        results.push(Ok(Directive::sleep(Duration::from_hours(1))));
+        let action = MockAction::new(results);
+        let count = action.call_count();
+        let (timer, _timer_handle) = poker(Duration::from_secs(1), cancel.clone());
+        timer.notify_one(); // break initial Idle
+        let worker = WorkerBuilder::new("test", cancel.clone())
+            .bulkhead(bulkhead)
+            .pacing(zero_pacing())
+            .notifier(timer)
+            .build(action);
+
+        let cancel_c = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(400)).await;
+            cancel_c.cancel();
+        });
+
+        worker.run().await;
+        // Every failed pass ran, and the worker went on running passes after
+        // them until it was cancelled.
+        let passes = count.load(Ordering::SeqCst);
+        assert!(passes > 100, "only {passes} passes ran");
     }
 
     #[tokio::test(start_paused = true)]

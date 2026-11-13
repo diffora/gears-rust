@@ -16,10 +16,10 @@ use crate::infra::storage::odata_mapper::{
 };
 use chrono::SubsecRound as _;
 use github_mirror_sdk::{
-    Branch, CheckRun, Comment, Commit, CommitComment, CommitFile, CommitStatus, Contributor,
-    Deployment, Issue, IssueEvent, IssueReaction, IssueTimelineEvent, Label, Milestone,
-    PullRequest, PullRequestCommit, PullRequestFile, Release, Repo, Review, ReviewComment,
-    ReviewThread, Tag, WorkflowJob, WorkflowRun,
+    Artifact, Branch, CheckRun, Comment, Commit, CommitComment, CommitFile, CommitStatus,
+    Contributor, Deployment, Issue, IssueEvent, IssueReaction, IssueTimelineEvent, Label,
+    Milestone, PullRequest, PullRequestCommit, PullRequestFile, Release, Repo, Review,
+    ReviewComment, ReviewThread, Tag, Workflow, WorkflowJob, WorkflowRun,
 };
 use sea_orm::prelude::DateTimeUtc;
 use sea_orm::sea_query::{Alias, Expr, Func, LikeExpr};
@@ -41,19 +41,20 @@ use crate::domain::repo::{
     SyncSessionRecord, SyncSessionRepository, SyncWatermarkRecord, SyncWatermarkRepository,
 };
 use crate::domain::repo::{
-    BranchRecord, BranchRepository, CheckRunRecord, CheckRunRepository, CommentRecord,
-    CommentRepository, CommitCommentRecord, CommitCommentRepository, CommitFileRecord,
-    CommitFileRepository, CommitRecord, CommitRepository, CommitStatusRecord,
-    CommitStatusRepository, ContributorRecord, ContributorRepository, DeploymentRecord,
-    DeploymentRepository, IssueEventRecord, IssueEventRepository, IssueReactionRecord,
-    IssueReactionRepository, IssueRecord, IssueRepository, IssueTimelineEventRecord,
-    IssueTimelineRepository, LabelRecord, LabelRepository, ListingDirection, ListingFilter,
-    ListingSort, MilestoneRecord, MilestoneRepository, PullRequestCommitRecord,
-    PullRequestCommitRepository, PullRequestFileRecord, PullRequestFileRepository,
-    PullRequestRecord, PullRequestRepository, ReleaseRecord, ReleaseRepository, RepoRecord,
-    RepoRepository, ReviewCommentRecord, ReviewCommentRepository, ReviewRecord, ReviewRepository,
-    ReviewThreadRecord, ReviewThreadRepository, TagRecord, TagRepository, WorkflowJobRecord,
-    WorkflowJobRepository, WorkflowRunRecord, WorkflowRunRepository,
+    ArtifactRecord, ArtifactRepository, BranchRecord, BranchRepository, CheckRunRecord,
+    CheckRunRepository, CommentRecord, CommentRepository, CommitCommentRecord,
+    CommitCommentRepository, CommitFileRecord, CommitFileRepository, CommitRecord,
+    CommitRepository, CommitStatusRecord, CommitStatusRepository, ContributorRecord,
+    ContributorRepository, DeploymentRecord, DeploymentRepository, IssueEventRecord,
+    IssueEventRepository, IssueReactionRecord, IssueReactionRepository, IssueRecord,
+    IssueRepository, IssueTimelineEventRecord, IssueTimelineRepository, LabelRecord,
+    LabelRepository, ListingDirection, ListingFilter, ListingSort, MilestoneRecord,
+    MilestoneRepository, PullRequestCommitRecord, PullRequestCommitRepository,
+    PullRequestFileRecord, PullRequestFileRepository, PullRequestRecord, PullRequestRepository,
+    ReleaseRecord, ReleaseRepository, RepoRecord, RepoRepository, ReviewCommentRecord,
+    ReviewCommentRepository, ReviewRecord, ReviewRepository, ReviewThreadRecord,
+    ReviewThreadRepository, TagRecord, TagRepository, WorkflowJobRecord, WorkflowJobRepository,
+    WorkflowRecord, WorkflowRepository, WorkflowRunRecord, WorkflowRunRepository,
 };
 use crate::domain::repo::{
     CommentForGrouping, ConversationRepository, LogicalConversation, ReviewCommentForGrouping,
@@ -68,6 +69,7 @@ use super::mapper::{
 };
 
 use super::entity::active_syncs::{self, Entity as ActiveSyncEntity};
+use super::entity::artifacts::{self, Entity as ArtifactEntity};
 use super::entity::branches::{self, Entity as BranchEntity};
 use super::entity::check_runs::{self, Entity as CheckRunEntity};
 use super::entity::comments::{self, Entity as CommentEntity};
@@ -100,6 +102,7 @@ use super::entity::sync_watermarks::{self, Entity as SyncWatermarkEntity};
 use super::entity::tags::{self, Entity as TagEntity};
 use super::entity::workflow_jobs::{self, Entity as WorkflowJobEntity};
 use super::entity::workflow_runs::{self, Entity as WorkflowRunEntity};
+use super::entity::workflows::{self, Entity as WorkflowEntity};
 
 fn extracted_since<C: ColumnTrait>(column: C, since: Option<DateTimeUtc>) -> sea_orm::Condition {
     let mut condition = sea_orm::Condition::all();
@@ -547,6 +550,7 @@ fn commit_active_model(tenant_id: Uuid, r: &CommitRecord) -> commits::ActiveMode
         committed_at: ActiveValue::Set(r.committed_at.clone()),
         additions: ActiveValue::Set(r.additions),
         deletions: ActiveValue::Set(r.deletions),
+        html_url: ActiveValue::Set(r.html_url.clone()),
         extracted_at: ActiveValue::Set(Some(Utc::now())),
     }
 }
@@ -672,6 +676,17 @@ impl CommentRepository for SeaOrmCommentRepository {
     ) -> Result<Vec<Comment>, DomainError> {
         let conn = self.db.conn()?;
         comment_list_by_issue_in(&conn, scope, repo_id, issue_number, window).await
+    }
+
+    async fn list_by_repo(
+        &self,
+        scope: &AccessScope,
+        repo_id: i64,
+        window: PageWindow,
+        filter: ListingFilter,
+    ) -> Result<Vec<Comment>, DomainError> {
+        let conn = self.db.conn()?;
+        comment_list_by_repo_in(&conn, scope, repo_id, window, filter).await
     }
 }
 
@@ -1137,6 +1152,7 @@ impl WorkflowRunRepository for SeaOrmWorkflowRunRepository {
         &self,
         scope: &AccessScope,
         repo_id: i64,
+        workflow_id: Option<i64>,
         window: PageWindow,
     ) -> Result<(Vec<WorkflowRun>, u64), DomainError> {
         let scope = scope.clone();
@@ -1144,8 +1160,11 @@ impl WorkflowRunRepository for SeaOrmWorkflowRunRepository {
             .db()
             .transaction_ref_mapped(move |tx| {
                 Box::pin(async move {
-                    let items = workflow_run_list_by_repo_in(tx, &scope, repo_id, window).await?;
-                    let total = workflow_run_count_by_repo_in(tx, &scope, repo_id).await?;
+                    let items =
+                        workflow_run_list_by_repo_in(tx, &scope, repo_id, workflow_id, window)
+                            .await?;
+                    let total =
+                        workflow_run_count_by_repo_in(tx, &scope, repo_id, workflow_id).await?;
                     Ok((items, total))
                 })
             })
@@ -1169,7 +1188,7 @@ impl WorkflowRunRepository for SeaOrmWorkflowRunRepository {
         window: PageWindow,
     ) -> Result<Vec<WorkflowRun>, DomainError> {
         let conn = self.db.conn()?;
-        workflow_run_list_by_repo_in(&conn, scope, repo_id, window).await
+        workflow_run_list_by_repo_in(&conn, scope, repo_id, None, window).await
     }
 }
 
@@ -1547,6 +1566,124 @@ impl DeploymentRepository for SeaOrmDeploymentRepository {
     }
 }
 
+pub struct SeaOrmArtifactRepository {
+    db: Arc<DbProvider>,
+}
+
+impl SeaOrmArtifactRepository {
+    #[must_use]
+    pub fn new(db: Arc<DbProvider>) -> Self {
+        Self { db }
+    }
+}
+
+fn artifact_active_model(tenant_id: Uuid, r: &ArtifactRecord) -> artifacts::ActiveModel {
+    artifacts::ActiveModel {
+        tenant_id: ActiveValue::Set(tenant_id),
+        id: ActiveValue::Set(r.id),
+        repo_id: ActiveValue::Set(r.repo_id),
+        name: ActiveValue::Set(r.name.clone()),
+        size_in_bytes: ActiveValue::Set(r.size_in_bytes),
+        expired: ActiveValue::Set(r.expired),
+        workflow_run_id: ActiveValue::Set(r.workflow_run_id),
+        head_branch: ActiveValue::Set(r.head_branch.clone()),
+        head_sha: ActiveValue::Set(r.head_sha.clone()),
+        created_at: ActiveValue::Set(r.created_at.clone()),
+        updated_at: ActiveValue::Set(r.updated_at.clone()),
+        expires_at: ActiveValue::Set(r.expires_at.clone()),
+        extracted_at: ActiveValue::Set(Some(Utc::now())),
+    }
+}
+
+#[async_trait]
+impl ArtifactRepository for SeaOrmArtifactRepository {
+    async fn page_by_repo(
+        &self,
+        scope: &AccessScope,
+        repo_id: i64,
+        window: PageWindow,
+    ) -> Result<(Vec<Artifact>, u64), DomainError> {
+        let scope = scope.clone();
+        self.db
+            .db()
+            .transaction_ref_mapped(move |tx| {
+                Box::pin(async move {
+                    let items = artifact_list_by_repo_in(tx, &scope, repo_id, window).await?;
+                    let total = artifact_count_by_repo_in(tx, &scope, repo_id).await?;
+                    Ok((items, total))
+                })
+            })
+            .await
+    }
+}
+
+pub struct SeaOrmWorkflowRepository {
+    db: Arc<DbProvider>,
+}
+
+impl SeaOrmWorkflowRepository {
+    #[must_use]
+    pub fn new(db: Arc<DbProvider>) -> Self {
+        Self { db }
+    }
+}
+
+fn workflow_active_model(tenant_id: Uuid, r: &WorkflowRecord) -> workflows::ActiveModel {
+    workflows::ActiveModel {
+        tenant_id: ActiveValue::Set(tenant_id),
+        id: ActiveValue::Set(r.id),
+        repo_id: ActiveValue::Set(r.repo_id),
+        name: ActiveValue::Set(r.name.clone()),
+        path: ActiveValue::Set(r.path.clone()),
+        state: ActiveValue::Set(r.state.clone()),
+        extracted_at: ActiveValue::Set(Some(Utc::now())),
+    }
+}
+
+#[async_trait]
+impl WorkflowRepository for SeaOrmWorkflowRepository {
+    async fn page_by_repo(
+        &self,
+        scope: &AccessScope,
+        repo_id: i64,
+        window: PageWindow,
+    ) -> Result<(Vec<Workflow>, u64), DomainError> {
+        let scope = scope.clone();
+        self.db
+            .db()
+            .transaction_ref_mapped(move |tx| {
+                Box::pin(async move {
+                    let items = workflow_list_by_repo_in(tx, &scope, repo_id, window).await?;
+                    let total = workflow_count_by_repo_in(tx, &scope, repo_id).await?;
+                    Ok((items, total))
+                })
+            })
+            .await
+    }
+
+    async fn find_by_id(
+        &self,
+        scope: &AccessScope,
+        repo_id: i64,
+        id: i64,
+    ) -> Result<Option<Workflow>, DomainError> {
+        let conn = self.db.conn()?;
+        let key = sea_orm::Condition::all().add(workflows::Column::Id.eq(id));
+        workflow_find_in(&conn, scope, repo_id, key).await
+    }
+
+    async fn find_by_path(
+        &self,
+        scope: &AccessScope,
+        repo_id: i64,
+        path: &str,
+    ) -> Result<Option<Workflow>, DomainError> {
+        let conn = self.db.conn()?;
+        let key = sea_orm::Condition::all().add(workflows::Column::Path.eq(path));
+        workflow_find_in(&conn, scope, repo_id, key).await
+    }
+}
+
 pub struct SeaOrmPullRequestCommitRepository {
     db: Arc<DbProvider>,
 }
@@ -1572,6 +1709,7 @@ fn pull_request_commit_active_model(
         committer_login: ActiveValue::Set(r.committer_login.clone()),
         authored_at: ActiveValue::Set(r.authored_at.clone()),
         committed_at: ActiveValue::Set(r.committed_at.clone()),
+        html_url: ActiveValue::Set(r.html_url.clone()),
         extracted_at: ActiveValue::Set(Some(Utc::now())),
     }
 }
@@ -2486,6 +2624,7 @@ async fn commit_upsert_in<C: DBRunner>(
         commits::Column::CommittedAt,
         commits::Column::Additions,
         commits::Column::Deletions,
+        commits::Column::HtmlUrl,
         commits::Column::ExtractedAt,
     ])
     .map_err(map_scope_error)?;
@@ -2510,6 +2649,7 @@ async fn commit_upsert_in<C: DBRunner>(
         committed_at: record.committed_at,
         additions: record.additions,
         deletions: record.deletions,
+        html_url: record.html_url,
     })
 }
 
@@ -2659,6 +2799,45 @@ async fn comment_list_by_issue_in<C: DBRunner>(
         )
         .order_by(comments::Column::CreatedAt, Order::Asc)
         // Unique tie-break: equal sort keys must not shuffle page windows.
+        .order_by(comments::Column::Id, Order::Asc)
+        .filter(window_cutoffs(
+            comments::Column::ExtractedAt,
+            Some(comments::Column::UpdatedAt),
+            window,
+        ))
+        .limit(window.limit())
+        .offset(window.offset())
+        .all(conn)
+        .await
+        .map_err(map_scope_error)?;
+
+    Ok(rows.into_iter().map(Into::into).collect())
+}
+
+async fn comment_list_by_repo_in<C: DBRunner>(
+    conn: &C,
+    scope: &AccessScope,
+    repo_id: i64,
+    window: PageWindow,
+    filter: ListingFilter,
+) -> Result<Vec<Comment>, DomainError> {
+    let mut condition = sea_orm::Condition::all().add(comments::Column::RepoId.eq(repo_id));
+    if let Some(since) = filter.since {
+        condition = condition.add(comments::Column::UpdatedAt.gte(github_instant(since)));
+    }
+    let sort_column = match filter.sort {
+        ListingSort::Created => comments::Column::CreatedAt,
+        ListingSort::Updated => comments::Column::UpdatedAt,
+    };
+    let direction = match filter.direction {
+        ListingDirection::Asc => Order::Asc,
+        ListingDirection::Desc => Order::Desc,
+    };
+    let rows = CommentEntity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(condition)
+        .order_by(sort_column, direction)
         .order_by(comments::Column::Id, Order::Asc)
         .filter(window_cutoffs(
             comments::Column::ExtractedAt,
@@ -3445,15 +3624,24 @@ async fn contributor_list_by_ids_in<C: DBRunner>(
     Ok(rows.into_iter().map(Into::into).collect())
 }
 
+fn workflow_runs_of(repo_id: i64, workflow_id: Option<i64>) -> sea_orm::Condition {
+    let mut condition = sea_orm::Condition::all().add(workflow_runs::Column::RepoId.eq(repo_id));
+    if let Some(workflow_id) = workflow_id {
+        condition = condition.add(workflow_runs::Column::WorkflowId.eq(workflow_id));
+    }
+    condition
+}
+
 async fn workflow_run_count_by_repo_in<C: DBRunner>(
     conn: &C,
     scope: &AccessScope,
     repo_id: i64,
+    workflow_id: Option<i64>,
 ) -> Result<u64, DomainError> {
     WorkflowRunEntity::find()
         .secure()
         .scope_with(scope)
-        .filter(sea_orm::Condition::all().add(workflow_runs::Column::RepoId.eq(repo_id)))
+        .filter(workflow_runs_of(repo_id, workflow_id))
         .count(conn)
         .await
         .map_err(map_scope_error)
@@ -3521,12 +3709,13 @@ async fn workflow_run_list_by_repo_in<C: DBRunner>(
     conn: &C,
     scope: &AccessScope,
     repo_id: i64,
+    workflow_id: Option<i64>,
     window: PageWindow,
 ) -> Result<Vec<WorkflowRun>, DomainError> {
     let rows = WorkflowRunEntity::find()
         .secure()
         .scope_with(scope)
-        .filter(sea_orm::Condition::all().add(workflow_runs::Column::RepoId.eq(repo_id)))
+        .filter(workflow_runs_of(repo_id, workflow_id))
         .order_by(workflow_runs::Column::CreatedAt, Order::Desc)
         // Unique tie-break: equal sort keys must not shuffle page windows.
         .order_by(workflow_runs::Column::Id, Order::Asc)
@@ -4078,6 +4267,189 @@ async fn deployment_list_by_repo_in<C: DBRunner>(
     Ok(rows.into_iter().map(Into::into).collect())
 }
 
+async fn artifact_upsert_in<C: DBRunner>(
+    conn: &C,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    record: ArtifactRecord,
+) -> Result<Artifact, DomainError> {
+    let on_conflict = SecureOnConflict::<ArtifactEntity>::columns([
+        artifacts::Column::TenantId,
+        artifacts::Column::Id,
+    ])
+    .update_columns([
+        artifacts::Column::RepoId,
+        artifacts::Column::Name,
+        artifacts::Column::SizeInBytes,
+        artifacts::Column::Expired,
+        artifacts::Column::WorkflowRunId,
+        artifacts::Column::HeadBranch,
+        artifacts::Column::HeadSha,
+        artifacts::Column::CreatedAt,
+        artifacts::Column::UpdatedAt,
+        artifacts::Column::ExpiresAt,
+        artifacts::Column::ExtractedAt,
+    ])
+    .map_err(map_scope_error)?;
+
+    let model = artifact_active_model(tenant_id, &record);
+    ArtifactEntity::insert(model.clone())
+        .secure()
+        .scope_with_model(scope, &model)
+        .map_err(map_scope_error)?
+        .on_conflict(on_conflict)
+        .exec(conn)
+        .await
+        .map_err(map_scope_error)?;
+
+    Ok(Artifact {
+        id: record.id,
+        repo_id: record.repo_id,
+        name: record.name,
+        size_in_bytes: record.size_in_bytes,
+        expired: record.expired,
+        workflow_run_id: record.workflow_run_id,
+        head_branch: record.head_branch,
+        head_sha: record.head_sha,
+        created_at: record.created_at,
+        updated_at: record.updated_at,
+        expires_at: record.expires_at,
+    })
+}
+
+async fn artifact_count_by_repo_in<C: DBRunner>(
+    conn: &C,
+    scope: &AccessScope,
+    repo_id: i64,
+) -> Result<u64, DomainError> {
+    ArtifactEntity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(sea_orm::Condition::all().add(artifacts::Column::RepoId.eq(repo_id)))
+        .count(conn)
+        .await
+        .map_err(map_scope_error)
+}
+
+async fn artifact_list_by_repo_in<C: DBRunner>(
+    conn: &C,
+    scope: &AccessScope,
+    repo_id: i64,
+    window: PageWindow,
+) -> Result<Vec<Artifact>, DomainError> {
+    let rows = ArtifactEntity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(sea_orm::Condition::all().add(artifacts::Column::RepoId.eq(repo_id)))
+        .order_by(artifacts::Column::CreatedAt, Order::Desc)
+        .order_by(artifacts::Column::Id, Order::Asc)
+        .filter(window_cutoffs(
+            artifacts::Column::ExtractedAt,
+            Some(artifacts::Column::UpdatedAt),
+            window,
+        ))
+        .limit(window.limit())
+        .offset(window.offset())
+        .all(conn)
+        .await
+        .map_err(map_scope_error)?;
+
+    Ok(rows.into_iter().map(Into::into).collect())
+}
+
+async fn workflow_upsert_in<C: DBRunner>(
+    conn: &C,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    record: WorkflowRecord,
+) -> Result<Workflow, DomainError> {
+    let on_conflict = SecureOnConflict::<WorkflowEntity>::columns([
+        workflows::Column::TenantId,
+        workflows::Column::Id,
+    ])
+    .update_columns([
+        workflows::Column::RepoId,
+        workflows::Column::Name,
+        workflows::Column::Path,
+        workflows::Column::State,
+        workflows::Column::ExtractedAt,
+    ])
+    .map_err(map_scope_error)?;
+
+    let model = workflow_active_model(tenant_id, &record);
+    WorkflowEntity::insert(model.clone())
+        .secure()
+        .scope_with_model(scope, &model)
+        .map_err(map_scope_error)?
+        .on_conflict(on_conflict)
+        .exec(conn)
+        .await
+        .map_err(map_scope_error)?;
+
+    Ok(Workflow {
+        id: record.id,
+        name: record.name,
+        path: record.path,
+        state: record.state,
+    })
+}
+
+async fn workflow_count_by_repo_in<C: DBRunner>(
+    conn: &C,
+    scope: &AccessScope,
+    repo_id: i64,
+) -> Result<u64, DomainError> {
+    WorkflowEntity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(sea_orm::Condition::all().add(workflows::Column::RepoId.eq(repo_id)))
+        .count(conn)
+        .await
+        .map_err(map_scope_error)
+}
+
+async fn workflow_list_by_repo_in<C: DBRunner>(
+    conn: &C,
+    scope: &AccessScope,
+    repo_id: i64,
+    window: PageWindow,
+) -> Result<Vec<Workflow>, DomainError> {
+    let rows = WorkflowEntity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(sea_orm::Condition::all().add(workflows::Column::RepoId.eq(repo_id)))
+        .order_by(workflows::Column::Id, Order::Asc)
+        .filter(window_cutoffs(workflows::Column::ExtractedAt, None, window))
+        .limit(window.limit())
+        .offset(window.offset())
+        .all(conn)
+        .await
+        .map_err(map_scope_error)?;
+
+    Ok(rows.into_iter().map(Into::into).collect())
+}
+
+async fn workflow_find_in<C: DBRunner>(
+    conn: &C,
+    scope: &AccessScope,
+    repo_id: i64,
+    key: sea_orm::Condition,
+) -> Result<Option<Workflow>, DomainError> {
+    let row = WorkflowEntity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            sea_orm::Condition::all()
+                .add(workflows::Column::RepoId.eq(repo_id))
+                .add(key),
+        )
+        .one(conn)
+        .await
+        .map_err(map_scope_error)?;
+
+    Ok(row.map(Into::into))
+}
+
 async fn pull_request_commit_upsert_in<C: DBRunner>(
     conn: &C,
     scope: &AccessScope,
@@ -4096,6 +4468,7 @@ async fn pull_request_commit_upsert_in<C: DBRunner>(
         pull_request_commits::Column::CommitterLogin,
         pull_request_commits::Column::AuthoredAt,
         pull_request_commits::Column::CommittedAt,
+        pull_request_commits::Column::HtmlUrl,
         pull_request_commits::Column::ExtractedAt,
     ])
     .map_err(map_scope_error)?;
@@ -4119,6 +4492,7 @@ async fn pull_request_commit_upsert_in<C: DBRunner>(
         committer_login: record.committer_login,
         authored_at: record.authored_at,
         committed_at: record.committed_at,
+        html_url: record.html_url,
     })
 }
 
@@ -5063,6 +5437,8 @@ impl SyncWriter for SeaOrmSyncWriter {
                         deployment_upsert_in,
                         listing.deployments
                     );
+                    sync_table!(tx, &scope, tenant_id, artifact_upsert_in, listing.artifacts);
+                    sync_table!(tx, &scope, tenant_id, workflow_upsert_in, listing.workflows);
                     Ok(())
                 })
             })
@@ -5147,6 +5523,8 @@ impl SyncWriter for SeaOrmSyncWriter {
                     removed +=
                         delete_by_repo!(tx, &scope, repo_id, WorkflowRunEntity, workflow_runs);
                     removed += delete_by_repo!(tx, &scope, repo_id, DeploymentEntity, deployments);
+                    removed += delete_by_repo!(tx, &scope, repo_id, ArtifactEntity, artifacts);
+                    removed += delete_by_repo!(tx, &scope, repo_id, WorkflowEntity, workflows);
                     removed += delete_by_repo!(tx, &scope, repo_id, LabelEntity, labels);
                     removed += delete_by_repo!(tx, &scope, repo_id, MilestoneEntity, milestones);
                     removed += delete_by_repo!(tx, &scope, repo_id, ReleaseEntity, releases);

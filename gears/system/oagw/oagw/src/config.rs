@@ -15,9 +15,8 @@ pub struct OagwConfig {
     /// Allow plaintext HTTP upstreams (and HTTP token endpoints) for the
     /// proxy. Default: `false`.
     ///
-    /// **FIPS:** rejected at startup by [`OagwConfig::validate`] under
-    /// `--features fips`; cleartext upstream token endpoints would otherwise
-    /// be refused by `toolkit-http` on the first proxied request.
+    /// **FIPS:** allowed under `--features fips` as an explicit opt-in to
+    /// plaintext; `toolkit-http` logs a warning for the token-endpoint client.
     #[serde(default)]
     pub allow_http_upstream: bool,
     /// TTL in seconds for cached OAuth2 access tokens.
@@ -94,6 +93,16 @@ pub struct ProxyCacheConfig {
         with = "toolkit_utils::humantime_serde"
     )]
     pub ttl: Duration,
+    /// How long past the TTL an entry may still answer when its reload
+    /// fails, so proxying keeps working while the database is down: the
+    /// entry is reloaded on use and served only if the reload fails or is
+    /// slow. Humantime (`15m`). From 0 (off: an expired entry is never
+    /// served) to 24 hours. Default: 15 minutes.
+    #[serde(
+        default = "default_proxy_cache_max_stale",
+        with = "toolkit_utils::humantime_serde"
+    )]
+    pub max_stale: Duration,
     /// Entries per section (upstream candidates by alias, routes by
     /// upstream); when a section is full the least recently used entry goes. From
     /// 1 to 1 000 000. Default: 10 000.
@@ -106,6 +115,7 @@ impl Default for ProxyCacheConfig {
         Self {
             enabled: true,
             ttl: default_proxy_cache_ttl(),
+            max_stale: default_proxy_cache_max_stale(),
             max_entries: default_proxy_cache_max_entries(),
         }
     }
@@ -113,6 +123,10 @@ impl Default for ProxyCacheConfig {
 
 fn default_proxy_cache_ttl() -> Duration {
     Duration::from_mins(1)
+}
+
+fn default_proxy_cache_max_stale() -> Duration {
+    Duration::from_mins(15)
 }
 
 fn default_proxy_cache_max_entries() -> usize {
@@ -123,6 +137,10 @@ fn default_proxy_cache_max_entries() -> usize {
 /// burst; above an hour a lost change stays visible too long.
 const PROXY_CACHE_TTL_MIN: Duration = Duration::from_secs(1);
 const PROXY_CACHE_TTL_MAX: Duration = Duration::from_hours(1);
+
+/// Upper bound of `proxy_cache.max_stale`: past a day an outage needs an
+/// operator, not configuration this old.
+const PROXY_CACHE_MAX_STALE_MAX: Duration = Duration::from_hours(24);
 
 /// Upper bound of `proxy_cache.max_entries`, per section: two sections of a
 /// million entries can hold gigabytes, so a larger value is a typo.
@@ -285,6 +303,12 @@ impl OagwConfig {
                 "proxy_cache.ttl must be between 1s and 1h, got {ttl:?}"
             ));
         }
+        let max_stale = self.proxy_cache.max_stale;
+        if max_stale > PROXY_CACHE_MAX_STALE_MAX {
+            return Err(format!(
+                "proxy_cache.max_stale must be at most 24h, got {max_stale:?}"
+            ));
+        }
         let max_entries = self.proxy_cache.max_entries;
         if max_entries == 0 {
             return Err(format!(
@@ -295,14 +319,6 @@ impl OagwConfig {
             return Err(format!(
                 "proxy_cache.max_entries must be at most {PROXY_CACHE_MAX_ENTRIES_MAX}, got {max_entries}"
             ));
-        }
-        #[cfg(feature = "fips")]
-        if self.allow_http_upstream {
-            return Err(
-                "allow_http_upstream=true is not permitted under --features fips \
-                 (cleartext upstream token endpoints would be rejected by toolkit-http)"
-                    .to_owned(),
-            );
         }
         Ok(())
     }
@@ -537,6 +553,7 @@ mod tests {
         let config: OagwConfig = serde_json::from_value(serde_json::json!({})).unwrap();
         assert!(config.proxy_cache.enabled);
         assert_eq!(config.proxy_cache.ttl, Duration::from_secs(60));
+        assert_eq!(config.proxy_cache.max_stale, Duration::from_mins(15));
         assert_eq!(config.proxy_cache.max_entries, 10_000);
         let partial: OagwConfig = serde_json::from_value(serde_json::json!({
             "proxy_cache": { "enabled": false }
@@ -591,6 +608,40 @@ mod tests {
     }
 
     #[test]
+    fn proxy_cache_reads_a_humantime_max_stale() {
+        let config: OagwConfig = serde_json::from_value(serde_json::json!({
+            "proxy_cache": { "max_stale": "30m" }
+        }))
+        .unwrap();
+        assert_eq!(config.proxy_cache.max_stale, Duration::from_mins(30));
+        let off: OagwConfig = serde_json::from_value(serde_json::json!({
+            "proxy_cache": { "max_stale": "0s" }
+        }))
+        .unwrap();
+        assert_eq!(off.proxy_cache.max_stale, Duration::ZERO);
+    }
+
+    #[test]
+    fn validate_bounds_the_proxy_cache_max_stale_at_a_day() {
+        let with = |max_stale| {
+            let mut config = OagwConfig::default();
+            config.proxy_cache.max_stale = max_stale;
+            config.validate()
+        };
+        for accepted in [
+            Duration::ZERO,
+            Duration::from_hours(1),
+            Duration::from_hours(24),
+        ] {
+            assert_eq!(with(accepted), Ok(()));
+        }
+        let rejected = Duration::from_hours(24) + Duration::from_millis(1);
+        let err = with(rejected).expect_err("over a day");
+        assert!(err.contains("proxy_cache.max_stale"), "{err}");
+        assert!(err.contains(&format!("{rejected:?}")), "{err}");
+    }
+
+    #[test]
     fn validate_needs_at_least_one_proxy_cache_entry() {
         let with = |max_entries| {
             let mut config = OagwConfig::default();
@@ -616,19 +667,13 @@ mod tests {
         assert!(err.contains("got 1000001"), "{err}");
     }
 
-    #[cfg(feature = "fips")]
+    /// Plaintext upstreams are a deployment opt-in, in FIPS builds too.
     #[test]
-    fn validate_rejects_allow_http_upstream_under_fips() {
+    fn validate_accepts_allow_http_upstream() {
         let config = OagwConfig {
             allow_http_upstream: true,
             ..Default::default()
         };
-        let err = config
-            .validate()
-            .expect_err("allow_http_upstream=true must be rejected under --features fips");
-        assert!(
-            err.contains("allow_http_upstream"),
-            "error must mention the offending field, got: {err}"
-        );
+        assert_eq!(config.validate(), Ok(()));
     }
 }

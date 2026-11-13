@@ -321,6 +321,27 @@ pub async fn enqueued_event_envelope(dsn: &str, payload_type: &str) -> serde_jso
         .clone()
 }
 
+/// The `subject_type` of the newest SDK envelope carrying this event type.
+///
+/// # Panics
+///
+/// Panics if no row of `payload_type` is enqueued or its payload is not JSON.
+pub async fn enqueued_event_subject_type(dsn: &str, payload_type: &str) -> serde_json::Value {
+    let body_table = format!("{}_body", events::OUTBOX_TABLE_PREFIX);
+    let payload = raw_string_opt(
+        dsn,
+        &format!(
+            "SELECT CAST(payload AS TEXT) AS v FROM {body_table} \
+             WHERE json_extract(CAST(payload AS TEXT), '$.type') = '{payload_type}' ORDER BY id DESC LIMIT 1"
+        ),
+    )
+    .await
+    .expect("the enqueued row carries a payload");
+    serde_json::from_str::<serde_json::Value>(&payload).expect("the door enqueues a JSON envelope")
+        ["subject_type"]
+        .clone()
+}
+
 /// How many idempotency rows carry `client_key`.
 pub async fn idempotency_rows_for(dsn: &str, client_key: &str) -> i64 {
     raw_i64(

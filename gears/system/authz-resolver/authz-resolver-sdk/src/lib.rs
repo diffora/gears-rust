@@ -42,6 +42,9 @@
 //! ```
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
+// `authz-resolver` publishes this crate's GTS declarations itself when configured to; see `gts`.
+toolkit_gts::declare_gts_inventory!();
+
 pub mod api;
 pub mod constraints;
 pub mod error;
@@ -49,6 +52,9 @@ pub mod gts;
 pub mod models;
 pub mod pep;
 pub mod plugin_api;
+
+#[cfg(feature = "test-util")]
+pub mod test_support;
 
 /// REST (HTTP) projection of the [`AuthZResolverApi`] contract
 pub mod rest;
@@ -67,7 +73,9 @@ pub use models::{
     Action, BarrierMode, Capability, DenyReason, EvaluationRequest, EvaluationRequestContext,
     EvaluationResponse, EvaluationResponseContext, Resource, Subject, TenantContext, TenantMode,
 };
-pub use pep::{AccessRequest, EnforcerError, IntoPropertyValue, PolicyEnforcer, ResourceType};
+pub use pep::{
+    AccessDenial, AccessRequest, EnforcerError, IntoPropertyValue, PolicyEnforcer, ResourceType,
+};
 pub use plugin_api::AuthZResolverPluginClient;
 // REST projection: base projection trait + HTTP binding builder (always), plus
 // the generated clients when `rest-client` is enabled.

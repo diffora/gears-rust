@@ -1,6 +1,6 @@
 [package]
 name = "cf-gears-toolkit"
-version = "0.12.0"
+version = "0.13.1"
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
@@ -18,10 +18,17 @@ name = "toolkit"
 [lints]
 workspace = true
 
+# `toolkit-http` is never named in code: the `fips` feature enables it only to
+# forward `toolkit-http/fips`.
+[package.metadata.cargo-shear]
+ignored = ["toolkit-http"]
+
 [features]
 # Enable the runner and the runtime integration by default.
 default = ["otel", "db"]
 coverage_nightly = []
+# Fixture helpers for downstream gear tests; enable only in dev-dependencies.
+test-support = []
 # Use the facade's per-OS policy for TLS and application primitives.
 fips = ["toolkit-security/fips", "dep:toolkit-http", "toolkit-http/fips"]
 
@@ -110,7 +117,7 @@ file-rotate = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
 dsn = { workspace = true, optional = true }
-toolkit-utils = { workspace = true }
+toolkit-utils = { workspace = true, features = ["humantime-serde"] }
 # Shared W3C Trace Context propagation (single source of truth with
 # `cf-gears-toolkit-http`). Not optional: `extract_trace_id` uses the parser on
 # the always-compiled canonical-error path, independent of the `otel` feature.
@@ -167,6 +174,8 @@ tonic = { workspace = true, optional = true }
 nix = { version = "0.31", default-features = false, features = ["signal"] }
 
 [dev-dependencies]
+# A platform credential in the deployment publication tests.
+secrecy = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 trybuild = { workspace = true }
 tempfile = { workspace = true }
@@ -175,3 +184,5 @@ serial_test = { workspace = true }
 toolkit-db = { workspace = true, features = ["sqlite"] }
 tracing-subscriber = { workspace = true }
 tracing-test = { workspace = true, features = ["no-env-filter"] }
+# `gts_type_schema` plugin specs in unit tests.
+schemars = { workspace = true }

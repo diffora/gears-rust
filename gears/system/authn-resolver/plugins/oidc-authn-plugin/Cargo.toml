@@ -2,7 +2,7 @@
 name = "cf-gears-oidc-authn-plugin"
 edition.workspace = true
 license.workspace = true
-version = "0.3.2"
+version = "0.5.1"
 description = "OIDC Authentication Resolver Plugin"
 keywords = ["constructorfabric", "cf-gears"]
 metadata.docs.rs.all-features = true
@@ -20,25 +20,28 @@ authn-resolver-sdk = {
     version = "0.3",
     path = "../../authn-resolver-sdk"
 }
+# Publishes through the consumed platform API (local or resolving REST client).
 types-registry-sdk = {
-    package = "cf-gears-types-registry-sdk", version = "0.4",
-    path = "../../../types-registry/types-registry-sdk"
+    package = "cf-gears-types-registry-sdk", version = "0.5",
+    path = "../../../types-registry/types-registry-sdk", features = ["rest-client"]
 }
-types-registry = { workspace = true }
-authn-resolver = { workspace = true }
 
 # ToolKit dependencies
 toolkit.workspace = true
 toolkit-gts = { workspace = true }
 toolkit-macros.workspace = true
 toolkit-security = { workspace = true, features = ["jwt"] }
+toolkit-resilience.workspace = true
 inventory.workspace = true
 
 # JWT validation
 jsonwebtoken.workspace = true
 
-# HTTP client for OIDC Discovery
-reqwest = { workspace = true, features = ["form", "json"] }
+# HTTP client for OIDC Discovery, JWKS and token calls
+toolkit-http = { workspace = true }
+# `legacy::Error::is_connect` tells a failed connect from a lost request (retry.rs).
+hyper-util = { workspace = true, features = ["client-legacy"] }
+http.workspace = true
 httpdate.workspace = true
 
 # Retry driver + backoff/jitter strategies for outbound IdP calls
@@ -47,14 +50,12 @@ tokio-retry.workspace = true
 # Regex-based issuer_pattern matching
 regex.workspace = true
 
-# URL parsing (domain-friendly; reqwest re-exports the same type)
+# URL parsing
 url.workspace = true
 
 # Concurrent JWKS / discovery cache
 dashmap.workspace = true
 
-# Low-overhead synchronization for circuit-breaker state
-parking_lot.workspace = true
 
 # Serialization
 serde.workspace = true
@@ -85,12 +86,18 @@ secrecy.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true
+tokio-util.workspace = true
 secrecy.workspace = true
 criterion.workspace = true
 httpmock.workspace = true
 serde_urlencoded.workspace = true
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
 rcgen.workspace = true
+tokio-rustls.workspace = true
+tracing-subscriber.workspace = true
+rustls.workspace = true
+# Enables `test-util` for this crate's own integration tests and benches.
+cf-gears-oidc-authn-plugin = { path = ".", features = ["test-util"] }
 
 [[bench]]
 name = "jwt_validation"
@@ -102,3 +109,6 @@ harness = false
 
 [features]
 e2e-diagnostics = []
+# Test-only constructors (plain-HTTP IdP URLs, mock-server HTTP client) for
+# this crate's integration tests and benches; never enable in production.
+test-util = []

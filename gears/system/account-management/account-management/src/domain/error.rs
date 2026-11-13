@@ -321,9 +321,18 @@ pub enum DomainError {
     #[error("feature disabled: {detail}")]
     FeatureDisabled { detail: String },
 
+    // ---- Unauthenticated (HTTP 401) / PermissionDenied (HTTP 403) ----
+    /// A Types Registry read made under the request's own credential
+    /// refused that caller. The registry's `Unauthenticated` or
+    /// `PermissionDenied` is returned as is, so a client can tell an
+    /// expired or insufficient credential from AM failing. Built only by
+    /// [`Self::caller_registry_failure`].
+    #[error("types-registry refused the caller: {0}")]
+    RegistryRefusedCaller(toolkit_canonical_errors::CanonicalError),
+
     // ---- PermissionDenied (HTTP 403) ----
     /// `cause` is `Some` only when the denial originates upstream
-    /// (e.g. `From<authz_resolver_sdk::EnforcerError::Denied>`); plain
+    /// (e.g. `From<authz_resolver_sdk::EnforcerError::AccessDenied>`); plain
     /// AM-side ancestry rejections leave it `None`.
     #[error("cross-tenant access denied")]
     CrossTenantDenied {
@@ -446,6 +455,47 @@ impl DomainError {
         }
     }
 
+    /// A failed Types Registry read made for the request's caller
+    /// ([`crate::domain::types_registry_reader::TypesRegistryReader::Caller`]):
+    /// a refusal of that caller's credential is the caller's
+    /// ([`Self::RegistryRefusedCaller`]); anything else is classified as
+    /// [`Self::platform_registry_failure`] does. `context` names the read.
+    #[must_use]
+    pub fn caller_registry_failure(
+        err: toolkit_canonical_errors::CanonicalError,
+        context: impl std::fmt::Display,
+    ) -> Self {
+        use toolkit_canonical_errors::CanonicalError;
+        match err {
+            CanonicalError::Unauthenticated { .. } | CanonicalError::PermissionDenied { .. } => {
+                Self::RegistryRefusedCaller(err)
+            }
+            other => Self::platform_registry_failure(other, context),
+        }
+    }
+
+    /// A failed Types Registry read: only an availability failure is a
+    /// retryable [`Self::ServiceUnavailable`]. Anything else — a corrupt
+    /// answer, a contract mismatch, a refusal of AM's own platform
+    /// credential — fails the same way again, so it is [`Self::Internal`].
+    /// `context` names the read.
+    #[must_use]
+    pub fn platform_registry_failure(
+        err: toolkit_canonical_errors::CanonicalError,
+        context: impl std::fmt::Display,
+    ) -> Self {
+        use toolkit_canonical_errors::CanonicalError;
+        match err {
+            CanonicalError::ServiceUnavailable { .. }
+            | CanonicalError::DeadlineExceeded { .. }
+            | CanonicalError::ResourceExhausted { .. }
+            | CanonicalError::Aborted { .. } => {
+                Self::service_unavailable(format!("{context}: {err}"))
+            }
+            other => Self::internal(format!("{context}: {other}")),
+        }
+    }
+
     /// Convenience constructor for [`Self::Internal`] without an
     /// upstream cause.
     #[must_use]
@@ -482,10 +532,13 @@ impl From<authz_resolver_sdk::EnforcerError> for DomainError {
     ///   shape AM cannot enforce locally — by the fail-closed rule
     ///   that MUST be a deny, not a 500. Raw compile error is kept on
     ///   the `cause` chain for the audit trail.
+    /// - An unknown outcome class (`EnforcerError` is `#[non_exhaustive]`)
+    ///   → [`DomainError::Internal`] (HTTP 500), never a denial; the error
+    ///   is kept on the `cause` chain.
     fn from(err: authz_resolver_sdk::EnforcerError) -> Self {
         use authz_resolver_sdk::EnforcerError;
         match err {
-            denied @ EnforcerError::Denied { .. } => Self::CrossTenantDenied {
+            denied @ EnforcerError::AccessDenied(_) => Self::CrossTenantDenied {
                 cause: Some(Box::new(denied)),
             },
             EnforcerError::EvaluationFailed(source) => Self::ServiceUnavailable {
@@ -500,6 +553,12 @@ impl From<authz_resolver_sdk::EnforcerError> for DomainError {
             },
             compile_failed @ EnforcerError::CompileFailed(_) => Self::CrossTenantDenied {
                 cause: Some(Box::new(compile_failed)),
+            },
+            // An unknown outcome class is an internal failure (HTTP 500),
+            // never a denial; the cause stays on the `cause` chain.
+            unknown => Self::Internal {
+                diagnostic: "authorization failed with an unknown outcome".to_owned(),
+                cause: Some(Box::new(unknown)),
             },
         }
     }

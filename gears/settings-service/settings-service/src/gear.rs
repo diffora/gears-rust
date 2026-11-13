@@ -578,9 +578,8 @@ impl Gear for SettingsService {
         // The two SDK traits are bound in process and have no remote contract
         // to reach, so a deployment that wires one remotely is refused here
         // rather than left with a binding that resolves to nothing.
-        if let Err(reason) = config.check_in_process_bindings() {
-            anyhow::bail!("{}: {reason}", Self::MODULE_NAME);
-        }
+        crate::config::check_in_process_bindings(ctx.config_provider(), ctx.gear_name())
+            .map_err(|reason| anyhow::anyhow!("{}: {reason}", Self::MODULE_NAME))?;
         if config.audit_retention_days < crate::audit::MIN_RETENTION_DAYS {
             anyhow::bail!(
                 "{}: audit_retention_days is {} but must not be below {}",
@@ -671,8 +670,7 @@ impl Gear for SettingsService {
                 ctx.client_hub(),
                 &config.step_up,
             )?);
-        // The Secret Manager over the Credential Store: `credstore` is a system
-        // gear, so its client is in the hub before this init runs.
+        // `credstore` is in `deps`, so its client is available here.
         let credstore = ctx
             .client_hub()
             .get::<dyn credstore_sdk::CredStoreClientV1>()

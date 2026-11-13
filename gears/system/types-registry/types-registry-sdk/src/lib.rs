@@ -11,10 +11,11 @@ pub mod item_failure;
 pub mod models;
 #[cfg(any(feature = "rest-client", feature = "rest-server"))]
 mod paths;
+mod payload;
 pub mod precondition;
-mod publication;
+pub mod publication;
 pub mod reason;
-mod reconcile;
+mod reconciliation;
 #[cfg(feature = "rest-server")]
 mod rest_binding;
 #[cfg(feature = "rest-client")]
@@ -46,8 +47,9 @@ pub use models::{
     RegistrationOutcome, TypeSchema, Validator,
 };
 
-pub use publication::{PublicationError, publish_startup_entities};
-pub use reconcile::{
+pub use payload::CompilePayloadValidatorError;
+pub use publication::{Publication, PublicationError};
+pub use reconciliation::{
     ReconcileOptions, ReconcileOutcome, ReconcilePendingCause, ReconcileReport, ReconcileStop,
     Reconciliation, STARTUP_PUBLICATION_DEADLINE,
 };
@@ -74,5 +76,11 @@ pub use legacy::models::{
     TypeSchemaQuery, is_type_schema_id,
 };
 
-// Re-export GTS types needed to construct requests.
-pub use ::gts::{GtsId, GtsIdPattern, GtsIdSegment, GtsInstanceId, GtsTypeId};
+// Re-export GTS identifiers and native payload-validation types for SDK consumers.
+pub use ::gts::{
+    CompilePayloadValidatorError as GtsCompilePayloadValidatorError, GtsId, GtsIdPattern,
+    GtsIdSegment, GtsInstanceId, GtsTypeId, PayloadValidationError, PayloadValidator,
+};
+
+#[cfg(test)]
+mod payload_tests;

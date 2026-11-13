@@ -55,6 +55,14 @@ database:
       pool:
         max_conns: 5             # Maximum 5 concurrent connections
         acquire_timeout: "30s"   # Timeout when acquiring connection from pool
+    # PostgreSQL server for graph storage (used by `make run GEAR=construct`).
+    # Needs PostgreSQL 16+ with the pgvector extension.
+    pg_graph:
+      engine: "postgres"
+      host: "localhost"
+      port: 5432
+      user: "postgres"
+      password: "graph"
 
   # Global database options
   # auto_provision: true       # (default) Create directories automatically for SQLite files
@@ -99,6 +107,7 @@ gears:
         description: "CF/Gears Example Server API Documentation"
       defaults:
         body_limit_bytes: 64000000
+        request_timeout: 30s
 
       # Authentication: disabled for local development (uses default root SecurityContext).
       # Set to false to enable bearer-token auth via authn-resolver pipeline below.
@@ -191,9 +200,10 @@ gears:
       vendor: "constructorfabric"
       priority: 100
 
-  # Requires --features quota-enforcement. The storage plugin publishes no
-  # client until the storage contract is complete, so the gear's bootstrap
-  # fails by design in a live server (see gears/system/quota-enforcement).
+  # Requires --features quota-enforcement. Quotas also need a catalog: the
+  # metric base, metrics, subject projections and request/constraint
+  # contracts in types-registry `entities`, and the projections listed under
+  # `catalog`. testing/e2e/suites/quota_enforcement/e2e.yaml is a worked example.
   quota-enforcement:
     config:
       storage_vendor: "constructorfabric"
@@ -564,6 +574,20 @@ gears:
   file-parser:
     config:
       allowed_local_base_dir: /tmp
+
+  # Graph storage and Construct gear configuration (used by `make run GEAR=construct`;
+  # both stay unused while their features are off)
+  graph-storage:
+    database:
+      server: "pg_graph"
+      dbname: "graph_storage"
+    config:
+      embedding_dimension: 384
+      embedding_provider: fake  # local run only; see graph storage's README for onnx or remote
+  construct:
+    database:
+      server: "sqlite_users"
+      file: "construct.db"
 
 # OpenTelemetry configuration (resource identity, tracing, metrics)
 opentelemetry:

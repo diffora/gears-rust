@@ -5,6 +5,9 @@
 //! either - the endpoint answers `202` with no body - so the observable
 //! behaviour lives at this boundary. What an operator sees on the wire is the
 //! ordering these values produce, which is the property each case below states.
+//!
+//! Event size: the broker counts it as the SDK does, and the ingest outbox row
+//! of a largest event fits the outbox.
 
 use toolkit_gts::GtsInstanceId;
 use uuid::Uuid;
@@ -165,4 +168,207 @@ fn a_pointer_resolving_to_a_container_is_refused() {
         ),
         "unexpected error: {err}"
     );
+}
+
+/// Publish bodies covering every optional member absent, present and `null`, a
+/// chained and a monotonic `meta`, and text that JSON escapes, each with how many
+/// bytes fewer than the SDK the broker counts for it. Parsing makes a nil producer
+/// id of an absent one and a sequence of 0 of an absent one, so the broker cannot
+/// tell those apart; it counts them so it never measures more than the SDK.
+fn parity_bodies() -> Vec<(serde_json::Value, usize)> {
+    let base = serde_json::json!({
+        "id": "0190f1a2-0000-7000-8000-00000000e101",
+        "type": EVENT_TYPE,
+        "tenant_id": "0190f1a2-0000-7000-8000-000000007e01",
+        "source": "order-service",
+        "subject": "order-\"1\"\\x",
+        "subject_type": "gts.x.eb.part.subject.v1~",
+        "occurred_at": "2026-11-09T10:00:00.123456Z",
+    });
+    let with = |members: serde_json::Value| {
+        let mut body = base.clone();
+        for (name, value) in members.as_object().expect("an object") {
+            body[name] = value.clone();
+        }
+        body
+    };
+    vec![
+        (base.clone(), 0),
+        (
+            with(serde_json::json!({ "data": null, "trace_parent": null, "meta": null })),
+            0,
+        ),
+        (
+            with(serde_json::json!({
+                "trace_parent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+                "data": { "order_id": "o-1", "note": "caf\u{e9} \"quoted\"\n", "total": 12.5 },
+                "meta": {
+                    "version": 1,
+                    "producer_id": "0190f1a2-0000-7000-8000-000000000d01",
+                    "previous": 4,
+                    "sequence": 5,
+                },
+            })),
+            0,
+        ),
+        (
+            with(serde_json::json!({
+                "data": [1, 2, 3],
+                "meta": {
+                    "version": 1,
+                    "producer_id": "0190f1a2-0000-7000-8000-000000000d01",
+                    "previous": null,
+                    "sequence": 7,
+                },
+            })),
+            0,
+        ),
+        // A sequence of 0, as a producer's fallback cursor stamps it.
+        (
+            with(serde_json::json!({
+                "meta": {
+                    "version": 1,
+                    "producer_id": "0190f1a2-0000-7000-8000-000000000d01",
+                    "previous": -1,
+                    "sequence": 0,
+                },
+            })),
+            0,
+        ),
+        // No producer id and no sequence: the id counts as `null`, the sequence as
+        // `0`, three bytes fewer than the SDK's `null`.
+        (
+            with(serde_json::json!({ "data": "text", "meta": { "version": 1 } })),
+            3,
+        ),
+        // A literal nil producer id counts as `null`: 34 bytes fewer than its uuid.
+        (
+            with(serde_json::json!({
+                "meta": {
+                    "version": 1,
+                    "producer_id": "00000000-0000-0000-0000-000000000000",
+                    "sequence": 3,
+                },
+            })),
+            34,
+        ),
+    ]
+}
+
+/// The broker counts an event's size on what it parsed, through either entry point,
+/// as the SDK counts the same event, and never more: an event the SDK admits is
+/// admitted.
+#[test]
+fn the_broker_counts_an_events_size_as_the_sdk_does() {
+    for (body, fewer) in parity_bodies() {
+        let event: event_broker_sdk::EventV1 =
+            serde_json::from_value(body.clone()).expect("the SDK reads the body");
+        let local = PublishRequest::try_from(&event).expect("the in-process broker takes it");
+        let rest: crate::api::rest::handlers::ingest::dto::PublishEventRequest =
+            serde_json::from_value(body.clone()).expect("the REST handler reads the body");
+        let rest = PublishRequest::try_from(rest).expect("the REST handler takes it");
+
+        let sdk = event.encoded_len().expect("the event measures");
+        assert_eq!(
+            (
+                local.encoded_len().expect("the request measures"),
+                rest.encoded_len().expect("the request measures"),
+            ),
+            (sdk - fewer, sdk - fewer),
+            "{body}"
+        );
+    }
+}
+
+/// A topic id at the GTS length limit.
+fn longest_topic() -> GtsInstanceId {
+    let prefix = "gts.cf.core.events.topic.v1~x.eb.fit.";
+    let suffix = ".v1";
+    let name = "t".repeat(1024 - prefix.len() - suffix.len());
+    GtsInstanceId::try_new(&format!("{prefix}{name}{suffix}")).expect("a valid topic id")
+}
+
+/// The ingest outbox row of an event at the per-event limit, with a topic at the
+/// GTS length limit and a partition key at its cap, fits the outbox's row limit:
+/// the row adds the topic twice, the key, the stored event's empty members, a nil
+/// producer id, which the size counts as `null`, and the flag a synchronous publish's
+/// row carries.
+#[test]
+fn an_ingest_row_of_a_largest_event_fits_the_outbox() {
+    let topic = longest_topic();
+    let key = "k".repeat(event_broker_sdk::EventV1::MAX_PARTITION_KEY_BYTES);
+    let mut request = request(
+        Uuid::from_u128(1),
+        &"s".repeat(1024),
+        serde_json::json!({ "pad": "" }),
+    );
+    request.source = "o".repeat(256);
+    request.meta = Some(crate::domain::model::Meta {
+        version: i32::MIN,
+        producer_id: Uuid::nil(),
+        previous: Some(i64::MIN),
+        sequence: 0,
+    });
+    let unpadded = request.encoded_len().expect("the request measures");
+    request.data = serde_json::json!({
+        "pad": "x".repeat(event_broker_sdk::EventV1::MAX_ENCODED_BYTES - unpadded),
+    });
+    assert_eq!(
+        request.encoded_len().expect("the request measures"),
+        event_broker_sdk::EventV1::MAX_ENCODED_BYTES
+    );
+    request.check_size(0).expect("an event at the limit passes");
+
+    let payload = serde_json::to_vec(&crate::domain::outbox::IngestPayload {
+        topic: topic.clone(),
+        key,
+        event: crate::domain::model::Event {
+            id: request.id,
+            r#type: request.r#type,
+            topic,
+            tenant_id: request.tenant_id,
+            source: request.source,
+            subject: request.subject,
+            subject_type: request.subject_type,
+            occurred_at: request.occurred_at,
+            trace_parent: request.trace_parent,
+            data: request.data,
+            meta: request.meta,
+            partition: None,
+            sequence: None,
+            sequence_time: None,
+        },
+        stored_wait: true,
+    })
+    .expect("the row serializes");
+
+    assert_eq!(
+        payload.len(),
+        event_broker_sdk::EventV1::MAX_ENCODED_BYTES + 3_220
+    );
+    toolkit_db::outbox::Record::to(crate::domain::outbox::INGEST_QUEUE_NAME, 0)
+        .payload(payload, crate::domain::outbox::INGEST_PAYLOAD_TYPE)
+        .build()
+        .expect("the row fits the outbox");
+}
+
+/// An event one byte over the limit is refused, naming its request position.
+#[test]
+fn an_event_one_byte_over_the_limit_is_refused() {
+    let mut request = request(
+        Uuid::from_u128(1),
+        "order-1",
+        serde_json::json!({ "pad": "" }),
+    );
+    let unpadded = request.encoded_len().expect("the request measures");
+    request.data = serde_json::json!({
+        "pad": "x".repeat(event_broker_sdk::EventV1::MAX_ENCODED_BYTES + 1 - unpadded),
+    });
+
+    let refused = request.check_size(4);
+
+    let Err(DomainError::EventTooLarge { index, bytes, max }) = refused else {
+        panic!("an event over the limit must be refused, got {refused:?}");
+    };
+    assert_eq!((index, bytes, max), (4, 61_441, 61_440));
 }

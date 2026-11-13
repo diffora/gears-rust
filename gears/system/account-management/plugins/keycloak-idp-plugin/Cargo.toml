@@ -1,6 +1,6 @@
 [package]
 name = "cf-gears-keycloak-idp-plugin"
-version = "0.2.2"
+version = "0.2.6"
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
@@ -25,10 +25,11 @@ toolkit-security.workspace = true
 toolkit-odata.workspace = true
 account-management-sdk.workspace = true
 credstore-sdk = { workspace = true }
-types-registry-sdk.workspace = true
-# Full gear crates for the `deps = [types_registry, credstore]` gear-macro arg
-# (force-linked via the macro's `::types_registry` / `::credstore` re-exports).
-types-registry = { workspace = true }
+# Publishes through the consumed platform API (local or resolving REST client).
+types-registry-sdk = { workspace = true, features = ["rest-client"] }
+# Full gear crate for the `deps = [credstore]` gear-macro arg (force-linked via
+# the macro's `::credstore` re-export). The registry is not linked: the plugin
+# publishes through whichever platform API the host wires (`src/module.rs`).
 credstore = { workspace = true }
 reqwest = { workspace = true, features = ["form", "json", "rustls"] }
 serde.workspace = true
@@ -44,7 +45,7 @@ tracing-opentelemetry.workspace = true
 opentelemetry = { workspace = true, features = ["metrics"] }
 opentelemetry_sdk = { workspace = true, features = ["trace"] }
 dashmap.workspace = true
-# guidelines/DEPENDENCIES.md: parking_lot for synchronous locks.
+# Synchronous locks.
 parking_lot.workspace = true
 uuid.workspace = true
 url = { workspace = true, features = ["serde"] }

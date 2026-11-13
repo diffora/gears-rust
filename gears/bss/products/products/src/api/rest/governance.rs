@@ -67,6 +67,11 @@ pub async fn grant_scope(
             tracing::error!(detail, "bss-products: authorization service unavailable");
             Err(CanonicalError::service_unavailable().create())
         }
+        // An internal failure is never an empty scope.
+        // Logged where it was classified; the detail stays off the wire.
+        Err(crate::authz::AuthzError::Internal(detail)) => {
+            Err(CanonicalError::internal(detail).create())
+        }
     }
 }
 
@@ -366,6 +371,7 @@ pub(super) async fn decided(
             generation: unit.generation,
             actors,
         },
+        broker::APPROVAL_UNIT_SUBJECT_TYPE,
     )
     .await
     .map_err(TxError::from)

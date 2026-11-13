@@ -15,15 +15,20 @@ The `cf-gears-toolkit-auth` crate provides:
 ## Outbound OAuth2 quick start
 
 ```rust
-use toolkit_auth::{HttpClientBuilderExt, OAuthClientConfig, SecretString, TokenProvider};
+use toolkit_auth::{
+    ClientCredentials, HttpClientBuilderExt, OAuthClientConfig, SecretString, TokenEndpoint,
+    TokenProvider,
+};
 use toolkit_http::HttpClientBuilder;
 
+// `new` takes the required parts; optional fields go through struct update.
 let token_provider = TokenProvider::new(OAuthClientConfig {
-    token_endpoint: Some("https://idp.example.com/oauth/token".parse()?),
-    client_id: "my-service".into(),
-    client_secret: SecretString::new("my-secret"),
     scopes: vec!["api.read".into()],
-    ..Default::default()
+    ..OAuthClientConfig::new(
+        TokenEndpoint::Direct("https://idp.example.com/oauth/token".parse()?),
+        "my-service",
+        ClientCredentials::SecretBasic(SecretString::new("my-secret")),
+    )
 })?;
 
 let client = HttpClientBuilder::new()
@@ -33,6 +38,37 @@ let client = HttpClientBuilder::new()
 // Every request gets Authorization: Bearer <token> automatically
 let resp = client.get("https://api.example.com/resource").send().await?;
 ```
+
+## Client authentication
+
+`OAuthClientConfig::credentials` selects the method and holds its credential:
+
+| Variant | Method | On the wire |
+|---------|--------|-------------|
+| `ClientCredentials::SecretBasic(secret)` | `client_secret_basic` | `Authorization: Basic` |
+| `ClientCredentials::SecretPost(secret)` | `client_secret_post` | `client_id`, `client_secret` in the body |
+| `ClientCredentials::PrivateKeyJwt(key)` | `private_key_jwt` (RFC 7523) | `client_id`, `client_assertion_type`, `client_assertion` |
+
+```rust
+use toolkit_auth::{
+    ClientCredentials, OAuthClientConfig, PrivateKeyJwt, RsaJwsAlg, TokenEndpoint, TokenProvider,
+};
+
+// Unencrypted PKCS#8 PEM; P-256 keys use `PrivateKeyJwt::es256_from_pem`.
+let key = PrivateKeyJwt::rsa_from_pem(&pem, RsaJwsAlg::Ps256)?.with_kid("my-service-2026");
+
+// Token endpoint discovered from the issuer's OIDC metadata.
+let token_provider = TokenProvider::new(OAuthClientConfig::new(
+    TokenEndpoint::Issuer("https://idp.example.com".parse()?),
+    "my-service",
+    ClientCredentials::PrivateKeyJwt(key),
+))?;
+```
+
+Each token request signs a new assertion (`exp` 60 s, random `jti`) through
+the `toolkit-security` crypto facade, which uses the platform FIPS module when
+`toolkit-security/fips` is on. By default `aud` is the resolved token endpoint;
+`with_audience` overrides it.
 
 ## Reactive refresh on 401
 
@@ -64,7 +100,7 @@ use toolkit_http::HttpClientBuilder;
 use std::sync::Arc;
 use std::time::Duration;
 
-let token_provider = TokenProvider::new(OAuthClientConfig { /* … */ ..Default::default() })?;
+let token_provider = TokenProvider::new(OAuthClientConfig::new(/* endpoint, client_id, credentials */))?;
 
 // Defaults: Authorization header, retry on 401 only, 15-min throttle.
 let client = HttpClientBuilder::new()

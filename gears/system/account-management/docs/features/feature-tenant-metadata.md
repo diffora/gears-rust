@@ -257,6 +257,8 @@ Delivers PRD §5.7 (Extensible Tenant Metadata) by making every metadata categor
 
 The system **MUST** accept the full chained `GtsSchemaId` as the `schema_id` path parameter on every REST operation and **MUST** validate that the schema is registered in the GTS types registry before any DB read or write; unregistered schemas **MUST** be refused with `code=not_found`. `MetadataService` **MUST** derive `schema_uuid` as a deterministic UUIDv5 from `schema_id` using the shared GTS namespace; the derivation **MUST** be a pure computation so `(tenant_id, schema_uuid)` remains stable across restarts, deployments, and replicas. `dbtable-tenant-metadata` **MUST NOT** retain the public `schema_id`; responses re-hydrate `schema_id` from Types Registry on every read.
 
+A schema deleted in the Types Registry keeps its exact identity as a tombstone. Entries already stored under it **MUST** stay listable, readable (`GET`) and removable (`DELETE`): the existence gate of those operations admits the tombstone and LIST re-hydrates its public chained identifier (`type_id`). `PUT` and the `/resolved` walk need the live schema's validation and inheritance policy and refuse a deleted schema with the unified `not_found`. A schema the registry does not know at all (never registered, or purged) is not recovered by this rule: GET and DELETE answer the unified `not_found`, and a stored row under it remains a data-integrity failure (LIST `Internal`).
+
 **Implements**:
 
 - `cpt-cf-account-management-flow-tenant-metadata-get`

@@ -1,15 +1,16 @@
 use github_mirror_sdk::{
-    Actor, Branch, CheckRun, Comment, Commit, CommitComment, CommitFile, CommitStatus, Contributor,
-    Deployment, Issue, IssueEvent, IssueReaction, IssueTimelineEvent, Label, LabelRef, Milestone,
-    PullRequest, PullRequestCommit, PullRequestFile, Release, ReleaseAsset, Repo, Review,
-    ReviewComment, ReviewThread, Tag, WorkflowJob, WorkflowRun, WorkflowStep,
+    Actor, Artifact, Branch, CheckRun, Comment, Commit, CommitComment, CommitFile, CommitStatus,
+    Contributor, Deployment, Issue, IssueEvent, IssueReaction, IssueTimelineEvent, Label, LabelRef,
+    Milestone, PullRequest, PullRequestCommit, PullRequestFile, Release, ReleaseAsset, Repo,
+    Review, ReviewComment, ReviewThread, Tag, Workflow, WorkflowJob, WorkflowRun, WorkflowStep,
 };
 
 use super::entity::{
-    branches, check_runs, comments, commit_comments, commit_files, commit_statuses, commits,
-    contributors, deployments, issue_events, issue_reactions, issue_timeline, issues, labels,
-    milestones, pull_request_commits, pull_request_files, pull_requests, releases, repositories,
-    review_comments, review_threads, reviews, tags, workflow_jobs, workflow_runs,
+    artifacts, branches, check_runs, comments, commit_comments, commit_files, commit_statuses,
+    commits, contributors, deployments, issue_events, issue_reactions, issue_timeline, issues,
+    labels, milestones, pull_request_commits, pull_request_files, pull_requests, releases,
+    repositories, review_comments, review_threads, reviews, tags, workflow_jobs, workflow_runs,
+    workflows,
 };
 
 #[derive(serde::Deserialize)]
@@ -324,6 +325,7 @@ impl From<commits::Model> for Commit {
             committed_at: m.committed_at,
             additions: m.additions,
             deletions: m.deletions,
+            html_url: m.html_url,
         }
     }
 }
@@ -615,6 +617,35 @@ impl From<deployments::Model> for Deployment {
     }
 }
 
+impl From<workflows::Model> for Workflow {
+    fn from(m: workflows::Model) -> Self {
+        Self {
+            id: m.id,
+            name: m.name,
+            path: m.path,
+            state: m.state,
+        }
+    }
+}
+
+impl From<artifacts::Model> for Artifact {
+    fn from(m: artifacts::Model) -> Self {
+        Self {
+            id: m.id,
+            repo_id: m.repo_id,
+            name: m.name,
+            size_in_bytes: m.size_in_bytes,
+            expired: m.expired,
+            workflow_run_id: m.workflow_run_id,
+            head_branch: m.head_branch,
+            head_sha: m.head_sha,
+            created_at: m.created_at,
+            updated_at: m.updated_at,
+            expires_at: m.expires_at,
+        }
+    }
+}
+
 impl From<pull_request_commits::Model> for PullRequestCommit {
     fn from(m: pull_request_commits::Model) -> Self {
         Self {
@@ -626,6 +657,7 @@ impl From<pull_request_commits::Model> for PullRequestCommit {
             committer_login: m.committer_login,
             authored_at: m.authored_at,
             committed_at: m.committed_at,
+            html_url: m.html_url,
         }
     }
 }

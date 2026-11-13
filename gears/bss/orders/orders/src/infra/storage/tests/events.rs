@@ -14,7 +14,7 @@ use crate::infra::events::payload::{
     LineRef, OrderCancelled, OrderHeld, OrderResumed, OrderSubmitted,
 };
 use crate::infra::events::test_support::{Root, root};
-use crate::infra::events::test_support::{encoded_max_events, max_events, registry_client};
+use crate::infra::events::test_support::{encoded_max_events, max_events, platform_registry};
 use crate::infra::events::{
     self as events, EventEnqueueError, EventKind, EventSink, OrderSummary, QUEUE, TOPIC, TxEvents,
 };
@@ -141,7 +141,7 @@ impl Env {
         let granted = Arc::new(AtomicBool::new(true));
         let pdp = grants(Arc::clone(&granted));
         let harness = EventBrokerHarness::builder()
-            .with_types_registry_client(registry_client(), &[(TOPIC, partitions)])
+            .with_types_registry_client(platform_registry(), &[(TOPIC, partitions)])
             .with_policy_enforcer(authz_resolver_sdk::PolicyEnforcer::new(
                 Arc::clone(&pdp) as Arc<dyn authz_resolver_sdk::AuthZResolverApi>
             ))
@@ -170,7 +170,7 @@ impl Env {
         .await
         .unwrap()
     }
-    pub(super) async fn stored(&self) -> Vec<event_broker_sdk::Event> {
+    pub(super) async fn stored(&self) -> Vec<event_broker_sdk::models::Event> {
         let mut all = Vec::new();
         for partition in 0..self.partitions {
             let at = TopicPartition::new(
@@ -187,7 +187,7 @@ impl Env {
         }
         all
     }
-    pub(super) async fn wait_stored(&self, n: usize) -> Vec<event_broker_sdk::Event> {
+    pub(super) async fn wait_stored(&self, n: usize) -> Vec<event_broker_sdk::models::Event> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
         loop {
             let stored = self.stored().await;
@@ -369,7 +369,7 @@ async fn committed_transitions_deliver_root_tenant_events_routed_by_order() -> a
     for event in &stored {
         assert_eq!(
             event.type_id.as_ref(),
-            <events::OrderEvent<OrderSubmitted> as event_broker_sdk::TypedEvent>::TYPE_ID
+            <events::OrderEvent<OrderSubmitted> as toolkit_gts::GtsSchema>::TYPE_ID
         );
         assert_eq!(
             event.tenant_id,
@@ -1405,9 +1405,19 @@ async fn every_event_is_stored_whatever_the_broker_partition_count() -> anyhow::
             .all(|p| p.outcome == DeliveredOutcome::Accepted && !p.ack_lost),
         "no duplicate or sequence-violation answer"
     );
+    // A leased processor also raises `attempts` for as long as it holds a partition's lease:
+    // acquiring it counts one attempt as a crash marker, and the release after an idle poll or
+    // the acknowledgement resets it. The test workers re-poll every 200 ms, so a processor in
+    // the middle of an idle poll is not a retry. A real retry records `last_error` and gives the
+    // lease up; a crash leaves `attempts > 0` on a lease nobody renews, which expires. Taking an
+    // expired lease over adds to the attempts the crash left, so a live lease above one attempt
+    // is a crash too: only a single attempt on a live lease is the healthy in-flight state.
     let errors = count(
         &env.pg,
-        "SELECT count(*) AS n FROM toolkit_outbox_processor WHERE last_error IS NOT NULL OR attempts > 0",
+        "SELECT count(*) AS n FROM toolkit_outbox_processor \
+         WHERE last_error IS NOT NULL \
+            OR attempts > 1 \
+            OR (attempts = 1 AND (locked_by IS NULL OR locked_until < now()))",
     )
     .await;
     assert_eq!(errors, 0, "no retry or error is visible on the queue");

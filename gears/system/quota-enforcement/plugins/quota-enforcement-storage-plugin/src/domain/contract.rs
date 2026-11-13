@@ -25,6 +25,7 @@ use super::bootstrap::StoragePlugin;
 // @cpt-dod:cpt-cf-quota-enforcement-dod-sdk-contracts:p1
 #[async_trait]
 impl QuotaEnforcementStoragePluginV1 for StoragePlugin {
+    #[tracing::instrument(name = "quota_enforcement.storage.bootstrap", skip_all)]
     async fn bootstrap(&self, bundle: &BootstrapBundle) -> Result<(), StorageError> {
         StoragePlugin::bootstrap(self, bundle)
             .await
@@ -41,6 +42,7 @@ impl QuotaEnforcementStoragePluginV1 for StoragePlugin {
         StoragePlugin::read_active_quota_counts(self).await
     }
 
+    #[tracing::instrument(name = "quota_enforcement.storage.create_quota", skip_all)]
     async fn create_quota(
         &self,
         ctx: &SecurityContext,
@@ -51,6 +53,7 @@ impl QuotaEnforcementStoragePluginV1 for StoragePlugin {
         StoragePlugin::create_quota(self, ctx, scope, draft, events).await
     }
 
+    #[tracing::instrument(name = "quota_enforcement.storage.update_quota", skip_all)]
     async fn update_quota(
         &self,
         ctx: &SecurityContext,
@@ -62,6 +65,7 @@ impl QuotaEnforcementStoragePluginV1 for StoragePlugin {
         StoragePlugin::update_quota(self, ctx, scope, quota_id, patch, events).await
     }
 
+    #[tracing::instrument(name = "quota_enforcement.storage.deactivate_quota", skip_all)]
     async fn deactivate_quota(
         &self,
         ctx: &SecurityContext,
@@ -82,6 +86,34 @@ impl QuotaEnforcementStoragePluginV1 for StoragePlugin {
         StoragePlugin::read_quotas(self, ctx, scope, filter, page).await
     }
 
+    #[tracing::instrument(name = "quota_enforcement.storage.bulk_create_quotas", skip_all, fields(item_count = envelope.items.len()))]
+    async fn bulk_create_quotas(
+        &self,
+        ctx: &SecurityContext,
+        envelope: &quota_enforcement_sdk::BulkCreateEnvelope,
+    ) -> Result<TransitionOutcome<quota_enforcement_sdk::BulkCreated>, StorageError> {
+        StoragePlugin::bulk_create_quotas(self, ctx, envelope).await
+    }
+
+    #[tracing::instrument(name = "quota_enforcement.storage.bulk_update_quotas", skip_all, fields(item_count = envelope.items.len()))]
+    async fn bulk_update_quotas(
+        &self,
+        ctx: &SecurityContext,
+        envelope: &quota_enforcement_sdk::BulkUpdateEnvelope,
+    ) -> Result<TransitionOutcome<quota_enforcement_sdk::BulkUpdated>, StorageError> {
+        StoragePlugin::bulk_update_quotas(self, ctx, envelope).await
+    }
+
+    #[tracing::instrument(name = "quota_enforcement.storage.bulk_deactivate_quotas", skip_all, fields(item_count = envelope.items.len()))]
+    async fn bulk_deactivate_quotas(
+        &self,
+        ctx: &SecurityContext,
+        envelope: &quota_enforcement_sdk::BulkDeactivateEnvelope,
+    ) -> Result<TransitionOutcome<quota_enforcement_sdk::BulkDeactivated>, StorageError> {
+        StoragePlugin::bulk_deactivate_quotas(self, ctx, envelope).await
+    }
+
+    #[tracing::instrument(name = "quota_enforcement.storage.apply_debit_plan", skip_all)]
     async fn apply_debit_plan(
         &self,
         ctx: &SecurityContext,
@@ -92,6 +124,7 @@ impl QuotaEnforcementStoragePluginV1 for StoragePlugin {
         StoragePlugin::apply_debit_plan(self, ctx, scope, mutation, events).await
     }
 
+    #[tracing::instrument(name = "quota_enforcement.storage.apply_batch_debit", skip_all, fields(item_count = batch.items.len()))]
     async fn apply_batch_debit(
         &self,
         ctx: &SecurityContext,
@@ -102,6 +135,7 @@ impl QuotaEnforcementStoragePluginV1 for StoragePlugin {
         StoragePlugin::apply_batch_debit(self, ctx, scope, batch, events).await
     }
 
+    #[tracing::instrument(name = "quota_enforcement.storage.apply_credit", skip_all)]
     async fn apply_credit(
         &self,
         ctx: &SecurityContext,
@@ -114,6 +148,7 @@ impl QuotaEnforcementStoragePluginV1 for StoragePlugin {
         StoragePlugin::apply_credit(self, ctx, scope, quota_id, amount, idempotency, events).await
     }
 
+    #[tracing::instrument(name = "quota_enforcement.storage.apply_rollback", skip_all)]
     async fn apply_rollback(
         &self,
         ctx: &SecurityContext,
@@ -125,6 +160,7 @@ impl QuotaEnforcementStoragePluginV1 for StoragePlugin {
         StoragePlugin::apply_rollback(self, ctx, scope, target, idempotency, events).await
     }
 
+    #[tracing::instrument(name = "quota_enforcement.storage.acquire_lease", skip_all)]
     async fn acquire_lease(
         &self,
         ctx: &SecurityContext,
@@ -135,6 +171,7 @@ impl QuotaEnforcementStoragePluginV1 for StoragePlugin {
         StoragePlugin::acquire_lease(self, ctx, scope, mutation, ttl).await
     }
 
+    #[tracing::instrument(name = "quota_enforcement.storage.commit_lease", skip_all)]
     async fn commit_lease(
         &self,
         ctx: &SecurityContext,
@@ -148,6 +185,7 @@ impl QuotaEnforcementStoragePluginV1 for StoragePlugin {
             .await
     }
 
+    #[tracing::instrument(name = "quota_enforcement.storage.release_lease", skip_all)]
     async fn release_lease(
         &self,
         ctx: &SecurityContext,
@@ -178,6 +216,7 @@ impl QuotaEnforcementStoragePluginV1 for StoragePlugin {
         StoragePlugin::bulk_read_quota_snapshot(self, ctx, scope, pairs, page).await
     }
 
+    #[tracing::instrument(name = "quota_enforcement.storage.create_policy", skip_all)]
     async fn create_policy(
         &self,
         ctx: &SecurityContext,
@@ -187,6 +226,7 @@ impl QuotaEnforcementStoragePluginV1 for StoragePlugin {
         StoragePlugin::create_policy(self, ctx, draft, events).await
     }
 
+    #[tracing::instrument(name = "quota_enforcement.storage.update_policy", skip_all)]
     async fn update_policy(
         &self,
         ctx: &SecurityContext,
@@ -197,6 +237,7 @@ impl QuotaEnforcementStoragePluginV1 for StoragePlugin {
         StoragePlugin::update_policy(self, ctx, policy_id, update, events).await
     }
 
+    #[tracing::instrument(name = "quota_enforcement.storage.rollback_policy", skip_all)]
     async fn rollback_policy(
         &self,
         ctx: &SecurityContext,
@@ -208,6 +249,7 @@ impl QuotaEnforcementStoragePluginV1 for StoragePlugin {
         StoragePlugin::rollback_policy(self, ctx, policy_id, target_version, comment, events).await
     }
 
+    #[tracing::instrument(name = "quota_enforcement.storage.delete_policy", skip_all)]
     async fn delete_policy(
         &self,
         ctx: &SecurityContext,
@@ -273,6 +315,7 @@ impl QuotaEnforcementStoragePluginV1 for StoragePlugin {
         StoragePlugin::count_expired_unreclaimed_leases(self, before).await
     }
 
+    #[tracing::instrument(name = "quota_enforcement.storage.reclaim_expired_leases", skip_all)]
     async fn reclaim_expired_leases(
         &self,
         batch_size: u32,
@@ -281,6 +324,10 @@ impl QuotaEnforcementStoragePluginV1 for StoragePlugin {
         StoragePlugin::reclaim_expired_leases(self, batch_size, before).await
     }
 
+    #[tracing::instrument(
+        name = "quota_enforcement.storage.reclaim_expired_idempotency",
+        skip_all
+    )]
     async fn reclaim_expired_idempotency(
         &self,
         batch_size: u32,
@@ -289,6 +336,7 @@ impl QuotaEnforcementStoragePluginV1 for StoragePlugin {
         StoragePlugin::reclaim_expired_idempotency(self, batch_size, before).await
     }
 
+    #[tracing::instrument(name = "quota_enforcement.storage.reclaim_operation_log", skip_all)]
     async fn reclaim_operation_log(
         &self,
         batch_size: u32,
@@ -297,3 +345,8 @@ impl QuotaEnforcementStoragePluginV1 for StoragePlugin {
         StoragePlugin::reclaim_operation_log(self, batch_size, before).await
     }
 }
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[path = "contract_tests.rs"]
+mod contract_tests;

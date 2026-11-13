@@ -9,6 +9,7 @@
 
 use thiserror::Error;
 use toolkit::domain_model;
+use uuid::Uuid;
 
 use event_broker_sdk::error::{reasons, resources};
 
@@ -92,13 +93,37 @@ pub enum DomainError {
         resource: String,
     },
 
-    /// Producer chain metadata does not match the broker's stored state.
-    /// `docs/openapi.yaml` documents this as `412` - `api/rest/error.rs`
-    /// keeps the canonical `FailedPrecondition` category but overrides the
-    /// wire status to `412` via `TransportOverride`, with `last_sequence`
-    /// echoed in the `Problem` context so the producer can resync.
-    #[error("sequence violation on topic {topic}: last_sequence={last_sequence}")]
-    SequenceViolation { topic: String, last_sequence: i64 },
+    /// A chain run neither advances nor duplicates its committed head
+    /// (feature 0001 §5.2 R4) - lifted to `412`: `api/rest/error.rs` keeps the
+    /// canonical `FailedPrecondition` category and overrides the wire status
+    /// via `TransportOverride`. `index` is the request position of the run's
+    /// first event (`0` for a single publish) and `last_sequence` the
+    /// committed head, so the producer can resync.
+    #[error(
+        "sequence violation at event {index} of producer {producer_id} on topic {topic}: \
+         last_sequence={last_sequence}"
+    )]
+    SequenceViolation {
+        index: usize,
+        producer_id: Uuid,
+        topic: String,
+        last_sequence: i64,
+    },
+
+    /// A batch with no events (feature 0001 §5.2 R1) - lifted to `400`.
+    #[error("empty_batch: a batch carries at least one event")]
+    EmptyBatch,
+
+    /// An `event.id` repeated within one batch (feature 0001 §5.2 R13) -
+    /// lifted to `400`. `index` names the repeat, not the event it repeats.
+    #[error("duplicate_event_id: event {index} repeats an earlier event's id")]
+    DuplicateEventId { index: usize },
+
+    /// A batch run that does not link (chained) or strictly increase
+    /// (monotonic) on its own (feature 0001 §5.2 R3) - lifted to `400`.
+    /// `index` names the first offending event.
+    #[error("malformed_run: event {index} does not follow the run before it")]
+    MalformedRun { index: usize },
 
     /// A batch exceeded the documented item-count ceiling. `docs/openapi.yaml`
     /// documents this as `413` - `api/rest/error.rs` overrides the wire
@@ -114,6 +139,27 @@ pub enum DomainError {
     #[error("batch payload too large: {bytes} bytes (max {max})")]
     BatchPayloadTooLarge { bytes: u64, max: u64 },
 
+    /// An event encoded to more than `EventV1::MAX_ENCODED_BYTES`, as the SDK counts
+    /// it. Same `413`/`InvalidArgument` treatment as
+    /// [`BatchTooLarge`](Self::BatchTooLarge). `index` is the event's request
+    /// position (`0` for a single publish); the sizes are derived numbers.
+    #[error("event too large: event {index} is {bytes} bytes encoded (max {max})")]
+    EventTooLarge {
+        index: usize,
+        bytes: usize,
+        max: usize,
+    },
+
+    /// An event's resolved partition key took more than
+    /// `EventV1::MAX_PARTITION_KEY_BYTES` - lifted to `400`. `index` is the event's
+    /// request position (`0` for a single publish). Carries no part of the key.
+    #[error("partition key too long: event {index} has {bytes} bytes (max {max})")]
+    PartitionKeyTooLong {
+        index: usize,
+        bytes: usize,
+        max: usize,
+    },
+
     /// Per-tenant/per-resource rate cap exceeded - lifted to `429` with a
     /// `Retry-After` header.
     #[error("{code}: {message}")]
@@ -123,12 +169,12 @@ pub enum DomainError {
         retry_after_secs: u32,
     },
 
-    /// Infrastructure failure reaching storage/cluster state - lifted to `503`.
-    /// `reason` is a stable, non-sensitive category label (the wire `503`
-    /// detail); the typed error rides in `source` for logs/`.source()` chaining
-    /// and is never serialized, so a raw driver/cluster message can't leak into
-    /// the response body. `source` is `None` for a failure with no underlying
-    /// error (e.g. a not-yet-started pipeline).
+    /// Infrastructure failure reaching storage/cluster state - lifted to `503`
+    /// with the generic body. `reason` (what failed, e.g. a topic not
+    /// provisioned yet) and the typed error in `source` go to the server-side
+    /// log and `.source()` chaining, never to the response body. `source` is
+    /// `None` for a failure with no underlying error (e.g. a not-yet-started
+    /// pipeline).
     #[error("storage backend unavailable: {reason}")]
     StorageUnavailable {
         reason: String,
@@ -199,6 +245,7 @@ pub enum ErrorCode {
     // -- Validation (400) --
     BadTypePattern,
     InvalidBody,
+    InvalidHeader,
     InvalidPartition,
     InvalidPath,
     InvalidQuery,
@@ -241,6 +288,7 @@ impl ErrorCode {
             Self::TopologyVersionMismatch => "TopologyVersionMismatch",
             Self::BadTypePattern => "BadTypePattern",
             Self::InvalidBody => "InvalidBody",
+            Self::InvalidHeader => "InvalidHeader",
             Self::InvalidPartition => "InvalidPartition",
             Self::InvalidPath => "InvalidPath",
             Self::InvalidQuery => "InvalidQuery",
@@ -367,7 +415,7 @@ impl From<event_broker_sdk::backend::BackendError> for DomainError {
     }
 }
 
-/// `EnforcerError::Denied` -> `Forbidden` with a generic `"AuthzDenied"` code;
+/// `EnforcerError::AccessDenied` -> `Forbidden` with a generic `"AuthzDenied"` code;
 /// call sites that need a specific `docs/openapi.yaml` code
 /// (`TopicNotAuthorized`, `EventTypeNotAuthorized`, `NotAuthorizedToProduce`,
 /// `TenantIdNotAuthorized`) overwrite `code` after this conversion
@@ -379,13 +427,19 @@ impl From<event_broker_sdk::backend::BackendError> for DomainError {
 /// mapping.
 impl From<authz_resolver_sdk::EnforcerError> for DomainError {
     fn from(err: authz_resolver_sdk::EnforcerError) -> Self {
-        use authz_resolver_sdk::EnforcerError;
+        use authz_resolver_sdk::{AccessDenial, EnforcerError};
         match err {
-            EnforcerError::Denied { deny_reason } => DomainError::Forbidden {
+            EnforcerError::AccessDenied(AccessDenial::Pdp { reason }) => DomainError::Forbidden {
                 code: ErrorCode::AuthzDenied,
-                message: deny_reason
+                message: reason
                     .and_then(|r| r.details)
                     .unwrap_or_else(|| "access denied by policy".to_owned()),
+                resource: String::new(),
+            },
+            // PEP-local access denial after successful compilation.
+            EnforcerError::AccessDenied(local) => DomainError::Forbidden {
+                code: ErrorCode::AuthzDenied,
+                message: local.to_string(),
                 resource: String::new(),
             },
             EnforcerError::CompileFailed(e) => {
@@ -393,6 +447,11 @@ impl From<authz_resolver_sdk::EnforcerError> for DomainError {
             }
             EnforcerError::EvaluationFailed(e) => {
                 DomainError::Internal(format!("authz evaluation failed: {e}"))
+            }
+            // An unknown outcome class is an internal failure, never a denial.
+            unknown => {
+                tracing::error!(error = %unknown, "authz failed with an unknown outcome");
+                DomainError::Internal("authorization failed with an unknown outcome".to_owned())
             }
         }
     }

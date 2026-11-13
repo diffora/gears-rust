@@ -10,20 +10,23 @@
 //! structural.
 //!
 //! Nothing an ingest outbox holds is dead-lettered (feature 0007 §4.1): a
-//! backend error, a payload that does not decode and a topic the registry does
-//! not hold are all retried, so a message that keeps failing stalls its outbox
-//! partition visibly - in `infra::metrics` and the log - instead of being
-//! lost. A retry of a message the backend already stored is answered
-//! `Duplicate` by the fence and acknowledged.
+//! backend error, a payload that does not decode, a topic the registry does
+//! not hold and a topic lookup that cannot be read are all retried, so a
+//! message that keeps failing stalls its outbox partition visibly - in
+//! `infra::metrics` and the log - instead of being lost. A retry of a message
+//! the backend already stored is answered `Duplicate` by the fence and
+//! acknowledged.
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use event_broker_sdk::backend::{AppendRequest, Appended, Fence, FenceSeq, Flush, KeyedEvent};
 use toolkit_db::outbox::{LeasedMessageHandler, MessageResult, OutboxMessage};
+use toolkit_gts::GtsInstanceId;
 use tracing::{error, warn};
 
 use crate::domain::backend::{BackendResolver, to_sdk_event};
+use crate::domain::model::Topic;
 use crate::domain::outbox::{IngestPayload, OutboxId, fence_key};
 use crate::domain::specification::SpecificationManager;
 use crate::infra::metrics::{IngestMetrics, NO_BACKEND, RetryCause};
@@ -52,20 +55,15 @@ impl IngestOutboxHandler {
         }
     }
 
-    /// Appends the message's event; on failure, the backend label and the
-    /// cause of the retry.
+    /// Appends the message's event; on failure, the backend label and the cause
+    /// of the retry. A synchronous row is appended with [`Flush::Sync`] so its
+    /// event is immediately readable once the publish is answered `201` (feature
+    /// 0007 §4.1, AC-2, S2); an async row stays [`Flush::Async`]. The waiting
+    /// publish is released through the row's outbox trace, which the ack counts
+    /// down - not from here.
     async fn append(&self, msg: &OutboxMessage) -> Result<(), (String, RetryCause)> {
         let payload = decode(msg)?;
-
-        // `get_topic` returning `None` conflates two cases: the topic was
-        // genuinely deregistered, and the local spec-cache read itself failed
-        // (a transient gear-database error is swallowed into `None` in
-        // `infra::specification`). Both are retried: the second heals by
-        // itself, and the first is the operator's to resolve.
-        let Some(topic) = self.spec_manager.get_topic(&payload.topic).await else {
-            error!(topic = %payload.topic, "ingest outbox payload references a topic that is not registered - will retry");
-            return Err((NO_BACKEND.to_owned(), RetryCause::UnregisteredTopic));
-        };
+        let topic = self.topic(&payload.topic).await?;
 
         let backend = self.backend_resolver.resolve(&topic);
         let events = [KeyedEvent {
@@ -79,9 +77,17 @@ impl IngestOutboxHandler {
             },
             topic: &topic.id,
             events: &events,
-            // `Prefer: wait` is answered `501`, so nothing waits on positions
-            // being assigned.
-            flush: Flush::Async,
+            // A `Prefer: wait=N` publish is answered `201` only once its events
+            // are stored and readable, so a sync row is flushed synchronously;
+            // an async row keeps the cheaper async flush. `Flush` governs only
+            // position visibility, never durability: `Ok(Appended)` survives a
+            // crash whichever flush was asked (feature 0007 §2.2 "Durable
+            // first").
+            flush: if payload.stored_wait {
+                Flush::Sync
+            } else {
+                Flush::Async
+            },
         };
         match backend.append(&request).await {
             // `Heads` and `Accepted`: stored; `Duplicate`: stored by an earlier
@@ -99,6 +105,23 @@ impl IngestOutboxHandler {
                     topic.settings.backend().value().to_string(),
                     RetryCause::Append(e),
                 ))
+            }
+        }
+    }
+
+    /// The payload's topic. A lookup that cannot be read and a topic the
+    /// registry does not hold are retried under causes of their own: the first
+    /// heals by itself, the second is the operator's to resolve.
+    async fn topic(&self, id: &GtsInstanceId) -> Result<Topic, (String, RetryCause)> {
+        match self.spec_manager.get_topic(id).await {
+            Ok(Some(topic)) => Ok(topic),
+            Ok(None) => {
+                error!(topic = %id, "ingest outbox payload references a topic that is not registered - will retry");
+                Err((NO_BACKEND.to_owned(), RetryCause::UnregisteredTopic))
+            }
+            Err(err) => {
+                warn!(topic = %id, error = %err, "ingest outbox topic lookup failed - will retry");
+                Err((NO_BACKEND.to_owned(), RetryCause::SpecificationUnavailable))
             }
         }
     }
@@ -124,6 +147,8 @@ impl LeasedMessageHandler for IngestOutboxHandler {
         match self.append(msg).await {
             Ok(()) => {
                 self.metrics.handled(msg.partition_id);
+                // A synchronous publish waiting on this row's trace is released
+                // by the outbox ack counting the trace down, not from here.
                 MessageResult::Ok
             }
             Err((backend, cause)) => {
@@ -136,19 +161,22 @@ impl LeasedMessageHandler for IngestOutboxHandler {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     use chrono::{DateTime, Utc};
     use event_broker_sdk::Sequence;
+    use event_broker_sdk::api::Position;
     use event_broker_sdk::backend::{
-        Backend, LogClaim, LogId, Replacing, Retention, TopicPartition, TopicSpec, Wait,
+        AppendRequest, Appended, Backend, BackendError, Dedup, Flush, LogClaim, LogId,
+        Provisioning, Replacing, Retention, TopicPartition, TopicSpec, Wait, Watch,
     };
+    use event_broker_sdk::models::{PartitionRange, TopicSegment};
     use memory_event_broker_plugin::MemoryBackend;
     use opentelemetry::metrics::MeterProvider;
     use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData};
     use opentelemetry_sdk::metrics::{InMemoryMetricExporter, PeriodicReader, SdkMeterProvider};
+    use tokio_util::sync::CancellationToken;
     use toolkit_db::DBProvider;
-    use types_registry_sdk::testing::{MockTypesRegistryClient, make_test_instance};
     use uuid::Uuid;
 
     use event_broker_sdk::backend::Partition;
@@ -160,6 +188,7 @@ mod tests {
     use crate::infra::specification::TypesRegistrySpecificationManager;
     use crate::infra::storage::migrations::Migrator;
     use crate::test_support::SingleBackendResolver;
+    use crate::test_support::type_registry::registry_holding;
 
     const TOPIC_ID: &str =
         toolkit_gts::gts_id!("cf.core.events.topic.v1~example.eb.ingestoutbox.topic.v1");
@@ -245,7 +274,8 @@ mod tests {
         (key.to_owned(), value.to_owned())
     }
 
-    async fn test_db() -> Arc<DBProvider<toolkit_db::DbError>> {
+    /// A fresh `SQLite` gear database, and a DSN that reaches the same file.
+    async fn test_db() -> (Arc<DBProvider<toolkit_db::DbError>>, String) {
         let mut path = std::env::temp_dir();
         path.push(format!(
             "cf-eb-ingestoutbox-test-{}.db",
@@ -270,7 +300,7 @@ mod tests {
         )
         .await
         .expect("migrations");
-        Arc::new(DBProvider::new(db))
+        (Arc::new(DBProvider::new(db)), dsn)
     }
 
     fn topic() -> toolkit_gts::GtsInstanceId {
@@ -280,16 +310,22 @@ mod tests {
     /// The handler over a registered topic; `provisioned` decides whether the
     /// backend holds the topic's log.
     async fn test_handler(provisioned: bool) -> (IngestOutboxHandler, MemoryBackend, Recorder) {
-        let db = test_db().await;
-        let instance = make_test_instance(
-            TOPIC_ID,
-            serde_json::json!({
+        let (handler, backend, recorder, _dsn) = test_handler_with_dsn(provisioned).await;
+        (handler, backend, recorder)
+    }
+
+    /// [`test_handler`], with a DSN that reaches its gear database.
+    async fn test_handler_with_dsn(
+        provisioned: bool,
+    ) -> (IngestOutboxHandler, MemoryBackend, Recorder, String) {
+        let (db, dsn) = test_db().await;
+        let client: Arc<dyn types_registry_sdk::PlatformTypesRegistryApi> = registry_holding(
+            &[serde_json::json!({
                 "id": TOPIC_ID,
                 "description": "a topic this test drains the outbox into",
-            }),
+            })],
+            &[],
         );
-        let client: Arc<dyn types_registry_sdk::TypesRegistryClient> =
-            Arc::new(MockTypesRegistryClient::new().with_instances(vec![instance]));
         crate::infra::specification::bulk_load(
             &client,
             &db,
@@ -322,6 +358,7 @@ mod tests {
             IngestOutboxHandler::new(spec_manager, resolver, OUTBOX, metrics),
             backend,
             recorder,
+            dsn,
         )
     }
 
@@ -354,13 +391,20 @@ mod tests {
     }
 
     fn test_message(event: &Event) -> OutboxMessage {
+        outbox_message(event, 1, false)
+    }
+
+    /// An outbox row carrying `event` under `seq`, with its payload's
+    /// `stored_wait` set (a `Prefer: wait` publish) or not.
+    fn outbox_message(event: &Event, seq: i64, stored_wait: bool) -> OutboxMessage {
         OutboxMessage {
             partition_id: 0,
-            seq: 1,
+            seq,
             payload: serde_json::to_vec(&IngestPayload {
                 topic: event.topic.clone(),
                 key: "key".to_owned(),
                 event: event.clone(),
+                stored_wait,
             })
             .expect("serialize payload"),
             payload_type: INGEST_PAYLOAD_TYPE.to_owned(),
@@ -473,8 +517,8 @@ mod tests {
         );
     }
 
-    /// A topic the registry does not hold is retried too: a failed registry
-    /// read heals by itself, and a deregistered topic is the operator's call.
+    /// A topic the registry does not hold is retried too: a deregistered topic
+    /// is the operator's call.
     #[tokio::test]
     async fn unregistered_topic_is_retried() {
         let (handler, _backend, recorder) = test_handler(true).await;
@@ -491,6 +535,180 @@ mod tests {
                 vec![
                     label("backend", "none"),
                     label("error", "unregistered_topic"),
+                    label("outbox", "default"),
+                    label("partition", "0"),
+                ],
+                1.0
+            )]
+        );
+        assert_eq!(
+            recorder.points(OLDEST_AGE),
+            vec![(
+                vec![label("outbox", "default"), label("partition", "0")],
+                90.0
+            )]
+        );
+    }
+
+    /// A [`Backend`] that records the [`Flush`] of every append and otherwise
+    /// delegates to an inner backend, so a test can pin that a traced
+    /// (synchronous) row is appended [`Flush::Sync`] and an untraced row
+    /// [`Flush::Async`].
+    struct RecordingBackend {
+        inner: Arc<dyn Backend>,
+        flushes: Arc<Mutex<Vec<Flush>>>,
+    }
+
+    #[async_trait]
+    impl Backend for RecordingBackend {
+        async fn provision(
+            &self,
+            topic: &TopicSpec,
+            claim: &LogClaim,
+        ) -> Result<Provisioning, BackendError> {
+            self.inner.provision(topic, claim).await
+        }
+
+        async fn append(&self, request: &AppendRequest<'_>) -> Result<Appended, BackendError> {
+            self.flushes.lock().unwrap().push(request.flush);
+            self.inner.append(request).await
+        }
+
+        fn dedup(&self) -> Dedup {
+            self.inner.dedup()
+        }
+
+        fn max_events_per_append(&self) -> usize {
+            self.inner.max_events_per_append()
+        }
+
+        async fn read(
+            &self,
+            at: &TopicPartition,
+            offset: Sequence,
+            max_events: usize,
+            wait: Wait,
+        ) -> Result<Vec<event_broker_sdk::models::Event>, BackendError> {
+            self.inner.read(at, offset, max_events, wait).await
+        }
+
+        async fn resolve(
+            &self,
+            at: &TopicPartition,
+            position: Position,
+        ) -> Result<Sequence, BackendError> {
+            self.inner.resolve(at, position).await
+        }
+
+        fn watch(&self) -> Watch<'_> {
+            self.inner.watch()
+        }
+
+        async fn query(
+            &self,
+            at: &TopicPartition,
+            range: PartitionRange,
+        ) -> Result<Vec<TopicSegment>, BackendError> {
+            self.inner.query(at, range).await
+        }
+
+        async fn start(&self) -> Result<(), BackendError> {
+            self.inner.start().await
+        }
+
+        async fn stop(&self, deadline: CancellationToken) {
+            self.inner.stop(deadline).await;
+        }
+    }
+
+    /// A handler whose backend records every append's [`Flush`], over a
+    /// provisioned memory backend, plus the shared record it appends to.
+    async fn recording_handler() -> (IngestOutboxHandler, Arc<Mutex<Vec<Flush>>>) {
+        let (db, _dsn) = test_db().await;
+        let client: Arc<dyn types_registry_sdk::PlatformTypesRegistryApi> = registry_holding(
+            &[serde_json::json!({
+                "id": TOPIC_ID,
+                "description": "a topic this test drains the outbox into",
+            })],
+            &[],
+        );
+        crate::infra::specification::bulk_load(
+            &client,
+            &db,
+            &crate::test_support::StaticTypesRegistry::empty_config(),
+        )
+        .await
+        .expect("bulk_load");
+        let spec_manager: Arc<dyn SpecificationManager> =
+            Arc::new(TypesRegistrySpecificationManager::new(Arc::clone(&db)));
+        let memory = MemoryBackend::new();
+        memory
+            .provision(
+                &TopicSpec {
+                    topic: topic(),
+                    partitions: 1,
+                    retention: Retention::default(),
+                },
+                &LogClaim {
+                    replacing: Replacing::Nothing,
+                    new: LogId::from_uuid(Uuid::from_u128(1)),
+                },
+            )
+            .await
+            .expect("provision");
+        let flushes = Arc::new(Mutex::new(Vec::new()));
+        let recording = RecordingBackend {
+            inner: Arc::new(memory),
+            flushes: Arc::clone(&flushes),
+        };
+        let resolver = Arc::new(SingleBackendResolver::new(Arc::new(recording)));
+        let (_recorder, metrics) = Recorder::new();
+        (
+            IngestOutboxHandler::new(spec_manager, resolver, OUTBOX, metrics),
+            flushes,
+        )
+    }
+
+    /// The handler's choice of [`Flush`] is driven by the payload's
+    /// `stored_wait`: a traced (`Prefer: wait`) row is appended [`Flush::Sync`]
+    /// so its `201` is immediately readable (feature 0007 §4.1, AC-2, S2); an
+    /// untraced row keeps the cheaper [`Flush::Async`]. This pins that mapping -
+    /// flipping either arm fails here even though the outcome (`Ok`) is
+    /// unchanged.
+    #[tokio::test]
+    async fn a_traced_row_is_appended_flush_sync_and_an_untraced_row_flush_async() {
+        let (handler, flushes) = recording_handler().await;
+
+        // Two distinct fences (seq 1 and 2) so both are genuine appends, not a
+        // duplicate of the other.
+        let traced = outbox_message(&test_event(1), 1, true);
+        let untraced = outbox_message(&test_event(2), 2, false);
+
+        assert!(matches!(handler.handle(&traced).await, MessageResult::Ok));
+        assert!(matches!(handler.handle(&untraced).await, MessageResult::Ok));
+
+        assert_eq!(
+            *flushes.lock().unwrap(),
+            vec![Flush::Sync, Flush::Async],
+            "a traced row is Flush::Sync, an untraced row Flush::Async"
+        );
+    }
+
+    /// A topic lookup that cannot be read is retried under a cause of its own,
+    /// so an operator can tell a database fault from a deregistered topic.
+    #[tokio::test]
+    async fn an_outbox_append_during_a_spec_cache_fault_retries_as_specification_unavailable() {
+        let (handler, _backend, recorder, dsn) = test_handler_with_dsn(true).await;
+        crate::test_support::tables::drop_table(&dsn, "event_broker_spec_cache").await;
+
+        let result = handler.handle(&test_message(&test_event(1))).await;
+        assert!(matches!(result, MessageResult::Retry), "{result:?}");
+        assert_eq!(
+            recorder.points(RETRIES),
+            vec![(
+                vec![
+                    label("backend", "none"),
+                    label("error", "specification_unavailable"),
                     label("outbox", "default"),
                     label("partition", "0"),
                 ],

@@ -1,7 +1,7 @@
 [package]
 name = "cf-gears-event-broker"
 description = "Event Broker: Ingest/Delivery/Dispatcher composite module (deployment-topology skeleton)"
-version = "0.4.0"
+version = "0.6.1"
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
@@ -11,8 +11,6 @@ keywords = ["constructorfabric", "cf-gears", "event-broker"]
 categories = ["asynchronous"]
 metadata.docs.rs.all-features = true
 
-autobins = false
-
 [features]
 # Exposes `test_support` (the in-process `EventBrokerHarness` + `test_router`)
 # to other crates' tests, mirroring oagw's `test-utils`. The event-broker SDK's
@@ -21,9 +19,21 @@ autobins = false
 # harness's own deps (`memory-event-broker-plugin`, `types-registry-sdk`,
 # `sea-orm-migration`, `tokio-util`) are already regular dependencies; the
 # router-driving side modules (`request`/`response`) additionally need `http`
-# + `tower`, and the fixtures need `types-registry-sdk`'s `test-util`, so the
-# feature pulls those in (they are otherwise dev-only).
-test-utils = ["dep:http", "dep:tower", "types-registry-sdk/test-util"]
+# + `tower`, and the fixtures need `types-registry-sdk`'s `test-util` and, for
+# the macro-declared event template, `schemars`, so the feature pulls those in
+# (they are otherwise dev-only). It also turns on the SDK's `test-util`, so the
+# SDK's integration tests, which dev-depend on this feature, reach its outbox
+# drain hooks. The harness binds the cluster profile through `cluster-sdk`'s
+# stub over a `standalone-cluster-plugin` cache, linking no cluster gear.
+test-utils = [
+    "dep:http",
+    "dep:tower",
+    "dep:schemars",
+    "dep:standalone-cluster-plugin",
+    "types-registry-sdk/test-util",
+    "event-broker-sdk/test-util",
+    "cluster-sdk/test-util",
+]
 # Gates the engine-matrix tests (`tests/*_backends_test.rs`), which need a
 # Docker daemon for their PostgreSQL and MySQL servers (or the servers
 # `EB_TEST_POSTGRES_URL` / `EB_TEST_MYSQL_URL` name), so a default `cargo test`
@@ -33,14 +43,11 @@ integration = []
 [lib]
 name = "event_broker"
 
-[[bin]]
-name = "cf-gears-event-broker-server"
-path = "src/bin/server.rs"
-
 [lints]
 workspace = true
 
 [dependencies]
+schemars = { workspace = true, optional = true }
 # A concrete topic and a concrete event type are both derived GTS type schemas,
 # so the broker models neither itself: the identifier wrapper comes from `gts`,
 # the resolved type schema from `types-registry-sdk`, and the DTO shapes the API
@@ -52,9 +59,12 @@ workspace = true
 # `gts_id!(...)` literals.
 event-broker-sdk = { workspace = true }
 gts = { workspace = true }
-types-registry-sdk = { workspace = true }
+# `rest-client`: the resolving client `#[toolkit::consumes]` registers when no
+# in-process registry publishes the platform API.
+types-registry-sdk = { workspace = true, features = ["rest-client"] }
 
-cluster = { workspace = true }
+# The cluster gear is reached only through its SDK contract (see `module.rs`);
+# the gear crate itself is deliberately not linked.
 cluster-sdk = { workspace = true }
 
 anyhow = { workspace = true }
@@ -79,11 +89,9 @@ http-body-util = { workspace = true }
 # global `MeterProvider` the host installs.
 opentelemetry = { workspace = true }
 
-# `bootstrap` feature: `toolkit::bootstrap::{AppConfig, run_server}`, used
-# only by `src/bin/server.rs` (eb-single-process-implementation D7) -
-# the library target itself doesn't need it, but Cargo features are
-# crate-wide, matching how `apps/cf-gears-example-server` depends on it.
-toolkit = { workspace = true, features = ["bootstrap"] }
+# No `bootstrap` feature: `run_server` is the deployment's concern and lives in
+# the `cf-gears-event-broker-server` crate.
+toolkit = { workspace = true }
 toolkit-security = { workspace = true }
 # `Iso8601Duration`, to parse a resolved retention trait into a real duration
 # rather than passing a string through to the API.
@@ -92,9 +100,9 @@ toolkit-canonical-errors = { workspace = true, features = ["axum", "utoipa"] }
 toolkit-odata = { workspace = true, features = ["with-utoipa"] }
 toolkit-macros = { workspace = true }
 utoipa = { workspace = true }
+# The authorization resolver and the type registry are consumed through their
+# SDK contracts (`#[toolkit::consumes]` in `module.rs`), never linked as gears.
 authz-resolver-sdk = { workspace = true, features = ["rest-client"] }
-authz-resolver = { workspace = true }
-types-registry = { workspace = true }
 # GTS ids and schema metadata used by domain authorization.
 toolkit-gts = { workspace = true }
 # `domain/ingest.rs`'s `subject_type_allowed`/`domain/specification.rs`'s
@@ -115,7 +123,7 @@ toolkit-http-proxy = { workspace = true }
 # through SecureORM (`toolkit_db::secure`); raw connections are never held by
 # gear code. `toolkit_db::outbox` (same crate) backs the ingest-side
 # transactional outbox (design.md D5) - the same generic library the SDK's
-# client-side `ProducerOutbox` already uses, here on the opposite
+# client-side `OutboxProducer` already uses, here on the opposite
 # (server-enqueue) side.
 sea-orm = { workspace = true }
 sea-orm-migration = { workspace = true }
@@ -129,23 +137,9 @@ toolkit-db-macros = { workspace = true }
 http = { workspace = true, optional = true }
 tower = { workspace = true, optional = true }
 
-# CLI for the standalone binary (src/bin/server.rs), mirroring
-# apps/cf-gears-example-server's Cli shape.
-clap = { workspace = true }
-
-# `src/bin/server.rs`-only: linked so their `inventory::submit!` gear/plugin
-# registrations are present in the binary. `event_broker` itself needs
-# `cluster`/`authz-resolver`/`types-registry` (already deps above) at
-# compile time for its own domain code; `api-gateway`/`authn-resolver` are
-# needed only for the binary's AuthN pipeline and
-# have no compile-time API surface this crate's library code calls, so they
-# (and the concrete plugins) are declared here but only ever referenced from
-# `src/bin/server.rs`, never from `src/`.
-api-gateway = { workspace = true }
-authn-resolver = { workspace = true }
-static-authn-plugin = { workspace = true }
-static-authz-plugin = { workspace = true }
-standalone-cluster-plugin = { workspace = true }
+# Optional, enabled by `test-utils`: the harness's stub cache backend
+# (`StandaloneCacheProvider` is a cache provider type, not a gear).
+standalone-cluster-plugin = { workspace = true, optional = true }
 # The storage backends, injected at wiring as providers (`module.rs`), the way
 # the cluster gear injects its cache providers. The gear links them but knows
 # only the `backend::Backend` trait behind them; the test harness runs on memory.
@@ -164,9 +158,17 @@ name = "delivery"
 harness = false
 
 [dev-dependencies]
+authz-resolver-sdk = { workspace = true, features = ["test-util"] }
 # The crate itself with `test-utils`, as oagw does: every `tests/` binary gets
 # `test_support` (the in-process harness) with no `required-features`.
 cf-gears-event-broker = { path = ".", features = ["test-utils"] }
+# `tests/migrations_backends_test.rs`: the SDK's producer registration
+# migration (`producer_registration_migrations`, behind its `db` feature) on
+# every engine the gear database may be.
+event-broker-sdk = { workspace = true, features = ["db"] }
+# `MockDatabase`: `migrations_tests.rs` records the DDL the migrations emit
+# on PostgreSQL to compare it with `docs/migration.sql`.
+sea-orm = { workspace = true, features = ["mock"] }
 # `tests/support/containers.rs`: the PostgreSQL and MySQL servers of the
 # engine-matrix tests, on `libs/test-containers`' pinned tags.
 test-containers = { workspace = true }
@@ -182,15 +184,17 @@ http = { workspace = true }
 # An in-memory exporter to read back `infra/metrics.rs`'s instruments.
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
 tracing-test = { workspace = true }
-# `tests/standalone_integration_tests.rs` (design.md D8, task group 10) -
-# spawns the real `[[bin]]` as a subprocess and drives it over real HTTP,
-# rather than in-process mocks.
-reqwest = { workspace = true, features = ["json", "stream"] }
+# Declared here too (not only via `test-utils`) so the crate's own `#[cfg(test)]`
+# tests reach the harness, matching the `http`/`tower` pattern above.
+cluster-sdk = { workspace = true, features = ["test-util"] }
+standalone-cluster-plugin = { workspace = true }
+# `src/infra/storage/migrations/migrations_tests.rs`: a temp-file SQLite DB the
+# migration DDL is recorded against.
 tempfile = { workspace = true }
-# `types_registry_sdk::testing::MockTypesRegistryClient` - the SDK's own
-# ready-made in-memory test double, reused rather than hand-rolled
-# (`eb-gts-type-registration`).
+# `types_registry_sdk::testing_platform::MockTypesRegistry` - the SDK's own
+# in-memory `PlatformTypesRegistryApi` test double, reused rather than
+# hand-rolled.
 types-registry-sdk = { workspace = true, features = ["test-util"] }
-# `cf-gears-standalone-cluster-plugin` moved to [dependencies] above (also
-# needed by src/bin/server.rs); regular dependencies are available to tests
-# too, so no separate dev-dependency entry is needed here anymore.
+# The full-process integration tests that spawn the server binary live in the
+# `cf-gears-event-broker-server` crate (the only crate defining its
+# `CARGO_BIN_EXE`).

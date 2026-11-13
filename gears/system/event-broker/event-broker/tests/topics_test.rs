@@ -1,4 +1,4 @@
-//! Topic introspection (scenarios topics/1.01-1.04, features 0003 and 0007
+//! Topic introspection (scenarios topics/1.01 and 1.03-1.05, features 0003 and 0007
 //! §2.6): the topic list, a partition's segment manifest, the event-type
 //! list. In-process: real services and router, `SQLite` gear database, memory
 //! backend.
@@ -9,8 +9,9 @@ use std::time::Duration;
 
 use chrono::DateTime;
 use event_broker::test_support::{EventBrokerHarness, Json, StaticTypesRegistry};
+use event_broker_sdk::Sequence;
 use event_broker_sdk::backend::{Partition, TopicPartition, Wait};
-use event_broker_sdk::{Event, Sequence};
+use event_broker_sdk::models::Event;
 use gts::GtsInstanceId;
 use serde_json::{Value, json};
 
@@ -62,7 +63,7 @@ async fn list_topics_returns_a_paged_list_of_every_registered_topic() {
     );
 }
 
-// scenario: topics/1.02-positive-list-topic-segments.md
+// scenario: topics/1.05-positive-segments-empty-partition.md
 #[tokio::test]
 async fn segments_of_an_empty_partition_report_an_empty_manifest() {
     let harness = harness().await;
@@ -85,7 +86,7 @@ async fn segments_of_an_empty_partition_report_an_empty_manifest() {
             "end_sequence": 0,
             "start_time": null,
             "end_time": null,
-            "segments": [{ "start_sequence": 0, "end_sequence": 0, "event_count": 0 }],
+            "segments": [],
         })
     );
 }

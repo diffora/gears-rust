@@ -35,6 +35,9 @@
 #![forbid(unsafe_code)]
 #![deny(rust_2018_idioms)]
 
+// AM publishes this crate's GTS declarations itself; see `gts`.
+toolkit_gts::declare_gts_inventory!();
+
 pub mod client;
 pub mod error;
 pub mod field;
@@ -47,6 +50,15 @@ pub mod precondition;
 pub mod quota;
 pub mod reason;
 pub mod tenant;
+mod tenant_validation;
+pub use tenant_validation::{TenantInputValidationError, validate_tenant_name};
+#[cfg(test)]
+mod tenant_validation_tests;
+mod user_validation;
+pub use user_validation::UserInputValidationError;
+
+#[cfg(test)]
+mod user_validation_tests;
 
 pub use client::AccountManagementClient;
 pub use error::AccountManagementError;

@@ -41,6 +41,13 @@ The OAGW design is decomposed into eight features organized along functional bou
 - `cpt-cf-oagw-nfr-ssrf-protection` — Feature 4 owns request-path SSRF guards, Feature 8 owns IP pinning and header-stripping hardening.
 - `cpt-cf-oagw-nfr-credential-isolation` — Feature 3 owns auth plugin credential handling, Feature 4 owns proxy-time credential flow.
 
+**Planned work across features 1–8 for `cpt-cf-oagw-fr-upstream-credentials`.** [ADR-0021](ADR/0021-upstream-credentials.md) is proposed. Implementation follows its approval.
+
+- [ ] Foundation and management: additive storage, ownership and atomic parent/child lifecycle on each backend; scoped REST/SDK CRUD and registry reconciliation.
+- [ ] Plugins, proxy and hierarchy: constrained API-key configuration, named resolution/preview, use authorization and owner endpoint checks, including streaming handshakes.
+- [ ] Limiting and observability: credential bucket, error-source handling, bounded labels, credential ID in access logs and replica cleanup.
+- [ ] Deployment and verification: cached routing with live credential reads, registry writer fencing and mixed-version rollout/rollback. Exercise the [acceptance scenarios](../scenarios/upstream-credentials/README.md).
+
 ## 2. Entries
 
 ### 1. [Core Domain & Storage Foundation](features/0001-cpt-cf-oagw-feature-domain-foundation.md) - HIGH
@@ -471,7 +478,7 @@ The OAGW design is decomposed into eight features organized along functional bou
 - **Depends On**: `cpt-cf-oagw-feature-proxy-engine`
 
 - **Scope**:
-  - Prometheus metrics: `oagw_requests_total`, `oagw_request_duration_seconds` (phases `total`, `resolve`, `auth`), `oagw_requests_in_flight`, `oagw_errors_total`, `oagw_circuit_breaker_state`, `oagw_rate_limit_exceeded_total`, `oagw_circuit_breaker_transitions_total`, `oagw_rate_limit_usage_ratio`, `oagw_routing_target_host_used`, `oagw_routing_endpoint_selected`, `oagw_upstream_available`, `oagw_upstream_connections`; with a database, the proxy configuration cache's `oagw_proxy_cache_*` metrics and its `proxy_cache_watch_connecting` and `proxy_cache_watch_down` health codes (`cpt-cf-oagw-adr-proxy-config-cache`)
+  - Prometheus metrics: `oagw_requests_total`, `oagw_request_duration_seconds` (phases `total`, `resolve`, `auth`), `oagw_requests_in_flight`, `oagw_errors_total`, `oagw_circuit_breaker_state`, `oagw_rate_limit_exceeded_total`, `oagw_circuit_breaker_transitions_total`, `oagw_rate_limit_usage_ratio`, `oagw_routing_target_host_used`, `oagw_routing_endpoint_selected`, `oagw_upstream_available`, `oagw_upstream_connections`; with a database, the proxy configuration cache's `oagw_proxy_cache_*` metrics and its `proxy_cache_serving_stale`, `proxy_cache_watch_connecting` and `proxy_cache_watch_down` health codes (`cpt-cf-oagw-adr-proxy-config-cache`)
   - Histogram buckets: `[0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0]`
   - Cardinality management: no tenant labels; normalized `http.route` from route config; `http.request.method` normalized to standard verbs or `_OTHER`; numeric `http.response.status_code` (OTel HTTP semconv) — status-class queries are expressed at query time over the numeric code
   - Structured JSON audit logging to stdout: request ID, tenant, host, path, method, status, duration, sizes

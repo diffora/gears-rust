@@ -4,6 +4,16 @@
 //! [`MockTypesRegistry::seed_inventory`]. Mutations advance versions, dry runs discard
 //! changes, and idempotency keys replay operations. Type Schema materializations are
 //! resolved by `gts-rust`; tombstones retain them, and unresolvable document reads fail.
+//! Changed Type Schemas are validated with native GTS before storage; in-batch schema
+//! prerequisites settle first. Invalid schemas fail admission without replacing old state;
+//! the members of an in-batch cycle are refused as invalid and the candidates waiting on
+//! them are blocked by that dependency. Seeds deliberately bypass this validation.
+//! Publisher guards, history/compatibility, database locking and complete production
+//! graph-reason parity are not modeled.
+//!
+//! Instances are not validated against their Type Schema and neither wait on nor are
+//! blocked by in-batch schema candidates: a batch the registry refuses for an instance can
+//! succeed here. Assert instance admission against the registry's local client.
 //!
 //! Use [`Fault`] for delays and errors, [`MockTypesRegistry::reject`] and
 //! [`MockTypesRegistry::depends_on`] for admission rules, and [`ProtocolFault`] for
@@ -36,6 +46,7 @@ use crate::models::{
 };
 use crate::reason::aborted;
 
+mod admission;
 pub mod conformance;
 
 // configuration.
@@ -314,6 +325,8 @@ struct State {
     protocol: Protocol,
     strict: Option<Strict>,
     calls: HashMap<Call, u32>,
+    caller_contexts: HashMap<Call, Vec<SecurityContext>>,
+    platform_calls: HashMap<Call, u32>,
     reads: Vec<EntityKey>,
     resolver: Resolver,
 }
@@ -482,6 +495,31 @@ impl MockTypesRegistry {
         self.state.lock().calls.get(&call).copied().unwrap_or(0)
     }
 
+    /// Request-plane contexts passed to `call`, cloned on entry in call order, including failed
+    /// and cancelled calls. Platform calls contribute no context; write methods return an empty
+    /// vector.
+    #[must_use]
+    pub fn caller_contexts(&self, call: Call) -> Vec<SecurityContext> {
+        self.state
+            .lock()
+            .caller_contexts
+            .get(&call)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Platform-plane calls of `call`, counted on entry, including failed and cancelled calls.
+    /// [`Self::calls`] counts both planes together.
+    #[must_use]
+    pub fn platform_calls(&self, call: Call) -> u32 {
+        self.state
+            .lock()
+            .platform_calls
+            .get(&call)
+            .copied()
+            .unwrap_or(0)
+    }
+
     /// Every key batch reads asked for, in order.
     #[must_use]
     pub fn reads(&self) -> Vec<EntityKey> {
@@ -521,12 +559,27 @@ impl MockTypesRegistry {
 
 impl MockTypesRegistry {
     /// Records the call, enforces strict mode, and applies the first admitting rule: its delay,
-    /// then its failure. The rule is chosen atomically, before any await.
-    async fn enter(&self, call: Call, keys: &[EntityKey]) -> Option<CanonicalError> {
+    /// then its failure. `caller` is present only for the request plane. Recording and rule
+    /// selection happen atomically, before any await.
+    async fn enter(
+        &self,
+        call: Call,
+        keys: &[EntityKey],
+        caller: Option<&SecurityContext>,
+    ) -> Option<CanonicalError> {
         let (delay, failure) = {
             let mut guard = self.state.lock();
             let state = &mut *guard;
             *state.calls.entry(call).or_default() += 1;
+            if let Some(caller) = caller {
+                state
+                    .caller_contexts
+                    .entry(call)
+                    .or_default()
+                    .push(caller.clone());
+            } else {
+                *state.platform_calls.entry(call).or_default() += 1;
+            }
             if call == Call::BatchGet {
                 state.reads.extend(keys.iter().cloned());
             }
@@ -641,11 +694,7 @@ impl MockTypesRegistry {
                 resolver.invalidate();
                 entities
             };
-            let outcomes = op
-                .candidates
-                .iter()
-                .map(|c| decide(entities, admission, c))
-                .collect();
+            let outcomes = admission::decide_batch(entities, admission, &op.candidates);
             op.outcomes = Some(outcomes);
         }
         let mut operation = render(
@@ -694,9 +743,11 @@ fn decide(
     entities: &mut BTreeMap<String, Stored>,
     admission: &Admission,
     candidate: &Candidate,
-) -> Decided {
-    let failed =
-        |reason: Reason, message: &str| Decided::Failed(AdmissionFailure::new(reason, message));
+    readiness: admission::Readiness<'_>,
+) -> Option<Decided> {
+    let failed = |reason: Reason, message: &str| {
+        Some(Decided::Failed(AdmissionFailure::new(reason, message)))
+    };
     match candidate {
         Candidate::Register {
             gts_id,
@@ -713,13 +764,13 @@ fn decide(
                         .is_some_and(|s| s.lifecycle == LifecycleStatus::Active)
             });
             if let Some((_, dependency)) = missing {
-                return Decided::Failed(
+                return Some(Decided::Failed(
                     AdmissionFailure::new(
                         Reason::DependencyNotFound,
                         "a dependency is not registered",
                     )
                     .with_context(context::DEPENDENCY_ID, dependency),
-                );
+                ));
             }
             // A tombstone stays present: it is never recreated, and a revision of it is refused.
             let current = entities.get(gts_id.id());
@@ -733,9 +784,27 @@ fn decide(
                 }
                 (None, Some(_)) => failed(Reason::PreconditionFailed, "nothing to update"),
                 (Some(s), Some(_)) if s.content == *content => {
-                    Decided::Unchanged(s.resource_version)
+                    Some(Decided::Unchanged(s.resource_version))
                 }
                 (current, _) => {
+                    if gts_id.is_type() {
+                        match readiness {
+                            admission::Readiness::Waiting => return None,
+                            admission::Readiness::Failed(dependency) => {
+                                return Some(Decided::Failed(
+                                    AdmissionFailure::new(
+                                        Reason::BlockedByDependency,
+                                        "a selected schema prerequisite was refused",
+                                    )
+                                    .with_context(context::DEPENDENCY_ID, dependency),
+                                ));
+                            }
+                            admission::Readiness::Ready => {}
+                        }
+                        if let Err(error) = admission::validate_schema(entities, gts_id, content) {
+                            return failed(Reason::InvalidSchema, &error.to_string());
+                        }
+                    }
                     let version = current.map_or(1, |s| s.resource_version + 1);
                     entities.insert(
                         gts_id.id().to_owned(),
@@ -746,7 +815,7 @@ fn decide(
                             frozen: None,
                         },
                     );
-                    Decided::Succeeded(version)
+                    Some(Decided::Succeeded(version))
                 }
             }
         }
@@ -771,7 +840,7 @@ fn decide(
             stored.lifecycle = LifecycleStatus::Deleted;
             stored.resource_version += 1;
             stored.frozen = frozen;
-            Decided::Succeeded(stored.resource_version)
+            Some(Decided::Succeeded(stored.resource_version))
         }
     }
 }
@@ -1010,10 +1079,11 @@ impl MockTypesRegistry {
     /// The batch read both contracts serve.
     async fn read_batch(
         &self,
+        caller: Option<&SecurityContext>,
         request: BatchGetEntitiesRequest,
     ) -> Result<BatchGetEntitiesResponse, CanonicalError> {
         let keys: Vec<EntityKey> = request.items.iter().map(|i| i.key.clone()).collect();
-        if let Some(error) = self.enter(Call::BatchGet, &keys).await {
+        if let Some(error) = self.enter(Call::BatchGet, &keys, caller).await {
             return Err(error);
         }
         if request.items.is_empty() || request.items.len() > crate::models::MAX_BATCH_GET_KEYS {
@@ -1065,9 +1135,10 @@ impl MockTypesRegistry {
     /// The discovery page both contracts serve.
     async fn read_page(
         &self,
+        caller: Option<&SecurityContext>,
         query: ListEntitiesRequest,
     ) -> Result<ListEntitiesResponse, CanonicalError> {
-        if let Some(error) = self.enter(Call::List, &[]).await {
+        if let Some(error) = self.enter(Call::List, &[], caller).await {
             return Err(error);
         }
         let fields = query.projection.normalized();
@@ -1150,7 +1221,7 @@ impl PlatformTypesRegistryApi for MockTypesRegistry {
         _ctx: &PlatformSecurityContext,
         request: BatchGetEntitiesRequest,
     ) -> Result<BatchGetEntitiesResponse, CanonicalError> {
-        self.read_batch(request).await
+        self.read_batch(None, request).await
     }
 
     async fn list_entities(
@@ -1158,7 +1229,7 @@ impl PlatformTypesRegistryApi for MockTypesRegistry {
         _ctx: &PlatformSecurityContext,
         request: ListEntitiesRequest,
     ) -> Result<ListEntitiesResponse, CanonicalError> {
-        self.read_page(request).await
+        self.read_page(None, request).await
     }
 
     async fn register_entities(
@@ -1172,7 +1243,7 @@ impl PlatformTypesRegistryApi for MockTypesRegistry {
             .iter()
             .map(|i| EntityKey::GtsId(i.gts_id.clone()))
             .collect();
-        let failure = self.enter(Call::Register, &keys).await;
+        let failure = self.enter(Call::Register, &keys, None).await;
         {
             let mut state = self.state.lock();
             state.submissions.push((key.clone(), request.clone()));
@@ -1245,7 +1316,7 @@ impl PlatformTypesRegistryApi for MockTypesRegistry {
         request: DeleteEntitiesRequest,
     ) -> Result<DeletionOperation, CanonicalError> {
         let keys: Vec<EntityKey> = request.items.iter().map(|i| i.key.clone()).collect();
-        if let Some(error) = self.enter(Call::Delete, &keys).await {
+        if let Some(error) = self.enter(Call::Delete, &keys, None).await {
             return Err(error);
         }
         if request.items.is_empty() {
@@ -1288,7 +1359,7 @@ impl PlatformTypesRegistryApi for MockTypesRegistry {
         _ctx: &PlatformSecurityContext,
         operation_id: Uuid,
     ) -> Result<Operation, CanonicalError> {
-        if let Some(error) = self.enter(Call::GetOperation, &[]).await {
+        if let Some(error) = self.enter(Call::GetOperation, &[], None).await {
             return Err(error);
         }
         self.operation(operation_id, true)
@@ -1300,18 +1371,18 @@ impl PlatformTypesRegistryApi for MockTypesRegistry {
 impl TypesRegistryApi for MockTypesRegistry {
     async fn batch_get_entities(
         &self,
-        _ctx: &SecurityContext,
+        ctx: &SecurityContext,
         request: BatchGetEntitiesRequest,
     ) -> Result<BatchGetEntitiesResponse, CanonicalError> {
-        self.read_batch(request).await
+        self.read_batch(Some(ctx), request).await
     }
 
     async fn list_entities(
         &self,
-        _ctx: &SecurityContext,
+        ctx: &SecurityContext,
         request: ListEntitiesRequest,
     ) -> Result<ListEntitiesResponse, CanonicalError> {
-        self.read_page(request).await
+        self.read_page(Some(ctx), request).await
     }
 }
 

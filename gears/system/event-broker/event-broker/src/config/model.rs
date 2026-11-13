@@ -38,6 +38,8 @@ pub struct EventBrokerConfig {
     #[serde(default)]
     pub batch: BatchConfig,
     #[serde(default)]
+    pub publish: PublishConfig,
+    #[serde(default)]
     pub polling: PollingConfig,
     #[serde(default)]
     pub subscription: SubscriptionConfig,
@@ -112,6 +114,28 @@ impl Default for BatchConfig {
             max_size: 100,
             max_payload_bytes: 1_048_576,
         }
+    }
+}
+
+/// The `[modules.event_broker.publish]` section: synchronous-publish
+/// (`Prefer: wait=N`) tuning.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct PublishConfig {
+    /// The ceiling on a `Prefer: wait=N` publish's hold, in seconds. A request
+    /// asking for more is capped to this; the broker never holds a publish open
+    /// longer than the operator allows. Default 20, to stay inside api-gateway's
+    /// request deadline. In the ingest-serving modes (`standalone` and
+    /// `cluster_ingest`) a startup check refuses a value above
+    /// [`MAX_PUBLISH_WAIT_SECS`](crate::config::checks::MAX_PUBLISH_WAIT_SECS),
+    /// which explains the bound and when it can rise (#4752).
+    pub max_wait_secs: u32,
+}
+
+impl Default for PublishConfig {
+    fn default() -> Self {
+        // Below api-gateway's request deadline; see `MAX_PUBLISH_WAIT_SECS`.
+        Self { max_wait_secs: 20 }
     }
 }
 

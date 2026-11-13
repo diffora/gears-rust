@@ -5,10 +5,7 @@ gdl_version = "1.0"
 # Gearbox product metadata for the resource-group gear.
 #
 # Projected from #[toolkit::gear]: id, runtime_caps (db, rest), colocated_deps
-# (authz-resolver, types-registry). This gear reads no configuration -- there is
-# no `ctx.config*()` call in its `impl Gear` -- so it declares no
-# `config_schema`, which is the right answer rather than a gap.
-
+# (types-registry).
 
 AUTHZ_SDK = cargo(crate_name = "cf-gears-authz-resolver-sdk", lib = "authz_resolver_sdk", path = "../../authz-resolver/authz-resolver-sdk", features = ["rest-client"])
 
@@ -40,6 +37,8 @@ gear(
         lib = "cf_gears_resource_group_sdk",
         path = "../resource-group-sdk",
     ),
+
+    config_schema = config(exposes = ["tenant_type_paths"]),
 
     # `odata` is a real product decision and is on by Cargo's default; `default`
     # itself is not a choice an integrator makes, and `integration` gates a

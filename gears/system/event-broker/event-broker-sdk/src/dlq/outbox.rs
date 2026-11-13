@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::error::{ConsumerError, EventBrokerError};
+use crate::error::{ConsumerError, EventBrokerError, OutboxRole};
 
 use super::{DeadLetterEnvelope, DeadLetterRecord};
 
@@ -49,8 +49,11 @@ impl ConsumerDlqOutbox {
     ///
     /// # Errors
     ///
-    /// Returns an error if the envelope cannot be serialized or the database
-    /// rejects the write.
+    /// Returns an error if the envelope cannot be serialized. Returns
+    /// [`EventBrokerError::Outbox`] of [`OutboxRole::DeadLetter`] if the outbox
+    /// refuses the record (for example a queue it does not hold, or a payload
+    /// over its size limit) or the database rejects the write; a database
+    /// error is its source.
     pub async fn enqueue(
         &self,
         runner: &(impl toolkit_db::secure::DBRunner + Sync + ?Sized),
@@ -63,12 +66,11 @@ impl ConsumerDlqOutbox {
         let message = toolkit_db::outbox::Record::to(&self.queue, partition)
             .payload(payload, DeadLetterEnvelope::PAYLOAD_TYPE)
             .build()
-            .map_err(|err| {
-                EventBrokerError::Internal(format!("enqueue dead-letter envelope: {err}"))
-            })?;
-        self.outbox.enqueue(runner, message).await.map_err(|err| {
-            EventBrokerError::Internal(format!("enqueue dead-letter envelope: {err}"))
-        })
+            .map_err(|err| EventBrokerError::outbox(OutboxRole::DeadLetter, err))?;
+        self.outbox
+            .enqueue(runner, message)
+            .await
+            .map_err(|err| EventBrokerError::outbox(OutboxRole::DeadLetter, err))
     }
 }
 

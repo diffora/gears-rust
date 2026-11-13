@@ -15,10 +15,11 @@ is rejected as a sequence violation and `meta.previous` is never refused.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import datetime, timezone
 
-from .conftest import API_BASE, EVENT_TYPE_STREAM, SUBJECT_TYPE, TOPIC_STREAM, TRACE_ID
+from .conftest import API_BASE, EVENT_TYPE_STREAM, SUBJECT_TYPE, TOPIC_STREAM, TRACE_ID, SseFrameReader
 
 
 def _now() -> str:
@@ -73,8 +74,9 @@ async def test_register_monotonic_producer_returns_201(api):
 async def test_chained_mode_sequence_advances(api):
     """scenario: producer/flows/1.03-positive-chained-mode-sequence.md
 
-    A chained producer publishes event N with meta.previous=N-1; the broker
-    validates the chain, admits the event, and advances last_sequence to N.
+    A chained producer publishes an event whose meta.previous is the chain head;
+    the broker validates the chain, admits the event, and advances last_sequence
+    to its sequence.
     """
     tenant_id = str(uuid.uuid4())
     async with api() as client:
@@ -116,15 +118,17 @@ async def test_chained_mode_sequence_advances(api):
     assert resp2.status_code == 202
 
 
-async def test_idempotency_key_dedup_returns_original(api):
-    """scenario: producer/flows/1.04-positive-idempotency-key-dedup.md
+async def test_a_resend_at_the_chain_head_is_a_duplicate_whatever_its_id(api):
+    """scenario: producer/flows/1.04-positive-chain-head-retry-dedup.md
 
-    A chained publish with the same event ``id`` and ``meta.previous`` as a
-    previously accepted event is a duplicate: the broker returns 200 (not 202)
-    and does not write a second row.
+    Dedup keys on ``meta.sequence`` against the chain head, so a resend at the
+    head under a new event ``id`` is still a duplicate: 200, nothing stored, the
+    chain goes on.
     """
     tenant_id = str(uuid.uuid4())
-    event_id = str(uuid.uuid4())
+    first_id = "e2e10400-0000-0000-0000-000000000001"
+    resend_id = "e2e10400-0000-0000-0000-000000000002"
+    next_id = "e2e10400-0000-0000-0000-000000000003"
     async with api() as client:
         reg = await client.post(
             "/producers",
@@ -133,8 +137,8 @@ async def test_idempotency_key_dedup_returns_original(api):
         assert reg.status_code == 201
         producer_id = reg.json()["id"]
 
-        payload = {
-            **_event(tenant_id, event_id=event_id),
+        head = {
+            **_event(tenant_id, event_id=first_id),
             "meta": {
                 "version": 1,
                 "producer_id": producer_id,
@@ -142,18 +146,220 @@ async def test_idempotency_key_dedup_returns_original(api):
                 "sequence": 1,
             },
         }
+        first = await client.post("/events", json=head)
+        assert first.status_code == 202, first.text
+        assert first.text == ""
+
+        resend = await client.post("/events", json={**head, "id": resend_id})
+        assert resend.status_code == 200, resend.text
+        assert resend.text == "", "200 dedup response must carry no body"
+
+        following = await client.post(
+            "/events",
+            json={
+                **_event(tenant_id, event_id=next_id),
+                "meta": {
+                    "version": 1,
+                    "producer_id": producer_id,
+                    "previous": 1,
+                    "sequence": 2,
+                },
+            },
+        )
+        assert following.status_code == 202, following.text
+        assert following.text == ""
+
+        cursors = await client.get(f"/producers/{producer_id}/cursors")
+        assert cursors.status_code == 200
+        assert cursors.json() == {
+            "producer_id": producer_id,
+            "client_agent": "e2e-test/1.0",
+            "topics": [{"topic": TOPIC_STREAM, "last_sequence": 2}],
+        }
+
+        # All three events share one tenant, so one outbox partition drains
+        # them in publish order: seeing the last one rules out a stored resend
+        # behind it.
+        delivered = await _deliveries_through(client, tenant_id, next_id)
+
+    assert [e["id"] for e in delivered] == [first_id, next_id]
+    [a, c] = delivered
+    assert c["sequence"] > a["sequence"]
+    assert delivered == [
+        {
+            "id": first_id,
+            "type": EVENT_TYPE_STREAM,
+            "topic": TOPIC_STREAM,
+            "tenant_id": tenant_id,
+            "source": "e2e-test",
+            "subject": "s1",
+            "subject_type": SUBJECT_TYPE,
+            "occurred_at": a["occurred_at"],
+            "trace_parent": None,
+            "data": None,
+            "partition": 0,
+            "sequence": a["sequence"],
+            "sequence_time": a["sequence_time"],
+        },
+        {
+            "id": next_id,
+            "type": EVENT_TYPE_STREAM,
+            "topic": TOPIC_STREAM,
+            "tenant_id": tenant_id,
+            "source": "e2e-test",
+            "subject": "s1",
+            "subject_type": SUBJECT_TYPE,
+            "occurred_at": c["occurred_at"],
+            "trace_parent": None,
+            "data": None,
+            "partition": 0,
+            "sequence": c["sequence"],
+            "sequence_time": c["sequence_time"],
+        },
+    ]
+
+
+async def test_a_resend_at_the_chain_head_is_a_duplicate_whatever_its_previous(api):
+    """scenario: producer/flows/1.04-positive-chain-head-retry-dedup.md
+
+    A resend is a duplicate when its ``sequence`` is the head, whatever its
+    ``previous``: 200, nothing stored, the chain goes on.
+    """
+    tenant_id = str(uuid.uuid4())
+    first_id = "e2e10401-0000-0000-0000-000000000001"
+    second_id = "e2e10401-0000-0000-0000-000000000002"
+    resend_id = "e2e10401-0000-0000-0000-000000000003"
+    next_id = "e2e10401-0000-0000-0000-000000000004"
+    async with api() as client:
+        reg = await client.post(
+            "/producers",
+            json={"mode": "chained", "client_agent": "e2e-test/1.0"},
+        )
+        assert reg.status_code == 201
+        producer_id = reg.json()["id"]
 
         first = await client.post(
-            "/events", json=payload
+            "/events",
+            json={
+                **_event(tenant_id, event_id=first_id),
+                "meta": {
+                    "version": 1,
+                    "producer_id": producer_id,
+                    "previous": 0,
+                    "sequence": 1,
+                },
+            },
         )
-        assert first.status_code == 202
+        assert first.status_code == 202, first.text
+        assert first.text == ""
 
-        # Exact same payload → dedup → 200
-        second = await client.post(
-            "/events", json=payload
+        second = {
+            **_event(tenant_id, event_id=second_id),
+            "meta": {
+                "version": 1,
+                "producer_id": producer_id,
+                "previous": 1,
+                "sequence": 2,
+            },
+        }
+        head = await client.post("/events", json=second)
+        assert head.status_code == 202, head.text
+        assert head.text == ""
+
+        resend = await client.post(
+            "/events",
+            json={
+                **second,
+                "id": resend_id,
+                "meta": {
+                    "version": 1,
+                    "producer_id": producer_id,
+                    "previous": 0,
+                    "sequence": 2,
+                },
+            },
         )
-    assert second.status_code == 200
-    assert second.text == "", "200 dedup response must carry no body"
+        assert resend.status_code == 200, resend.text
+        assert resend.text == "", "200 dedup response must carry no body"
+
+        following = await client.post(
+            "/events",
+            json={
+                **_event(tenant_id, event_id=next_id),
+                "meta": {
+                    "version": 1,
+                    "producer_id": producer_id,
+                    "previous": 2,
+                    "sequence": 3,
+                },
+            },
+        )
+        assert following.status_code == 202, following.text
+        assert following.text == ""
+
+        cursors = await client.get(f"/producers/{producer_id}/cursors")
+        assert cursors.status_code == 200
+        assert cursors.json() == {
+            "producer_id": producer_id,
+            "client_agent": "e2e-test/1.0",
+            "topics": [{"topic": TOPIC_STREAM, "last_sequence": 3}],
+        }
+
+        # All four events share one tenant, so one outbox partition drains
+        # them in publish order: seeing the last one rules out a stored resend
+        # behind it.
+        delivered = await _deliveries_through(client, tenant_id, next_id)
+
+    assert [e["id"] for e in delivered] == [first_id, second_id, next_id]
+    [a, b, c] = delivered
+    assert a["sequence"] < b["sequence"] < c["sequence"]
+    assert delivered == [
+        {
+            "id": first_id,
+            "type": EVENT_TYPE_STREAM,
+            "topic": TOPIC_STREAM,
+            "tenant_id": tenant_id,
+            "source": "e2e-test",
+            "subject": "s1",
+            "subject_type": SUBJECT_TYPE,
+            "occurred_at": a["occurred_at"],
+            "trace_parent": None,
+            "data": None,
+            "partition": 0,
+            "sequence": a["sequence"],
+            "sequence_time": a["sequence_time"],
+        },
+        {
+            "id": second_id,
+            "type": EVENT_TYPE_STREAM,
+            "topic": TOPIC_STREAM,
+            "tenant_id": tenant_id,
+            "source": "e2e-test",
+            "subject": "s1",
+            "subject_type": SUBJECT_TYPE,
+            "occurred_at": b["occurred_at"],
+            "trace_parent": None,
+            "data": None,
+            "partition": 0,
+            "sequence": b["sequence"],
+            "sequence_time": b["sequence_time"],
+        },
+        {
+            "id": next_id,
+            "type": EVENT_TYPE_STREAM,
+            "topic": TOPIC_STREAM,
+            "tenant_id": tenant_id,
+            "source": "e2e-test",
+            "subject": "s1",
+            "subject_type": SUBJECT_TYPE,
+            "occurred_at": c["occurred_at"],
+            "trace_parent": None,
+            "data": None,
+            "partition": 0,
+            "sequence": c["sequence"],
+            "sequence_time": c["sequence_time"],
+        },
+    ]
 
 
 async def test_chained_sequence_violation_returns_412(api):
@@ -376,7 +582,7 @@ async def test_chained_producer_desync_recovery(api):
             )
             assert r.status_code == 202
 
-        # Step 1 — Publish with a stale sequence (simulating a crash/restore).
+        # Step 1 - Publish with a stale sequence (simulating a crash/restore).
         # Broker last accepted sequence=2; producer thinks it's 0.
         stale_resp = await client.post(
             "/events",
@@ -412,7 +618,7 @@ async def test_chained_producer_desync_recovery(api):
             },
         }
 
-        # Step 2 — Read the broker's cursor to learn the authoritative sequence.
+        # Step 2 - Read the broker's cursor to learn the authoritative sequence.
         cursors_resp = await client.get(f"/producers/{producer_id}/cursors")
         assert cursors_resp.status_code == 200
         cursor_body = cursors_resp.json()
@@ -420,7 +626,7 @@ async def test_chained_producer_desync_recovery(api):
         assert cursor_body["topics"] == [{"topic": TOPIC_STREAM, "last_sequence": 2}]
         last_seq = 2
 
-        # Step 3 — Republish with the correct sequence (previous=2, sequence=3).
+        # Step 3 - Republish with the correct sequence (previous=2, sequence=3).
         recovered_resp = await client.post(
             "/events",
             json={
@@ -434,6 +640,56 @@ async def test_chained_producer_desync_recovery(api):
             },
         )
     assert recovered_resp.status_code == 202
+
+
+async def _deliveries_through(client, tenant_id: str, last_id: str) -> list[dict]:
+    """Subscribes a new group to the stream topic for ``tenant_id``, seeks it to the
+    earliest offset and returns the payloads delivered up to and including
+    ``last_id``, within 7s.
+    """
+    group = await client.post("/consumer-groups")
+    assert group.status_code == 201
+    sub = await client.post(
+        "/subscriptions",
+        json={
+            "consumer_group": group.json()["id"],
+            "client_agent": "e2e-test",
+            "interests": [
+                {
+                    "topic": TOPIC_STREAM,
+                    "tenant_id": tenant_id,
+                    "types": [EVENT_TYPE_STREAM],
+                }
+            ],
+        },
+    )
+    assert sub.status_code == 201
+    sub_id = sub.json()["id"]
+    seek = await client.post(
+        f"/subscriptions/{sub_id}:seek",
+        json={
+            "topology_version": 1,
+            "positions": {TOPIC_STREAM: [{"partition": 0, "value": "earliest"}]},
+        },
+    )
+    assert seek.status_code == 200, seek.text
+    assert seek.json() == {
+        "positions": {TOPIC_STREAM: [{"partition": 0, "value": 0}]}
+    }
+
+    delivered: list[dict] = []
+    async with client.stream("GET", f"/events:sse?subscription_id={sub_id}") as stream:
+        assert stream.status_code == 200
+        reader = SseFrameReader(stream)
+        loop = asyncio.get_running_loop()
+        # 7s bounds the topology and delivery waits together, under the 10s test timeout.
+        deadline = loop.time() + 7
+        await reader.await_kind("topology", timeout=deadline - loop.time())
+        while not delivered or delivered[-1]["id"] != last_id:
+            remaining = deadline - loop.time()
+            assert remaining > 0, f"{last_id} not delivered within 7s: {delivered}"
+            delivered.append((await reader.await_kind("event", timeout=remaining))["payload"])
+    return delivered
 
 
 async def _register_monotonic(client) -> str:

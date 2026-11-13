@@ -104,6 +104,13 @@
                 "chicago"
               ]
             },
+            "coding_conventions": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 500,
+              "pattern": "\\S",
+              "description": "A coding habit the person wants followed: style, naming, testing or review practice, for example \"snake_case names\", \"tests before code\"."
+            },
             "cognitive_load_hint": {
               "type": "string",
               "minLength": 1,
@@ -139,6 +146,13 @@
               "minLength": 1,
               "maxLength": 500,
               "pattern": "\\S"
+            },
+            "development_environment": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 500,
+              "pattern": "\\S",
+              "description": "A part of the person's development setup: editor, operating system, shell or terminal, for example Neovim, Ubuntu, zsh."
             },
             "dialect": {
               "type": "string",

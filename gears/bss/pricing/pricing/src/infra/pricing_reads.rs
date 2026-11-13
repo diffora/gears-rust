@@ -62,22 +62,26 @@ pub fn plan_missing(what: &str) -> CanonicalError {
 pub fn plan_conflict(code: &str) -> CanonicalError {
     PlanResource::aborted(code).with_reason(code).create()
 }
-/// `plan:read` denied; an unreachable PDP stays 503.
+/// `plan:read` denied; an unreachable PDP stays 503, an internal failure 500.
 pub fn plan_denied(error: authz::AuthzError) -> CanonicalError {
     match error {
         authz::AuthzError::Denied(d) => PlanResource::permission_denied()
             .with_reason(d.reason)
             .create(),
-        unavailable @ authz::AuthzError::Unavailable(_) => authz_failure(unavailable),
+        failure @ (authz::AuthzError::Unavailable(_) | authz::AuthzError::Internal(_)) => {
+            authz_failure(failure)
+        }
     }
 }
-/// `price:read` denied; an unreachable PDP stays 503.
+/// `price:read` denied; an unreachable PDP stays 503, an internal failure 500.
 pub fn price_denied(error: authz::AuthzError) -> CanonicalError {
     match error {
         authz::AuthzError::Denied(d) => PriceResource::permission_denied()
             .with_reason(d.reason)
             .create(),
-        unavailable @ authz::AuthzError::Unavailable(_) => authz_failure(unavailable),
+        failure @ (authz::AuthzError::Unavailable(_) | authz::AuthzError::Internal(_)) => {
+            authz_failure(failure)
+        }
     }
 }
 /// A read transaction's failure: exhausted contention is a `plan` or `price` conflict like every
@@ -120,6 +124,13 @@ pub struct LocalGeneration {
     book: price_book::Model,
     dimensions: Vec<crate::infra::storage::entity::dimension_key::Model>,
     settings: serde_json::Value,
+}
+
+impl LocalGeneration {
+    /// The revision's book as the snapshot read it (D-524 judges its window at a new sale).
+    pub(crate) fn book(&self) -> &price_book::Model {
+        &self.book
+    }
 }
 
 pub async fn load_price(

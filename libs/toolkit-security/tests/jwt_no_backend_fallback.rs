@@ -22,6 +22,8 @@ impl JwtVerifier for ForbiddenVerifier {
     }
 }
 
+// Also fences `jwt::encode`: a facade-signed token must never construct a
+// jsonwebtoken signer, and its claims pass constructs exactly one verifier.
 static POISON: CryptoProvider = CryptoProvider {
     signer_factory: |_, _| panic!("no signing in this test"),
     verifier_factory: |algorithm, _| {
@@ -106,5 +108,38 @@ fn claims_pass_does_not_execute_jsonwebtoken_crypto() {
             .is_err()
         );
         assert_eq!(CONSTRUCTIONS.load(Ordering::SeqCst), index + 1);
+    }
+    let signing_key = toolkit_security::crypto::signature::EcdsaP256KeyPair::generate().unwrap();
+    let before = CONSTRUCTIONS.load(Ordering::SeqCst);
+    let claims = serde_json::json!({"sub": "svc", "exp": 4_000_000_000_u64});
+    let token =
+        toolkit_security::jwt::encode(&Header::new(Algorithm::ES256), &claims, &signing_key)
+            .unwrap();
+    let decoded = toolkit_security::jwt::decode::<serde_json::Value>(
+        &token,
+        &DecodingKey::from_ec_der(signing_key.public_key()),
+        &Validation::new(Algorithm::ES256),
+    )
+    .unwrap();
+    assert_eq!(decoded.claims, claims);
+    assert_eq!(CONSTRUCTIONS.load(Ordering::SeqCst), before + 1);
+
+    let rsa_key = toolkit_security::crypto::signature::RsaKeyPair::from_pkcs8_pem(include_str!(
+        "../src/crypto/testdata/rsa-private.pem"
+    ))
+    .unwrap();
+    let rsa_decoding =
+        DecodingKey::from_rsa_raw_components(rsa_key.modulus(), rsa_key.public_exponent());
+    for (offset, algorithm) in [Algorithm::RS256, Algorithm::PS256].into_iter().enumerate() {
+        let token =
+            toolkit_security::jwt::encode(&Header::new(algorithm), &claims, &rsa_key).unwrap();
+        let decoded = toolkit_security::jwt::decode::<serde_json::Value>(
+            &token,
+            &rsa_decoding,
+            &Validation::new(algorithm),
+        )
+        .unwrap();
+        assert_eq!(decoded.claims, claims);
+        assert_eq!(CONSTRUCTIONS.load(Ordering::SeqCst), before + 2 + offset);
     }
 }

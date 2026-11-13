@@ -352,22 +352,15 @@ async def test_list_subscriptions_returns_paged_list(api):
         )
         assert sub_resp.status_code == 201
         created = sub_resp.json()
-        sub_id = created["id"]
 
-        list_resp = await client.get("/subscriptions")
+        list_resp = await client.get(
+            "/subscriptions", params={"$filter": f"consumer_group eq '{group_id}'"}
+        )
     assert list_resp.status_code == 200
-    body = list_resp.json()
-    assert body == {
-        "items": body["items"],
-        "page_info": body["page_info"],
+    assert list_resp.json() == {
+        "items": [created],
+        "page_info": {"next_cursor": None, "prev_cursor": None, "limit": 25},
     }
-    assert isinstance(body["items"], list)
-    assert isinstance(body["page_info"], dict)
-
-    # The created subscription must appear in the list with its full shape intact.
-    found = next((item for item in body["items"] if item["id"] == sub_id), None)
-    assert found is not None, f"subscription {sub_id} not found in list"
-    assert found == created
 
 
 async def test_read_subscription_returns_200(api):
@@ -546,7 +539,7 @@ async def test_cross_tenant_join_anonymous_group_returns_403(api):
 
     Tenant A creates an anonymous group; tenant B's POST /subscriptions
     targeting that group must return 403.  In standalone mode auth is disabled
-    so the server returns 201 — hence strict xfail.
+    so the server returns 201 - hence strict xfail.
     """
     tenant_id = str(uuid.uuid4())
     async with api() as client:

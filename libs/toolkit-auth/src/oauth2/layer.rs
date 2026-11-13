@@ -102,6 +102,8 @@ where
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+    use crate::oauth2::TokenEndpoint;
+    use crate::oauth2::credentials::ClientCredentials;
     use bytes::Bytes;
     use http::{Method, Request, Response, StatusCode};
     use http_body_util::Full;
@@ -115,15 +117,16 @@ mod tests {
     /// Build a test config pointing at the given mock server.
     fn test_config(server: &MockServer) -> OAuthClientConfig {
         OAuthClientConfig {
-            token_endpoint: Some(
-                Url::parse(&format!("http://localhost:{}/token", server.port())).unwrap(),
-            ),
-            client_id: "test-client".into(),
-            client_secret: SecretString::new("test-secret"),
             http_config: Some(toolkit_http::HttpClientConfig::for_testing()),
             jitter_max: Duration::from_millis(0),
             min_refresh_period: Duration::from_millis(100),
-            ..Default::default()
+            ..OAuthClientConfig::new(
+                TokenEndpoint::Direct(
+                    Url::parse(&format!("http://localhost:{}/token", server.port())).unwrap(),
+                ),
+                "test-client",
+                ClientCredentials::SecretBasic(SecretString::new("test-secret")),
+            )
         }
     }
 

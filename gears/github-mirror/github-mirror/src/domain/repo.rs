@@ -3,10 +3,10 @@ use std::collections::BTreeMap;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use github_mirror_sdk::{
-    Branch, CheckRun, Comment, Commit, CommitComment, CommitFile, CommitStatus, Contributor,
-    Deployment, Issue, IssueEvent, IssueReaction, IssueTimelineEvent, Label, Milestone,
-    PullRequest, PullRequestCommit, PullRequestFile, Release, Repo, Review, ReviewComment,
-    ReviewThread, Tag, WorkflowJob, WorkflowRun,
+    Artifact, Branch, CheckRun, Comment, Commit, CommitComment, CommitFile, CommitStatus,
+    Contributor, Deployment, Issue, IssueEvent, IssueReaction, IssueTimelineEvent, Label,
+    Milestone, PullRequest, PullRequestCommit, PullRequestFile, Release, Repo, Review,
+    ReviewComment, ReviewThread, Tag, Workflow, WorkflowJob, WorkflowRun,
 };
 use toolkit_macros::domain_model;
 use toolkit_odata::{ODataQuery, Page};
@@ -549,6 +549,7 @@ pub struct CommitRecord {
     pub committed_at: Option<String>,
     pub additions: i64,
     pub deletions: i64,
+    pub html_url: Option<String>,
 }
 
 #[async_trait]
@@ -625,6 +626,14 @@ pub trait CommentRepository: Send + Sync {
         repo_id: i64,
         issue_number: i64,
         window: PageWindow,
+    ) -> Result<Vec<Comment>, DomainError>;
+
+    async fn list_by_repo(
+        &self,
+        scope: &AccessScope,
+        repo_id: i64,
+        window: PageWindow,
+        filter: ListingFilter,
     ) -> Result<Vec<Comment>, DomainError>;
     /// Hard-delete this repo's rows whose `extracted_at` predates
     /// `extracted_before` — rows the sync that set the watermark did not
@@ -1056,6 +1065,7 @@ pub trait WorkflowRunRepository: Send + Sync {
         &self,
         scope: &AccessScope,
         repo_id: i64,
+        workflow_id: Option<i64>,
         window: PageWindow,
     ) -> Result<(Vec<WorkflowRun>, u64), DomainError>;
     async fn upsert(
@@ -1071,6 +1081,40 @@ pub trait WorkflowRunRepository: Send + Sync {
         repo_id: i64,
         window: PageWindow,
     ) -> Result<Vec<WorkflowRun>, DomainError>;
+}
+
+#[domain_model]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowRecord {
+    pub id: i64,
+    pub repo_id: i64,
+    pub name: String,
+    pub path: String,
+    pub state: String,
+}
+
+#[async_trait]
+pub trait WorkflowRepository: Send + Sync {
+    async fn page_by_repo(
+        &self,
+        scope: &AccessScope,
+        repo_id: i64,
+        window: PageWindow,
+    ) -> Result<(Vec<Workflow>, u64), DomainError>;
+
+    async fn find_by_id(
+        &self,
+        scope: &AccessScope,
+        repo_id: i64,
+        id: i64,
+    ) -> Result<Option<Workflow>, DomainError>;
+
+    async fn find_by_path(
+        &self,
+        scope: &AccessScope,
+        repo_id: i64,
+        path: &str,
+    ) -> Result<Option<Workflow>, DomainError>;
 }
 
 /// Write-side record for a mirrored pull-request file.
@@ -1313,6 +1357,32 @@ pub trait DeploymentRepository: Send + Sync {
     ) -> Result<Vec<Deployment>, DomainError>;
 }
 
+#[domain_model]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtifactRecord {
+    pub id: i64,
+    pub repo_id: i64,
+    pub name: String,
+    pub size_in_bytes: i64,
+    pub expired: bool,
+    pub workflow_run_id: Option<i64>,
+    pub head_branch: Option<String>,
+    pub head_sha: Option<String>,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+    pub expires_at: Option<String>,
+}
+
+#[async_trait]
+pub trait ArtifactRepository: Send + Sync {
+    async fn page_by_repo(
+        &self,
+        scope: &AccessScope,
+        repo_id: i64,
+        window: PageWindow,
+    ) -> Result<(Vec<Artifact>, u64), DomainError>;
+}
+
 /// Write-side record for a commit of one pull request.
 #[domain_model]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1325,6 +1395,7 @@ pub struct PullRequestCommitRecord {
     pub committer_login: Option<String>,
     pub authored_at: Option<String>,
     pub committed_at: Option<String>,
+    pub html_url: Option<String>,
 }
 
 #[async_trait]

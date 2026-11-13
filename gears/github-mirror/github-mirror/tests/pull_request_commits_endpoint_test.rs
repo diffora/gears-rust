@@ -46,6 +46,7 @@ fn commit_record(
         committer_login: Some("ivan".to_owned()),
         authored_at: Some(committed_at.to_owned()),
         committed_at: Some(committed_at.to_owned()),
+        html_url: None,
     }
 }
 

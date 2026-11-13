@@ -583,3 +583,14 @@ fn the_notification_bounds_are_read_from_their_own_section() {
     );
     config.validate().expect("valid");
 }
+
+#[test]
+fn client_wiring_is_not_a_config_key() {
+    // Transport wiring lives in `gears.quota-enforcement.clients.provides`.
+    assert!(
+        serde_json::from_str::<QuotaEnforcementConfig>(
+            r#"{ "client_wiring": { "quota_manager_api": { "transport": "local" } } }"#
+        )
+        .is_err()
+    );
+}

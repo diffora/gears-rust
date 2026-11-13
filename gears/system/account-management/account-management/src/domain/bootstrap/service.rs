@@ -61,7 +61,11 @@ use crate::domain::tenant::closure::build_activation_rows;
 use crate::domain::tenant::model::{NewTenant, TenantModel, TenantStatus};
 use crate::domain::tenant::repo::TenantRepo;
 use crate::domain::util::backoff::compute_next_backoff;
-use types_registry_sdk::TypesRegistryClient;
+use toolkit_security::PlatformSecurityContext;
+use types_registry_sdk::{
+    EntityField, FieldSelection, LifecycleStatus, PlatformTypesRegistryApi,
+    PlatformTypesRegistryApiExt, Projection, ReadOptions,
+};
 
 /// Internal classification produced by `BootstrapService::classify`.
 #[allow(clippy::large_enum_variant)]
@@ -109,7 +113,7 @@ enum BootstrapState {
     InitialClassify,
 
     /// Initial-`NoRoot` bridge: run `preflight_root_tenant_type` +
-    /// `preflight_root_gts_config` once before entering the loop.
+    /// `preflight_root_config` once before entering the loop.
     /// Skipped on the `ProvisioningRootResume` path — the peer is
     /// performing those checks.
     InitialPreflight,
@@ -234,7 +238,7 @@ struct RunCtx {
 pub struct BootstrapService<R: TenantRepo> {
     repo: Arc<R>,
     idp: Arc<dyn IdpPluginClient>,
-    types_registry: Option<Arc<dyn TypesRegistryClient>>,
+    types_registry: Option<Arc<dyn PlatformTypesRegistryApi>>,
     cfg: BootstrapConfig,
     root_type: RootTypeConfig,
     /// Mirrors `cfg.idp.required` from the parent
@@ -320,7 +324,10 @@ impl<R: TenantRepo> BootstrapService<R> {
     /// preflight. Tests that exercise non-GTS paths may omit this; gear
     /// wiring supplies it when `ClientHub` resolves the registry client.
     #[must_use]
-    pub fn with_types_registry(mut self, types_registry: Arc<dyn TypesRegistryClient>) -> Self {
+    pub fn with_types_registry(
+        mut self,
+        types_registry: Arc<dyn PlatformTypesRegistryApi>,
+    ) -> Self {
         self.types_registry = Some(types_registry);
         self
     }
@@ -559,9 +566,8 @@ impl<R: TenantRepo> BootstrapService<R> {
         if let Err(e) = self.preflight_root_tenant_type(ctx.deadline).await {
             return BootstrapState::Terminal(Err(e));
         }
-        // Registry-backed config validation for `root_name` /
-        // `root_tenant_metadata`.
-        if let Err(e) = self.preflight_root_gts_config(ctx.deadline).await {
+        // Local root-name and opaque metadata-size checks.
+        if let Err(e) = self.preflight_root_config() {
             return BootstrapState::Terminal(Err(e));
         }
         BootstrapState::LoopClassify
@@ -657,7 +663,7 @@ impl<R: TenantRepo> BootstrapService<R> {
         if let Err(e) = self.preflight_root_tenant_type(ctx.deadline).await {
             return BootstrapState::Terminal(Err(e));
         }
-        if let Err(e) = self.preflight_root_gts_config(ctx.deadline).await {
+        if let Err(e) = self.preflight_root_config() {
             return BootstrapState::Terminal(Err(e));
         }
         ctx.pending_takeover_precheck = false;
@@ -838,10 +844,33 @@ impl<R: TenantRepo> BootstrapService<R> {
         // and can correlate with the deadline.
         let entity = match tokio::time::timeout_at(
             deadline,
-            registry.get_type_schema(self.root_type.gts_id.as_ref()),
+            registry.get_type_schema(
+                &PlatformSecurityContext::outbound_marker(),
+                &self.root_type.gts_id,
+                ReadOptions {
+                    projection: Projection::Select(FieldSelection::with(&[
+                        EntityField::EffectiveTraits,
+                    ])),
+                    ..ReadOptions::default()
+                },
+            ),
         )
         .await
         {
+            Ok(Ok(entity)) if entity.lifecycle_status != LifecycleStatus::Active => {
+                emit_metric(
+                    AM_BOOTSTRAP_LIFECYCLE,
+                    MetricKind::Counter,
+                    &[
+                        ("phase", "gts_preflight"),
+                        ("classification", "invalid_tenant_type"),
+                        ("outcome", "failure"),
+                    ],
+                );
+                return Err(DomainError::InvalidTenantType {
+                    detail: format!("{} is deleted in GTS", self.root_type.gts_id),
+                });
+            }
             Ok(Ok(entity)) => entity,
             Ok(Err(err)) => {
                 if matches!(
@@ -890,8 +919,8 @@ impl<R: TenantRepo> BootstrapService<R> {
             }
         };
 
-        // `GtsTypeSchema` is by construction a type-schema (the
-        // `is_schema` axis is implicit in the type), so the only check
+        // `TypeSchema` is by construction a type-schema (the
+        // kind is implicit in the type), so the only check
         // remaining is that the chain root is AM's tenant_type root.
         let entity_type_id = entity.type_id.as_ref();
         let is_am_tenant_type = gts::GtsId::try_new(entity_type_id)
@@ -914,15 +943,21 @@ impl<R: TenantRepo> BootstrapService<R> {
             });
         }
 
-        // `effective_traits` resolves the GTS chain (own + ancestors)
-        // so a root type that inherits a non-empty
+        // The registry-materialized `effective_traits` merges the GTS
+        // chain (own + ancestors) so a root type that inherits a non-empty
         // `allowed_parent_types` from a base schema is correctly
-        // rejected. Reading `entity.raw_schema` directly only sees the
+        // rejected. Reading the authored content directly only sees the
         // type's own declarations and would silently accept an
         // inherited rule, breaking the root-eligibility contract —
         // the same effective-trait resolution that
         // `GtsTenantTypeChecker` already uses for child create.
-        let allowed = extract_allowed_parent_types_from_effective(&entity.effective_traits())?;
+        let effective = entity.effective_traits.as_ref().ok_or_else(|| {
+            DomainError::internal(format!(
+                "types-registry answered root tenant type {} without the selected effective_traits",
+                self.root_type.gts_id
+            ))
+        })?;
+        let allowed = extract_allowed_parent_types_from_effective(effective)?;
         if !allowed.is_empty() {
             emit_metric(
                 AM_BOOTSTRAP_LIFECYCLE,
@@ -979,56 +1014,15 @@ impl<R: TenantRepo> BootstrapService<R> {
     // @cpt-end:cpt-cf-account-management-dod-platform-bootstrap-idempotency:p1:inst-dod-bootstrap-idempotency-classify
     // @cpt-end:cpt-cf-account-management-algo-platform-bootstrap-idempotency-detection:p1:inst-algo-idem-classify-root
 
-    /// Registry-backed validation of the operator-configured root
-    /// tenant metadata. Runs in the preflight phase (BEFORE the
-    /// saga loop opens its first `provision_tenant` call) so a bad
-    /// `root_name` or `root_tenant_metadata` fails fast as
-    /// `Validation` instead of burning the full `idp_wait_timeout`
-    /// budget on retries.
-    ///
-    /// Mirrors the call sites in `TenantService::create_tenant` (and
-    /// the `cf-resource-group::validate_metadata_via_gts` posture):
-    /// when the registry has the schema the JSON-Schema bounds
-    /// (`minLength`, `maxLength`) gate the call; when the schema is
-    /// not yet registered the helper short-circuits to `Ok(())` and
-    /// the DB `CHECK (length(name) BETWEEN 1 AND 255)` constraint
-    /// serves as the last-line guard for `root_name`. Without these
-    /// checks running at preflight, a misconfigured `root_name`
-    /// would land in `tenants.name` after passing only the
-    /// trim-non-empty check in [`BootstrapConfig::validate`].
-    ///
-    /// # Deadline contract
-    ///
-    /// Both calls are live registry calls — a stalled types-registry
-    /// would otherwise hang the bootstrap saga past
-    /// `idp_wait_timeout`. Each await is wrapped in
-    /// `tokio::time::timeout_at(deadline, …)` so the saga's
-    /// deadline-bound contract (already enforced for
-    /// `preflight_root_tenant_type` and `provision_tenant`) extends
-    /// to these too. A timeout maps to `service_unavailable` and the
-    /// bootstrap retry loop handles it the same way as a transient
-    /// registry error.
-    async fn preflight_root_gts_config(&self, deadline: Instant) -> Result<(), DomainError> {
-        let Some(registry) = self.types_registry.as_ref() else {
-            return Ok(());
-        };
-        match tokio::time::timeout_at(
-            deadline,
-            crate::domain::gts_validation::validate_tenant_name_via_gts(
-                &self.cfg.root_name,
-                registry.as_ref(),
-            ),
-        )
-        .await
-        {
-            Ok(Ok(())) => {}
-            Ok(Err(err)) => return Err(err),
-            Err(_elapsed) => {
-                return Err(DomainError::service_unavailable(
-                    "bootstrap: validate_tenant_name_via_gts timed out against types-registry",
-                ));
+    /// Validate local root config before insert/provisioning, independently of
+    /// registry availability. The raw name is persisted unchanged, so it must
+    /// satisfy the SDK bounds without request-name normalization.
+    fn preflight_root_config(&self) -> Result<(), DomainError> {
+        account_management_sdk::validate_tenant_name(&self.cfg.root_name).map_err(|error| {
+            DomainError::Validation {
+                detail: format!("bootstrap.root_name: {error}"),
             }
-        }
+        })?;
         // No plugin-input metadata shape validation here: the IdP
         // plugin owns its own `provisioning_metadata` shape end-to-
         // end (AM treats the value as opaque per the IdP-metadata
@@ -1056,8 +1050,8 @@ impl<R: TenantRepo> BootstrapService<R> {
         &self,
         scope: &AccessScope,
     ) -> Result<TenantModel, DomainError> {
-        // GTS-config validation runs in the preflight phase
-        // (`preflight_root_gts_config`) so a bad `root_name` /
+        // Local config validation runs in the preflight phase
+        // (`preflight_root_config`) so a bad `root_name` /
         // `root_tenant_metadata` fails BEFORE the first
         // `provision_tenant` call. By the time we reach this method
         // the configured values have already been gated.
@@ -1884,7 +1878,7 @@ fn record_invariant_violation() {
 // @cpt-end:cpt-cf-account-management-dod-platform-bootstrap-audit-and-metrics:p1:inst-dod-bootstrap-invariant-telemetry
 
 /// Extract `allowed_parent_types` from a flat effective-traits map
-/// (the shape returned by `GtsTypeSchema::effective_traits`), which
+/// (the registry-materialized `effective_traits`), which
 /// keys traits directly rather than nesting them under
 /// `x-gts-traits` / `allOf`.
 fn extract_allowed_parent_types_from_effective(

@@ -6,9 +6,9 @@
 use std::time::Duration;
 
 use httpmock::prelude::*;
-use toolkit_auth::HttpClientBuilderExt;
 use toolkit_auth::oauth2::config::OAuthClientConfig;
 use toolkit_auth::oauth2::token::TokenProvider;
+use toolkit_auth::{ClientCredentials, HttpClientBuilderExt, TokenEndpoint};
 use toolkit_utils::SecretString;
 use url::Url;
 
@@ -41,15 +41,16 @@ async fn full_oauth2_bearer_flow() {
 
     // Build token + client
     let config = OAuthClientConfig {
-        token_endpoint: Some(
-            Url::parse(&format!("http://localhost:{}/token", oauth_server.port())).unwrap(),
-        ),
-        client_id: "int-test-client".into(),
-        client_secret: SecretString::new("int-test-secret"),
         http_config: Some(toolkit_http::HttpClientConfig::for_testing()),
         jitter_max: Duration::from_millis(0),
         min_refresh_period: Duration::from_millis(100),
-        ..Default::default()
+        ..OAuthClientConfig::new(
+            TokenEndpoint::Direct(
+                Url::parse(&format!("http://localhost:{}/token", oauth_server.port())).unwrap(),
+            ),
+            "int-test-client",
+            ClientCredentials::SecretBasic(SecretString::new("int-test-secret")),
+        )
     };
 
     let token = TokenProvider::new(config).unwrap();
@@ -116,13 +117,16 @@ async fn full_oauth2_with_oidc_discovery() {
 
     // Build token + client
     let config = OAuthClientConfig {
-        issuer_url: Some(Url::parse(&format!("http://localhost:{}", server.port())).unwrap()),
-        client_id: "disc-client".into(),
-        client_secret: SecretString::new("disc-secret"),
         http_config: Some(toolkit_http::HttpClientConfig::for_testing()),
         jitter_max: Duration::from_millis(0),
         min_refresh_period: Duration::from_millis(100),
-        ..Default::default()
+        ..OAuthClientConfig::new(
+            TokenEndpoint::Issuer(
+                Url::parse(&format!("http://localhost:{}", server.port())).unwrap(),
+            ),
+            "disc-client",
+            ClientCredentials::SecretBasic(SecretString::new("disc-secret")),
+        )
     };
 
     let token = TokenProvider::new(config).unwrap();

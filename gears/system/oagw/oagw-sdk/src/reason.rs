@@ -129,7 +129,8 @@ pub mod permission {
     /// The policy enforcement point denied the request because the
     /// subject attempted to act outside its own tenant boundary.
     /// Emitted by PEPs that supply structured deny reasons; surfaces
-    /// here through `EnforcerError::Denied.deny_reason.error_code`.
+    /// here through `EnforcerError::AccessDenied(AccessDenial::Pdp { reason })`'s
+    /// `reason.error_code`.
     pub const TENANT_BOUNDARY_VIOLATION: &str = "TENANT_BOUNDARY_VIOLATION";
 
     /// CORS pre-flight or simple request: the request origin is not in
@@ -139,6 +140,13 @@ pub mod permission {
     /// CORS pre-flight or simple request: the request method is not in
     /// the upstream's CORS `allowed_methods` list.
     pub const CORS_METHOD_NOT_ALLOWED: &str = "CORS_METHOD_NOT_ALLOWED";
+
+    /// The resolved upstream serves the alias on endpoints the owner of its
+    /// enforced auth did not configure, so the credential cannot be sent.
+    /// A tenant above the caller changed its endpoints or switched its auth
+    /// to `enforce` after the caller's tenant bound the alias. Projects to
+    /// [`DenialReason::Unknown`], which keeps the enum unchanged.
+    pub const ENFORCED_AUTH_OTHER_SERVER: &str = "ENFORCED_AUTH_OTHER_SERVER";
 
     use core::fmt;
 

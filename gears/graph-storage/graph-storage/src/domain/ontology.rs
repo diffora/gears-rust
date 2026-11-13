@@ -21,60 +21,11 @@ use uuid::Uuid;
 
 use crate::domain::error::DomainError;
 
-/// The nine base-ontology schemas, embedded from the crate's `schemas/` so the
-/// boot registration and the published schema files cannot drift apart. They
-/// live inside the crate rather than under `docs/` because `cargo package`
-/// ships nothing outside the crate directory.
-pub const BASE_SCHEMAS: [(&str, &str); 9] = [
-    (
-        graph_storage_sdk::gts::NODE_BASE_TYPE,
-        include_str!("../../schemas/gts.cf.core.graph.node.v1~.schema.json"),
-    ),
-    (
-        graph_storage_sdk::gts::EDGE_BASE_TYPE,
-        include_str!("../../schemas/gts.cf.core.graph.edge.v1~.schema.json"),
-    ),
-    (
-        graph_storage_sdk::gts::ATTRIBUTE_BASE_TYPE,
-        include_str!("../../schemas/gts.cf.core.graph.attribute.v1~.schema.json"),
-    ),
-    (
-        graph_storage_sdk::gts::OWNED_NODE_TYPE,
-        include_str!(
-            "../../schemas/gts.cf.core.graph.node.v1~cf.core.graph.owned_node.v1~.schema.json"
-        ),
-    ),
-    (
-        graph_storage_sdk::gts::REFERENCE_NODE_TYPE,
-        include_str!(
-            "../../schemas/gts.cf.core.graph.node.v1~cf.core.graph.reference_node.v1~.schema.json"
-        ),
-    ),
-    (
-        graph_storage_sdk::gts::PHANTOM_NODE_TYPE,
-        include_str!(
-            "../../schemas/gts.cf.core.graph.node.v1~cf.core.graph.phantom_node.v1~.schema.json"
-        ),
-    ),
-    (
-        graph_storage_sdk::gts::STATIC_EDGE_TYPE,
-        include_str!(
-            "../../schemas/gts.cf.core.graph.edge.v1~cf.core.graph.static_edge.v1~.schema.json"
-        ),
-    ),
-    (
-        graph_storage_sdk::gts::ANALYSIS_EDGE_TYPE,
-        include_str!(
-            "../../schemas/gts.cf.core.graph.edge.v1~cf.core.graph.analysis_edge.v1~.schema.json"
-        ),
-    ),
-    (
-        graph_storage_sdk::gts::PROVENANCE_ATTRIBUTE_TYPE,
-        include_str!(
-            "../../schemas/gts.cf.core.graph.attribute.v1~cf.core.graph.provenance.v1~.schema.json"
-        ),
-    ),
-];
+/// The nine base-ontology schemas. Defined, embedded and published to the
+/// types-registry by the SDK (`graph_storage_sdk::gts`), the public contract
+/// producers derive from; re-exported here, where the gear registers and
+/// validates against them.
+pub use graph_storage_sdk::gts::BASE_SCHEMAS;
 
 /// The platform's GTS keyword vocabulary. The gear registers **no** extension
 /// keyword of its own, so this list is exactly what `gts` defines; anything
@@ -683,6 +634,30 @@ impl jsonschema::Retrieve for MapRetriever {
     }
 }
 
+/// Every definition a `gts://` reference can resolve to: the chain as given,
+/// then each base ontology type the chain does not already carry.
+///
+/// The base set is always resolvable, ancestor or not, and a base type the
+/// chain carries keeps that (stored) definition: what the database holds is
+/// what a check is about, and a second, different copy of one id would be
+/// refused by the schema store. A base schema that does not parse is an error
+/// naming it, not a silent gap.
+pub fn resolvable_definitions(
+    chain: impl IntoIterator<Item = (String, Value)>,
+) -> Result<Vec<(String, Value)>, DomainError> {
+    let mut definitions: Vec<(String, Value)> = chain.into_iter().collect();
+    for (type_id, raw) in BASE_SCHEMAS {
+        if definitions.iter().any(|(carried, _)| carried == type_id) {
+            continue;
+        }
+        let schema = serde_json::from_str(raw).map_err(|error| {
+            DomainError::internal(format!("base schema `{type_id}` does not parse: {error}"))
+        })?;
+        definitions.push(((*type_id).to_owned(), schema));
+    }
+    Ok(definitions)
+}
+
 impl ChainValidator {
     /// Compile the leaf schema, resolving `gts://` references from the given
     /// chain (ancestors and the leaf itself, in any order).
@@ -696,19 +671,10 @@ impl ChainValidator {
         leaf: &Value,
         chain: impl IntoIterator<Item = (String, Value)>,
     ) -> Result<Self, DomainError> {
-        let mut schemas: BTreeMap<String, Value> = BASE_SCHEMAS
-            .iter()
-            .filter_map(|(id, raw)| {
-                serde_json::from_str(raw)
-                    .ok()
-                    .map(|schema| (format!("gts://{id}"), schema))
-            })
+        let schemas: BTreeMap<String, Value> = resolvable_definitions(chain)?
+            .into_iter()
+            .map(|(id, schema)| (format!("gts://{id}"), schema))
             .collect();
-        schemas.extend(
-            chain
-                .into_iter()
-                .map(|(id, schema)| (format!("gts://{id}"), schema)),
-        );
         let validator = jsonschema::options()
             .with_retriever(MapRetriever { schemas })
             .build(leaf)

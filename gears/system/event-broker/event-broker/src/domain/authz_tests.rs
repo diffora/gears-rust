@@ -2,6 +2,7 @@
 //! interests are checked on the exact type and which on the event base type,
 //! and which ids are refused before the PEP is asked at all.
 
+use authz_resolver_sdk::test_support::EmptyScopePdp;
 use gts::{GtsIdPattern, GtsTypeId};
 
 use super::{event_type_interest_resource, event_type_resource};
@@ -80,4 +81,47 @@ fn publishing_a_type_that_is_not_an_event_type_is_refused_before_the_pep() {
         ))
         .is_ok()
     );
+}
+
+#[test]
+fn event_and_topic_resources_advertise_the_target_tenant_property() {
+    use toolkit_security::pep_properties::OWNER_TENANT_ID;
+    let topic =
+        toolkit_gts::GtsInstanceId::try_new("gts.cf.core.events.topic.v1~x.eb.orders.acme.v1")
+            .unwrap();
+    for resource in [
+        super::topic_resource(&topic),
+        event_type_resource(&GtsTypeId::new(EVENT_BASE)).unwrap(),
+        event_type_interest_resource(&pattern(EVENT_BASE)).unwrap(),
+        event_type_interest_resource(&pattern("gts.cf.core.events.*")).unwrap(),
+    ] {
+        assert!(resource.supported_properties().contains(&OWNER_TENANT_ID));
+    }
+}
+
+use uuid::Uuid;
+
+#[tokio::test]
+async fn empty_scope_cannot_authorize_target_tenant() {
+    let tenant = Uuid::from_u128(1);
+    let ctx = toolkit_security::SecurityContext::builder()
+        .subject_id(Uuid::from_u128(2))
+        .subject_tenant_id(tenant)
+        .build()
+        .unwrap();
+    for live in [false, true] {
+        let pep =
+            authz_resolver_sdk::PolicyEnforcer::new(std::sync::Arc::new(EmptyScopePdp { live }));
+        let result = super::tenant_authorized(&ctx, &pep, "produce", tenant).await;
+        assert_eq!(result.is_ok(), live);
+        if !live {
+            assert!(matches!(
+                result,
+                Err(DomainError::Forbidden {
+                    code: ErrorCode::TenantIdNotAuthorized,
+                    ..
+                })
+            ));
+        }
+    }
 }

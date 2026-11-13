@@ -34,8 +34,9 @@ pub async fn migrated_gear_db(gear_db: &GearDb) -> toolkit_db::DBProvider<toolki
 /// A context for `mode`, with `db` attached and `extra` merged into the
 /// `event-broker` config over a single memory backend routed for every topic.
 ///
-/// Registers an empty `MockTypesRegistryClient` on `hub` (a test that seeds
-/// one registers its own afterwards), and binds a `standalone` cache provider
+/// Registers an empty `MockTypesRegistry` on `hub` as the
+/// `PlatformTypesRegistryApi` the gear consumes (a test that seeds one
+/// registers its own afterwards), and binds a `standalone` cache provider
 /// under the `event-broker` cluster profile unless `hub` already resolves one.
 pub async fn module_ctx(
     mode: &str,
@@ -43,31 +44,27 @@ pub async fn module_ctx(
     extra: &serde_json::Value,
     db: toolkit_db::DBProvider<toolkit_db::DbError>,
 ) -> GearCtx {
-    hub.register::<dyn types_registry_sdk::TypesRegistryClient>(Arc::new(
-        types_registry_sdk::testing::MockTypesRegistryClient::new(),
+    hub.register::<dyn types_registry_sdk::PlatformTypesRegistryApi>(Arc::new(
+        types_registry_sdk::testing_platform::MockTypesRegistry::new(),
     ));
-    if crate::domain::cluster::EventBrokerCluster::resolve(&hub)
-        .await
-        .is_err()
-    {
-        let config: cluster::ClusterConfig = serde_json::from_value(json!({
-            "profiles": { "event-broker": { "cache": { "provider": "standalone" } } }
-        }))
-        .expect("valid test cluster config");
-        let providers = cluster::ProviderRegistry::new()
-            .with_cache_provider(Arc::new(standalone_cluster_plugin::StandaloneCacheProvider));
-        let handle = cluster::ClusterWiring::from_config(Arc::clone(&hub), &config, &providers)
-            .await
-            .expect("standalone provider wires cleanly");
-        // Intentionally leaked - matches `standalone_event_broker_cluster()`'s
-        // own "no graceful shutdown needed in tests" precedent.
-        std::mem::forget(handle);
+    if hub.try_get::<dyn cluster_sdk::ClusterClient>().is_none() {
+        // Bind the `event-broker` cluster profile through `cluster-sdk`'s stub
+        // over a `standalone-cluster-plugin` cache, the way a consumer's tests
+        // do - no cluster gear is linked. Tested on the client's presence, not
+        // on `resolve()`: `resolve()` returns an unbound backend on an empty
+        // hub rather than erring, so it would never take this branch.
+        super::register_standalone_cluster_stub(&hub).await;
     }
     let mut cfg = json!({
         "event-broker": {
             "config": {
                 "mode": mode,
-                "backends": { "main": { "type": "gts.cf.core.events.backend.v1~cf.core.backend.memory.v1~" } },
+                // `single_process` lets the cluster roles build memory: this
+                // test process is the only one; harmless for `standalone`.
+                "backends": { "main": {
+                    "type": "gts.cf.core.events.backend.v1~cf.core.backend.memory.v1~",
+                    "single_process": true,
+                } },
                 "backend_routing": { "gts.cf.core.events.topic.v1~": "main" },
                 // Only load-bearing for cluster_ingest/cluster_delivery
                 // (registration `init`-time validation); harmless for the other

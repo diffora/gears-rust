@@ -1,6 +1,6 @@
 //! Execute CNG primitives even on CI hosts without Windows FIPS policy.
 //! Internal injection does not change the production provider/witness gate.
-use super::{CryptoError, backend, ecdsa, hash, initialize, mac, rng, rsa};
+use super::{CryptoError, aead, backend, ecdsa, hash, initialize, mac, rng, rsa};
 use aws_lc_rs::signature::{self, KeyPair};
 use pkcs1::der::Decode;
 
@@ -18,6 +18,11 @@ fn native_cng_operations() {
             Some(CryptoError::FipsUnavailable)
         );
     }
+    // No CNG AEAD route exists; the facade says so before any witness check.
+    assert_eq!(
+        aead::Aes256Gcm::new(&[0; aead::KEY_LEN]).err(),
+        Some(CryptoError::UnsupportedAlgorithm)
+    );
     let provider = rustls_cng_crypto::custom_provider(
         rustls_cng_crypto::ALL_CIPHER_SUITES.to_vec(),
         rustls_cng_crypto::ALL_KX_GROUPS.to_vec(),
@@ -128,6 +133,33 @@ fn native_cng_operations() {
             )
             .is_err()
         );
+    }
+    // CNG RSA import, pairwise check and signing (JOSE RS*/PS*), checked by AWS-LC.
+    let (_, rsa_der) = pem_rfc7468::decode_vec(include_bytes!("testdata/rsa-private.pem")).unwrap();
+    let rsa_key = rsa::RsaKeyPair::from_pkcs8_with_provider(&rsa_der, &provider).unwrap();
+    assert_eq!(rsa_key.modulus(), public.modulus.as_bytes());
+    for (algorithm, oracle) in [
+        (
+            rsa::RsaAlgorithm::Pkcs1Sha256,
+            &signature::RSA_PKCS1_2048_8192_SHA256,
+        ),
+        (
+            rsa::RsaAlgorithm::Pkcs1Sha512,
+            &signature::RSA_PKCS1_2048_8192_SHA512,
+        ),
+        (
+            rsa::RsaAlgorithm::PssSha256,
+            &signature::RSA_PSS_2048_8192_SHA256,
+        ),
+        (
+            rsa::RsaAlgorithm::PssSha512,
+            &signature::RSA_PSS_2048_8192_SHA512,
+        ),
+    ] {
+        let signed = rsa_key.sign(algorithm, b"CNG RSA signing").unwrap();
+        signature::UnparsedPublicKey::new(oracle, key.public_key().as_ref())
+            .verify(b"CNG RSA signing", &signed)
+            .unwrap();
     }
     // CNG key generation, import, pairwise check and signing, independent of policy.
     let private = ecdsa::generate_pkcs8().unwrap();

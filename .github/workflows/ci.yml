@@ -34,7 +34,7 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: full
-  # .github/actions/sccache sets RUSTC_WRAPPER in each job. sccache puts every
+  # .github/actions/ci-cache sets RUSTC_WRAPPER on the self-hosted runners. sccache puts every
   # CARGO_* variable in its cache keys, so changing one rebuilds everything.
   # Usually better determinism and smaller cache churn in CI.
   CARGO_INCREMENTAL: "0"
@@ -52,7 +52,7 @@ jobs:
   # On workflow_dispatch every filter defaults to true (run everything).
   changes:
     name: Detect changes
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.GEARS_FORCE_GITHUB_HOSTED == 'true' || github.repository != 'constructorfabric/gears-rust' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || 'gears-small' }}
     permissions:
       contents: read
       pull-requests: read
@@ -74,6 +74,9 @@ jobs:
         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
         with:
+          # git diff instead of the PR-files REST API: that call spends the shared
+          # GITHUB_TOKEN budget (1,000/h per repo) in the job-start burst.
+          token: ''
           filters: |
             rust:
               - '**/*.rs'
@@ -95,6 +98,8 @@ jobs:
               - 'deploy/components.yaml'
               - 'tools/scripts/resolve_release.py'
               - 'tools/scripts/tests/test_resolve_release.py'
+              - 'tools/scripts/release_retry.py'
+              - 'tools/scripts/tests/test_release_retry.py'
               # Input to `e2e_sidecar_pins_the_same_timescaledb_image` in
               # libs/test-containers: a Python-only edit to the E2E sidecar must
               # still get the cross-lane TimescaleDB pin checked, or the guard
@@ -106,6 +111,8 @@ jobs:
               - 'libs/toolkit/**'
               - 'libs/toolkit-http/**'
               - 'libs/toolkit-http-proxy/**'
+              - 'libs/toolkit-contract/**'
+              - 'libs/toolkit-contract-macros/**'
               - 'libs/rustls-*/**'
             magika:
               - 'gears/file-parser/**'
@@ -121,6 +128,8 @@ jobs:
               - 'gears/graph-storage/**'
             github_mirror:
               - 'gears/github-mirror/**'
+              - 'libs/**'
+              - 'gears-rust.mk'
             dylint:
               - 'tools/dylint_lints/**'
             deps:
@@ -145,17 +154,18 @@ jobs:
       || needs.changes.outputs.rust == 'true'
       || needs.changes.outputs.ci == 'true'
       || github.event_name == 'workflow_dispatch')
-    runs-on: ubuntu-latest
-    # sccache S3 keys: read-write on main, read-only elsewhere. See .github/actions/sccache.
-    # No environment until the S3_BUCKET variable is set, so the job runs without one.
-    # Reused below as `*sccache-env`.
-    environment: &sccache-env
-      name: ${{ vars.S3_BUCKET != '' && (github.ref == 'refs/heads/main' && 'ci-cache-write' || 'ci-cache-read') || '' }}
+    runs-on: ${{ (vars.GEARS_FORCE_GITHUB_HOSTED == 'true' || github.repository != 'constructorfabric/gears-rust' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || 'gears-large' }}
+    # Only a push to main enters the environment, whose read-write key for the
+    # shared build cache GitHub releases to main alone; every other run reads.
+    # Reused below as `*ci-cache-env`.
+    environment: &ci-cache-env
+      name: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && 'ci-trusted' || '' }}
       deployment: false
     env:
       RUSTFLAGS: "-C debuginfo=0"
     steps:
       - name: Free disk space
+        if: runner.environment == 'github-hosted'
         uses: jlumbroso/free-disk-space@ceedf095f4ec1a097402bc6bd80831f2e1a6fde6 # v2.0.0
         with:
           tool-cache: false
@@ -169,13 +179,44 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install protoc
-        uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+        if: runner.environment == 'github-hosted'
+        uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
         with:
           tool: protoc@3.34.1
+
+      # Own App budget, separate from the shared GITHUB_TOKEN pool (GitHub App per workflow family)
+      - name: Mint gears-rust-ci app token
+        id: app
+        # Unset variable, or a fork/Dependabot run without secrets: skip and fall back to GITHUB_TOKEN.
+        if: >-
+          vars.GEARS_CI_APP_CLIENT_ID != '' &&
+          github.actor != 'dependabot[bot]' &&
+          !github.event.pull_request.head.repo.fork
+        continue-on-error: true  # a bad key or missing install must never fail the job
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.GEARS_CI_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GEARS_CI_APP_PRIVATE_KEY }}
+          permission-contents: read
+      - name: Report API token source
+        shell: bash
+        env:
+          APP_TOKEN_SET: ${{ steps.app.outputs.token != '' }}
+          MINT_OUTCOME: ${{ steps.app.outcome }}
+          API_TOKEN: ${{ steps.app.outputs.token || github.token }}
+        run: |
+          if [ "$APP_TOKEN_SET" = true ]; then src=gears-rust-ci; echo "::notice::GitHub API token: gears-rust-ci app"
+          elif [ "$MINT_OUTCOME" = failure ]; then src=github-token; echo "::warning::gears-rust-ci app token mint failed; using GITHUB_TOKEN"
+          else src=github-token; echo "::notice::GitHub API token: GITHUB_TOKEN (gears-rust-ci app not configured or fork run)"; fi
+          # GET /rate_limit is free; one sample per job gives a per-token time series (see the API limits plan).
+          core=$(curl -fsS -m 10 -H "Authorization: Bearer $API_TOKEN" -H "Accept: application/vnd.github+json" \
+            https://api.github.com/rate_limit 2>/dev/null | tr -d ' \n' | sed -n 's/.*"core":{\([^}]*\)}.*/\1/p' | tr -d '"' | tr ',' ' ' | sed 's/:/=/g') || true
+          echo "RATE-APP ts=$(date -u +%Y-%m-%dT%H:%M:%SZ) token=$src workflow=$GITHUB_WORKFLOW job=$GITHUB_JOB ${core:-unavailable}"
 
       - name: Install Go (required for aws-lc-fips-sys FIPS build)
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
+          token: ${{ steps.app.outputs.token || github.token }}
           go-version: '1.21.x'  # pinned - see docs/security/fips/TOOLCHAIN.md
           cache: false
 
@@ -185,29 +226,36 @@ jobs:
           rustup show
 
       - name: Install cargo-hack
-        uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+        if: runner.environment == 'github-hosted'
+        uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
         with:
           tool: cargo-hack
 
+      - name: Set up the shared build cache
+        id: cache
+        uses: ./.github/actions/ci-cache
+        # Reused below as `*ci-cache-inputs`.
+        with: &ci-cache-inputs
+          rw-key-id: ${{ secrets.CI_CACHE_RW_KEY_ID }}
+          rw-secret: ${{ secrets.CI_CACHE_RW_SECRET }}
+          trusted: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          rust: true
+          downloads: |
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          downloads-key: cargo-${{ hashFiles('**/Cargo.lock') }}
+          downloads-restore-keys: cargo-
+
+      # GitHub-hosted runs (fork pull requests, the kill switch) keep the
+      # registry cache; on the self-hosted runners ci-cache covers it.
       - name: Cache Cargo/target
+        if: ${{ steps.cache.outputs.mode == 'none' }}
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           cache-bin: false
           cache-targets: false
           shared-key: pr-clippy-${{ hashFiles('rust-toolchain.toml') }}
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-
-      # Only main writes to the cache. See .github/actions/sccache.
-      - name: Set up sccache
-        id: sccache
-        uses: ./.github/actions/sccache
-        # Reused below as `*sccache-inputs`.
-        with: &sccache-inputs
-          s3-endpoint: ${{ vars.S3_ENDPOINT }}
-          s3-region: ${{ vars.S3_REGION }}
-          s3-bucket: ${{ vars.S3_BUCKET }}
-          s3-access-key-id: ${{ secrets.S3_ACCESS_KEY_ID }}
-          s3-secret-access-key: ${{ secrets.S3_SECRET_ACCESS_KEY }}
 
       # Database image tags are pinned in libs/test-containers (docs/TESTING.md
       # 4.4). A fixture that constructs a container any other way re-introduces
@@ -233,11 +281,6 @@ jobs:
       - name: cargo clippy
         run: tools/scripts/with_rust_annotations.sh make clippy
 
-      - name: Save compilation metrics
-        if: always() && runner.os == 'Linux' && steps.sccache.outputs.enabled == 'true'
-        continue-on-error: true
-        uses: ./.github/actions/sccache-stats
-
   # Python checks of repo files. They need no Rust toolchain, so they run in
   # their own short job.
   repo-checks:
@@ -249,7 +292,7 @@ jobs:
       || needs.changes.outputs.rust == 'true'
       || needs.changes.outputs.ci == 'true'
       || github.event_name == 'workflow_dispatch')
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.GEARS_FORCE_GITHUB_HOSTED == 'true' || github.repository != 'constructorfabric/gears-rust' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || 'gears-small-vm' }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -285,10 +328,11 @@ jobs:
     # macOS and Windows run once a day in macos-windows-tests.yml.
     uses: ./.github/workflows/test-suite.yml
     with:
-      os: ubuntu-latest
-    secrets:
-      S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
-      S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+      os: ${{ (vars.GEARS_FORCE_GITHUB_HOSTED == 'true' || github.repository != 'constructorfabric/gears-rust' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || 'gears-large' }}
+    # The nextest job enters `ci-trusted` itself on a push to main; its read-write
+    # cache key is an environment secret, which only `inherit` carries into a
+    # called workflow.
+    secrets: inherit
 
   integration:
     name: Integration tests
@@ -299,8 +343,8 @@ jobs:
       || needs.changes.outputs.rust == 'true'
       || needs.changes.outputs.ci == 'true'
       || github.event_name == 'workflow_dispatch')
-    runs-on: ubuntu-latest
-    environment: *sccache-env
+    runs-on: ${{ (vars.GEARS_FORCE_GITHUB_HOSTED == 'true' || github.repository != 'constructorfabric/gears-rust' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || 'gears-large' }}
+    environment: *ci-cache-env
     env:
       RUSTFLAGS: "-C debuginfo=0"
       # See the `test` job: per-suite JUnit reports land in JUNIT_DIR.
@@ -308,6 +352,7 @@ jobs:
       JUNIT_DIR: test-results
     steps:
       - name: Free disk space
+        if: runner.environment == 'github-hosted'
         uses: jlumbroso/free-disk-space@ceedf095f4ec1a097402bc6bd80831f2e1a6fde6 # v2.0.0
         with:
           tool-cache: false
@@ -321,13 +366,43 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install protoc
-        uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+        if: runner.environment == 'github-hosted'
+        uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
         with:
           tool: protoc@3.34.1
+
+      - name: Mint gears-rust-ci app token
+        id: app
+        # Unset variable, or a fork/Dependabot run without secrets: skip and fall back to GITHUB_TOKEN.
+        if: >-
+          vars.GEARS_CI_APP_CLIENT_ID != '' &&
+          github.actor != 'dependabot[bot]' &&
+          !github.event.pull_request.head.repo.fork
+        continue-on-error: true  # a bad key or missing install must never fail the job
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.GEARS_CI_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GEARS_CI_APP_PRIVATE_KEY }}
+          permission-contents: read
+      - name: Report API token source
+        shell: bash
+        env:
+          APP_TOKEN_SET: ${{ steps.app.outputs.token != '' }}
+          MINT_OUTCOME: ${{ steps.app.outcome }}
+          API_TOKEN: ${{ steps.app.outputs.token || github.token }}
+        run: |
+          if [ "$APP_TOKEN_SET" = true ]; then src=gears-rust-ci; echo "::notice::GitHub API token: gears-rust-ci app"
+          elif [ "$MINT_OUTCOME" = failure ]; then src=github-token; echo "::warning::gears-rust-ci app token mint failed; using GITHUB_TOKEN"
+          else src=github-token; echo "::notice::GitHub API token: GITHUB_TOKEN (gears-rust-ci app not configured or fork run)"; fi
+          # GET /rate_limit is free; one sample per job gives a per-token time series (see the API limits plan).
+          core=$(curl -fsS -m 10 -H "Authorization: Bearer $API_TOKEN" -H "Accept: application/vnd.github+json" \
+            https://api.github.com/rate_limit 2>/dev/null | tr -d ' \n' | sed -n 's/.*"core":{\([^}]*\)}.*/\1/p' | tr -d '"' | tr ',' ' ' | sed 's/:/=/g') || true
+          echo "RATE-APP ts=$(date -u +%Y-%m-%dT%H:%M:%SZ) token=$src workflow=$GITHUB_WORKFLOW job=$GITHUB_JOB ${core:-unavailable}"
 
       - name: Install Go (required for aws-lc-fips-sys FIPS build)
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
+          token: ${{ steps.app.outputs.token || github.token }}
           go-version: '1.21.x'  # pinned - see docs/security/fips/TOOLCHAIN.md
           cache: false
 
@@ -337,11 +412,20 @@ jobs:
           rustup show
 
       - name: Install nextest
-        uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+        if: runner.environment == 'github-hosted'
+        uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
         with:
           tool: nextest
 
+      - name: Set up the shared build cache
+        id: cache
+        uses: ./.github/actions/ci-cache
+        with: *ci-cache-inputs
+
+      # GitHub-hosted runs (fork pull requests, the kill switch) keep the
+      # registry cache; on the self-hosted runners ci-cache covers it.
       - name: Cache Cargo/target
+        if: ${{ steps.cache.outputs.mode == 'none' }}
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           cache-bin: false
@@ -349,55 +433,54 @@ jobs:
           shared-key: pr-${{ runner.os }}-integration-${{ hashFiles('rust-toolchain.toml') }}
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
-      # Only main writes to the cache. See .github/actions/sccache.
-      - name: Set up sccache
-        id: setup
-        uses: ./.github/actions/sccache
-        with: *sccache-inputs
-
       # Every test step below runs even when an earlier one failed
       # (`!cancelled()`), so one broken suite no longer hides the results of the
-      # rest; the job still fails if any of them did. Gated on `setup` so a
+      # rest; the job still fails if any of them did. Gated on `cache` so a
       # broken toolchain does not cascade into a wall of identical failures.
       - name: UI tests for toolkit macros libraries
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.cache.outcome == 'success' }}
         run: tools/scripts/with_rust_annotations.sh make test-macros
 
       - name: Test users_info with Postgres (integration)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.cache.outcome == 'success' }}
         run: tools/scripts/with_rust_annotations.sh make test-integration LANE=users-info-pg
 
       - name: Test timescaledb usage-collector plugin (pg integration)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.cache.outcome == 'success' }}
         run: tools/scripts/with_rust_annotations.sh make test-integration LANE=usage-collector-pg
 
       - name: Test clickhouse usage-collector plugin (ch integration)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.cache.outcome == 'success' }}
         run: tools/scripts/with_rust_annotations.sh make test-integration LANE=usage-collector-ch
 
       - name: Test postgres-cluster-plugin (pg integration)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.cache.outcome == 'success' }}
         run: tools/scripts/with_rust_annotations.sh make test-integration LANE=cluster-pg
 
       - name: Test postgres-event-broker-plugin (pg integration)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.cache.outcome == 'success' }}
         run: tools/scripts/with_rust_annotations.sh make test-eb-pg
 
       - name: Test event-broker gear database (SQLite, PostgreSQL, MySQL integration)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.cache.outcome == 'success' }}
         # The lane sets EB_TEST_REQUIRE_DOCKER=1 itself, so an unreachable
         # Docker fails the step instead of skipping the suite green.
         run: tools/scripts/with_rust_annotations.sh make test-integration LANE=eb-gear-db
 
-      - name: Test k8s-cluster-plugin (k3s L2+L3 integration)
+      - name: Test quota-enforcement storage plugin (pg integration)
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: tools/scripts/with_rust_annotations.sh make test-integration LANE=quota-enforcement-pg
+
+      - name: Test k8s-cluster-plugin (k3s L2+L3 integration)
+        if: ${{ !cancelled() && steps.cache.outcome == 'success' }}
         # k3s runs in a **privileged** container (testcontainers-modules sets it);
-        # GitHub-hosted ubuntu runners permit that. The target uses `cargo test`, not
-        # nextest, so one k3s container is shared per test binary -- see gears-rust.mk.
+        # GitHub-hosted ubuntu runners and gears-large permit that. The target
+        # uses `cargo test`, not nextest, so one k3s container is shared per
+        # test binary -- see gears-rust.mk.
         run: tools/scripts/with_rust_annotations.sh make test-cluster-k8s
 
       - name: Test resource-group (pg smoke, integration)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.cache.outcome == 'success' }}
         # Fail if Docker is unreachable instead of letting the suite skip itself
         # into a green step that asserted nothing.
         env:
@@ -405,25 +488,36 @@ jobs:
         run: tools/scripts/with_rust_annotations.sh make test-integration LANE=rg-pg
 
       - name: Test settings-service (pg migrations, integration)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.cache.outcome == 'success' }}
         # Same shape as resource-group above: Docker is on this runner, so a
         # skip here would be a broken daemon passing green.
         env:
           SETTINGS_SERVICE_PG_REQUIRE_DOCKER: "1"
         run: tools/scripts/with_rust_annotations.sh make test-integration LANE=settings-service-pg
 
-      - name: Test github-mirror (PostgreSQL and MariaDB, integration)
-        run: make test-github-mirror-db
+      - name: Test credstore v2 (pg migrations, integration)
+        if: ${{ !cancelled() && steps.cache.outcome == 'success' }}
+        # Same shape as settings-service above: Docker is on this runner, so a
+        # skip here would be a broken daemon passing green.
+        env:
+          CREDSTORE_PG_REQUIRE_DOCKER: "1"
+        run: tools/scripts/with_rust_annotations.sh make test-integration LANE=credstore-pg
 
-      - name: Test github-mirror (110k-entity interrupt and resume)
-        run: make test-github-mirror-scale
+      - name: Test github-mirror (PostgreSQL and MariaDB, integration)
+        if: >-
+          needs.changes.result != 'success'
+          || needs.changes.outputs.github_mirror == 'true'
+          || needs.changes.outputs.deps == 'true'
+          || needs.changes.outputs.ci == 'true'
+          || github.event_name == 'workflow_dispatch'
+        run: make test-github-mirror-db
 
       # bss-pricing's Postgres tests are `#[ignore]`d behind Docker and ran in
       # no job until 2026-08-11 — every concurrency and trigger proof the crate
       # owns lives in them. This job already has Docker. The lane passes
       # `--no-fail-fast`; see gears-rust.mk for what the default cost on 2026-08-18.
       - name: Test bss-pricing with Postgres (integration)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.cache.outcome == 'success' }}
         run: tools/scripts/with_rust_annotations.sh make test-integration LANE=pricing-pg
 
       # coord's `m0001_…` writes two independent SQL literals and only the
@@ -431,7 +525,7 @@ jobs:
       # that stops the `bss-pricing`-beside-`bss-ledger` boot crash, and the
       # `in_schema("bss")` form both gears actually pass, ran in no job.
       - name: Test coord with Postgres (integration)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.cache.outcome == 'success' }}
         run: tools/scripts/with_rust_annotations.sh make test-integration LANE=coord-pg
 
       # bss-products' Postgres tier, added 2026-08-30. It carries the gear's
@@ -442,56 +536,56 @@ jobs:
       # here and runs nowhere, which is the state the pricing comment above
       # records as having cost that gear nine hidden failures.
       - name: Test bss-products with Postgres (integration)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.cache.outcome == 'success' }}
         run: tools/scripts/with_rust_annotations.sh make test-integration LANE=products-pg
 
       # bss-ledger's Postgres tier: every posting, chain, payment and REST-over-Postgres
       # proof the gear owns. Without this step the tier compiles here and runs nowhere.
       - name: Test bss-ledger with Postgres (integration)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.cache.outcome == 'success' }}
         run: tools/scripts/with_rust_annotations.sh make test-integration LANE=ledger-pg
 
       # bss-orders' Postgres tier: the engine, sealed audit, idempotency, claims, role-isolation
       # and gear-boot proofs all run against a real PostgreSQL. Without this step the tier
       # compiles here and runs nowhere.
       - name: Test bss-orders with Postgres (integration)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.cache.outcome == 'success' }}
         run: tools/scripts/with_rust_annotations.sh make test-integration LANE=orders-pg
 
       - name: Test redis-cluster-plugin (redis integration)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.cache.outcome == 'success' }}
         run: tools/scripts/with_rust_annotations.sh make test-integration LANE=cluster-redis
 
       - name: Test durable-execution (PostgreSQL and subprocess recovery)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.cache.outcome == 'success' }}
         run: tools/scripts/with_rust_annotations.sh make test-durable-execution-pg
 
       - name: Test toolkit-db (sqlite integration)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.cache.outcome == 'success' }}
         run: tools/scripts/with_rust_annotations.sh make test-integration LANE=toolkit-db-sqlite
 
       - name: Test toolkit-db (pg integration)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.cache.outcome == 'success' }}
         run: tools/scripts/with_rust_annotations.sh make test-integration LANE=toolkit-db-pg
 
       - name: Test toolkit-db (pgq)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.cache.outcome == 'success' }}
         run: tools/scripts/with_rust_annotations.sh make test-integration LANE=toolkit-db-pgq
 
       - name: Test toolkit-db (mysql integration)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.cache.outcome == 'success' }}
         run: tools/scripts/with_rust_annotations.sh make test-integration LANE=toolkit-db-mysql
 
       - name: Test types-registry (db integration)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.cache.outcome == 'success' }}
         run: tools/scripts/with_rust_annotations.sh make test-integration LANE=types-registry-db
 
       - name: Test oagw (pg/mysql conformance + migrations, integration)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.cache.outcome == 'success' }}
         run: tools/scripts/with_rust_annotations.sh make test-integration LANE=oagw-db
 
       - name: Test oagw (cluster feature)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.cache.outcome == 'success' }}
         run: tools/scripts/with_rust_annotations.sh make test-integration LANE=oagw-cluster
 
       # Published as GitHub Checks by test-report.yml (workflow_run), which has
@@ -507,11 +601,6 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      - name: Save compilation metrics
-        if: always() && runner.os == 'Linux' && steps.setup.outputs.enabled == 'true'
-        continue-on-error: true
-        uses: ./.github/actions/sccache-stats
-
   test-fips:
     name: FIPS verification (${{ matrix.os }})
     needs: changes
@@ -522,8 +611,8 @@ jobs:
       || needs.changes.outputs.deps == 'true'
       || needs.changes.outputs.ci == 'true'
       || github.event_name == 'workflow_dispatch')
-    runs-on: ${{ matrix.os }}
-    environment: *sccache-env
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && ((vars.GEARS_FORCE_GITHUB_HOSTED == 'true' || github.repository != 'constructorfabric/gears-rust' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || 'gears-large') || matrix.os }}
+    environment: *ci-cache-env
     strategy:
       fail-fast: false
       matrix:
@@ -532,7 +621,7 @@ jobs:
       RUSTFLAGS: "-C debuginfo=0"
     steps:
       - name: Free disk space
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && runner.environment == 'github-hosted'
         uses: jlumbroso/free-disk-space@ceedf095f4ec1a097402bc6bd80831f2e1a6fde6 # v2.0.0
         with:
           tool-cache: false
@@ -553,15 +642,45 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install protoc
-        uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+        if: runner.environment == 'github-hosted'
+        uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
         with:
           tool: protoc@3.34.1
 
       # Go is only required for the aws-lc-fips-sys build on the Linux lane.
+      - name: Mint gears-rust-ci app token
+        id: app
+        # Unset variable, or a fork/Dependabot run without secrets: skip and fall back to GITHUB_TOKEN.
+        if: >-
+          vars.GEARS_CI_APP_CLIENT_ID != '' &&
+          github.actor != 'dependabot[bot]' &&
+          !github.event.pull_request.head.repo.fork
+        continue-on-error: true  # a bad key or missing install must never fail the job
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.GEARS_CI_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GEARS_CI_APP_PRIVATE_KEY }}
+          permission-contents: read
+      - name: Report API token source
+        shell: bash
+        env:
+          APP_TOKEN_SET: ${{ steps.app.outputs.token != '' }}
+          MINT_OUTCOME: ${{ steps.app.outcome }}
+          API_TOKEN: ${{ steps.app.outputs.token || github.token }}
+        run: |
+          if [ "$APP_TOKEN_SET" = true ]; then src=gears-rust-ci; echo "::notice::GitHub API token: gears-rust-ci app"
+          elif [ "$MINT_OUTCOME" = failure ]; then src=github-token; echo "::warning::gears-rust-ci app token mint failed; using GITHUB_TOKEN"
+          else src=github-token; echo "::notice::GitHub API token: GITHUB_TOKEN (gears-rust-ci app not configured or fork run)"; fi
+          # GET /rate_limit is free; one sample per job gives a per-token time series (see the API limits plan).
+          core=$(curl -fsS -m 10 -H "Authorization: Bearer $API_TOKEN" -H "Accept: application/vnd.github+json" \
+            https://api.github.com/rate_limit 2>/dev/null | tr -d ' \n' | sed -n 's/.*"core":{\([^}]*\)}.*/\1/p' | tr -d '"' | tr ',' ' ' | sed 's/:/=/g') || true
+          echo "RATE-APP ts=$(date -u +%Y-%m-%dT%H:%M:%SZ) token=$src workflow=$GITHUB_WORKFLOW job=$GITHUB_JOB ${core:-unavailable}"
+
       - name: Install Go (required for aws-lc-fips-sys FIPS build)
         if: runner.os == 'Linux'
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
+          token: ${{ steps.app.outputs.token || github.token }}
           go-version: '1.21.x'  # pinned - see docs/security/fips/TOOLCHAIN.md
           cache: false
 
@@ -571,25 +690,30 @@ jobs:
           rustup show
 
       - name: Install nextest
-        uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+        if: runner.environment == 'github-hosted'
+        uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
         with:
           tool: nextest
 
+      # Linux only: the macOS and Windows legs run on GitHub-hosted runners.
+      - name: Set up the shared build cache
+        if: runner.os == 'Linux'
+        id: cache
+        uses: ./.github/actions/ci-cache
+        with: *ci-cache-inputs
+
       # `-fips` only splits the registry cache. Sharing sccache is safe: its keys
       # include features and rustc args, and it never caches the FIPS C code.
+      # GitHub-hosted runs (fork pull requests, the kill switch) keep the
+      # registry cache; on the self-hosted runners ci-cache covers it.
       - name: Cache Cargo/target
+        if: ${{ runner.os != 'Linux' || steps.cache.outputs.mode == 'none' }}
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           cache-bin: false
           cache-targets: false
           shared-key: pr-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-fips
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-
-      # Only main writes to the cache. See .github/actions/sccache.
-      - name: Set up sccache
-        id: sccache
-        uses: ./.github/actions/sccache
-        with: *sccache-inputs
 
       # Linux: aws-lc-fips path via the existing make target
       # (cf-gears-toolkit + cf-gears-toolkit-http, bootstrap + fips).
@@ -607,6 +731,7 @@ jobs:
           cargo test -p cf-gears-toolkit-auth --features toolkit-security/fips --lib providers::jwks
           cargo test -p cf-gears-rustls-corecrypto-provider --features fips
           cargo test -p cf-gears-toolkit-http --features fips
+          cargo test -p cf-gears-toolkit-contract --features fips,rest-client,rest-server,grpc-client,otel,canonical-errors
           cargo test -p cf-gears-toolkit-http-proxy --features fips --no-run
 
       # Windows: execute native CNG operations through internal test injection.
@@ -631,11 +756,6 @@ jobs:
           cargo test --locked -p cf-gears-file-storage --features toolkit/fips --lib --bin sidecar
           cargo test --locked -p cf-gears-credstore --features toolkit-security/fips --lib domain::secret::fence
 
-      - name: Save compilation metrics
-        if: always() && runner.os == 'Linux' && steps.sccache.outputs.enabled == 'true'
-        continue-on-error: true
-        uses: ./.github/actions/sccache-stats
-
   # The gear's whole suite against a real PostgreSQL with pgvector, and its
   # own coverage floor, in one pass.
   #
@@ -657,7 +777,8 @@ jobs:
       || needs.changes.outputs.deps == 'true'
       || needs.changes.outputs.ci == 'true'
       || github.event_name == 'workflow_dispatch')
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.GEARS_FORCE_GITHUB_HOSTED == 'true' || github.repository != 'constructorfabric/gears-rust' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || 'gears-large' }}
+    environment: *ci-cache-env
     # The Codecov upload below asks for OIDC off pull requests, and an OIDC
     # token needs `id-token: write` — the workflow default is `contents: read`
     # alone, so without this the token request is denied. That upload also sets
@@ -673,12 +794,42 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Mint gears-rust-ci app token
+        id: app
+        # Unset variable, or a fork/Dependabot run without secrets: skip and fall back to GITHUB_TOKEN.
+        if: >-
+          vars.GEARS_CI_APP_CLIENT_ID != '' &&
+          github.actor != 'dependabot[bot]' &&
+          !github.event.pull_request.head.repo.fork
+        continue-on-error: true  # a bad key or missing install must never fail the job
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.GEARS_CI_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GEARS_CI_APP_PRIVATE_KEY }}
+          permission-contents: read
+      - name: Report API token source
+        shell: bash
+        env:
+          APP_TOKEN_SET: ${{ steps.app.outputs.token != '' }}
+          MINT_OUTCOME: ${{ steps.app.outcome }}
+          API_TOKEN: ${{ steps.app.outputs.token || github.token }}
+        run: |
+          if [ "$APP_TOKEN_SET" = true ]; then src=gears-rust-ci; echo "::notice::GitHub API token: gears-rust-ci app"
+          elif [ "$MINT_OUTCOME" = failure ]; then src=github-token; echo "::warning::gears-rust-ci app token mint failed; using GITHUB_TOKEN"
+          else src=github-token; echo "::notice::GitHub API token: GITHUB_TOKEN (gears-rust-ci app not configured or fork run)"; fi
+          # GET /rate_limit is free; one sample per job gives a per-token time series (see the API limits plan).
+          core=$(curl -fsS -m 10 -H "Authorization: Bearer $API_TOKEN" -H "Accept: application/vnd.github+json" \
+            https://api.github.com/rate_limit 2>/dev/null | tr -d ' \n' | sed -n 's/.*"core":{\([^}]*\)}.*/\1/p' | tr -d '"' | tr ',' ' ' | sed 's/:/=/g') || true
+          echo "RATE-APP ts=$(date -u +%Y-%m-%dT%H:%M:%SZ) token=$src workflow=$GITHUB_WORKFLOW job=$GITHUB_JOB ${core:-unavailable}"
+
       - name: Install protoc
+        if: runner.environment == 'github-hosted'
         uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          repo-token: ${{ steps.app.outputs.token || github.token }}
 
       - name: Install Rust toolchain (with llvm-tools)
+        if: runner.environment == 'github-hosted'
         uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
         with:
           toolchain: ${{ env.RUSTUP_TOOLCHAIN_NIGHTLY }}
@@ -687,7 +838,15 @@ jobs:
       - name: Pin nightly for all cargo commands
         run: echo "RUSTUP_TOOLCHAIN=${{ env.RUSTUP_TOOLCHAIN_NIGHTLY }}" >> "$GITHUB_ENV"
 
+      - name: Set up the shared build cache
+        id: cache
+        uses: ./.github/actions/ci-cache
+        with: *ci-cache-inputs
+
+      # GitHub-hosted runs (fork pull requests, the kill switch) keep the
+      # registry cache; on the self-hosted runners ci-cache covers it.
       - name: Cache Cargo/target
+        if: ${{ steps.cache.outputs.mode == 'none' }}
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           cache-bin: false
@@ -699,7 +858,8 @@ jobs:
       # cargo-llvm-cov 0.8.5, which on nightly-2026-08-21 ran every test and
       # then found no object files to report on.
       - name: Install cargo-llvm-cov and nextest
-        uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+        if: runner.environment == 'github-hosted'
+        uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
         with:
           tool: cargo-llvm-cov, nextest
 
@@ -775,7 +935,8 @@ jobs:
       || needs.changes.outputs.deps == 'true'
       || needs.changes.outputs.ci == 'true'
       || github.event_name == 'workflow_dispatch')
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.GEARS_FORCE_GITHUB_HOSTED == 'true' || github.repository != 'constructorfabric/gears-rust' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || 'gears-large' }}
+    environment: *ci-cache-env
     permissions:
       contents: read
       id-token: write
@@ -785,12 +946,42 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Mint gears-rust-ci app token
+        id: app
+        # Unset variable, or a fork/Dependabot run without secrets: skip and fall back to GITHUB_TOKEN.
+        if: >-
+          vars.GEARS_CI_APP_CLIENT_ID != '' &&
+          github.actor != 'dependabot[bot]' &&
+          !github.event.pull_request.head.repo.fork
+        continue-on-error: true  # a bad key or missing install must never fail the job
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.GEARS_CI_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GEARS_CI_APP_PRIVATE_KEY }}
+          permission-contents: read
+      - name: Report API token source
+        shell: bash
+        env:
+          APP_TOKEN_SET: ${{ steps.app.outputs.token != '' }}
+          MINT_OUTCOME: ${{ steps.app.outcome }}
+          API_TOKEN: ${{ steps.app.outputs.token || github.token }}
+        run: |
+          if [ "$APP_TOKEN_SET" = true ]; then src=gears-rust-ci; echo "::notice::GitHub API token: gears-rust-ci app"
+          elif [ "$MINT_OUTCOME" = failure ]; then src=github-token; echo "::warning::gears-rust-ci app token mint failed; using GITHUB_TOKEN"
+          else src=github-token; echo "::notice::GitHub API token: GITHUB_TOKEN (gears-rust-ci app not configured or fork run)"; fi
+          # GET /rate_limit is free; one sample per job gives a per-token time series (see the API limits plan).
+          core=$(curl -fsS -m 10 -H "Authorization: Bearer $API_TOKEN" -H "Accept: application/vnd.github+json" \
+            https://api.github.com/rate_limit 2>/dev/null | tr -d ' \n' | sed -n 's/.*"core":{\([^}]*\)}.*/\1/p' | tr -d '"' | tr ',' ' ' | sed 's/:/=/g') || true
+          echo "RATE-APP ts=$(date -u +%Y-%m-%dT%H:%M:%SZ) token=$src workflow=$GITHUB_WORKFLOW job=$GITHUB_JOB ${core:-unavailable}"
+
       - name: Install protoc
+        if: runner.environment == 'github-hosted'
         uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          repo-token: ${{ steps.app.outputs.token || github.token }}
 
       - name: Install Rust toolchain (with llvm-tools)
+        if: runner.environment == 'github-hosted'
         uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
         with:
           toolchain: ${{ env.RUSTUP_TOOLCHAIN_NIGHTLY }}
@@ -799,7 +990,15 @@ jobs:
       - name: Pin nightly for all cargo commands
         run: echo "RUSTUP_TOOLCHAIN=${{ env.RUSTUP_TOOLCHAIN_NIGHTLY }}" >> "$GITHUB_ENV"
 
+      - name: Set up the shared build cache
+        id: cache
+        uses: ./.github/actions/ci-cache
+        with: *ci-cache-inputs
+
+      # GitHub-hosted runs (fork pull requests, the kill switch) keep the
+      # registry cache; on the self-hosted runners ci-cache covers it.
       - name: Cache Cargo/target
+        if: ${{ steps.cache.outputs.mode == 'none' }}
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           cache-bin: false
@@ -808,7 +1007,8 @@ jobs:
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-llvm-cov and nextest
-        uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+        if: runner.environment == 'github-hosted'
+        uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
         with:
           tool: cargo-llvm-cov, nextest
 
@@ -848,7 +1048,8 @@ jobs:
       || needs.changes.outputs.deps == 'true'
       || needs.changes.outputs.ci == 'true'
       || github.event_name == 'workflow_dispatch')
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.GEARS_FORCE_GITHUB_HOSTED == 'true' || github.repository != 'constructorfabric/gears-rust' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || 'gears-large' }}
+    environment: *ci-cache-env
     env:
       ONNXRUNTIME_VERSION: "1.29.0"
       ONNXRUNTIME_SHA256: "c3fddc4f139a045b0c4902c57410f0694f1c2fdf9b6939fbe38b1aeae7cd14ba"
@@ -864,17 +1065,54 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Mint gears-rust-ci app token
+        id: app
+        # Unset variable, or a fork/Dependabot run without secrets: skip and fall back to GITHUB_TOKEN.
+        if: >-
+          vars.GEARS_CI_APP_CLIENT_ID != '' &&
+          github.actor != 'dependabot[bot]' &&
+          !github.event.pull_request.head.repo.fork
+        continue-on-error: true  # a bad key or missing install must never fail the job
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.GEARS_CI_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GEARS_CI_APP_PRIVATE_KEY }}
+          permission-contents: read
+      - name: Report API token source
+        shell: bash
+        env:
+          APP_TOKEN_SET: ${{ steps.app.outputs.token != '' }}
+          MINT_OUTCOME: ${{ steps.app.outcome }}
+          API_TOKEN: ${{ steps.app.outputs.token || github.token }}
+        run: |
+          if [ "$APP_TOKEN_SET" = true ]; then src=gears-rust-ci; echo "::notice::GitHub API token: gears-rust-ci app"
+          elif [ "$MINT_OUTCOME" = failure ]; then src=github-token; echo "::warning::gears-rust-ci app token mint failed; using GITHUB_TOKEN"
+          else src=github-token; echo "::notice::GitHub API token: GITHUB_TOKEN (gears-rust-ci app not configured or fork run)"; fi
+          # GET /rate_limit is free; one sample per job gives a per-token time series (see the API limits plan).
+          core=$(curl -fsS -m 10 -H "Authorization: Bearer $API_TOKEN" -H "Accept: application/vnd.github+json" \
+            https://api.github.com/rate_limit 2>/dev/null | tr -d ' \n' | sed -n 's/.*"core":{\([^}]*\)}.*/\1/p' | tr -d '"' | tr ',' ' ' | sed 's/:/=/g') || true
+          echo "RATE-APP ts=$(date -u +%Y-%m-%dT%H:%M:%SZ) token=$src workflow=$GITHUB_WORKFLOW job=$GITHUB_JOB ${core:-unavailable}"
+
       - name: Install protoc
+        if: runner.environment == 'github-hosted'
         uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          repo-token: ${{ steps.app.outputs.token || github.token }}
 
       - name: Install Rust toolchain from rust-toolchain.toml
         run: |
           rustup show active-toolchain || rustup toolchain install
           rustup show
 
+      - name: Set up the shared build cache
+        id: cache
+        uses: ./.github/actions/ci-cache
+        with: *ci-cache-inputs
+
+      # GitHub-hosted runs (fork pull requests, the kill switch) keep the
+      # registry cache; on the self-hosted runners ci-cache covers it.
       - name: Cache Cargo/target
+        if: ${{ steps.cache.outputs.mode == 'none' }}
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           cache-bin: false
@@ -948,8 +1186,8 @@ jobs:
       || needs.changes.outputs.deps == 'true'
       || needs.changes.outputs.ci == 'true'
       || github.event_name == 'workflow_dispatch')
-    runs-on: ubuntu-latest
-    environment: *sccache-env
+    runs-on: ${{ (vars.GEARS_FORCE_GITHUB_HOSTED == 'true' || github.repository != 'constructorfabric/gears-rust' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || 'gears-large' }}
+    environment: *ci-cache-env
     env:
       # api-24 (see workspace Cargo.toml `ort` entry) requires an ONNX
       # Runtime with minor version >= 24; older builds fail `ort`'s version
@@ -964,29 +1202,60 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Mint gears-rust-ci app token
+        id: app
+        # Unset variable, or a fork/Dependabot run without secrets: skip and fall back to GITHUB_TOKEN.
+        if: >-
+          vars.GEARS_CI_APP_CLIENT_ID != '' &&
+          github.actor != 'dependabot[bot]' &&
+          !github.event.pull_request.head.repo.fork
+        continue-on-error: true  # a bad key or missing install must never fail the job
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.GEARS_CI_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GEARS_CI_APP_PRIVATE_KEY }}
+          permission-contents: read
+      - name: Report API token source
+        shell: bash
+        env:
+          APP_TOKEN_SET: ${{ steps.app.outputs.token != '' }}
+          MINT_OUTCOME: ${{ steps.app.outcome }}
+          API_TOKEN: ${{ steps.app.outputs.token || github.token }}
+        run: |
+          if [ "$APP_TOKEN_SET" = true ]; then src=gears-rust-ci; echo "::notice::GitHub API token: gears-rust-ci app"
+          elif [ "$MINT_OUTCOME" = failure ]; then src=github-token; echo "::warning::gears-rust-ci app token mint failed; using GITHUB_TOKEN"
+          else src=github-token; echo "::notice::GitHub API token: GITHUB_TOKEN (gears-rust-ci app not configured or fork run)"; fi
+          # GET /rate_limit is free; one sample per job gives a per-token time series (see the API limits plan).
+          core=$(curl -fsS -m 10 -H "Authorization: Bearer $API_TOKEN" -H "Accept: application/vnd.github+json" \
+            https://api.github.com/rate_limit 2>/dev/null | tr -d ' \n' | sed -n 's/.*"core":{\([^}]*\)}.*/\1/p' | tr -d '"' | tr ',' ' ' | sed 's/:/=/g') || true
+          echo "RATE-APP ts=$(date -u +%Y-%m-%dT%H:%M:%SZ) token=$src workflow=$GITHUB_WORKFLOW job=$GITHUB_JOB ${core:-unavailable}"
+
       - name: Install protoc
+        if: runner.environment == 'github-hosted'
         uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          repo-token: ${{ steps.app.outputs.token || github.token }}
 
       - name: Install Rust toolchain from rust-toolchain.toml
         run: |
           rustup show active-toolchain || rustup toolchain install
           rustup show
 
+      - name: Set up the shared build cache
+        id: cache
+        uses: ./.github/actions/ci-cache
+        with: *ci-cache-inputs
+
+      # GitHub-hosted runs (fork pull requests, the kill switch) keep the
+      # registry cache; on the self-hosted runners ci-cache covers it.
       - name: Cache Cargo/target
+        if: ${{ steps.cache.outputs.mode == 'none' }}
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           cache-bin: false
           cache-targets: false
           shared-key: pr-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-magika
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-
-      # Only main writes to the cache. See .github/actions/sccache.
-      - name: Set up sccache
-        id: sccache
-        uses: ./.github/actions/sccache
-        with: *sccache-inputs
 
       - name: Fetch ONNX Runtime shared library
         shell: bash
@@ -1003,14 +1272,12 @@ jobs:
         timeout-minutes: 10
         run: cargo test -p cf-gears-file-parser --features magika
 
-      - name: Save compilation metrics
-        if: always() && runner.os == 'Linux' && steps.sccache.outputs.enabled == 'true'
-        continue-on-error: true
-        uses: ./.github/actions/sccache-stats
-
   cfs:
     name: CFS
     uses: ./.github/workflows/cfs.yml
+    # Only the CI App key, not `inherit`: CFS runs PR code and needs nothing else.
+    secrets:
+      GEARS_CI_APP_PRIVATE_KEY: ${{ secrets.GEARS_CI_APP_PRIVATE_KEY }}
 
   security:
     name: Security (cargo-deny on Ubuntu)
@@ -1021,7 +1288,7 @@ jobs:
       || needs.changes.outputs.deps == 'true'
       || needs.changes.outputs.ci == 'true'
       || github.event_name == 'workflow_dispatch')
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.GEARS_FORCE_GITHUB_HOSTED == 'true' || github.repository != 'constructorfabric/gears-rust' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || 'gears-small-vm' }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1033,7 +1300,8 @@ jobs:
 
       # Install tools via prebuilt binaries for speed.
       - name: Install cargo-deny
-        uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+        if: runner.environment == 'github-hosted'
+        uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
         with:
           tool: cargo-deny@0.20.2
 
@@ -1050,12 +1318,14 @@ jobs:
       || needs.changes.outputs.rust == 'true'
       || needs.changes.outputs.ci == 'true'
       || github.event_name == 'workflow_dispatch')
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.GEARS_FORCE_GITHUB_HOSTED == 'true' || github.repository != 'constructorfabric/gears-rust' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || 'gears-large' }}
+    environment: *ci-cache-env
     permissions:
       contents: read
       id-token: write
     steps:
       - name: Free disk space
+        if: runner.environment == 'github-hosted'
         uses: jlumbroso/free-disk-space@ceedf095f4ec1a097402bc6bd80831f2e1a6fde6 # v2.0.0
         with:
           tool-cache: false
@@ -1069,11 +1339,13 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install protoc
-        uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+        if: runner.environment == 'github-hosted'
+        uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
         with:
           tool: protoc@3.34.1
 
       - name: Install Rust toolchain (with llvm-tools)
+        if: runner.environment == 'github-hosted'
         uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
         with:
           toolchain: ${{ env.RUSTUP_TOOLCHAIN_NIGHTLY }}
@@ -1084,7 +1356,15 @@ jobs:
       - name: Pin nightly for all cargo commands
         run: echo "RUSTUP_TOOLCHAIN=${{ env.RUSTUP_TOOLCHAIN_NIGHTLY }}" >> "$GITHUB_ENV"
 
+      - name: Set up the shared build cache
+        id: cache
+        uses: ./.github/actions/ci-cache
+        with: *ci-cache-inputs
+
+      # GitHub-hosted runs (fork pull requests, the kill switch) keep the
+      # registry cache; on the self-hosted runners ci-cache covers it.
       - name: Cache Cargo/target
+        if: ${{ steps.cache.outputs.mode == 'none' }}
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           cache-bin: false
@@ -1093,7 +1373,8 @@ jobs:
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+        if: runner.environment == 'github-hosted'
+        uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
         with:
           tool: cargo-llvm-cov, nextest
 
@@ -1117,6 +1398,9 @@ jobs:
       #   6. OAGW with its `cluster` feature, which pass 1 lacks: the proxy
       #      cache's change log, publisher and watcher. Keep in sync with
       #      the `oagw-cluster` lane of `make test-integration`.
+      #   7. The quota-enforcement storage plugin's PostgreSQL suites. These
+      #      live behind `#![cfg(feature = "postgres")]`. Keep in sync with
+      #      the `quota-enforcement-pg` lane of `make test-integration`.
       #
       # The per-binary k3s loop (one container per binary, cleaned between —
       # nextest's process-per-test would start ~70 of them) lives in the
@@ -1161,6 +1445,10 @@ jobs:
           # Pass 6: OAGW with the `cluster` feature.
           fresh_report
           "$W" cargo llvm-cov nextest --no-report -p cf-gears-oagw --features cluster
+          # Pass 7: quota-enforcement storage plugin PostgreSQL suites (real
+          # Postgres via testcontainers).
+          fresh_report
+          "$W" cargo llvm-cov nextest --no-report -p cf-gears-quota-enforcement-storage-plugin --features postgres
           # Merge into the single report that gets uploaded.
           cargo llvm-cov report --lcov --output-path lcov.info
 
@@ -1213,7 +1501,8 @@ jobs:
 
   lint:
     name: Architecture Lints (cargo gears lint)
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.GEARS_FORCE_GITHUB_HOSTED == 'true' || github.repository != 'constructorfabric/gears-rust' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || 'gears-large' }}
+    environment: *ci-cache-env
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1221,7 +1510,8 @@ jobs:
           persist-credentials: false
 
       - name: Install protoc
-        uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+        if: runner.environment == 'github-hosted'
+        uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
         with:
           tool: protoc@3.34.1
 
@@ -1229,6 +1519,11 @@ jobs:
         uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # stable
         with:
           toolchain: stable
+
+      - name: Set up the shared build cache
+        id: cache
+        uses: ./.github/actions/ci-cache
+        with: *ci-cache-inputs
 
       - name: Install cargo-gears
         uses: ./.github/actions/cargo-gears

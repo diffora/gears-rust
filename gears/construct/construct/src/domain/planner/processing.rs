@@ -13,10 +13,13 @@ use crate::domain::admission::{Admission, AdmissionOutcome};
 use crate::domain::error::DomainError;
 use crate::domain::plan::{Change, Plan};
 use crate::domain::profile::Profile;
+use crate::domain::profile_writes::WRITER_LIMIT;
 use crate::domain::record_intake::{
     DropEvent, DropReason, DropStage, IntakeEvents, ReceivedRecord,
 };
+use crate::domain::review_queue::FactsUnderReview;
 use crate::domain::sensitive_data::{Checked, SensitiveDataChecks};
+use crate::domain::subject_settings::SubjectKey;
 
 /// The record types the planner decides on. A mastery record is stored as it is, by its own story, and never reaches
 /// the model.
@@ -26,6 +29,9 @@ const PLANNED_TYPES: [&str; 2] = [CHAT_MESSAGE_TYPE, ENRICHMENT_FACT_CANDIDATE_T
 const USER_ROLE: &str = "user";
 
 /// Reads a subject's profile and its version from graph storage.
+///
+/// It checks only that the subject is in the context's tenant. Whether the caller may read this subject's profile is
+/// decided before it is called.
 #[async_trait]
 pub trait ProfileSource: Send + Sync {
     /// # Errors
@@ -49,12 +55,35 @@ pub enum Written {
 }
 
 /// Stores an admitted plan in one write, expecting the profile version the plan was built on.
+///
+/// It checks only that the subject is in the context's tenant. Whether the caller may change this subject's profile is
+/// decided before it is called.
 #[async_trait]
 pub trait PlanWriter: Send + Sync {
+    /// [`Self::write_by`] with [`WRITER_LIMIT`] from now, for a write no caller waits on.
+    ///
     /// # Errors
     ///
-    /// When the write cannot run. The record is then dropped.
-    async fn write(&self, ctx: &SecurityContext, plan: &Plan) -> Result<Written, DomainError>;
+    /// The errors of [`Self::write_by`]. The record is then dropped.
+    async fn write(&self, ctx: &SecurityContext, plan: &Plan) -> Result<Written, DomainError> {
+        self.write_by(ctx, plan, Instant::now() + WRITER_LIMIT)
+            .await
+    }
+
+    /// Stores `plan` by `deadline`: no call to the store and no resend starts once it passed, and a call still
+    /// running then is cut.
+    ///
+    /// # Errors
+    ///
+    /// When the write cannot run. [`DomainError::Unavailable`] when `deadline` passed before the plan was sent:
+    /// nothing was written. [`DomainError::WriteUnknown`] when the plan was sent and its result is unknown, also when
+    /// `deadline` passed after the send.
+    async fn write_by(
+        &self,
+        ctx: &SecurityContext,
+        plan: &Plan,
+        deadline: Instant,
+    ) -> Result<Written, DomainError>;
 }
 
 /// The security context and the scope processing runs under for a tenant. Intake hands off no context: the
@@ -77,6 +106,7 @@ pub struct ProcessingPorts {
     pub profiles: Arc<dyn ProfileSource>,
     pub writer: Arc<dyn PlanWriter>,
     pub events: Arc<dyn IntakeEvents>,
+    pub reviews: Arc<dyn FactsUnderReview>,
 }
 
 /// Takes one received record through the planner, the sensitive-data checks, Admission and the writer. A write
@@ -95,6 +125,7 @@ enum Failure {
     NotPlanned,
     NoContext,
     ProfileRead,
+    ReviewRead,
     AdmissionRead,
     Write,
     RerunLimit,
@@ -103,7 +134,9 @@ enum Failure {
 impl Failure {
     fn stage(self) -> DropStage {
         match self {
-            Self::NotPlanned | Self::NoContext | Self::ProfileRead => DropStage::Planner,
+            Self::NotPlanned | Self::NoContext | Self::ProfileRead | Self::ReviewRead => {
+                DropStage::Planner
+            }
             Self::AdmissionRead => DropStage::Admission,
             Self::Write | Self::RerunLimit => DropStage::Writer,
         }
@@ -122,6 +155,7 @@ impl Failure {
             Self::NotPlanned | Self::RerunLimit => self.reason().name(),
             Self::NoContext => "no_context",
             Self::ProfileRead => "profile_read_failed",
+            Self::ReviewRead => "review_read_failed",
             Self::AdmissionRead => "admission_read_failed",
             Self::Write => "write_failed",
         }
@@ -165,8 +199,10 @@ impl Changes {
 pub enum NothingStored {
     /// The message held nothing to store, or every value it held was blocked.
     NoChange,
-    /// The deadline passed before the write started.
+    /// The deadline of the steps before the write passed, and nothing is stored.
     Timeout,
+    /// Every step touched a fact under an open review request.
+    UnderReview,
     Dropped(DropReason),
 }
 
@@ -177,9 +213,20 @@ impl NothingStored {
         match self {
             Self::NoChange => "no_change",
             Self::Timeout => "timeout",
+            Self::UnderReview => "under_review",
             Self::Dropped(reason) => reason.name(),
         }
     }
+}
+
+/// When a manage-facts call must have done its steps, so the caller hears how the call ended.
+#[domain_model]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ManageDeadlines {
+    /// The end of the steps before the write.
+    pub before_write: Instant,
+    /// The end of the write.
+    pub answer: Instant,
 }
 
 /// What a manage-facts call did.
@@ -283,6 +330,20 @@ impl Processing {
         if plan.steps.is_empty() {
             return Ok(Run::Done);
         }
+        self.skip_under_review(scope, &mut plan)
+            .await
+            .map_err(|err| {
+                tracing::warn!(
+                    tenant_id = %record.tenant_id,
+                    %subject_id,
+                    error = %err,
+                    "processing could not read the facts under review"
+                );
+                Failure::ReviewRead
+            })?;
+        if plan.steps.is_empty() {
+            return Ok(Run::Done);
+        }
         let Checked::Verdicts(verdicts) = self.checks.run(&plan).await else {
             return Ok(Run::Done);
         };
@@ -311,13 +372,15 @@ impl Processing {
     }
 
     /// Takes what a subject told an agent through the planner, the checks, Admission and the writer, under the
-    /// caller's own context and scope. The deadline cuts off only the steps before the write: a write that started is
-    /// awaited, so the answer never says nothing changed while the write lands. A conflict plans again on a new read
-    /// while time is left, at most `max_reruns` times.
+    /// processing context and scope of the message's tenant. The steps before the write end by
+    /// `deadlines.before_write`, and nothing is stored when they run out. The write ends by `deadlines.answer`; one it
+    /// cuts after the plan was sent answers unavailable with its result unknown, never that nothing changed. A conflict
+    /// plans again on a new read while time is left, at most `max_reruns` times.
     ///
     /// # Errors
     ///
-    /// When the profile, the subject's settings, the tenant's rules or the write cannot be reached.
+    /// When the profile, the subject's settings, the tenant's rules or the write cannot be reached, and when the
+    /// write runs out of time.
     ///
     /// @cpt-dod:cpt-cf-construct-dod-planner-manage:p1
     pub async fn manage(
@@ -325,17 +388,24 @@ impl Processing {
         ctx: &SecurityContext,
         scope: &AccessScope,
         message: &AgentMessage,
-        deadline: Instant,
+        deadlines: ManageDeadlines,
     ) -> Result<Managed, DomainError> {
         for _ in 0..=self.max_reruns {
-            let Ok(prepared) = timeout_at(deadline, self.prepare(ctx, scope, message)).await else {
+            let Ok(prepared) =
+                timeout_at(deadlines.before_write, self.prepare(ctx, scope, message)).await
+            else {
                 return Ok(nothing_stored(message, NothingStored::Timeout));
             };
             let plan = match prepared? {
                 Prepared::Write(plan) => plan,
                 Prepared::Nothing(nothing) => return Ok(nothing_stored(message, nothing)),
             };
-            match self.ports.writer.write(ctx, &plan).await? {
+            match self
+                .ports
+                .writer
+                .write_by(ctx, &plan, deadlines.answer)
+                .await?
+            {
                 Written::Stored => return Ok(Managed::Stored(Changes::of(&plan))),
                 Written::Conflict => {}
             }
@@ -357,12 +427,20 @@ impl Processing {
             .profiles
             .read(ctx, message.tenant_id, message.subject_id)
             .await?;
-        let plan = match self.planner.plan_message(ctx, message, profile).await {
+        let mut plan = match self.planner.plan_message(ctx, message, profile).await {
             Ok(plan) => plan,
             Err(reason) => return Ok(Prepared::Nothing(NothingStored::Dropped(reason))),
         };
         if plan.steps.is_empty() {
             return Ok(Prepared::Nothing(NothingStored::NoChange));
+        }
+        // The open requests are Construct's own, read as Construct: under
+        // the agent's scope a request the scope does not reach would not
+        // freeze its fact.
+        let (_, construct) = self.ports.contexts.for_tenant(message.tenant_id).await?;
+        self.skip_under_review(&construct, &mut plan).await?;
+        if plan.steps.is_empty() {
+            return Ok(Prepared::Nothing(NothingStored::UnderReview));
         }
         let Checked::Verdicts(verdicts) = self.checks.run(&plan).await else {
             return Ok(Prepared::Nothing(NothingStored::Dropped(
@@ -379,6 +457,61 @@ impl Processing {
             return Ok(Prepared::Nothing(NothingStored::NoChange));
         }
         Ok(Prepared::Write(admitted))
+    }
+}
+
+impl Processing {
+    /// Drops every step of `plan` that would change or remove a fact under an
+    /// open review request, or add a property to it. The planner still sees
+    /// the fact, so the model does not add it again. `construct` is
+    /// Construct's own scope in the plan's tenant.
+    ///
+    /// The open requests are read here, outside the write's compare-and-set,
+    /// and opening a request does not move the profile's version. So a flag
+    /// that lands between this read and the write does not stop the write;
+    /// the request then points at a fact that is gone, and its resolution
+    /// closes it as deleted. The window is the length of the checks,
+    /// Admission and the write.
+    ///
+    /// @cpt-dod:cpt-cf-construct-dod-review-queue-frozen:p1
+    async fn skip_under_review(
+        &self,
+        construct: &AccessScope,
+        plan: &mut Plan,
+    ) -> Result<(), DomainError> {
+        // @cpt-begin:cpt-cf-construct-algo-review-queue-skip:p1:inst-skip-drop
+        let under_review = self
+            .ports
+            .reviews
+            .under_review(
+                construct,
+                SubjectKey {
+                    tenant_id: plan.tenant_id,
+                    subject_id: plan.subject_id,
+                },
+            )
+            .await?;
+        if under_review.is_empty() {
+            return Ok(());
+        }
+        let planned = plan.steps.len();
+        plan.steps.retain(|step| {
+            step.change
+                .touches()
+                .is_none_or(|entity| !under_review.contains(entity))
+        });
+        let dropped = planned - plan.steps.len();
+        if dropped > 0 {
+            tracing::info!(
+                event = "planner_steps_under_review_dropped",
+                tenant_id = %plan.tenant_id,
+                subject_id = %plan.subject_id,
+                dropped,
+                "planned steps on facts under review were dropped"
+            );
+        }
+        Ok(())
+        // @cpt-end:cpt-cf-construct-algo-review-queue-skip:p1:inst-skip-drop
     }
 }
 

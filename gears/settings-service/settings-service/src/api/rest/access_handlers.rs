@@ -76,14 +76,13 @@ fn conn_error(err: &toolkit_db::DbError) -> DomainError {
 }
 
 /// The readout with its tag in `ETag`. The stored row names who recorded it,
-/// an administrator's identity: the entitlement to see it unmasked is asked
-/// only when there is such a row.
-async fn with_etag(
+/// an administrator's identity, shown unmasked only when `pii` is true (the
+/// caller holds that entitlement and there is such a row).
+fn with_etag(
     readout: &AccessReadout,
-    enforcer: &authz_resolver_sdk::PolicyEnforcer,
     ctx: &SecurityContext,
+    pii: bool,
 ) -> ([(header::HeaderName, String); 1], Json<AccessReadDto>) {
-    let pii = readout.stored.is_some() && may_read_pii(enforcer, ctx).await;
     // The reader is the caller's own tenant: the root for a platform
     // administrator.
     let reader = Reader::new(ctx.subject_tenant_id(), readout.root);
@@ -117,7 +116,9 @@ pub async fn read_access(
     let readout = service
         .read(&conn, &actor(&ctx, &headers, &scope), &key, target)
         .await?;
-    Ok(with_etag(&readout, &enforcer, &ctx).await)
+    // The entitlement is asked only when there is a stored row to unmask.
+    let pii = readout.stored.is_some() && may_read_pii(&enforcer, &ctx).await?;
+    Ok(with_etag(&readout, &ctx, pii))
 }
 
 // Axum extractors, one per dependency; bundling them would hide what the
@@ -156,6 +157,15 @@ pub async fn set_access(
     // @cpt-end:cpt-cf-settings-service-flow-tenant-access-set:p1:inst-ta-set-3
     // @cpt-end:cpt-cf-settings-service-flow-tenant-access-set:p1:inst-ta-set-2
     let actor = actor(&ctx, &headers, &scope);
+    // The target check and the hierarchy lookups ask the tenant resolver,
+    // which opens its own connection and so cannot run inside the
+    // transaction below.
+    // @cpt-begin:cpt-cf-settings-service-flow-tenant-access-set:p1:inst-ta-set-4
+    let chains = service.authorized_hierarchy_chains(&actor, target).await?;
+    // @cpt-end:cpt-cf-settings-service-flow-tenant-access-set:p1:inst-ta-set-4
+    // Asked before the write: a failure to decide must not follow a committed
+    // change. A known refusal masks; any other failure stops here.
+    let may_unmask = may_read_pii(&enforcer, &ctx).await?;
     let if_match = if_match(&headers).map(str::to_owned);
     let readout = {
         let service = Arc::clone(&service);
@@ -165,7 +175,15 @@ pub async fn set_access(
             .transaction_ref_mapped::<_, AccessReadout, DomainError>(move |tx| {
                 Box::pin(async move {
                     service
-                        .set(tx, &actor, &key, target, access, if_match.as_deref())
+                        .set(
+                            tx,
+                            &actor,
+                            &chains,
+                            &key,
+                            target,
+                            access,
+                            if_match.as_deref(),
+                        )
                         .await
                 })
             })
@@ -173,7 +191,8 @@ pub async fn set_access(
     };
     service.evict(&key, target).await?;
     // @cpt-begin:cpt-cf-settings-service-flow-tenant-access-set:p1:inst-ta-set-13
-    Ok(with_etag(&readout, &enforcer, &ctx).await)
+    let pii = readout.stored.is_some() && may_unmask;
+    Ok(with_etag(&readout, &ctx, pii))
     // @cpt-end:cpt-cf-settings-service-flow-tenant-access-set:p1:inst-ta-set-13
 }
 
@@ -198,6 +217,10 @@ pub async fn clear_access(
     let scope = authz::access_scope(&enforcer, &ctx, &resource::VALUE, DELEGATE, None).await?;
     // @cpt-end:cpt-cf-settings-service-flow-tenant-access-clear:p1:inst-ta-clear-2
     let actor = actor(&ctx, &headers, &scope);
+    // Outside the transaction for the same reason as in `set_access`.
+    // @cpt-begin:cpt-cf-settings-service-flow-tenant-access-clear:p1:inst-ta-clear-3
+    let chains = service.authorized_hierarchy_chains(&actor, target).await?;
+    // @cpt-end:cpt-cf-settings-service-flow-tenant-access-clear:p1:inst-ta-clear-3
     let if_match = if_match(&headers).map(str::to_owned);
     let readout = {
         let service = Arc::clone(&service);
@@ -207,7 +230,7 @@ pub async fn clear_access(
             .transaction_ref_mapped::<_, AccessReadout, DomainError>(move |tx| {
                 Box::pin(async move {
                     service
-                        .clear(tx, &actor, &key, target, if_match.as_deref())
+                        .clear(tx, &actor, &chains, &key, target, if_match.as_deref())
                         .await
                 })
             })
@@ -215,7 +238,8 @@ pub async fn clear_access(
     };
     service.evict(&key, target).await?;
     // @cpt-begin:cpt-cf-settings-service-flow-tenant-access-clear:p1:inst-ta-clear-9
-    Ok(with_etag(&readout, &enforcer, &ctx).await)
+    // Clearing removes the stored row, so there is no setter identity to unmask.
+    Ok(with_etag(&readout, &ctx, false))
     // @cpt-end:cpt-cf-settings-service-flow-tenant-access-clear:p1:inst-ta-clear-9
 }
 
@@ -244,7 +268,7 @@ pub async fn list_access(
         .await?;
     // @cpt-begin:cpt-cf-settings-service-flow-tenant-access-list:p1:inst-ta-list-5
     // Every row names who recorded it; asked once for the page.
-    let pii = !listing.rows.is_empty() && may_read_pii(&enforcer, &ctx).await;
+    let pii = !listing.rows.is_empty() && may_read_pii(&enforcer, &ctx).await?;
     let items: Vec<RestrictionDto> = render_listing(&listing, pii);
     // The whole list in one page, by design: at most one row per descendant
     // tenant, the subtree walked under the shared budget and refused past it,

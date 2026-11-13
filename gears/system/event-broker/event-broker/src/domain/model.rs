@@ -30,8 +30,8 @@ use uuid::Uuid;
 /// Semantics" section.
 ///
 /// The producer chain (`Meta::previous`/`Meta::sequence`) is a *different*
-/// numbering space - producer-assigned per `(producer_id, topic, partition)`
-/// for ingest dedup - and deliberately does not use this type.
+/// numbering space - producer-assigned per `(producer_id, topic)` for ingest
+/// dedup - and deliberately does not use this type.
 pub use event_broker_sdk::Sequence;
 
 /// `gts.cf.core.events.topic.v1~` - a named, partitioned event log, as the
@@ -335,6 +335,26 @@ pub struct ConsumerGroup {
     pub created_at: DateTime<Utc>,
 }
 
+/// Which consumer groups a listing keeps: the documented filterable fields,
+/// `id` (any of `ids`) and `kind`. An empty `ids` and no `kind` keep every
+/// group.
+#[domain_model]
+#[derive(Debug, Clone, Default)]
+pub struct ConsumerGroupFilter {
+    pub ids: Vec<GtsInstanceId>,
+    pub kind: Option<ConsumerGroupKind>,
+}
+
+impl ConsumerGroupFilter {
+    /// Whether `group` passes every field this filter sets.
+    #[must_use]
+    pub fn matches(&self, group: &ConsumerGroup) -> bool {
+        let id_matches = self.ids.is_empty() || self.ids.contains(&group.id);
+        let kind_matches = self.kind.is_none_or(|kind| kind == group.kind);
+        id_matches && kind_matches
+    }
+}
+
 /// Caller-suppliable fields for `DeliveryService::create_consumer_group`
 /// (`docs/openapi.yaml`'s `POST /v1/consumer-groups`'s `requestBody` is
 /// itself optional; `client_agent` is required only once a body is sent at
@@ -351,10 +371,10 @@ pub struct ConsumerGroupCreateInput {
 }
 
 /// Backend segment manifest for one `(topic, partition)`
-/// (`GET /v1/topics/segments`). `segments` entries are opaque per
-/// `docs/openapi.yaml` - this in-memory backing reports the whole stored
-/// range as one synthetic segment, which is honest for what it actually is
-/// (no real segmented storage backend exists yet - `#4347`/`#4348`).
+/// (`GET /v1/topics/segments`): the stored range and the segments the topic's
+/// backend reports for the whole partition. `segments` entries are opaque
+/// (`docs/openapi.yaml`). A partition that holds nothing, or is not yet
+/// provisioned, has both sequences 0, no times and no segments.
 #[domain_model]
 #[derive(Debug, Clone)]
 pub struct TopicSegmentManifest {

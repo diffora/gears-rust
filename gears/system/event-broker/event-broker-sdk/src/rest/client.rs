@@ -1,20 +1,23 @@
+use std::time::Duration;
+
 use async_trait::async_trait;
 use bytes::Bytes;
 use secrecy::ExposeSecret;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use toolkit_canonical_errors::{CanonicalError, Problem};
-use toolkit_http::{HttpClient, HttpResponse, RequestBuilder};
+use toolkit_http::{HttpClient, HttpClientBuilder, HttpResponse, RequestBuilder};
 use toolkit_security::SecurityContext;
 
 use crate::api::{
-    EventBrokerApi, IngestOutcome, JoinRequest, ProducerCursors, ProducerMode, SeekPosition,
+    Ack, EventBrokerApi, IngestOutcome, JoinRequest, ProducerCursors, ProducerMode, SeekPosition,
     SeekResult, SubscriptionAssignment, TenantTraversalDepth,
 };
 use crate::error::EventBrokerError;
+use crate::gts::EventV1;
 use crate::ids::{ConsumerGroupId, ProducerId, SubscriptionId};
 use crate::models::{
-    ConsumerGroup, ConsumerGroupQuery, CreateConsumerGroupRequest, Event, EventType, Page,
+    ConsumerGroup, ConsumerGroupQuery, CreateConsumerGroupRequest, EventType, Page,
     PartitionAssignment, PartitionRange, ResetScope, Subscription, Topic, TopicSegment,
 };
 use crate::rest::stream;
@@ -22,6 +25,43 @@ use crate::rest::wire;
 use crate::sequence::Sequence;
 
 const V1: &str = "/event-broker/v1";
+
+/// The headroom the client timeout keeps above the broker's hold, for the round
+/// trip and the broker's own pre-wait and response work, so the final
+/// `201`/`202` always arrives before the client gives up. Without it the
+/// timeout would equal the hold and race the response.
+const SYNC_PROCESSING_MARGIN: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The client's per-request timeout: the caller's `sync_wait` budget plus
+/// [`SYNC_PROCESSING_MARGIN`].
+///
+/// It bounds the time to the response *head*, not the streamed body, so a
+/// long-lived delivery stream is unaffected. A synchronous publish is the only
+/// call the broker holds server-side, so sizing the timeout to outlast
+/// `sync_wait` keeps a held `201`/`202` from being cut off; every other call
+/// (management, async publish, opening a stream) returns well inside it.
+///
+/// There is no fixed ceiling: `sync_wait` is the caller's own budget, so the
+/// timeout tracks it - and therefore whatever hold a per-route gateway deadline
+/// may later allow (#4752) - rather than a hardcoded bound that would cut a
+/// longer hold off. The broker still clamps the actual hold to its
+/// `publish.max_wait_secs`, and api-gateway bounds every request at its own
+/// deadline (answering `504` past it), so at the default `sync_wait` this
+/// timeout sits just above that deadline: a stuck request surfaces as the
+/// server's `504`, not an opaque client timeout, and only a fully unresponsive
+/// connection waits the whole budget.
+fn request_timeout(sync_wait: std::time::Duration) -> std::time::Duration {
+    sync_wait.saturating_add(SYNC_PROCESSING_MARGIN)
+}
+
+/// Builds an [`HttpClient`] whose per-request timeout bounds the time to the
+/// response head.
+fn build_http(timeout: std::time::Duration) -> Result<HttpClient, EventBrokerError> {
+    HttpClientBuilder::new()
+        .timeout(timeout)
+        .build()
+        .map_err(|err| EventBrokerError::Transport(err.to_string()))
+}
 
 /// Wire framing for the delivery stream.
 ///
@@ -43,10 +83,18 @@ pub enum StreamTransport {
 /// same trait as the mock and any in-process implementation, so consumers
 /// resolving `Arc<dyn EventBrokerApi>` cannot tell which one they hold.
 pub struct RestBroker {
+    /// Every request goes through this client; its timeout is sized from
+    /// [`sync_wait`](Self::sync_wait) ([`request_timeout`]), the only hold the
+    /// broker keeps server-side.
     http: HttpClient,
     base_url: String,
     framing: StreamTransport,
     debug: bool,
+    /// The longest hold an [`Ack::Persisted`] publish asks the broker for (the cap
+    /// on the `N` of `Prefer: wait=N`). The broker clamps it to its own configured
+    /// ceiling, so a client asking for more than the broker allows simply gets the
+    /// broker's maximum.
+    sync_wait: std::time::Duration,
 }
 
 impl RestBroker {
@@ -57,13 +105,30 @@ impl RestBroker {
     /// [`EventBrokerError::Transport`] if the underlying HTTP client cannot be
     /// constructed.
     pub fn new(base_url: impl Into<String>) -> Result<Self, EventBrokerError> {
-        let http = HttpClient::new().map_err(|err| EventBrokerError::Transport(err.to_string()))?;
+        // A 30s default cap on `Prefer: wait=N`; the broker caps it to its own
+        // `publish.max_wait_secs`, so this is an upper bound, not a demand.
+        let sync_wait = std::time::Duration::from_secs(30);
         Ok(Self {
-            http,
+            http: build_http(request_timeout(sync_wait))?,
             base_url: base_url.into(),
             framing: StreamTransport::default(),
             debug: false,
+            sync_wait,
         })
+    }
+
+    /// Sets the longest hold an [`Ack::Persisted`] publish asks the broker for
+    /// (`Prefer: wait=N`); clamped by the broker to its configured ceiling.
+    /// Rebuilds the HTTP client so its request timeout still outlasts the new
+    /// hold ([`request_timeout`]).
+    ///
+    /// # Errors
+    /// [`EventBrokerError::Transport`] if the rebuilt HTTP client cannot be
+    /// constructed.
+    pub fn with_sync_wait(mut self, wait: std::time::Duration) -> Result<Self, EventBrokerError> {
+        self.http = build_http(request_timeout(wait))?;
+        self.sync_wait = wait;
+        Ok(self)
     }
 
     /// Selects the delivery stream framing this client opens streams with.
@@ -87,7 +152,8 @@ impl RestBroker {
         self.debug
     }
 
-    /// The underlying HTTP client every request goes through.
+    /// The HTTP client every request goes through, including opening a delivery
+    /// stream.
     pub(crate) fn http(&self) -> &HttpClient {
         &self.http
     }
@@ -187,6 +253,19 @@ impl RestBroker {
         url: &str,
         body: Option<serde_json::Value>,
     ) -> Result<(u16, Bytes), EventBrokerError> {
+        self.call_with_headers(ctx, method, url, body, &[]).await
+    }
+
+    /// [`call`](Self::call) with additional request headers - the publish
+    /// path's `Prefer: wait=N` (RFC 7240) rides through here.
+    async fn call_with_headers(
+        &self,
+        ctx: &SecurityContext,
+        method: Method,
+        url: &str,
+        body: Option<serde_json::Value>,
+        headers: &[(&str, &str)],
+    ) -> Result<(u16, Bytes), EventBrokerError> {
         let mut rb = match method {
             Method::Get => self.http().get(url),
             Method::Post => self.http().post(url),
@@ -194,6 +273,9 @@ impl RestBroker {
         };
         if let Some(body) = &body {
             rb = rb.json(body).map_err(to_transport)?;
+        }
+        for (name, value) in headers {
+            rb = rb.header(name, value);
         }
         rb = self.authed(rb, ctx);
         if self.debug {
@@ -269,6 +351,48 @@ impl RestBroker {
         } else {
             Err(error_from_bytes(status, &bytes))
         }
+    }
+
+    /// Sends a publish `body` to `url` and reports the outcome its status names. A
+    /// persisted publish asks the broker to wait with `Prefer: wait=N`.
+    async fn send_publish(
+        &self,
+        ctx: &SecurityContext,
+        url: &str,
+        body: serde_json::Value,
+        ack: Ack,
+    ) -> Result<IngestOutcome, EventBrokerError> {
+        let prefer = match ack {
+            Ack::Accepted => None,
+            Ack::Persisted { within } => Some(format!("wait={}", self.prefer_wait_secs(within))),
+        };
+        let headers: Vec<(&str, &str)> = prefer
+            .as_deref()
+            .map(|prefer| ("Prefer", prefer))
+            .into_iter()
+            .collect();
+        let (status, bytes) = self
+            .call_with_headers(ctx, Method::Post, url, Some(body), &headers)
+            .await?;
+        if (200..300).contains(&status) {
+            Ok(outcome_from_status(status))
+        } else {
+            Err(error_from_bytes(status, &bytes))
+        }
+    }
+
+    /// The `N` of `Prefer: wait=N` for `within`: whole seconds rounded up, at most the
+    /// client's `sync_wait` rounded up the same way, and at least 1.
+    fn prefer_wait_secs(&self, within: Duration) -> u64 {
+        Self::whole_secs_up(within)
+            .min(Self::whole_secs_up(self.sync_wait))
+            .max(1)
+    }
+
+    /// `wait` in whole seconds, a fraction rounded up, as `Prefer: wait` counts it.
+    fn whole_secs_up(wait: Duration) -> u64 {
+        wait.as_secs()
+            .saturating_add(u64::from(wait.subsec_nanos() > 0))
     }
 
     /// Follows `next_cursor` to accumulate every page of a list endpoint whose
@@ -461,6 +585,17 @@ fn topic_from_wire(w: wire::TopicWire) -> Result<Topic, EventBrokerError> {
     })
 }
 
+/// The outcome a publish's success status reports: 200 when the broker
+/// already holds every event, 201 when the write is confirmed durable, and 202
+/// when anything was enqueued.
+fn outcome_from_status(status: u16) -> IngestOutcome {
+    match status {
+        200 => IngestOutcome::Duplicate,
+        201 => IngestOutcome::Persisted,
+        _ => IngestOutcome::Accepted,
+    }
+}
+
 #[async_trait]
 impl EventBrokerApi for RestBroker {
     async fn register_producer(
@@ -491,67 +626,39 @@ impl EventBrokerApi for RestBroker {
         Ok(ProducerId(resp.id))
     }
 
+    /// `Ack::Persisted { within }` sends `Prefer: wait=N`: `within` in whole seconds
+    /// rounded up, at least 1 and at most the client's
+    /// [`with_sync_wait`](RestBroker::with_sync_wait) (30 s by default). `201` reports
+    /// `Persisted`, `202` `Accepted` (the wait ended first; the event stays admitted),
+    /// `200` `Duplicate`.
     async fn publish(
         &self,
         ctx: &SecurityContext,
-        event: &Event,
+        event: &EventV1,
+        ack: Ack,
     ) -> Result<IngestOutcome, EventBrokerError> {
-        let body = wire::PublishEventWire::from_event(event);
+        let body = wire::PublishEventWire::try_from(event)?;
         let url = self.url(&format!("{V1}/events"));
-        // 201 = persisted (sync path), 202 = accepted. Duplicate is not carried
-        // on the wire (design - Branch gaps).
-        let status = self
-            .call_status(ctx, Method::Post, &url, Some(to_value(&body)?))
-            .await?;
-        Ok(if status == 201 {
-            IngestOutcome::Persisted
-        } else {
-            IngestOutcome::Accepted
-        })
-    }
-
-    async fn publish_sync(
-        &self,
-        ctx: &SecurityContext,
-        event: &Event,
-    ) -> Result<IngestOutcome, EventBrokerError> {
-        let body = wire::PublishEventWire::from_event(event);
-        // Sync-wait as a query param (`?wait=persisted`) rather than the
-        // `Sync-Wait` header, so it fits the header-less `call` chokepoint; the
-        // server honours either form.
-        let url = self.url(&format!("{V1}/events?wait=persisted"));
-        let status = self
-            .call_status(ctx, Method::Post, &url, Some(to_value(&body)?))
-            .await?;
-        Ok(if status == 201 {
-            IngestOutcome::Persisted
-        } else {
-            IngestOutcome::Accepted
-        })
+        self.send_publish(ctx, &url, to_value(&body)?, ack).await
     }
 
     async fn publish_batch(
         &self,
         ctx: &SecurityContext,
-        events: &[Event],
+        events: &[EventV1],
+        ack: Ack,
     ) -> Result<IngestOutcome, EventBrokerError> {
         let body = wire::PublishBatchWire {
             events: events
                 .iter()
-                .map(wire::PublishEventWire::from_event)
-                .collect(),
+                .map(wire::PublishEventWire::try_from)
+                .collect::<Result<_, _>>()?,
         };
         let url = self.url(&format!("{V1}/events:batch"));
-        // A batch is all-or-nothing; the wire reports one status for the whole
-        // batch (201 persisted / 202 accepted), no per-event body.
-        let status = self
-            .call_status(ctx, Method::Post, &url, Some(to_value(&body)?))
-            .await?;
-        Ok(if status == 201 {
-            IngestOutcome::Persisted
-        } else {
-            IngestOutcome::Accepted
-        })
+        // The wire reports one status for the whole batch, no per-event body:
+        // 201 once every admitted event is stored (`Ack::Persisted`), 202 when
+        // anything was enqueued, 200 when every event is a duplicate.
+        self.send_publish(ctx, &url, to_value(&body)?, ack).await
     }
 
     async fn get_producer_cursors(
@@ -601,6 +708,8 @@ impl EventBrokerApi for RestBroker {
         consumer_group_from_wire(resp)
     }
 
+    /// Sends `ids` and `kind` as `$filter`. The broker rejects a `$filter` longer than 8 KiB with
+    /// `400` (`FILTER_TOO_LONG`), so one call carries about 100 ids.
     async fn list_consumer_groups(
         &self,
         ctx: &SecurityContext,
@@ -613,11 +722,23 @@ impl EventBrokerApi for RestBroker {
         if let Some(cursor) = query.cursor {
             params.push(("cursor".to_owned(), cursor));
         }
-        if let Some(filter) = query.filter {
-            params.push(("$filter".to_owned(), filter));
+        // The documented filterable fields: `id` (eq/in) and `kind` (eq).
+        let mut filters = Vec::new();
+        match query.ids.as_slice() {
+            [] => {}
+            [id] => filters.push(format!("id eq '{}'", id.to_gts())),
+            ids => {
+                let quoted: Vec<String> =
+                    ids.iter().map(|id| format!("'{}'", id.to_gts())).collect();
+                filters.push(format!("id in ({})", quoted.join(",")));
+            }
         }
-        if let Some(orderby) = query.orderby {
-            params.push(("$orderby".to_owned(), orderby));
+        if let Some(kind) = query.kind {
+            let token = wire::ConsumerGroupKindWire::from(kind).as_str();
+            filters.push(format!("kind eq '{token}'"));
+        }
+        if !filters.is_empty() {
+            params.push(("$filter".to_owned(), filters.join(" and ")));
         }
         let qs = serde_html_form::to_string(&params).unwrap_or_default();
         let url = if qs.is_empty() {
@@ -797,3 +918,6 @@ impl EventBrokerApi for RestBroker {
         event_type_from_wire(found)
     }
 }
+
+#[cfg(test)]
+mod tests;

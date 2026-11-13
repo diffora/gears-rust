@@ -8,7 +8,7 @@ gdl_version = "1.0"
 # so they are alternatives: a product picks one per deployment profile.
 
 gear(
-    deps = ["types-registry"],
+    deps = [],
     source = git(url = "https://github.com/constructorfabric/gears-rust", path = "gears/system/authn-resolver/plugins/firebase-authn-plugin"),
     maturity = "preview",
     name = "Firebase AuthN Plugin",

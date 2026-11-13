@@ -23,6 +23,12 @@ use uuid::Uuid;
 use super::error::DomainError;
 use super::ports::metrics::{DenialReason, QeMetrics};
 
+/// The admission phase of one operation: every PDP call it makes, covering `item_count` items.
+#[must_use]
+pub fn admission_span(item_count: usize) -> tracing::Span {
+    tracing::info_span!("quota_enforcement.admission", item_count)
+}
+
 /// The explicit, caller-supplied target of an operation. Untrusted until the
 /// PDP authorizes it for the authenticated service principal.
 #[domain_model]
@@ -267,10 +273,12 @@ fn validate_target_shape(target: AdmissionTarget) -> Result<(), DomainError> {
 /// The denial metric reason for a PEP error.
 const fn denial_reason(err: &EnforcerError) -> DenialReason {
     match err {
-        EnforcerError::Denied { .. } | EnforcerError::CompileFailed(_) => {
+        EnforcerError::AccessDenied(_) | EnforcerError::CompileFailed(_) => {
             DenialReason::PermissionDenied
         }
         EnforcerError::EvaluationFailed(_) => DenialReason::PdpUnavailable,
+        // An unknown outcome class is neither a denial nor PDP unavailability.
+        _ => DenialReason::Internal,
     }
 }
 

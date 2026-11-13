@@ -169,12 +169,14 @@ Plain AuthZEN point-in-time `true/false` decisions are insufficient for LIST que
 
 Constraints **OR** across alternatives, **AND** predicates within each constraint. PEP compiles constraints into `AccessScope` → SecureORM translates to SQL `WHERE` clauses.
 
-**Fail-closed PEP enforcement** — PEP denies access on:
-- Missing or `false` decision
-- Unreachable PDP
-- Missing constraints when `require_constraints: true`
-- Unknown predicates or property names
-- Empty predicate lists, empty `in`/`group_ids` values, or empty `constraints: []`
+**Fail-closed PEP enforcement:**
+
+- Reject a denied decision, unavailable PDP, or response that cannot be decoded (for example an unknown predicate `op` or missing required field).
+- Reject absent/empty outer constraints when `require_constraints: true`.
+- A decoded branch with unsupported properties/capabilities, invalid semantic values, or `predicates: []` fails compilation. Discard that entire branch; reject the response if no branch compiles successfully.
+- Valid empty branches are fully validated, then normalized out of `AccessScope::constraints()` (kept in `original_constraints()`). An all-empty scope is refused by default by both the enforcer and the low-level `compile_to_access_scope`; PEP-local `AccessRequest::allow_empty_scope(true)` (or `CompileOptions::allow_empty_scope(true)`) returns it, as a deny-all-equivalent scope, for queries or catalog gates. Invalid siblings are still discarded (strict rejection: #5958).
+
+Empty value lists inside `in`, `in_group`, and `in_group_subtree` are valid predicates that match nothing, compiled to `FALSE`; they do not invalidate other OR branches. With `decision: true`, absent or empty outer `constraints` permit unrestricted row access only when `require_constraints: false`. See [the full PEP contract](../arch/authorization/DESIGN.md#pep-enforcement).
 
 **Capability negotiation** — PEP sends `capabilities`, `supported_properties`, and `require_constraints` with each evaluation request. The PDP must not emit unsupported property names and must degrade gracefully (expand groups to explicit `in` lists, or deny).
 
@@ -197,7 +199,7 @@ Hierarchical multi-tenancy with a **single-root tree topology** (exactly one ten
 - **Barriers** — child tenants set `self_managed = true` to create a privacy barrier. Parents cannot see that subtree's business data by default; `BarrierMode` controls per-resource-type relaxation (e.g., billing ignores barriers while tasks respect them).
 - **`tenant_closure` table** — materialized `(ancestor_id, descendant_id, barrier, descendant_status)` enables efficient `in_tenant_subtree` predicate compilation to SQL subqueries.
 
-**Tenant Resolver** is a plugin-based system gear providing tenant graph operations (get, ancestors, descendants, `is_ancestor`) via `TenantResolverClient`:
+**Tenant Resolver** is a plugin-based core gear providing tenant graph operations (get, ancestors, descendants, `is_ancestor`) via `TenantResolverClient`:
 
 - **Plugin architecture** — gateway discovers a backend plugin by GTS vendor string; routes all calls through `TenantResolverPluginClient`. Built-in plugins: `static-tr-plugin` (in-memory tree from config), `single-tenant-tr-plugin` (enforces `ctx.subject_tenant_id()` as the only tenant).
 - **Barrier-aware traversal** — ancestor/descendant walks respect `self_managed` barriers and use visited sets for cycle safety.
@@ -486,7 +488,7 @@ The HTTP client (`cf-gears-toolkit-http`) exposes the following transport knobs 
 
 | Knob | Type | Effect |
 |---|---|---|
-| Transport security | `TransportSecurity` (`TlsOnly` \| `AllowInsecureHttp`); `HttpClientBuilder::deny_insecure_http()` | Whether cleartext `http://` is permitted. Defaults to `TlsOnly` under `--features fips`, `AllowInsecureHttp` otherwise. Selecting `AllowInsecureHttp` under FIPS makes `build()` return `HttpError::InsecureTransport`. |
+| Transport security | `TransportSecurity` (`TlsOnly` \| `AllowInsecureHttp`); `HttpClientBuilder::deny_insecure_http()` | Whether cleartext `http://` is permitted. Defaults to `TlsOnly` under `--features fips`, `AllowInsecureHttp` otherwise. Under FIPS, selecting `AllowInsecureHttp` is an explicit opt-in (e.g. plaintext to a loopback mTLS sidecar): `build()` accepts it and logs a warning on the `toolkit_http::security` target. FIPS 140-3 governs the crypto modules, not which connections are encrypted. |
 | Minimum TLS version | `TlsVersion` (`Tls12` \| `Tls13`) | `Tls12` advertises TLS 1.2 + 1.3 (rustls safe default); `Tls13` is TLS 1.3-only. Does not relax FIPS hardening. |
 | Mutual TLS identity | `ClientAuthConfig` | PEM cert-chain + private-key **file paths** (PKCS#8 / PKCS#1 / SEC1). Files are read lazily at build; no key bytes are held in the cloneable config. |
 | Trust roots | `TlsRootConfig` | Selects the certificate trust anchors (e.g. the native OS root store). |

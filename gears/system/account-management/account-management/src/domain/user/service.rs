@@ -59,7 +59,7 @@ use toolkit_odata::filter::{FilterNode, FilterOp, ODataValue};
 use toolkit_odata::{CursorV1, ODataOrderBy, ODataQuery, OrderKey, SortDir};
 use toolkit_security::AccessScope;
 use toolkit_security::{SecurityContext, pep_properties};
-use types_registry_sdk::TypesRegistryClient;
+use types_registry_sdk::TypesRegistryApi;
 use uuid::Uuid;
 
 use crate::domain::error::DomainError;
@@ -68,33 +68,33 @@ use crate::domain::metrics::{AM_DEPENDENCY_HEALTH, MetricKind, emit_metric};
 use crate::domain::tenant::TenantContext;
 use crate::domain::tenant::repo::TenantRepo;
 
-/// Upper bound on `username` length enforced at the AM boundary
-/// before the `IdP` round-trip. Matches the `child_tenant_name`
-/// bound declared by `m0004_create_conversion_requests` so AM-side
-/// length policy stays uniform across the two identifier surfaces.
-/// Counts Unicode scalars (`chars().count()`), not bytes — the GTS
-/// schema's `maxLength` is also character-counted.
-const MAX_USERNAME_CHARS: usize = 255;
+/// AM username whitespace policy, applied after authorization/tenant guards.
+/// Trim in place so oversized input is not cloned before DTO length validation.
+fn normalize_username(value: &mut String) {
+    value.truncate(value.trim_end().len());
+    let leading = value.len() - value.trim_start().len();
+    drop(value.drain(..leading));
+}
 
-/// Upper bound on the secondary profile fields (`email`,
-/// `display_name`) enforced at the AM boundary as a cheap
-/// **pre-flight cap** before the JSON-Schema validator runs.
-///
-/// A missing `USER_RESOURCE_TYPE` schema is NOT a fallback
-/// case for this constant — that path is fail-closed in
-/// [`crate::domain::gts_validation::validate_new_user_payload_via_gts`]
-/// (surfaces `ServiceUnavailable` until the catalog is seeded).
-/// This cap stays in place as belt-and-suspenders: it cuts
-/// megabyte-scale payloads before they reach the JSON-Schema
-/// validator, and keeps the AM boundary deterministic against a
-/// future contract bug that lets the schema-backed validator
-/// admit an oversize field by mistake.
-///
-/// The cap value matches `MAX_USERNAME_CHARS` so a schema
-/// tightening that lowers any of the per-field `maxLength`s still
-/// passes through the AM boundary unchanged (the GTS validator
-/// remains authoritative).
-const MAX_PROFILE_FIELD_CHARS: usize = 255;
+#[cfg(test)]
+mod username_normalization_tests {
+    use super::normalize_username;
+
+    #[test]
+    fn username_normalization_preserves_unicode_boundaries_and_internal_spaces() {
+        for (input, expected) in [
+            ("", ""),
+            (" \t\r\n", ""),
+            ("\u{2003}alice \t", "alice"),
+            (" \u{44f} ", "\u{44f}"),
+            ("\u{2003}al ice\u{2003}", "al ice"),
+        ] {
+            let mut value = input.to_owned();
+            normalize_username(&mut value);
+            assert_eq!(value, expected);
+        }
+    }
+}
 
 /// PEP descriptors. The literal type-name duplicates
 /// `USER_RESOURCE_TYPE` because `ResourceType.name` is `&'static str`;
@@ -156,10 +156,9 @@ pub(crate) mod pep {
 pub struct UserService {
     tenant_repo: Arc<dyn TenantRepo>,
     idp_user: Arc<dyn IdpPluginClient>,
-    /// GTS schema source for the user JSON-Schema contract — keeps
-    /// structural rules (length, format) authoritative in the
-    /// catalogue rather than duplicated in code.
-    types_registry: Arc<dyn TypesRegistryClient>,
+    /// Resolves the tenant's mandatory type under the request caller.
+    /// Fixed user command fields are validated by the SDK DTO contract.
+    types_registry: Arc<dyn TypesRegistryApi>,
     /// PEP gate run before any `IdP` / RG round trip.
     enforcer: PolicyEnforcer,
     /// RG client for `delete_user` membership cleanup. `None` in
@@ -223,7 +222,7 @@ impl UserService {
     pub fn new(
         tenant_repo: Arc<dyn TenantRepo>,
         idp_user: Arc<dyn IdpPluginClient>,
-        types_registry: Arc<dyn TypesRegistryClient>,
+        types_registry: Arc<dyn TypesRegistryApi>,
         enforcer: PolicyEnforcer,
     ) -> Self {
         Self {
@@ -344,14 +343,10 @@ impl UserService {
     /// * [`DomainError::Validation`] -- tenant exists but is not
     ///   [`crate::domain::tenant::model::TenantStatus::Active`] (provisioning, suspended, deleted).
     /// * [`DomainError::Validation`] -- payload rejected before the
-    ///   `IdP` call: empty / whitespace-only username, username or
-    ///   email / `display_name` exceeding the length cap, or GTS
-    ///   schema rejection on a structural property.
-    /// * [`DomainError::ServiceUnavailable`] -- GTS Types Registry
-    ///   transport failure or `gts.cf.core.am.user.v1~` not yet
-    ///   registered (fails closed rather than forwarding an
-    ///   unvalidated payload to the `IdP`); also DB transport
-    ///   failure inside `resolve_active_tenant`.
+    ///   `IdP` call: empty / whitespace-only username, invalid profile
+    ///   lengths or an email that violates the plain-address policy.
+    /// * [`DomainError::ServiceUnavailable`] -- registry or DB failure
+    ///   in mandatory tenant-type resolution, independently of DTO validation.
     /// * [`DomainError::IdpUnavailable`] -- transport failure or
     ///   timeout on the `IdP` call.
     /// * [`DomainError::UnsupportedOperation`] -- provider declined
@@ -362,10 +357,6 @@ impl UserService {
     ///   as the user id (plugin contract violation) or an unknown
     ///   SDK failure variant.
     // @cpt-begin:cpt-cf-account-management-flow-idp-user-operations-contract-provision-user:p1:inst-flow-puser-service
-    #[allow(
-        clippy::cognitive_complexity,
-        reason = "flat guard sequence (tenant scope -> actor precondition -> payload trim/cap -> GTS structural -> IdP call -> response nil-id guard) is the security-critical ordering reviewers eyeball-check; extracting helpers would fragment the audit chain and obscure the @cpt-* CPT markers anchored to each step"
-    )]
     pub async fn create_user(
         &self,
         ctx: &SecurityContext,
@@ -387,40 +378,23 @@ impl UserService {
         // a request against a non-existent / soft-deleted / out-of-
         // scope tenant surfaces as `NotFound` / `Validation` without
         // leaking tenant topology through a payload-shape error.
-        let tenant_context = self.resolve_active_tenant(&scope, tenant_id).await?;
+        let tenant_context = self.resolve_active_tenant(ctx, &scope, tenant_id).await?;
         // @cpt-end:cpt-cf-account-management-dod-idp-user-operations-contract-authenticated-tenant-scoped-invocation:p1:inst-dod-authenticated-tenant-scoped-invocation-puser
         // @cpt-end:cpt-cf-account-management-flow-idp-user-operations-contract-provision-user:p1:inst-flow-puser-resolve-tenant
 
-        // Trim username BEFORE the GTS schema check: whitespace-equivalence is AM
-        // policy, not schema-level (the schema enforces structural shape only).
-        // Cap at MAX_USERNAME_CHARS BEFORE the IdP round-trip so megabyte payloads
-        // don't ride the wire just to be rejected upstream.
-        let trimmed = payload.username.trim();
-        if trimmed.is_empty() {
+        // Username whitespace-equivalence is AM policy. Preserve the PEP and
+        // active-tenant guards before normalization and fixed DTO validation.
+        normalize_username(&mut payload.username);
+        if payload.username.is_empty() {
             return Err(DomainError::Validation {
                 detail: "create_user: username MUST not be all-whitespace".to_owned(),
             });
         }
-        if trimmed.chars().count() > MAX_USERNAME_CHARS {
-            return Err(DomainError::Validation {
-                detail: format!(
-                    "create_user: username MUST be {MAX_USERNAME_CHARS} characters or fewer"
-                ),
-            });
-        }
-        if trimmed.len() != payload.username.len() {
-            payload.username = trimmed.to_owned();
-        }
-        // Pre-flight char-count caps on email/display_name. Cuts megabyte-scale
-        // payloads before the GTS validator runs, and stays fail-closed when the
-        // schema is unregistered (ServiceUnavailable path).
-        check_profile_field_bound("email", payload.email.as_deref())?;
-        check_profile_field_bound("display_name", payload.display_name.as_deref())?;
-        crate::domain::gts_validation::validate_new_user_payload_via_gts(
-            &payload,
-            &*self.types_registry,
-        )
-        .await?;
+        payload
+            .validate()
+            .map_err(|error| DomainError::Validation {
+                detail: format!("create_user: {error}"),
+            })?;
 
         // @cpt-begin:cpt-cf-account-management-flow-idp-user-operations-contract-provision-user:p1:inst-flow-puser-invoke-contract
         // @cpt-begin:cpt-cf-account-management-algo-idp-user-operations-contract-idp-contract-invocation:p1:inst-algo-ici-package-request-puser
@@ -546,7 +520,7 @@ impl UserService {
         // @cpt-begin:cpt-cf-account-management-dod-idp-user-operations-contract-authenticated-tenant-scoped-invocation:p1:inst-dod-authenticated-tenant-scoped-invocation-duser
         let scope = self.authorize(ctx, pep::actions::DELETE, tenant_id).await?;
         let actor = ctx.subject_id();
-        let tenant_context = self.resolve_active_tenant(&scope, tenant_id).await?;
+        let tenant_context = self.resolve_active_tenant(ctx, &scope, tenant_id).await?;
         // @cpt-end:cpt-cf-account-management-dod-idp-user-operations-contract-authenticated-tenant-scoped-invocation:p1:inst-dod-authenticated-tenant-scoped-invocation-duser
         // @cpt-end:cpt-cf-account-management-flow-idp-user-operations-contract-deprovision-user:p1:inst-flow-duser-resolve-tenant
 
@@ -631,8 +605,8 @@ impl UserService {
     /// Apply a JSON Merge Patch to `user_id`'s mutable attributes in
     /// `tenant_id` via the configured `IdP` plugin. The `IdP` remains
     /// the source of truth; AM orchestrates the saga (empty-patch guard
-    /// -> PEP gate -> tenant scope -> username normalisation -> GTS
-    /// structural validation of changed fields -> `IdP` call -> nil-id
+    /// -> PEP gate -> tenant scope -> username normalisation -> SDK
+    /// DTO validation of supplied fields -> `IdP` call -> nil-id
     /// guard) and persists nothing per
     /// `cpt-cf-account-management-constraint-no-user-storage`.
     ///
@@ -647,7 +621,7 @@ impl UserService {
     ///
     /// * [`DomainError::Validation`] -- empty patch; a username rename
     ///   that is all-whitespace or over the length cap; a profile field
-    ///   over its cap or failing the GTS schema; a provider payload
+    ///   outside its DTO bounds or violating email syntax; a provider payload
     ///   rejection (incl. rejected password).
     /// * [`DomainError::UserAlreadyExists`] -- a username rename
     ///   collided with an existing login (HTTP 409).
@@ -671,10 +645,6 @@ impl UserService {
     /// * [`DomainError::Internal`] -- provider returned `Uuid::nil()`
     ///   (plugin contract violation) or an unknown SDK failure variant.
     // @cpt-begin:cpt-cf-account-management-flow-idp-user-operations-contract-update-user:p1:inst-flow-uuser-service
-    #[allow(
-        clippy::cognitive_complexity,
-        reason = "flat guard sequence (empty-patch -> PEP gate -> tenant scope -> username normalisation -> profile caps -> GTS structural -> IdP call -> response nil-id guard) is the security-critical ordering reviewers eyeball-check; mirrors create_user and keeps the @cpt-* CPT markers anchored per step"
-    )]
     pub async fn update_user(
         &self,
         ctx: &SecurityContext,
@@ -697,44 +667,23 @@ impl UserService {
         // security ordering as create_user / delete_user.
         let scope = self.authorize(ctx, pep::actions::UPDATE, tenant_id).await?;
         let actor = ctx.subject_id();
-        let tenant_context = self.resolve_active_tenant(&scope, tenant_id).await?;
+        let tenant_context = self.resolve_active_tenant(ctx, &scope, tenant_id).await?;
         // @cpt-end:cpt-cf-account-management-dod-idp-user-operations-contract-authenticated-tenant-scoped-invocation:p1:inst-dod-authenticated-tenant-scoped-invocation-uuser
         // @cpt-end:cpt-cf-account-management-flow-idp-user-operations-contract-update-user:p1:inst-flow-uuser-resolve-tenant
 
-        // Normalise + bound a username rename exactly as create_user
-        // treats the create-time username: trim (whitespace-equivalence
-        // is AM policy, not schema-level), reject all-whitespace, cap
-        // before the IdP round-trip.
-        if let Some(username) = patch.username.as_ref() {
-            let trimmed = username.trim();
-            if trimmed.is_empty() {
+        // Normalize only a supplied username; clears and omitted fields retain
+        // their patch meaning. The SDK validates every supplied profile value.
+        if let Some(username) = patch.username.as_mut() {
+            normalize_username(username);
+            if username.is_empty() {
                 return Err(DomainError::Validation {
                     detail: "update_user: username MUST not be all-whitespace".to_owned(),
                 });
             }
-            if trimmed.chars().count() > MAX_USERNAME_CHARS {
-                return Err(DomainError::Validation {
-                    detail: format!(
-                        "update_user: username MUST be {MAX_USERNAME_CHARS} characters or fewer"
-                    ),
-                });
-            }
-            if trimmed.len() != username.len() {
-                patch.username = Some(trimmed.to_owned());
-            }
         }
-
-        // Pre-flight char-count caps on the profile fields being SET to
-        // a value (`Some(Some(_))`); clearing (`Some(None)`) carries no
-        // value to cap. Cuts megabyte-scale payloads before the GTS
-        // validator's registry round-trip, mirroring create_user.
-        check_profile_field_bound("email", patch.email.as_ref().and_then(|e| e.as_deref()))?;
-        check_profile_field_bound(
-            "display_name",
-            patch.display_name.as_ref().and_then(|d| d.as_deref()),
-        )?;
-        crate::domain::gts_validation::validate_user_patch_via_gts(&patch, &*self.types_registry)
-            .await?;
+        patch.validate().map_err(|error| DomainError::Validation {
+            detail: format!("update_user: {error}"),
+        })?;
 
         // @cpt-begin:cpt-cf-account-management-flow-idp-user-operations-contract-update-user:p1:inst-flow-uuser-invoke-contract
         // Convert internal `TenantContext` → SDK `IdpTenantContext` at
@@ -899,7 +848,7 @@ impl UserService {
         // tenant topology through a pagination-shape error.
         // @cpt-begin:cpt-cf-account-management-flow-idp-user-operations-contract-list-users:p1:inst-flow-luser-resolve-tenant
         // @cpt-begin:cpt-cf-account-management-dod-idp-user-operations-contract-authenticated-tenant-scoped-invocation:p1:inst-dod-authenticated-tenant-scoped-invocation-luser
-        let tenant_context = self.resolve_active_tenant(&scope, tenant_id).await?;
+        let tenant_context = self.resolve_active_tenant(ctx, &scope, tenant_id).await?;
         // @cpt-end:cpt-cf-account-management-dod-idp-user-operations-contract-authenticated-tenant-scoped-invocation:p1:inst-dod-authenticated-tenant-scoped-invocation-luser
         // @cpt-end:cpt-cf-account-management-flow-idp-user-operations-contract-list-users:p1:inst-flow-luser-resolve-tenant
 
@@ -1009,23 +958,12 @@ impl UserService {
     // Helpers
     // ----------------------------------------------------------------
 
-    /// Resolve `tenant_id` to an [`crate::domain::tenant::model::TenantStatus::Active`] tenant and
-    /// build the [`TenantContext`] forwarded to the `IdP` plugin.
-    ///
-    /// Centralised so each flow shares one tenant guard implementation
-    /// and CPT review can verify the precondition once instead of
-    /// three times.
-    ///
-    /// `tenant_type` on the returned context is mandatory: AM resolves
-    /// the chained GTS identifier via `TypesRegistryClient` and
-    /// surfaces an outage as [`DomainError::service_unavailable`]
-    /// rather than leaking an `Option` through the plugin contract.
-    /// The opaque `metadata` blob is loaded from `tenant_idp_metadata`
-    /// (whatever the `IdP` plugin returned at `provision_tenant` time
-    /// and AM persisted via `activate_tenant`) so every `IdP` call
-    /// receives the plugin's own per-tenant state inline.
+    /// Build an active tenant's [`TenantContext`] through the shared tenant guard.
+    /// Reads the mandatory chained type for `ctx` and includes the plugin's opaque
+    /// `tenant_idp_metadata`. Registry outages return [`DomainError::service_unavailable`].
     async fn resolve_active_tenant(
         &self,
+        ctx: &SecurityContext,
         scope: &AccessScope,
         tenant_id: Uuid,
     ) -> Result<TenantContext, DomainError> {
@@ -1036,6 +974,7 @@ impl UserService {
         crate::domain::tenant::resolve::resolve_active_tenant(
             &*self.tenant_repo,
             &*self.types_registry,
+            ctx,
             scope,
             tenant_id,
         )
@@ -1331,35 +1270,4 @@ async fn list_tenant_user_groups(
     Ok(all_ids)
 }
 
-/// AM-side fallback length cap for the optional profile fields
-/// (`email`, `display_name`) on `create_user`. `None`
-/// short-circuits to `Ok(())` because the public schema declares
-/// the field optional and AM does not synthesise a value;
-/// `Some(value)` is rejected with [`DomainError::Validation`] when
-/// the **raw** char-count exceeds [`MAX_PROFILE_FIELD_CHARS`].
-///
-/// No trim normalisation is applied to these fields (unlike
-/// `username`) — vendor profiles differ on whether `email`
-/// uniqueness is whitespace-sensitive and `display_name` is a
-/// user-visible label where surrounding whitespace can be
-/// intentional. The cap is therefore on the raw value as supplied;
-/// whitespace policy stays the provider's call. The cap alone is
-/// enough to prevent megabyte-scale forwards to the `IdP` when the
-/// GTS schema is not registered.
-fn check_profile_field_bound(
-    field_name: &'static str,
-    value: Option<&str>,
-) -> Result<(), DomainError> {
-    let Some(value) = value else {
-        return Ok(());
-    };
-    if value.chars().count() > MAX_PROFILE_FIELD_CHARS {
-        return Err(DomainError::Validation {
-            detail: format!(
-                "create_user: {field_name} MUST be {MAX_PROFILE_FIELD_CHARS} characters or fewer"
-            ),
-        });
-    }
-    Ok(())
-}
 // @cpt-end:cpt-cf-account-management-dod-idp-user-operations-contract-no-local-user-storage:p1:inst-dod-idp-user-operations-contract-no-local-user-storage-service

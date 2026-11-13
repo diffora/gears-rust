@@ -70,10 +70,11 @@ pub async fn fetch_token(config: OAuthClientConfig) -> Result<FetchedToken, Toke
 mod tests {
     use super::super::error::HttpOperation;
     use super::*;
+    use crate::oauth2::TokenEndpoint;
     use httpmock::prelude::*;
     use url::Url;
 
-    use super::super::types::ClientAuthMethod;
+    use super::super::credentials::ClientCredentials;
 
     // -----------------------------------------------------------------------
     // Helpers
@@ -81,15 +82,16 @@ mod tests {
 
     fn test_config(server: &MockServer) -> OAuthClientConfig {
         OAuthClientConfig {
-            token_endpoint: Some(
-                Url::parse(&format!("http://localhost:{}/token", server.port())).unwrap(),
-            ),
-            client_id: "test-client".into(),
-            client_secret: SecretString::new("test-secret"),
             http_config: Some(toolkit_http::HttpClientConfig::for_testing()),
             jitter_max: Duration::from_millis(0),
             min_refresh_period: Duration::from_millis(100),
-            ..Default::default()
+            ..OAuthClientConfig::new(
+                TokenEndpoint::Direct(
+                    Url::parse(&format!("http://localhost:{}/token", server.port())).unwrap(),
+                ),
+                "test-client",
+                ClientCredentials::SecretBasic(SecretString::new("test-secret")),
+            )
         }
     }
 
@@ -103,17 +105,15 @@ mod tests {
 
     #[tokio::test]
     async fn config_validated_before_fetch() {
-        let cfg = OAuthClientConfig {
-            token_endpoint: Some(Url::parse("https://a.example.com/token").unwrap()),
-            issuer_url: Some(Url::parse("https://b.example.com").unwrap()),
-            client_id: "test-client".into(),
-            client_secret: SecretString::new("test-secret"),
-            ..Default::default()
-        };
+        let cfg = OAuthClientConfig::new(
+            TokenEndpoint::Direct(Url::parse("https://a.example.com/token").unwrap()),
+            "test-client",
+            ClientCredentials::SecretBasic(SecretString::new("")),
+        );
 
         let err = fetch_token(cfg).await.unwrap_err();
         assert!(
-            matches!(err, TokenError::ConfigError(ref msg) if msg.contains("mutually exclusive")),
+            matches!(err, TokenError::ConfigError(ref msg) if msg.contains("client_secret")),
             "expected ConfigError, got: {err}"
         );
     }
@@ -142,13 +142,16 @@ mod tests {
         });
 
         let cfg = OAuthClientConfig {
-            issuer_url: Some(Url::parse(&format!("http://localhost:{}", server.port())).unwrap()),
-            client_id: "test-client".into(),
-            client_secret: SecretString::new("test-secret"),
             http_config: Some(toolkit_http::HttpClientConfig::for_testing()),
             jitter_max: Duration::from_millis(0),
             min_refresh_period: Duration::from_millis(100),
-            ..Default::default()
+            ..OAuthClientConfig::new(
+                TokenEndpoint::Issuer(
+                    Url::parse(&format!("http://localhost:{}", server.port())).unwrap(),
+                ),
+                "test-client",
+                ClientCredentials::SecretBasic(SecretString::new("test-secret")),
+            )
         };
 
         let fetched = fetch_token(cfg).await.unwrap();
@@ -167,11 +170,14 @@ mod tests {
         });
 
         let cfg = OAuthClientConfig {
-            issuer_url: Some(Url::parse(&format!("http://localhost:{}", server.port())).unwrap()),
-            client_id: "test-client".into(),
-            client_secret: SecretString::new("test-secret"),
             http_config: Some(toolkit_http::HttpClientConfig::for_testing()),
-            ..Default::default()
+            ..OAuthClientConfig::new(
+                TokenEndpoint::Issuer(
+                    Url::parse(&format!("http://localhost:{}", server.port())).unwrap(),
+                ),
+                "test-client",
+                ClientCredentials::SecretBasic(SecretString::new("test-secret")),
+            )
         };
 
         let err = fetch_token(cfg).await.unwrap_err();
@@ -217,7 +223,7 @@ mod tests {
 
         let fetched = fetch_token(test_config(&server)).await.unwrap();
         assert_eq!(fetched.bearer.expose(), "tok-default");
-        // default_ttl from OAuthClientConfig::default() is 5 min = 300s
+        // default_ttl from OAuthClientConfig::new() is 5 min = 300s
         assert_eq!(fetched.expires_in, Duration::from_mins(5));
     }
 
@@ -317,7 +323,7 @@ mod tests {
         });
 
         let mut cfg = test_config(&server);
-        cfg.auth_method = ClientAuthMethod::Form;
+        cfg.credentials = ClientCredentials::SecretPost(SecretString::new("test-secret"));
         fetch_token(cfg).await.unwrap();
         mock.assert();
     }
@@ -337,7 +343,6 @@ mod tests {
         });
 
         let cfg = test_config(&server);
-        // Default auth_method is Basic.
         fetch_token(cfg).await.unwrap();
         mock.assert();
     }

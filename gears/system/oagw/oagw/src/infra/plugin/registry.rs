@@ -1,15 +1,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use toolkit_auth::oauth2::types::ClientAuthMethod;
-
 use crate::config::TokenCacheConfig;
 use crate::domain::plugin::{AuthPlugin, GuardPlugin, PluginError, TransformPlugin};
 use credstore_sdk::CredStoreClientV1;
 
 use super::apikey_auth::ApiKeyAuthPlugin;
 use super::noop_auth::NoopAuthPlugin;
-use super::oauth2_client_cred_auth::OAuth2ClientCredAuthPlugin;
+use super::oauth2_client_cred_auth::{OAuth2ClientCredAuthPlugin, SecretAuthMethod};
 use super::request_id_transform::RequestIdTransformPlugin;
 use super::required_headers_guard::RequiredHeadersGuardPlugin;
 use crate::domain::gts_helpers::{
@@ -40,13 +38,13 @@ impl AuthPluginRegistry {
 
         let mut form_plugin = OAuth2ClientCredAuthPlugin::new(
             credstore.clone(),
-            ClientAuthMethod::Form,
+            SecretAuthMethod::Form,
             token_cache_config.ttl,
             token_cache_config.capacity,
         );
         let mut basic_plugin = OAuth2ClientCredAuthPlugin::new(
             credstore.clone(),
-            ClientAuthMethod::Basic,
+            SecretAuthMethod::Basic,
             token_cache_config.ttl,
             token_cache_config.capacity,
         );

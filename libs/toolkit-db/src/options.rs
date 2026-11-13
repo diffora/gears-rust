@@ -97,8 +97,13 @@ impl DbConnectOptions {
                 let mut pool_opts = pool.apply_sqlite(sqlx::sqlite::SqlitePoolOptions::new());
 
                 if is_memory_filename(opts.get_filename()) {
-                    pool_opts = pool_opts.max_connections(1).min_connections(1);
-                    tracing::info!("Using single connection pool for in-memory SQLite database");
+                    // Each connection to `:memory:` is a database of its own: keep exactly one.
+                    pool_opts = crate::sqlite::keep_memory_connections(
+                        pool_opts.max_connections(1).min_connections(1),
+                    );
+                    tracing::info!(
+                        "Using a single non-expiring connection for in-memory SQLite database"
+                    );
                 }
 
                 let sqlx_pool = pool_opts.connect_with(opts.clone()).await?;

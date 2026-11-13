@@ -66,7 +66,7 @@ A supported scheduled cancellation is a durable intent on the aggregate. Its fin
 
 ### Confirmation
 
-- The domain enum accepts only the six declared values.
+- The domain enum accepts only the six declared values, and storage fails closed: a database check on both supported backends refuses any other stored status ([DESIGN §3.7](../DESIGN.md#37-database-schemas--tables)).
 - A preparing acquisition reads `preparing` from the authorized preparation start; successful initial activation records one fresh T and applied outcome; closure without activation returns `draft` with the operation's activation resolution; a `draft` without an activation operation was never prepared.
 - An active trial reports active plus its trial episode. Pending cancellation reports the current status plus its intent and any confirmed financial cutoff.
 - Reordered delivery observations cannot revive a cancelled subscription or rewrite an applied outcome.

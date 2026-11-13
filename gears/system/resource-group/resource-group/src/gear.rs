@@ -16,7 +16,8 @@ use toolkit_db::DbError;
 use tracing::info;
 
 use crate::api::rest::routes;
-use crate::domain::group_service::{GroupService, QueryProfile};
+use crate::config::ResourceGroupConfig;
+use crate::domain::group_service::{GroupService, QueryProfile, TenantTypes};
 use crate::domain::membership_service::MembershipService;
 use crate::domain::read_service::RgReadService;
 use crate::domain::rg_service::RgService;
@@ -34,7 +35,11 @@ pub type ConcreteRgService = RgService<GroupRepository, TypeRepository, Membersh
 pub type ConcreteTypeBootstrapService = RgTypeBootstrapService<TypeRepository>;
 
 // @cpt-dod:cpt-cf-resource-group-dod-sdk-foundation-gear-scaffold:p1
-/// Main gear struct for the resource-group gear.
+/// Resource-group gear.
+///
+/// `init` requires the legacy `TypesRegistryClient` for metadata validation.
+/// The `deps` edge links the registry into the host; its system-group startup
+/// makes the client available before this gear initializes.
 #[toolkit::consumes(contract = authz_resolver_sdk::AuthZResolverApi, from = "authz-resolver")]
 #[toolkit::gear(
     name = "resource-group",
@@ -67,6 +72,13 @@ impl Default for ResourceGroup {
 #[async_trait]
 impl Gear for ResourceGroup {
     async fn init(&self, ctx: &GearCtx) -> anyhow::Result<()> {
+        let cfg: ResourceGroupConfig = ctx.config_or_default()?;
+        cfg.validate()?;
+        info!(
+            tenant_type_paths = ?cfg.tenant_type_paths,
+            "Loaded resource-group configuration"
+        );
+
         // Acquire DB capability (secure wrapper)
         let db: Arc<DBProvider<DbError>> = Arc::new(ctx.db_required()?);
 
@@ -119,7 +131,8 @@ impl Gear for ResourceGroup {
             )
             .with_metrics(Arc::new(
                 crate::infra::metrics::RgMetricsMeter::from_global(),
-            )),
+            ))
+            .with_tenant_types(TenantTypes::new(cfg.tenant_type_paths)),
         );
 
         self.group_service
@@ -138,7 +151,7 @@ impl Gear for ResourceGroup {
             .set(membership_service.clone())
             .map_err(|_| anyhow::anyhow!("{} gear already initialized", Self::MODULE_NAME))?;
 
-        // Phase 1 (SystemCapability): register SDK clients in ClientHub
+        // Application init: register SDK clients before client wiring and route composition.
         let type_svc = self
             .type_service
             .get()

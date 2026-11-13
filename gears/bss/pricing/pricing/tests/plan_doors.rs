@@ -4,6 +4,7 @@
 //! D-404.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 mod plan_support;
+use bss_pricing::infra::reference_events::PLAN_ITEM_SUBJECT_TYPE;
 use bss_products_sdk::models::{ReferenceKind, SkuType};
 use plan_support::entry_support::policy_support;
 use plan_support::{
@@ -851,6 +852,9 @@ async fn an_attach_refused_to_the_system_actor_loses_its_item_at_the_first_tick(
         3,
         "one PlanReferenceLost per item"
     );
+    for e in plan_support::entry_support::outbox_events(&f.dsn, LOST).await {
+        assert_eq!(e["subject_type"], PLAN_ITEM_SUBJECT_TYPE);
+    }
 }
 
 #[tokio::test]

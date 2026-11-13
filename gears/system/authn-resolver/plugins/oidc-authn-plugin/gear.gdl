@@ -14,7 +14,7 @@ gdl_version = "1.0"
 # vendor-match check keys on.
 
 gear(
-    deps = ["authn-resolver", "types-registry"],
+    deps = [],
     source = git(url = "https://github.com/constructorfabric/gears-rust", path = "gears/system/authn-resolver/plugins/oidc-authn-plugin"),
     maturity = "preview",
     name = "OIDC AuthN Plugin",

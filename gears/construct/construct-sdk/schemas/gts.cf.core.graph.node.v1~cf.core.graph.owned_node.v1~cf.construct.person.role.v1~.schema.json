@@ -1,7 +1,7 @@
 {
   "$id": "gts://gts.cf.core.graph.node.v1~cf.core.graph.owned_node.v1~cf.construct.person.role.v1~",
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "description": "A person's roles: current role, education, programme, affiliations and work history. One node is one fact. Its payload holds one property, which names the fact, and the origin of the fact. It also holds record, the record the fact came from, exactly when the fact came from a record.",
+  "description": "A person's roles: current role, education, programme, affiliations, work history, projects and repositories. One node is one fact. Its payload holds one property, which names the fact, and the origin of the fact. It also holds record, the record the fact came from, exactly when the fact came from a record.",
   "type": "object",
   "allOf": [
     {
@@ -161,6 +161,20 @@
               "minLength": 1,
               "maxLength": 500,
               "pattern": "\\S"
+            },
+            "projects": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 500,
+              "pattern": "\\S",
+              "description": "A project or product the person works on, by name: Atlas, the billing service. One value per project."
+            },
+            "repositories": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 500,
+              "pattern": "\\S",
+              "description": "A code repository the person works in, by name or URL: gears-rust, https://github.com/acme/api. One value per repository."
             },
             "role": {
               "type": "string",

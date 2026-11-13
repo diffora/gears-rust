@@ -1,0 +1,83 @@
+name: Nightly status
+
+# Keeps one issue, "Nightly status", with a table of the four nightly
+# workflows. It is updated after every scheduled run of any of them, so a red
+# or cancelled nightly is visible without opening Actions.
+#
+# To refresh it by hand: Actions > Nightly status > Run workflow.
+on:
+  workflow_run:
+    workflows:
+      - e2e
+      - Clippy (full feature matrix)
+      - macOS and Windows tests
+      - Unused Deps (nightly)
+    types: [completed]
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  update:
+    name: Update status issue
+    # e2e also runs on pull requests. Those must not touch the issue.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.event == 'schedule' }}
+    runs-on: ${{ (vars.GEARS_FORCE_GITHUB_HOSTED == 'true' || github.repository != 'constructorfabric/gears-rust' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || 'gears-small' }}
+    timeout-minutes: 5
+    # Job level, not workflow level: every e2e run on a PR also triggers this
+    # workflow and is skipped by the `if:` above. A workflow-level group would
+    # let such a skipped run replace a pending scheduled update, so the update
+    # would be lost. A job-level group is only entered after `if:` passes.
+    # Runs queue up one by one, so two updates don't race on the issue body.
+    concurrency:
+      group: nightly-status
+      cancel-in-progress: false
+    permissions:
+      actions: read   # to list the nightly runs
+      contents: read  # to check out the script
+      issues: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      # Own App budget, separate from the shared GITHUB_TOKEN pool (GitHub App per workflow family)
+      - name: Mint gears-rust-nightly app token
+        id: app
+        # Unset variable, or a fork/Dependabot run without secrets: skip and fall back to GITHUB_TOKEN.
+        if: >-
+          vars.GEARS_NIGHTLY_APP_CLIENT_ID != '' &&
+          github.actor != 'dependabot[bot]' &&
+          !github.event.pull_request.head.repo.fork
+        continue-on-error: true  # a bad key or missing install must never fail the job
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.GEARS_NIGHTLY_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GEARS_NIGHTLY_APP_PRIVATE_KEY }}
+          permission-actions: read
+          permission-contents: read
+          permission-issues: write
+      - name: Report API token source
+        if: always()
+        env:
+          APP_TOKEN_SET: ${{ steps.app.outputs.token != '' }}
+          MINT_OUTCOME: ${{ steps.app.outcome }}
+          API_TOKEN: ${{ steps.app.outputs.token || github.token }}
+        run: |
+          if [ "$APP_TOKEN_SET" = true ]; then src=gears-rust-nightly; echo "::notice::GitHub API token: gears-rust-nightly app"
+          elif [ "$MINT_OUTCOME" = failure ]; then src=github-token; echo "::warning::gears-rust-nightly app token mint failed; using GITHUB_TOKEN"
+          else src=github-token; echo "::notice::GitHub API token: GITHUB_TOKEN (gears-rust-nightly app not configured or fork run)"; fi
+          # GET /rate_limit is free; one sample per job gives a per-token time series (see the API limits plan).
+          core=$(curl -fsS -m 10 -H "Authorization: Bearer $API_TOKEN" -H "Accept: application/vnd.github+json" \
+            https://api.github.com/rate_limit 2>/dev/null | tr -d ' \n' | sed -n 's/.*"core":{\([^}]*\)}.*/\1/p' | tr -d '"' | tr ',' ' ' | sed 's/:/=/g') || true
+          echo "RATE-APP ts=$(date -u +%Y-%m-%dT%H:%M:%SZ) token=$src workflow=$GITHUB_WORKFLOW job=$GITHUB_JOB ${core:-unavailable}"
+
+      - name: Update status issue
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          github-token: ${{ steps.app.outputs.token || github.token }}
+          script: |
+            const run = require('./.github/scripts/nightly-status.js');
+            await run({ github, context, core });

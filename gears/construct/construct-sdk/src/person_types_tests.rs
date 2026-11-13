@@ -1,56 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::LazyLock;
 
-use graph_storage_sdk::gts::{
-    ATTRIBUTE_BASE_TYPE, NODE_BASE_TYPE, OWNED_NODE_TYPE, PROVENANCE_ATTRIBUTE_TYPE,
-};
-use jsonschema::{Retrieve, Uri, Validator};
+use graph_storage_sdk::gts::{OWNED_NODE_TYPE, PROVENANCE_ATTRIBUTE_TYPE};
+use jsonschema::Validator;
 use serde_json::{Value, json};
 
 use super::*;
+use crate::graph_schemas_tests::GraphStorageSchemas;
 use crate::gts::PREFERENCE_TYPE;
-
-const GRAPH_STORAGE_SCHEMAS: [(&str, &str); 4] = [
-    (
-        NODE_BASE_TYPE,
-        include_str!(
-            "../../../graph-storage/graph-storage/schemas/gts.cf.core.graph.node.v1~.schema.json"
-        ),
-    ),
-    (
-        OWNED_NODE_TYPE,
-        include_str!(
-            "../../../graph-storage/graph-storage/schemas/gts.cf.core.graph.node.v1~cf.core.graph.owned_node.v1~.schema.json"
-        ),
-    ),
-    (
-        ATTRIBUTE_BASE_TYPE,
-        include_str!(
-            "../../../graph-storage/graph-storage/schemas/gts.cf.core.graph.attribute.v1~.schema.json"
-        ),
-    ),
-    (
-        PROVENANCE_ATTRIBUTE_TYPE,
-        include_str!(
-            "../../../graph-storage/graph-storage/schemas/gts.cf.core.graph.attribute.v1~cf.core.graph.provenance.v1~.schema.json"
-        ),
-    ),
-];
-
-struct GraphStorageSchemas;
-
-impl Retrieve for GraphStorageSchemas {
-    fn retrieve(
-        &self,
-        uri: &Uri<String>,
-    ) -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
-        GRAPH_STORAGE_SCHEMAS
-            .iter()
-            .find(|(id, _)| format!("gts://{id}") == uri.as_str())
-            .map(|(_, text)| serde_json::from_str(text).expect("a JSON schema"))
-            .ok_or_else(|| format!("unresolved schema reference `{uri}`").into())
-    }
-}
 
 static NODE_VALIDATORS: LazyLock<BTreeMap<&str, Validator>> = LazyLock::new(|| {
     PERSON_TYPES
@@ -247,6 +204,29 @@ fn samples() -> Vec<(&'static str, Value, Value)> {
             "publications",
             json!({ "title": "Attention Is All You Need", "doi": "10.48550/arXiv.1706.03762" }),
             json!({ "title": "Attention Is All You Need", "doi": "arXiv.1706.03762" }),
+        ),
+        (
+            "programming_languages",
+            json!({ "name": "Rust", "level": "advanced", "years": 4 }),
+            json!({ "name": "Rust", "level": "guru" }),
+        ),
+        (
+            "tools_and_frameworks",
+            json!({ "name": "Docker", "level": "intermediate" }),
+            json!({ "level": "intermediate" }),
+        ),
+        ("projects", json!("Atlas"), json!("  ")),
+        ("repositories", json!("gears-rust"), json!("")),
+        (
+            "development_environment",
+            json!("Neovim on Ubuntu"),
+            json!("  "),
+        ),
+        ("coding_conventions", json!("tests before code"), json!("")),
+        (
+            "remembered_notes",
+            json!("sister is called Anna"),
+            json!("  "),
         ),
         (
             "research_areas",
@@ -453,10 +433,13 @@ fn each_property_holds_one_value_unless_a_person_can_have_several() {
     let many: BTreeSet<&str> = [
         "name_variants",
         "public_mentions",
+        "remembered_notes",
         "public_profiles",
         "assistive_tools",
         "communication_channel",
+        "coding_conventions",
         "current_focus_areas",
+        "development_environment",
         "focus_windows",
         "local_environment_constraint",
         "long_term_goals",
@@ -471,13 +454,17 @@ fn each_property_holds_one_value_unless_a_person_can_have_several() {
         "board_memberships",
         "group_memberships",
         "roles_and_affiliations",
+        "projects",
+        "repositories",
         "work_history",
         "activity_by_year",
         "awards",
         "languages",
+        "programming_languages",
         "publications",
         "research_areas",
         "skills",
+        "tools_and_frameworks",
     ]
     .into_iter()
     .collect();

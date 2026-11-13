@@ -69,6 +69,66 @@ async fn postgres_managed_registration_timestamp_round_trip() {
     round_trip(&std::env::var("EVENT_SDK_POSTGRES_URL").unwrap()).await;
 }
 
+/// A replace computed from a generation the slot has since left matches no
+/// row, so it never overwrites the newer id.
+#[cfg(feature = "outbox")]
+#[tokio::test]
+async fn a_stale_replace_does_not_overwrite_a_newer_generation() {
+    let db = toolkit_db::connect_db(
+        "sqlite::memory:",
+        toolkit_db::ConnectOpts {
+            max_conns: Some(1),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    toolkit_db::migration_runner::run_migrations_for_testing(
+        &db,
+        crate::producer_registration_migrations(),
+    )
+    .await
+    .unwrap();
+    let store = ProducerRegistrationStore::new(db);
+    let slot = RegistrationSlot {
+        key: "stale-replace".to_owned(),
+        queue: "events".to_owned(),
+        partition: 4,
+    };
+    let current = store
+        .insert_new(NewRegistration {
+            slot: &slot,
+            producer_id: ProducerId(uuid::Uuid::from_u128(0xA)),
+            mode: ProducerMode::Chained,
+            client_agent: "stale/1",
+        })
+        .await
+        .unwrap();
+    let replaced_b = ProducerRegistration {
+        slot: slot.clone(),
+        producer_id: ProducerId(uuid::Uuid::from_u128(0xB)),
+        mode: ProducerMode::Chained,
+        client_agent: "stale/1".to_owned(),
+        generation: 2,
+    };
+
+    let first = store
+        .replace_with_new_generation(&current, ProducerId(uuid::Uuid::from_u128(0xB)))
+        .await
+        .unwrap();
+    let second = store
+        .replace_with_new_generation(&current, ProducerId(uuid::Uuid::from_u128(0xC)))
+        .await
+        .unwrap();
+
+    assert_eq!(first, Replaced::Done(replaced_b.clone()));
+    assert_eq!(second, Replaced::Lost);
+    assert_eq!(
+        store.load_all("stale-replace").await.unwrap(),
+        vec![replaced_b]
+    );
+}
+
 /// Rows written before the `DateTimeUtc` binding still load on SQLite, where
 /// timestamps are TEXT: the previous code stored `Utc::now().to_rfc3339()`, and
 /// the table default stores `datetime('now')` (`YYYY-MM-DD HH:MM:SS`, no zone).
@@ -130,10 +190,10 @@ async fn sqlite_registration_rows_written_as_legacy_text_still_load() {
 /// The registration table as the previous release wrote it: TEXT timestamps.
 mod legacy {
     use sea_orm::entity::prelude::*;
-    use toolkit_db::secure::ScopableEntity;
 
-    #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
+    #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, toolkit_db::secure::Scopable)]
     #[sea_orm(table_name = "event_broker_producer_registrations")]
+    #[secure(unrestricted)]
     pub struct Model {
         #[sea_orm(primary_key, auto_increment = false)]
         pub registration_key: String,
@@ -153,32 +213,4 @@ mod legacy {
     pub enum Relation {}
 
     impl ActiveModelBehavior for ActiveModel {}
-
-    impl ScopableEntity for Entity {
-        const IS_UNRESTRICTED: bool = true;
-
-        fn tenant_col() -> Option<Self::Column> {
-            None
-        }
-
-        fn resource_col() -> Option<Self::Column> {
-            None
-        }
-
-        fn owner_col() -> Option<Self::Column> {
-            None
-        }
-
-        fn type_col() -> Option<Self::Column> {
-            None
-        }
-
-        fn resolve_property(_property: &str) -> Option<Self::Column> {
-            None
-        }
-
-        fn scope_columns() -> Vec<Self::Column> {
-            Vec::new()
-        }
-    }
 }

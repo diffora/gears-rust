@@ -135,7 +135,7 @@ impl BssProductsGear {
 /// Owns the running outbox pipeline until shutdown.
 pub enum OutboxLifetime {
     /// Broker SDK pipeline.
-    Broker(Box<event_broker_sdk::ProducerOutboxHandle>),
+    Broker(Box<event_broker_sdk::OutboxProducerHandle>),
     /// Holding pipeline when no broker is registered.
     Interim(toolkit_db::outbox::OutboxHandle),
 }
@@ -163,8 +163,8 @@ impl toolkit::contracts::DatabaseCapability for BssProductsGear {
 
         // The producer's own registration table, appended for the same reason
         // and on the same terms: the SDK owns it, this chain does not declare
-        // it, and the README requires it run *before* a `DbProducer` is
-        // constructed. Appended unconditionally rather than only where a broker
+        // it, and the SDK requires it run *before* an `OutboxSetup` is
+        // built. Appended unconditionally rather than only where a broker
         // is configured — a migration set that varies with runtime wiring gives
         // two deployments two different schemas, and the cost here is **one**
         // table a no-broker deployment never writes
@@ -289,7 +289,7 @@ impl Gear for BssProductsGear {
 
         // `#[toolkit::provides]`-generated wiring: validates the contract IR
         // (and the browse HTTP binding), reads
-        // `client_wiring.product_catalog_client_v1` (absent → Local), and
+        // `clients.provides.product_catalog_client_v1` (absent → Local), and
         // registers `Arc<dyn ProductCatalogClientV1>` in the ClientHub.
         self.wire_product_catalog_client_v1(ctx).await?;
 

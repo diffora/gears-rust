@@ -1074,6 +1074,7 @@ def _default_auth_header():
 @pytest.fixture(scope="session")
 def gear_test_env(request):
     """mini-chat gear test environment."""
+    from lib.budgets import SERVER_STARTUP_TIMEOUT_SECS
     from lib.orchestrator import GearTestEnv
 
     mode = request.config.getoption("mode")
@@ -1089,8 +1090,9 @@ def gear_test_env(request):
         config_path=MODULE_DIR / "config" / "base.yaml",
         config_patch=_patch_mini_chat_config,
         port=8087,
-        health_path="/cf/openapi.json",
-        health_timeout=90,
+        health_path="/cf/readyz",
+        # 90 s predates the shared budget; kept so this suite does not get less time.
+        health_timeout=max(90, SERVER_STARTUP_TIMEOUT_SECS),
         env={"RUST_LOG": rust_log},
         sidecars=[mock],
         log_suffix="mini-chat",

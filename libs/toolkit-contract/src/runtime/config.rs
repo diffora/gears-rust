@@ -136,12 +136,17 @@ pub struct ClientConfig {
     /// This is *idle*, not *quiet*: any wire chunk resets it, including ones
     /// that dispatch no item (an SSE keepalive comment, a multipart part header
     /// block arriving on its own).
+    ///
+    /// REST only for now: the generated gRPC client does not apply it.
     pub stream_idle_timeout: Duration,
     /// Retry policy applied to methods marked `#[retryable]`.
     pub retry: RetryConfig,
     /// Reconnect policy for streams of any framing. By default
     /// `max_attempts: 0` — stream failures bubble up unchanged. Set explicitly
     /// to opt into transparent re-open on a transient failure.
+    ///
+    /// REST only for now: a generated gRPC client never reconnects a stream,
+    /// and wiring warns when this is set for one.
     ///
     /// Two limits are deliberate rather than accidental:
     ///
@@ -172,6 +177,11 @@ pub struct ClientConfig {
     /// convention where plaintext HTTP inside a secured network boundary is an
     /// accepted, deliberate choice (see
     /// [`build_default_http_client`](crate::runtime::client::build_default_http_client)).
+    /// In a build where `toolkit-http/fips` is enabled the default is `true`
+    /// (it follows `toolkit_http::TransportSecurity::default()`); there an
+    /// explicit `false` is the opt-in to plaintext and a warning is logged
+    /// when the client is built (by `toolkit-http` for REST, by the generated
+    /// `connect` for gRPC).
     /// Set this when a resolved endpoint may cross an untrusted network. Read by
     /// both the REST and gRPC transports.
     pub require_tls: bool,
@@ -219,6 +229,15 @@ pub struct ClientConfig {
     /// methods (`SecurityContext`) never consult it; they forward the caller's
     /// bearer token from the argument.
     pub internal_token_provider: Option<InternalTokenProvider>,
+
+    /// Circuit breaker guarding every attempt this client sends. `None` (the
+    /// default for [`ClientConfig::new`]) sends every attempt. The wiring
+    /// paths attach one per endpoint from `ClientTuning::circuit_breaker`; see
+    /// [`crate::runtime::breaker`].
+    pub circuit_breaker: Option<Arc<toolkit_resilience::circuit_breaker::CircuitBreaker>>,
+
+    /// Runs after an attempt the breaker classified as a backend failure.
+    pub on_endpoint_failure: Option<crate::runtime::breaker::EndpointFailureHook>,
 }
 
 impl ClientConfig {
@@ -231,13 +250,15 @@ impl ClientConfig {
             stream_idle_timeout: Duration::from_mins(1),
             retry: RetryConfig::default(),
             stream_reconnect: ReconnectConfig::default(),
-            require_tls: false,
+            require_tls: default_require_tls(),
             // `build_default_http_client` always sets these on the builder, so
             // toolkit-http's own defaults (32/90s/100) never apply here.
             pool_max_idle_per_host: 128,
             pool_idle_timeout: Some(Duration::from_secs(90)),
             max_concurrent_requests: Some(128),
             internal_token_provider: None,
+            circuit_breaker: None,
+            on_endpoint_failure: None,
         }
     }
 
@@ -281,6 +302,52 @@ impl ClientConfig {
         self
     }
 
+    /// Error message when [`Self::require_tls`] is set but `base_url` is not
+    /// `https://`. Transports call this when the client is constructed, so a
+    /// plaintext endpoint fails once there instead of on every call.
+    #[must_use]
+    pub(crate) fn tls_scheme_violation(&self) -> Option<String> {
+        if !self.require_tls || is_https(&self.base_url) {
+            return None;
+        }
+        let why = if default_require_tls() {
+            "require_tls is on (the default in FIPS builds); set `require_tls: false` \
+             to opt in to plaintext"
+        } else {
+            "require_tls is set"
+        };
+        Some(format!(
+            "{why}, but the endpoint scheme is not https: {}",
+            self.base_url
+        ))
+    }
+
+    /// Check `base_url` against [`Self::require_tls`], for a transport that
+    /// does not go through `toolkit-http` (the generated gRPC `connect`).
+    ///
+    /// In a FIPS build, a plaintext endpoint allowed by `require_tls: false`
+    /// passes, and the first one in the process is logged as a warning.
+    ///
+    /// # Errors
+    /// TLS is required and the endpoint is not `https://`; the message says why.
+    pub fn check_tls_scheme(&self) -> Result<(), String> {
+        if let Some(reason) = self.tls_scheme_violation() {
+            return Err(reason);
+        }
+        if default_require_tls() && !self.require_tls && !is_https(&self.base_url) {
+            static WARNED: std::sync::Once = std::sync::Once::new();
+            WARNED.call_once(|| {
+                tracing::warn!(
+                    target: "toolkit_http::security",
+                    endpoint = %self.base_url,
+                    "plaintext endpoint used in a FIPS build (require_tls: false): \
+                     requests to it are not encrypted (logged once per process)"
+                );
+            });
+        }
+        Ok(())
+    }
+
     /// Override the max idle keep-alive connections per upstream host. See
     /// [`Self::pool_max_idle_per_host`].
     #[must_use]
@@ -302,6 +369,27 @@ impl ClientConfig {
     #[must_use]
     pub fn with_max_concurrent_requests(mut self, max: Option<usize>) -> Self {
         self.max_concurrent_requests = max;
+        self
+    }
+
+    /// Guard this client's attempts with `breaker`. See [`Self::circuit_breaker`].
+    #[must_use]
+    pub fn with_circuit_breaker(
+        mut self,
+        breaker: impl Into<Option<Arc<toolkit_resilience::circuit_breaker::CircuitBreaker>>>,
+    ) -> Self {
+        self.circuit_breaker = breaker.into();
+        self
+    }
+
+    /// Run `hook` after each attempt the breaker classified as a backend
+    /// failure. See [`Self::on_endpoint_failure`].
+    #[must_use]
+    pub fn with_on_endpoint_failure(
+        mut self,
+        hook: impl Into<Option<crate::runtime::breaker::EndpointFailureHook>>,
+    ) -> Self {
+        self.on_endpoint_failure = hook.into();
         self
     }
 
@@ -471,10 +559,85 @@ impl ReconnectConfig {
     }
 }
 
+/// `true` when `toolkit-http` defaults to `TlsOnly`, i.e. under its `fips`
+/// feature. Read from `toolkit-http` rather than a feature of this crate so it
+/// follows Cargo feature unification.
+pub(crate) fn default_require_tls() -> bool {
+    toolkit_http::TransportSecurity::default() == toolkit_http::TransportSecurity::TlsOnly
+}
+
+/// `url` has an `https` scheme (case-insensitive, leading whitespace ignored).
+pub(crate) fn is_https(url: &str) -> bool {
+    url.trim_start()
+        .get(..8)
+        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("https://"))
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+
+    /// Run with `--features fips` in `make test-fips`. The default follows
+    /// `toolkit-http`'s transport default, which feature unification can turn
+    /// to `TlsOnly` without this crate's `fips` feature; this crate's `fips`
+    /// always turns it on.
+    #[test]
+    fn require_tls_defaults_to_true_only_in_fips_builds() {
+        let require_tls = ClientConfig::new("http://svc").require_tls;
+        assert_eq!(
+            require_tls,
+            toolkit_http::TransportSecurity::default() == toolkit_http::TransportSecurity::TlsOnly
+        );
+        if cfg!(feature = "fips") {
+            assert!(
+                require_tls,
+                "require_tls must default to true in a FIPS build"
+            );
+        }
+    }
+
+    #[test]
+    fn tls_scheme_violation_only_for_required_tls_over_plaintext() {
+        let plain = ClientConfig::new("http://svc:8080");
+        assert!(
+            plain
+                .clone()
+                .with_require_tls(false)
+                .tls_scheme_violation()
+                .is_none()
+        );
+        let message = plain
+            .with_require_tls(true)
+            .tls_scheme_violation()
+            .expect("require_tls over http:// must be reported");
+        assert!(message.contains("http://svc:8080"), "{message}");
+        if cfg!(feature = "fips") {
+            assert!(message.contains("require_tls: false"), "{message}");
+        }
+
+        for url in ["https://svc", "HTTPS://svc", " https://svc"] {
+            let tls = ClientConfig::new(url).with_require_tls(true);
+            assert!(tls.tls_scheme_violation().is_none(), "{url}");
+        }
+    }
+
+    #[test]
+    fn check_tls_scheme_fails_only_on_violation() {
+        for (url, require_tls) in [
+            ("http://svc", false),
+            ("http://svc", true),
+            ("https://svc", false),
+            ("https://svc", true),
+        ] {
+            let config = ClientConfig::new(url).with_require_tls(require_tls);
+            assert_eq!(
+                config.check_tls_scheme().err(),
+                config.tls_scheme_violation(),
+                "{url} require_tls={require_tls}"
+            );
+        }
+    }
 
     #[test]
     fn default_retry_has_three_attempts() {

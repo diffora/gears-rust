@@ -5,6 +5,7 @@
 //! witnesses identify implementation routing; deployment must still satisfy
 //! the module certificate's operational environment and security policy.
 
+pub mod aead;
 mod backend;
 mod ecdsa;
 pub mod hash;
@@ -38,8 +39,8 @@ pub enum CryptoError {
     /// The native FIPS provider does not provide the requested algorithm.
     #[error("algorithm is unavailable under the configured crypto policy")]
     UnsupportedAlgorithm,
-    /// A signature key could not be generated or imported.
-    #[error("invalid signature key")]
+    /// A signature or AEAD key could not be generated or imported.
+    #[error("invalid key")]
     InvalidKey,
     /// The selected backend could not generate a signing key.
     #[error("native signing key generation failed")]
@@ -47,6 +48,9 @@ pub enum CryptoError {
     /// The selected backend could not produce a signature.
     #[error("native signing operation failed")]
     SigningFailed,
+    /// The selected backend could not seal a message.
+    #[error("native sealing operation failed")]
+    SealingFailed,
     /// A signature did not verify.
     #[error("invalid signature")]
     InvalidSignature,
@@ -61,6 +65,26 @@ pub enum CryptoError {
 /// Returns an error if SHA-256 is absent or the FIPS witness is unavailable.
 pub fn initialize() -> Result<(), CryptoError> {
     backend::sha256_suite().map(|_| ())
+}
+
+/// Decode an unencrypted PKCS#8 PEM document (`-----BEGIN PRIVATE KEY-----`)
+/// into a buffer that is erased on every path and hand the DER to `import`.
+///
+/// Surrounding whitespace is trimmed; otherwise RFC 7468 strict (64-column
+/// base64 lines). Any other label, SEC1/PKCS#1 and encrypted keys included,
+/// is `InvalidKey`.
+fn with_pkcs8_pem<T>(
+    pem: &str,
+    import: impl FnOnce(&[u8]) -> Result<T, CryptoError>,
+) -> Result<T, CryptoError> {
+    let pem = pem.trim().as_bytes();
+    let mut buffer = zeroize::Zeroizing::new(vec![0; pem.len()]);
+    let (label, der) =
+        pem_rfc7468::decode(pem, &mut buffer).map_err(|_| CryptoError::InvalidKey)?;
+    if label != "PRIVATE KEY" {
+        return Err(CryptoError::InvalidKey);
+    }
+    import(der)
 }
 
 /// Compare bytes without content-dependent early exit. Lengths are public.

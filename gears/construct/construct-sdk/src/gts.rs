@@ -35,18 +35,25 @@ use time::OffsetDateTime;
 use toolkit_gts::{GtsTraitsSchema, gts_id, gts_type_schema};
 use uuid::Uuid;
 
-/// A person's identity: names, external ids, public profiles, location, background.
+/// A person's identity: names, external ids, public profiles, location, background and notes the person asked to remember.
 pub const IDENTITY_TYPE: &str =
     gts_id!("cf.core.graph.node.v1~cf.core.graph.owned_node.v1~cf.construct.person.identity.v1~");
-/// A person's roles: current role, education, programme, affiliations and work history.
+/// A person's roles: current role, education, programme, affiliations, work history, projects and repositories.
 pub const ROLE_TYPE: &str =
     gts_id!("cf.core.graph.node.v1~cf.core.graph.owned_node.v1~cf.construct.person.role.v1~");
-/// A person's skills: skills, languages, research areas, publications, awards and research metrics.
+/// A person's skills: skills, programming languages, tools and frameworks, languages, research areas, publications, awards and research metrics.
 pub const SKILL_TYPE: &str =
     gts_id!("cf.core.graph.node.v1~cf.core.graph.owned_node.v1~cf.construct.person.skill.v1~");
 /// How a person wants to be served: language, format, tone, accessibility, constraints and goals.
 pub const PREFERENCE_TYPE: &str =
     gts_id!("cf.core.graph.node.v1~cf.core.graph.owned_node.v1~cf.construct.person.preference.v1~");
+
+/// The root of one subject's profile, from which every fact hangs.
+pub const PROFILE_ROOT_TYPE: &str =
+    gts_id!("cf.core.graph.node.v1~cf.core.graph.owned_node.v1~cf.construct.profile.root.v1~");
+/// The edge from a profile's root to one of its facts.
+pub const HAS_FACT_TYPE: &str =
+    gts_id!("cf.core.graph.edge.v1~cf.core.graph.static_edge.v1~cf.construct.profile.has_fact.v1~");
 
 /// The abstract base every connector record type derives from. It fixes the
 /// envelope: `type`, `provenance`, `version`, `observed_at`, the optional

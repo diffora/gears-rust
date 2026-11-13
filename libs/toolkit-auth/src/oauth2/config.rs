@@ -2,38 +2,55 @@ use std::fmt;
 use std::time::Duration;
 use url::Url;
 
+use super::credentials::ClientCredentials;
 use super::error::TokenError;
-use super::types::{ClientAuthMethod, SecretString};
+
+/// Where the token endpoint comes from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TokenEndpoint {
+    /// Token endpoint URL, used as is.
+    Direct(Url),
+    /// OIDC issuer. The token endpoint is resolved on first use from
+    /// `{issuer}/.well-known/openid-configuration`.
+    Issuer(Url),
+}
 
 /// Configuration for an outbound `OAuth2` client credentials flow.
 ///
-/// Exactly one of [`token_endpoint`](Self::token_endpoint) or
-/// [`issuer_url`](Self::issuer_url) must be set.  Call
-/// [`validate`](Self::validate) to enforce this constraint.
+/// Built with [`new`](Self::new) from the required parts; optional fields are
+/// set with struct update syntax:
 ///
-/// `Debug` is manually implemented to redact [`client_secret`](Self::client_secret).
+/// ```
+/// use toolkit_auth::{ClientCredentials, OAuthClientConfig, SecretString, TokenEndpoint};
+///
+/// let config = OAuthClientConfig {
+///     scopes: vec!["api.read".into()],
+///     ..OAuthClientConfig::new(
+///         TokenEndpoint::Direct("https://idp.example.com/oauth/token".parse().unwrap()),
+///         "my-service",
+///         ClientCredentials::SecretBasic(SecretString::new("my-secret")),
+///     )
+/// };
+/// assert!(config.validate().is_ok());
+/// ```
+///
+/// `Debug` is manually implemented; credentials and extra header values are
+/// redacted.
 pub struct OAuthClientConfig {
     // ---- endpoint resolution ------------------------------------------------
-    /// Direct token endpoint URL (mutually exclusive with `issuer_url`).
-    pub token_endpoint: Option<Url>,
-
-    /// OIDC issuer URL for discovery (mutually exclusive with `token_endpoint`).
-    /// The actual token endpoint is resolved via
-    /// `{issuer_url}/.well-known/openid-configuration`.
-    pub issuer_url: Option<Url>,
+    /// Token endpoint, given directly or discovered from an OIDC issuer.
+    pub endpoint: TokenEndpoint,
 
     // ---- credentials --------------------------------------------------------
     /// `OAuth2` client identifier.
     pub client_id: String,
 
-    /// `OAuth2` client secret (redacted in `Debug` output).
-    pub client_secret: SecretString,
-
     /// Requested scopes (normalized once, stable order).
     pub scopes: Vec<String>,
 
-    /// How client credentials are transmitted to the token endpoint.
-    pub auth_method: ClientAuthMethod,
+    /// Client authentication method and its credential (secret or signing
+    /// key). Redacted in `Debug` output.
+    pub credentials: ClientCredentials,
 
     /// Extra headers attached to every token request (vendor quirks).
     pub extra_headers: Vec<(String, String)>,
@@ -56,49 +73,69 @@ pub struct OAuthClientConfig {
     /// When `None`,
     /// [`HttpClientConfig::token_endpoint()`](toolkit_http::HttpClientConfig::token_endpoint)
     /// is used.
+    ///
+    /// With [`ClientCredentials::PrivateKeyJwt`] the HTTP retry policy is
+    /// cleared: a retry would resend a single-use assertion. Failed requests
+    /// are retried by the token watcher, each with a new assertion.
     pub http_config: Option<toolkit_http::HttpClientConfig>,
 }
 
 impl OAuthClientConfig {
-    /// Validate that the configuration is self-consistent.
+    /// Configuration with the required parts and default policy: no scopes,
+    /// no extra headers, refresh 30 min before expiry with up to 5 min of
+    /// jitter, at most one refresh per 10 s, 5 min TTL when the server omits
+    /// `expires_in`, and the default token-endpoint HTTP client.
+    #[must_use]
+    pub fn new(
+        endpoint: TokenEndpoint,
+        client_id: impl Into<String>,
+        credentials: ClientCredentials,
+    ) -> Self {
+        Self {
+            endpoint,
+            client_id: client_id.into(),
+            credentials,
+            scopes: Vec::new(),
+            extra_headers: Vec::new(),
+            refresh_offset: Duration::from_mins(30),
+            jitter_max: Duration::from_mins(5),
+            min_refresh_period: Duration::from_secs(10),
+            default_ttl: Duration::from_mins(5),
+            http_config: None,
+        }
+    }
+
+    /// Validate the values the types cannot rule out.
     ///
     /// # Errors
     ///
-    /// Returns [`TokenError::ConfigError`] if:
-    /// - both `token_endpoint` and `issuer_url` are set, or
-    /// - neither is set.
+    /// Returns [`TokenError::ConfigError`] if `client_id` is empty or a
+    /// `SecretBasic` / `SecretPost` secret is empty.
     pub fn validate(&self) -> Result<(), TokenError> {
         if self.client_id.trim().is_empty() {
             return Err(TokenError::ConfigError(
                 "client_id must not be empty".into(),
             ));
         }
-        if self.client_secret.expose().is_empty() {
+        if let ClientCredentials::SecretBasic(secret) | ClientCredentials::SecretPost(secret) =
+            &self.credentials
+            && secret.expose().is_empty()
+        {
             return Err(TokenError::ConfigError(
                 "client_secret must not be empty".into(),
             ));
         }
-        match (&self.token_endpoint, &self.issuer_url) {
-            (Some(_), Some(_)) => Err(TokenError::ConfigError(
-                "token_endpoint and issuer_url are mutually exclusive".into(),
-            )),
-            (None, None) => Err(TokenError::ConfigError(
-                "one of token_endpoint or issuer_url must be set".into(),
-            )),
-            _ => Ok(()),
-        }
+        Ok(())
     }
 }
 
 impl Clone for OAuthClientConfig {
     fn clone(&self) -> Self {
         Self {
-            token_endpoint: self.token_endpoint.clone(),
-            issuer_url: self.issuer_url.clone(),
+            endpoint: self.endpoint.clone(),
             client_id: self.client_id.clone(),
-            client_secret: self.client_secret.clone(),
+            credentials: self.credentials.clone(),
             scopes: self.scopes.clone(),
-            auth_method: self.auth_method,
             extra_headers: self.extra_headers.clone(),
             refresh_offset: self.refresh_offset,
             jitter_max: self.jitter_max,
@@ -109,7 +146,8 @@ impl Clone for OAuthClientConfig {
     }
 }
 
-/// `Debug` redacts `client_secret` to prevent accidental exposure in logs.
+/// `Debug` redacts credentials and header values to prevent accidental
+/// exposure in logs.
 impl fmt::Debug for OAuthClientConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let redacted_headers: Vec<_> = self
@@ -118,12 +156,10 @@ impl fmt::Debug for OAuthClientConfig {
             .map(|(k, _)| (k.as_str(), "[REDACTED]"))
             .collect();
         f.debug_struct("OAuthClientConfig")
-            .field("token_endpoint", &self.token_endpoint)
-            .field("issuer_url", &self.issuer_url)
+            .field("endpoint", &self.endpoint)
             .field("client_id", &self.client_id)
-            .field("client_secret", &"[REDACTED]")
+            .field("credentials", &self.credentials)
             .field("scopes", &self.scopes)
-            .field("auth_method", &self.auth_method)
             .field("extra_headers", &redacted_headers)
             .field("refresh_offset", &self.refresh_offset)
             .field("jitter_max", &self.jitter_max)
@@ -134,142 +170,87 @@ impl fmt::Debug for OAuthClientConfig {
     }
 }
 
-impl Default for OAuthClientConfig {
-    fn default() -> Self {
-        Self {
-            token_endpoint: None,
-            issuer_url: None,
-            client_id: String::new(),
-            client_secret: SecretString::new(String::new()),
-            scopes: Vec::new(),
-            auth_method: ClientAuthMethod::default(),
-            extra_headers: Vec::new(),
-            refresh_offset: Duration::from_mins(30),
-            jitter_max: Duration::from_mins(5),
-            min_refresh_period: Duration::from_secs(10),
-            default_ttl: Duration::from_mins(5),
-            http_config: None,
-        }
-    }
-}
-
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+    use crate::oauth2::types::SecretString;
 
-    fn test_url(s: &str) -> Url {
-        Url::parse(s).unwrap()
+    fn endpoint() -> TokenEndpoint {
+        TokenEndpoint::Direct(Url::parse("https://auth.example.com/token").unwrap())
+    }
+
+    fn secret(value: &str) -> ClientCredentials {
+        ClientCredentials::SecretBasic(SecretString::new(value))
     }
 
     // ---- validate -----------------------------------------------------------
 
-    /// Returns a minimal valid config (credentials + one endpoint).
-    fn valid_base() -> OAuthClientConfig {
-        OAuthClientConfig {
-            client_id: "my-client".into(),
-            client_secret: SecretString::new("my-secret"),
-            ..Default::default()
+    #[test]
+    fn validate_ok_with_either_endpoint_kind() {
+        for endpoint in [
+            endpoint(),
+            TokenEndpoint::Issuer(Url::parse("https://auth.example.com").unwrap()),
+        ] {
+            OAuthClientConfig::new(endpoint, "my-client", secret("my-secret"))
+                .validate()
+                .unwrap();
         }
     }
 
     #[test]
-    fn validate_ok_with_token_endpoint_only() {
-        let cfg = OAuthClientConfig {
-            token_endpoint: Some(test_url("https://auth.example.com/token")),
-            ..valid_base()
-        };
-        assert!(cfg.validate().is_ok());
+    fn validate_err_when_client_id_empty_or_whitespace() {
+        for client_id in ["", "   "] {
+            let err = OAuthClientConfig::new(endpoint(), client_id, secret("my-secret"))
+                .validate()
+                .unwrap_err();
+            assert!(
+                err.to_string().contains("client_id"),
+                "unexpected error: {err}"
+            );
+        }
     }
 
     #[test]
-    fn validate_ok_with_issuer_url_only() {
-        let cfg = OAuthClientConfig {
-            issuer_url: Some(test_url("https://auth.example.com")),
-            ..valid_base()
-        };
-        assert!(cfg.validate().is_ok());
+    fn validate_err_when_secret_empty_for_basic_and_post() {
+        for credentials in [
+            secret(""),
+            ClientCredentials::SecretPost(SecretString::new("")),
+        ] {
+            let err = OAuthClientConfig::new(endpoint(), "my-client", credentials)
+                .validate()
+                .unwrap_err();
+            assert!(
+                err.to_string().contains("client_secret"),
+                "unexpected error: {err}"
+            );
+        }
     }
 
     #[test]
-    fn validate_err_when_both_set() {
-        let cfg = OAuthClientConfig {
-            token_endpoint: Some(test_url("https://a.example.com/token")),
-            issuer_url: Some(test_url("https://b.example.com")),
-            ..valid_base()
-        };
-        let err = cfg.validate().unwrap_err();
-        assert!(
-            err.to_string().contains("mutually exclusive"),
-            "unexpected error: {err}"
+    fn validate_ok_with_private_key_jwt_and_no_secret() {
+        let key = super::super::PrivateKeyJwt::rsa_from_pem(
+            super::super::credentials::tests::RSA_PEM,
+            super::super::RsaJwsAlg::Rs256,
+        )
+        .unwrap();
+        let cfg = OAuthClientConfig::new(
+            endpoint(),
+            "my-client",
+            ClientCredentials::PrivateKeyJwt(key),
         );
-    }
-
-    #[test]
-    fn validate_err_when_neither_set() {
-        let cfg = valid_base();
-        let err = cfg.validate().unwrap_err();
-        assert!(
-            err.to_string().contains("must be set"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn validate_err_when_client_id_empty() {
-        let cfg = OAuthClientConfig {
-            token_endpoint: Some(test_url("https://auth.example.com/token")),
-            client_id: String::new(),
-            client_secret: SecretString::new("my-secret"),
-            ..Default::default()
-        };
-        let err = cfg.validate().unwrap_err();
-        assert!(
-            err.to_string().contains("client_id"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn validate_err_when_client_id_whitespace() {
-        let cfg = OAuthClientConfig {
-            token_endpoint: Some(test_url("https://auth.example.com/token")),
-            client_id: "   ".into(),
-            client_secret: SecretString::new("my-secret"),
-            ..Default::default()
-        };
-        let err = cfg.validate().unwrap_err();
-        assert!(
-            err.to_string().contains("client_id"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn validate_err_when_client_secret_empty() {
-        let cfg = OAuthClientConfig {
-            token_endpoint: Some(test_url("https://auth.example.com/token")),
-            client_id: "my-client".into(),
-            client_secret: SecretString::new(""),
-            ..Default::default()
-        };
-        let err = cfg.validate().unwrap_err();
-        assert!(
-            err.to_string().contains("client_secret"),
-            "unexpected error: {err}"
-        );
+        cfg.validate().unwrap();
+        assert!(matches!(
+            &cfg.credentials,
+            ClientCredentials::PrivateKeyJwt(key) if key.algorithm() == jsonwebtoken::Algorithm::RS256
+        ));
     }
 
     // ---- Debug redaction ----------------------------------------------------
 
     #[test]
     fn debug_redacts_client_secret() {
-        let cfg = OAuthClientConfig {
-            token_endpoint: Some(test_url("https://auth.example.com/token")),
-            client_id: "my-client".into(),
-            client_secret: SecretString::new("super-secret"),
-            ..Default::default()
-        };
+        let cfg = OAuthClientConfig::new(endpoint(), "my-client", secret("super-secret"));
         let dbg = format!("{cfg:?}");
         assert!(dbg.contains("[REDACTED]"), "Debug must contain [REDACTED]");
         assert!(
@@ -282,11 +263,8 @@ mod tests {
     #[test]
     fn debug_redacts_extra_header_values() {
         let cfg = OAuthClientConfig {
-            token_endpoint: Some(test_url("https://auth.example.com/token")),
-            client_id: "my-client".into(),
-            client_secret: SecretString::new("s"),
             extra_headers: vec![("x-api-key".into(), "secret-api-key-value".into())],
-            ..Default::default()
+            ..OAuthClientConfig::new(endpoint(), "my-client", secret("s"))
         };
         let dbg = format!("{cfg:?}");
         assert!(
@@ -299,15 +277,19 @@ mod tests {
         );
     }
 
-    // ---- Default ------------------------------------------------------------
+    // ---- new ----------------------------------------------------------------
 
     #[test]
-    fn default_durations() {
-        let cfg = OAuthClientConfig::default();
+    fn new_uses_default_policy() {
+        let cfg = OAuthClientConfig::new(endpoint(), "my-client", secret("s"));
+        assert_eq!(cfg.endpoint, endpoint());
+        assert_eq!(cfg.client_id, "my-client");
+        assert!(cfg.scopes.is_empty());
+        assert!(cfg.extra_headers.is_empty());
         assert_eq!(cfg.refresh_offset, Duration::from_mins(30));
         assert_eq!(cfg.jitter_max, Duration::from_mins(5));
         assert_eq!(cfg.min_refresh_period, Duration::from_secs(10));
         assert_eq!(cfg.default_ttl, Duration::from_mins(5));
-        assert_eq!(cfg.auth_method, ClientAuthMethod::Basic);
+        assert!(cfg.http_config.is_none());
     }
 }

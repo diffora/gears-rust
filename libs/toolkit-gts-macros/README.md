@@ -10,6 +10,10 @@ Proc-macros backing the [`cf-gears-toolkit-gts`](../toolkit-gts/README.md) crate
   process-wide inventory, and — for derived unit structs
   (`base = ParentStruct`) — auto-emits `impl Default` so generic helpers
   can construct the marker without the caller re-spelling the type.
+- **`#[gts_type_schema_template(...)]`** — generation-only wrapper around
+  `struct_to_gts_schema`. Emits the schema implementation and accessors without
+  inventory registration or declaration provenance; no crate collector is needed.
+  Consumers access it through `toolkit_gts::gts_type_schema_template`.
 - **`gts_instance! { … }`** — function-like macro for **typed** Instance
   declarations. Takes a single struct literal `Struct { id: "<full>", … }`,
   optionally preceded by `#[gts_static(NAME)]`. Upstream rewrites the
@@ -36,3 +40,21 @@ See **[`cf-gears-toolkit-gts` README](../toolkit-gts/README.md)**:
 
 Integration tests covering both macros live in
 [`libs/toolkit-gts/tests/macro_integration.rs`](../toolkit-gts/tests/macro_integration.rs).
+
+Crate-local collector macro tests and compile-fail cases live in
+[`tests/local_collectors.rs`](tests/local_collectors.rs). Their
+[`declaring-crate` fixture](tests/fixtures/declaring-crate) provides a second
+compiled crate and uses a renamed `toolkit-gts` dependency. Merge behaviour is
+tested in [`toolkit-gts`](../toolkit-gts/tests/local_collectors.rs).
+
+Run the macro and merge tests with:
+
+```sh
+cargo test -p cf-gears-toolkit-gts-macros -p cf-gears-toolkit-gts
+```
+
+CI runs release/fat-LTO through `make test-macros`. For an explicit local run:
+
+```sh
+cargo test -p cf-gears-toolkit-gts-macros --test release_lto -- --ignored
+```

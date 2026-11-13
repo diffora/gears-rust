@@ -342,7 +342,7 @@ Every SDK uses the same trait-contract migration. Whether to **also** ship a pro
 | `credstore-sdk` | **no** | TBD after consumer audit | ~1 day (author canonical boundary first) |
 | `authn-resolver-sdk` | **no** | no | ~1 day |
 | `tenant-resolver-sdk` | **no** | no | ~1 day |
-| `authz-resolver-sdk` | **no** | likely yes (`EnforcerError::Denied { deny_reason }` — typed payload) | ~1–2 days |
+| `authz-resolver-sdk` | **no** | likely yes (`EnforcerError::AccessDenied(AccessDenial::Pdp { reason })` — typed payload) | ~1–2 days |
 
 For the four resolver SDKs at the bottom, the canonical boundary mapping is the real cost. The trait-contract switch is trivial once that lands.
 

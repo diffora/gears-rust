@@ -189,11 +189,10 @@ pub enum LlmGatewayError {
     #[error("credentials unavailable")]
     CredentialsUnavailable,
 
-    /// `unapproved_destination` — the model's OAGW upstream alias
-    /// (`provider_settings.oagw_alias`) does not resolve to an upstream enabled
-    /// for the tenant. OAGW forwards nothing, so the provider key is never
-    /// sent. The provider plugin returns it when OAGW refuses the call for
-    /// that reason.
+    /// `unapproved_destination` — the model's destination does not resolve to
+    /// an upstream enabled for the tenant. OAGW forwards nothing, so the
+    /// provider key is never sent. The provider plugin returns it when OAGW
+    /// refuses the call for that reason.
     #[error("unapproved destination")]
     UnapprovedDestination,
 

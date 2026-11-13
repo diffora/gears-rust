@@ -7,10 +7,9 @@ gdl_version = "1.0"
 # Fills authz-resolver's extension point (`AuthZResolverPluginClient`) with a
 # static, tenant-scoped policy. The point is declared by `implements`; vendor and
 # priority are read from source.
-#
 
 gear(
-    deps = ["types-registry"],
+    deps = [],
     source = git(url = "https://github.com/constructorfabric/gears-rust", path = "gears/system/authz-resolver/plugins/static-authz-plugin"),
     maturity = "preview",
     name = "Static AuthZ Plugin",

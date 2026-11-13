@@ -27,8 +27,9 @@ env:
 jobs:
   # `release-plz release` publishes only versions present in the manifests and absent
   # from crates.io, so running it on every push is safe and makes an interrupted release
-  # self-healing: the next push to main finishes it. That is why this needs no
-  # pull_request trigger and no label matching to decide whether a release is happening.
+  # self-healing: a retry within the job, or the next push to main, finishes it. That
+  # is why this needs no pull_request trigger and no label matching to decide whether a
+  # release is happening.
   release:
     name: Publish crates
     runs-on: ubuntu-latest
@@ -45,6 +46,11 @@ jobs:
     # failure. release-plz's docs mandate this: "the concurrency block cancels the
     # pending job if a new commit is pushed — we can't risk to skip a release." Two
     # concurrent publishes are harmless, since each publishes only what crates.io lacks.
+    # The release App's private key is a secret of `ci-trusted`, which only a push to main
+    # enters; any other run gets no key and falls back to GITHUB_TOKEN.
+    environment:
+      name: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && 'ci-trusted' || '' }}
+      deployment: false
     permissions:
       contents: write
       # release-plz resolves PR numbers and contributors for changelogs and releases.
@@ -52,8 +58,8 @@ jobs:
     # Exposed so the publish jobs below know what was released. `releases` is a JSON
     # array of {package_name, tag, version}; empty when nothing was published.
     outputs:
-      releases: ${{ steps.release-plz.outputs.releases }}
-      releases_created: ${{ steps.release-plz.outputs.releases_created }}
+      releases: ${{ steps.releases.outputs.releases }}
+      releases_created: ${{ steps.releases.outputs.releases_created }}
     steps:
       # No `ref:` needed. On push, checkout defaults to github.sha, which is exactly the
       # commit that was pushed — for a release PR merge, its merge commit.
@@ -98,7 +104,7 @@ jobs:
           cache: false
 
       - name: Install protoc
-        uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+        uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
         with:
           tool: protoc@3.34.1
 
@@ -112,15 +118,144 @@ jobs:
       # inform it. `cargo publish` still compiles every crate, so a crate that does not
       # build cannot be published.
 
+      # Own App budget, separate from the shared GITHUB_TOKEN pool (GitHub App per workflow family)
+      - name: Mint gears-rust-release app token
+        id: app
+        # Unset variable, or a fork/Dependabot run without secrets: skip and fall back to GITHUB_TOKEN.
+        if: >-
+          vars.GEARS_RELEASE_APP_CLIENT_ID != '' &&
+          github.actor != 'dependabot[bot]' &&
+          !github.event.pull_request.head.repo.fork
+        continue-on-error: true  # a bad key or missing install must never fail the job
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.GEARS_RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GEARS_RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: read
+      - name: Report API token source
+        env:
+          APP_TOKEN_SET: ${{ steps.app.outputs.token != '' }}
+          MINT_OUTCOME: ${{ steps.app.outcome }}
+          API_TOKEN: ${{ steps.app.outputs.token || github.token }}
+        run: |
+          if [ "$APP_TOKEN_SET" = true ]; then src=gears-rust-release; echo "::notice::GitHub API token: gears-rust-release app"
+          elif [ "$MINT_OUTCOME" = failure ]; then src=github-token; echo "::warning::gears-rust-release app token mint failed; using GITHUB_TOKEN"
+          else src=github-token; echo "::notice::GitHub API token: GITHUB_TOKEN (gears-rust-release app not configured or fork run)"; fi
+          # GET /rate_limit is free; one sample per job gives a per-token time series (see the API limits plan).
+          core=$(curl -fsS -m 10 -H "Authorization: Bearer $API_TOKEN" -H "Accept: application/vnd.github+json" \
+            https://api.github.com/rate_limit 2>/dev/null | tr -d ' \n' | sed -n 's/.*"core":{\([^}]*\)}.*/\1/p' | tr -d '"' | tr ',' ' ' | sed 's/:/=/g') || true
+          echo "RATE-APP ts=$(date -u +%Y-%m-%dT%H:%M:%SZ) token=$src workflow=$GITHUB_WORKFLOW job=$GITHUB_JOB ${core:-unavailable}"
+
+      # Up to three attempts. A retry is safe: release-plz skips versions crates.io
+      # already has and packages whose tag exists. Before each retry
+      # tools/scripts/release_retry.py waits (5, then 10 minutes, or until the GitHub API
+      # budget resets if it is nearly spent; crates.io 429s ask for seconds) and fetches
+      # tags, because release-plz checks for a tag with a local `git tag -l` and would
+      # otherwise fail creating one a concurrent run already made ("Reference already
+      # exists"). An App token lives one hour and the retries can outlast it, so each
+      # retry mints a fresh one, falling back to the previous one.
+      #
+      # The snapshot is the baseline for "Collect releases"; it is taken here, not at
+      # checkout, so tags made by other runs during the setup steps are not counted.
+      - name: Snapshot tags
+        id: snapshot
+        env:
+          TAGS_BEFORE: ${{ runner.temp }}/tags-before
+        run: python3 tools/scripts/release_retry.py snapshot
+
       - name: release-plz release
-        id: release-plz
-        uses: release-plz/action@f67a7e724bdad4a0f6875f186060a0ca2770d76c # v0.3.155
+        id: release-plz-1
+        continue-on-error: true
+        uses: release-plz/action@66b324fd6c72d05d2a08568492ecdd62bfb8a62b # v0.3.155
         with:
           command: release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ steps.app.outputs.token || secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
           CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
+
+      - name: Wait and fetch tags before retry 1
+        if: steps.release-plz-1.outcome == 'failure'
+        env:
+          API_TOKEN: ${{ steps.app.outputs.token || github.token }}
+        run: python3 tools/scripts/release_retry.py wait --min-delay 300
+
+      - name: Mint gears-rust-release app token (retry 1)
+        id: app-2
+        if: >-
+          steps.release-plz-1.outcome == 'failure' &&
+          steps.app.outputs.token != ''
+        continue-on-error: true  # falls back to the first token below
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.GEARS_RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GEARS_RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: read
+
+      - name: release-plz release (retry 1)
+        id: release-plz-2
+        if: steps.release-plz-1.outcome == 'failure'
+        continue-on-error: true
+        uses: release-plz/action@66b324fd6c72d05d2a08568492ecdd62bfb8a62b # v0.3.155
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ steps.app-2.outputs.token || steps.app.outputs.token || secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+          CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
+
+      - name: Wait and fetch tags before retry 2
+        if: steps.release-plz-2.outcome == 'failure'
+        env:
+          API_TOKEN: ${{ steps.app-2.outputs.token || steps.app.outputs.token || github.token }}
+        run: python3 tools/scripts/release_retry.py wait --min-delay 600
+
+      - name: Mint gears-rust-release app token (retry 2)
+        id: app-3
+        if: >-
+          steps.release-plz-2.outcome == 'failure' &&
+          steps.app.outputs.token != ''
+        continue-on-error: true  # falls back to an earlier token below
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.GEARS_RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GEARS_RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: read
+
+      # Last attempt: no continue-on-error, so its failure fails the job.
+      - name: release-plz release (retry 2)
+        id: release-plz-3
+        if: steps.release-plz-2.outcome == 'failure'
+        uses: release-plz/action@66b324fd6c72d05d2a08568492ecdd62bfb8a62b # v0.3.155
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ steps.app-3.outputs.token || steps.app-2.outputs.token || steps.app.outputs.token || secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+          CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
+
+      # Builds the `releases` output: the successful attempt's list plus, after a retry,
+      # the packages earlier attempts released (recovered from tags created during this
+      # job). Also tags published crates that release-plz left untagged. See the
+      # docstring of tools/scripts/release_retry.py. Runs even when every attempt
+      # failed, so packages that were released still get their image and chart; a
+      # later run would no longer list them.
+      - name: Collect releases
+        id: releases
+        if: ${{ !cancelled() && steps.snapshot.outcome == 'success' }}
+        env:
+          TAGS_BEFORE: ${{ runner.temp }}/tags-before
+          OUTCOME_1: ${{ steps.release-plz-1.outcome }}
+          RELEASES_1: ${{ steps.release-plz-1.outputs.releases }}
+          OUTCOME_2: ${{ steps.release-plz-2.outcome }}
+          RELEASES_2: ${{ steps.release-plz-2.outputs.releases }}
+          OUTCOME_3: ${{ steps.release-plz-3.outcome }}
+          RELEASES_3: ${{ steps.release-plz-3.outputs.releases }}
+          GH_TOKEN: ${{ steps.app-3.outputs.token || steps.app-2.outputs.token || steps.app.outputs.token || secrets.GITHUB_TOKEN }}
+        run: python3 tools/scripts/release_retry.py collect
 
       - name: Disk report (post-mortem)
         if: always()
@@ -128,7 +263,7 @@ jobs:
 
   release-pr:
     name: Create release PR
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.GEARS_FORCE_GITHUB_HOSTED == 'true' || github.repository != 'constructorfabric/gears-rust' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || 'gears-large' }}
     # Ordered after `release` so release-plz never derives the next versions from
     # crates.io while a publish is mid-flight. `!cancelled()` keeps this running when
     # `release` was skipped (manual release-pr dispatch) or failed.
@@ -150,6 +285,11 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+    # Only a push to main enters the environment, whose read-write key for the
+    # shared build cache GitHub releases to main alone; every other run reads.
+    environment:
+      name: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && 'ci-trusted' || '' }}
+      deployment: false
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -169,7 +309,8 @@ jobs:
           cache: false
 
       - name: Install protoc
-        uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+        if: runner.environment == 'github-hosted'
+        uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
         with:
           tool: protoc@3.34.1
 
@@ -178,26 +319,74 @@ jobs:
           rustup show active-toolchain || rustup toolchain install
           rustup show
 
+      # cargo-semver-checks compiles the crates it documents; the shared cache
+      # takes the dependency half of that.
+      - name: Set up the shared build cache
+        id: cache
+        uses: ./.github/actions/ci-cache
+        with:
+          rw-key-id: ${{ secrets.CI_CACHE_RW_KEY_ID }}
+          rw-secret: ${{ secrets.CI_CACHE_RW_SECRET }}
+          trusted: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          rust: true
+          downloads: |
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          downloads-key: cargo-${{ hashFiles('**/Cargo.lock') }}
+          downloads-restore-keys: cargo-
+
+      - name: Mint gears-rust-release app token
+        id: app
+        # Unset variable, or a fork/Dependabot run without secrets: skip and fall back to GITHUB_TOKEN.
+        if: >-
+          vars.GEARS_RELEASE_APP_CLIENT_ID != '' &&
+          github.actor != 'dependabot[bot]' &&
+          !github.event.pull_request.head.repo.fork
+        continue-on-error: true  # a bad key or missing install must never fail the job
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.GEARS_RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GEARS_RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Report API token source
+        env:
+          APP_TOKEN_SET: ${{ steps.app.outputs.token != '' }}
+          MINT_OUTCOME: ${{ steps.app.outcome }}
+          API_TOKEN: ${{ steps.app.outputs.token || github.token }}
+        run: |
+          if [ "$APP_TOKEN_SET" = true ]; then src=gears-rust-release; echo "::notice::GitHub API token: gears-rust-release app"
+          elif [ "$MINT_OUTCOME" = failure ]; then src=github-token; echo "::warning::gears-rust-release app token mint failed; using GITHUB_TOKEN"
+          else src=github-token; echo "::notice::GitHub API token: GITHUB_TOKEN (gears-rust-release app not configured or fork run)"; fi
+          # GET /rate_limit is free; one sample per job gives a per-token time series (see the API limits plan).
+          core=$(curl -fsS -m 10 -H "Authorization: Bearer $API_TOKEN" -H "Accept: application/vnd.github+json" \
+            https://api.github.com/rate_limit 2>/dev/null | tr -d ' \n' | sed -n 's/.*"core":{\([^}]*\)}.*/\1/p' | tr -d '"' | tr ',' ' ' | sed 's/:/=/g') || true
+          echo "RATE-APP ts=$(date -u +%Y-%m-%dT%H:%M:%SZ) token=$src workflow=$GITHUB_WORKFLOW job=$GITHUB_JOB ${core:-unavailable}"
+
       - name: release-plz release-pr
-        uses: release-plz/action@f67a7e724bdad4a0f6875f186060a0ca2770d76c # v0.3.155
+        uses: release-plz/action@66b324fd6c72d05d2a08568492ecdd62bfb8a62b # v0.3.155
         with:
           command: release-pr
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ steps.app.outputs.token || secrets.GITHUB_TOKEN }}
           # Share one build directory across release-plz tasks to save disk space.
           CARGO_TARGET_DIR: ${{ runner.temp }}/release-plz-target
 
   # Publish the Docker image + Helm chart for each released, publishable gear, in this
-  # same run. Driven by release-plz's `releases` output, NOT by tag pushes: release-plz
-  # creates its tags with the default GITHUB_TOKEN, which cannot trigger tag/`push`
-  # workflows, and a release of >3 crates is suppressed by GitHub anyway. Reading the
+  # same run. Driven by release-plz's `releases` output, NOT by tag pushes: GitHub
+  # suppresses tag/`push` events for a release of >3 crates anyway. Tags and the release
+  # PR are created with the gears-rust-release App token (GITHUB_TOKEN is only the
+  # fallback), so they DO trigger workflows: never add a `push: tags` / `release` /
+  # `create` trigger that publishes, or it would publish a second time. Reading the
   # output sidesteps both. (Regular gears are publish=true; examples and flight-control
   # are git_only — either way they appear in `releases`. The toolkit-platform umbrella
   # isn't a crate, so it's published via workflow_dispatch on publish-artifacts.yml.)
   plan-publish:
     name: Plan publish
     needs: release
-    if: needs.release.outputs.releases_created == 'true'
+    # `!cancelled()`: a release job that failed after releasing some packages still
+    # publishes their images and charts.
+    if: ${{ !cancelled() && needs.release.outputs.releases_created == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read

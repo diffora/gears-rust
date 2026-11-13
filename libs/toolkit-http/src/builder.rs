@@ -1,7 +1,8 @@
 use crate::config::{
-    ClientAuthConfig, HttpClientConfig, RateLimitConfig, RedirectConfig, RetryConfig, TlsConfig,
-    TlsRootConfig, TlsVersion, TransportSecurity,
+    ClientAuthConfig, HttpClientConfig, OutboundProxy, RateLimitConfig, RedirectConfig,
+    RetryConfig, TlsConfig, TlsRootConfig, TlsVersion, TransportSecurity,
 };
+use crate::connector::{self, ConnectTimeout, ProxyConnector};
 use crate::error::HttpError;
 use crate::layers::{OtelLayer, RetryLayer, SecureRedirectPolicy, UserAgentLayer};
 use crate::response::ResponseBody;
@@ -12,7 +13,10 @@ use http_body_util::{BodyExt, Full};
 use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::connect::HttpConnector;
+use hyper_util::client::proxy::matcher::Matcher;
 use hyper_util::rt::{TokioExecutor, TokioTimer};
+use rustls_pki_types::CertificateDer;
+use std::sync::Arc;
 use std::time::Duration;
 use tower::buffer::Buffer;
 use tower::limit::ConcurrencyLimitLayer;
@@ -31,6 +35,7 @@ type InnerService =
 pub struct HttpClientBuilder {
     config: HttpClientConfig,
     auth_layer: Option<Box<dyn FnOnce(InnerService) -> InnerService + Send>>,
+    attempt_layer: Option<Box<dyn FnOnce(InnerService) -> InnerService + Send>>,
     metrics_layer: Option<Box<dyn FnOnce(InnerService) -> InnerService + Send>>,
 }
 
@@ -41,6 +46,7 @@ impl HttpClientBuilder {
         Self {
             config: HttpClientConfig::default(),
             auth_layer: None,
+            attempt_layer: None,
             metrics_layer: None,
         }
     }
@@ -51,6 +57,7 @@ impl HttpClientBuilder {
         Self {
             config,
             auth_layer: None,
+            attempt_layer: None,
             metrics_layer: None,
         }
     }
@@ -144,7 +151,7 @@ impl HttpClientBuilder {
     ///
     /// Replaces the entire [`TlsConfig`]; use [`crate::config::TlsConfig`]'s
     /// fields to set `min_version` and `client_auth`. The root-trust strategy
-    /// is configured separately via the `tls_roots` config field.
+    /// is configured separately via [`tls_roots`](Self::tls_roots).
     ///
     /// Mutual-TLS PEM material referenced by `client_auth` is read and parsed
     /// in [`HttpClientBuilder::build`]; IO/parse failures surface there as
@@ -154,6 +161,15 @@ impl HttpClientBuilder {
     #[must_use]
     pub fn tls(mut self, tls: TlsConfig) -> Self {
         self.config.tls = tls;
+        self
+    }
+
+    /// Select the root certificate store (default: [`TlsRootConfig::WebPki`]).
+    /// Extra roots from [`add_root_certificates`](Self::add_root_certificates)
+    /// are added to it.
+    #[must_use]
+    pub fn tls_roots(mut self, roots: TlsRootConfig) -> Self {
+        self.config.tls_roots = roots;
         self
     }
 
@@ -210,6 +226,23 @@ impl HttpClientBuilder {
         wrap: impl FnOnce(InnerService) -> InnerService + Send + 'static,
     ) -> Self {
         self.auth_layer = Some(Box::new(wrap));
+        self
+    }
+
+    /// Insert a layer that sees every attempt as it leaves for the network.
+    ///
+    /// Stack position: `… → Retry → Auth → **this layer** → ErrorMapping → Timeout → …`
+    ///
+    /// The layer runs once per attempt, after credentials are attached, and
+    /// sees the transport outcome of that attempt: a response with any status,
+    /// or a connect, TLS or timeout error. A circuit breaker belongs here.
+    /// Only one attempt layer can be set; a second call replaces the first.
+    #[must_use]
+    pub fn with_attempt_layer(
+        mut self,
+        wrap: impl FnOnce(InnerService) -> InnerService + Send + 'static,
+    ) -> Self {
+        self.attempt_layer = Some(Box::new(wrap));
         self
     }
 
@@ -360,37 +393,84 @@ impl HttpClientBuilder {
         self
     }
 
+    /// Bound each new connection: DNS, TCP connect (to the destination or
+    /// the proxy), proxy `CONNECT` and TLS handshake together. A connect timeout
+    /// surfaces as [`HttpError::Transport`] with an `io::ErrorKind::TimedOut`
+    /// source.
+    #[must_use]
+    pub fn connect_timeout(mut self, timeout: Duration) -> Self {
+        self.config.connect_timeout = Some(timeout);
+        self
+    }
+
+    /// Trust `certs` in addition to the roots selected by `tls_roots`.
+    ///
+    /// A certificate that is not a valid trust anchor fails
+    /// [`build`](Self::build) with [`HttpError::Tls`].
+    #[must_use]
+    pub fn add_root_certificates(
+        mut self,
+        certs: impl IntoIterator<Item = CertificateDer<'static>>,
+    ) -> Self {
+        let mut all = self.config.extra_root_certs.to_vec();
+        all.extend(certs);
+        self.config.extra_root_certs = all.into();
+        self
+    }
+
+    /// Trust every certificate in a PEM bundle in addition to the roots
+    /// selected by `tls_roots`.
+    ///
+    /// # Errors
+    ///
+    /// [`HttpError::Tls`] when the bundle is not PEM or holds no
+    /// certificate. A certificate whose DER is invalid fails
+    /// [`build`](Self::build) instead.
+    pub fn add_root_certificates_pem(self, pem: &[u8]) -> Result<Self, HttpError> {
+        let certs = tls::load_pem_bundle(pem).map_err(|e| HttpError::Tls(Box::new(e)))?;
+        Ok(self.add_root_certificates(certs))
+    }
+
+    /// Set the outbound (forward) proxy, e.g. `OutboundProxy::FromEnv` or an
+    /// [`ExplicitProxy`](crate::ExplicitProxy). See [`OutboundProxy`].
+    #[must_use]
+    pub fn outbound_proxy(mut self, proxy: impl Into<OutboundProxy>) -> Self {
+        self.config.outbound_proxy = proxy.into();
+        self
+    }
+
     /// Build the HTTP client with all configured layers
     ///
     /// # Errors
     /// Returns an error if TLS initialization fails or configuration is invalid.
     ///
-    /// Under `--features fips`, returns [`HttpError::InsecureTransport`] when
-    /// `config.transport == TransportSecurity::AllowInsecureHttp`. FIPS builds
-    /// must use [`TransportSecurity::TlsOnly`] — there is no opt-out.
+    /// Under `--features fips`, `TransportSecurity::AllowInsecureHttp` is accepted
+    /// as an explicit opt-in (the default there is `TlsOnly`). The first such
+    /// build in the process logs a warning, because requests over `http://`
+    /// are not encrypted.
     pub fn build(self) -> Result<crate::HttpClient, HttpError> {
-        // Reject AllowInsecureHttp under --features fips before any TLS work.
-        // The check lives here (rather than in HttpClientConfig) so that
-        // constructing a config with AllowInsecureHttp is still cheap and
-        // infallible; only actually building a client fails closed.
         #[cfg(feature = "fips")]
         if self.config.transport == TransportSecurity::AllowInsecureHttp {
-            tracing::warn!(
-                target: "toolkit_http::security",
-                "rejecting AllowInsecureHttp under --features fips: returning HttpError::InsecureTransport"
-            );
-            return Err(HttpError::InsecureTransport);
+            // Once per process: some callers build a client per operation.
+            static WARNED: std::sync::Once = std::sync::Once::new();
+            WARNED.call_once(|| {
+                tracing::warn!(
+                    target: "toolkit_http::security",
+                    user_agent = %self.config.user_agent,
+                    allow_https_downgrade = self.config.redirect.allow_https_downgrade,
+                    "plaintext http:// explicitly enabled (AllowInsecureHttp) in a FIPS build: \
+                     requests over http:// are not encrypted (logged once per process)"
+                );
+            });
         }
 
         let timeout = self.config.request_timeout;
         let total_timeout = self.config.total_timeout;
 
         // Build the HTTPS connector (may fail for Native roots if no valid certs)
-        let https = build_https_connector(
-            self.config.tls_roots,
-            self.config.transport,
-            &self.config.tls,
-        )?;
+        let allow_http = self.config.transport == TransportSecurity::AllowInsecureHttp;
+        let proxy_matcher = connector::build_matcher(&self.config.outbound_proxy, allow_http)?;
+        let https = build_https_connector(&self.config, proxy_matcher.clone())?;
 
         // Create the base hyper client with HTTP/2 support and connection pool settings
         let mut client_builder = Client::builder(TokioExecutor::new());
@@ -418,7 +498,7 @@ impl HttpClientBuilder {
         //
         // Request flow (outer → inner):
         //   Buffer → OtelLayer → [MetricsLayer?] → LoadShed/Concurrency →
-        //   RetryLayer → [AuthLayer?] → ErrorMapping → Timeout → UserAgent →
+        //   RetryLayer → [AuthLayer?] → [AttemptLayer?] → ErrorMapping → Timeout → UserAgent →
         //   Decompression → FollowRedirect → hyper_client
         //
         // AuthLayer (if set via with_auth_layer) sits inside the retry
@@ -432,7 +512,7 @@ impl HttpClientBuilder {
         //
         // Response flow (inner → outer):
         //   hyper_client → FollowRedirect → Decompression → UserAgent →
-        //   Timeout → ErrorMapping → [AuthLayer?] → RetryLayer →
+        //   Timeout → ErrorMapping → [AttemptLayer?] → [AuthLayer?] → RetryLayer →
         //   LoadShed/Concurrency → [MetricsLayer?] → OtelLayer → Buffer
         //
         // Key semantics (reqwest-like):
@@ -456,6 +536,8 @@ impl HttpClientBuilder {
             .layer(ua_layer)
             .layer(DecompressionLayer::new())
             .layer(FollowRedirectLayer::with_policy(redirect_policy))
+            // Inside FollowRedirect so every hop is checked against the matcher.
+            .map_request(move |req| add_forward_proxy_auth(proxy_matcher.as_deref(), req))
             .service(hyper_client);
 
         // Map the decompression body to our boxed ResponseBody type.
@@ -470,6 +552,12 @@ impl HttpClientBuilder {
 
         // Box the service for type erasure
         let mut boxed_service = service.boxed_clone();
+
+        // Attempt layer (e.g. a circuit breaker): inside auth, so a failure to
+        // obtain credentials is not taken for a backend failure.
+        if let Some(wrap) = self.attempt_layer {
+            boxed_service = wrap(boxed_service);
+        }
 
         // Apply auth layer (between timeout and retry).
         // Inside retry so each retry attempt re-acquires the token.
@@ -617,8 +705,24 @@ fn map_tower_error(err: tower::BoxError, timeout: Duration) -> HttpError {
     // Try to extract existing HttpError before wrapping as Transport
     match err.downcast::<HttpError>() {
         Ok(http_err) => *http_err,
-        Err(other) => HttpError::Transport(other),
+        Err(other) => find_proxy_error(&*other).unwrap_or(HttpError::Transport(other)),
     }
+}
+
+/// Lift a proxy failure raised by the connector out of hyper's connect error,
+/// so it is typed; whether it is retried then depends on its `ProxyErrorKind`.
+fn find_proxy_error(err: &(dyn std::error::Error + 'static)) -> Option<HttpError> {
+    let mut source = Some(err);
+    while let Some(e) = source {
+        if let Some(HttpError::Proxy { kind, proxy }) = e.downcast_ref::<HttpError>() {
+            return Some(HttpError::Proxy {
+                kind: *kind,
+                proxy: proxy.clone(),
+            });
+        }
+        source = e.source();
+    }
+    None
 }
 
 /// Map load shed errors to `HttpError::Overloaded`.
@@ -655,10 +759,22 @@ where
     Response::from_parts(parts, boxed_body)
 }
 
-/// Build the HTTPS connector with the specified TLS root configuration.
-///
-/// For `TlsRootConfig::Native`, uses cached native root certificates to avoid
-/// repeated OS certificate store lookups on each `build()` call.
+/// Add `Proxy-Authorization` to a plain-HTTP request that goes through a
+/// forwarding proxy with credentials. A caller-set header is kept.
+fn add_forward_proxy_auth(
+    matcher: Option<&Matcher>,
+    mut req: http::Request<Full<Bytes>>,
+) -> http::Request<Full<Bytes>> {
+    if let Some(auth) = matcher.and_then(|m| connector::forward_proxy_auth(m, req.uri())) {
+        req.headers_mut()
+            .entry(http::header::PROXY_AUTHORIZATION)
+            .or_insert(auth);
+    }
+    req
+}
+
+/// Build the HTTPS connector: TLS roots plus extra roots, connect timeout and
+/// outbound proxy routing.
 ///
 /// HTTP/2 is enabled via `enable_all_versions()` which configures ALPN to
 /// advertise both h2 and http/1.1. Protocol selection happens during TLS
@@ -666,35 +782,59 @@ where
 ///
 /// # Errors
 ///
-/// Returns `HttpError::Tls` if `TlsRootConfig::Native` is requested but no
-/// valid root certificates are available from the OS certificate store.
+/// Returns `HttpError::Tls` if no usable root store can be built (e.g.
+/// `TlsRootConfig::Native` with an empty OS store and no extra roots, or an
+/// invalid extra root).
 fn build_https_connector(
-    tls_roots: TlsRootConfig,
-    transport: TransportSecurity,
-    tls: &TlsConfig,
-) -> Result<HttpsConnector<HttpConnector>, HttpError> {
-    let allow_http = transport == TransportSecurity::AllowInsecureHttp;
+    config: &HttpClientConfig,
+    proxy_matcher: Option<Arc<Matcher>>,
+) -> Result<ConnectTimeout<HttpsConnector<ProxyConnector>>, HttpError> {
+    let allow_http = config.transport == TransportSecurity::AllowInsecureHttp;
 
-    // Both branches build a `ClientConfig` ourselves (rather than using
-    // `with_provider_and_webpki_roots`) so we can apply `require_ems = true`
-    // under the `fips` feature — see `tls::build_client_config`. The
-    // functions return `tls::TlsConfigError` (an enum implementing
-    // `std::error::Error`); boxing it into `HttpError::Tls`'s
-    // `Box<dyn Error + Send + Sync>` preserves the source chain via
-    // `TlsConfigError`'s own `Error::source()` impl.
-    let client_config = match tls_roots {
-        TlsRootConfig::WebPki => tls::webpki_roots_client_config(tls),
-        TlsRootConfig::Native => tls::native_roots_client_config(tls),
-    }
-    .map_err(|e| HttpError::Tls(Box::new(e)))?;
+    // The `ClientConfig` is built by `tls` (not `with_provider_and_webpki_roots`)
+    // so FIPS hardening applies; see `tls::build_client_config`.
+    let root_store = tls::root_store_with_extra(config.tls_roots, &config.extra_root_certs)
+        .map_err(|e| HttpError::Tls(Box::new(e)))?;
+    let client_config = tls::custom_roots_client_config(root_store.clone(), &config.tls)
+        .map_err(|e| HttpError::Tls(Box::new(e)))?;
+
+    let mut http = HttpConnector::new();
+    // The HTTPS connector on top enforces the scheme.
+    http.enforce_http(false);
+    // Split across the resolved addresses; `ConnectTimeout` below bounds the
+    // whole connect.
+    http.set_connect_timeout(config.connect_timeout);
+    let tcp = match proxy_matcher {
+        None => ProxyConnector::direct(http),
+        Some(matcher) => {
+            // Same trust and TLS floor as the destination, but no client
+            // certificate (see `ProxyConnector::with_proxy`) and HTTP/1.1 only:
+            // `CONNECT` and forwarding are HTTP/1, so ALPN must not pick h2.
+            let proxy_tls = TlsConfig {
+                min_version: config.tls.min_version,
+                client_auth: None,
+            };
+            let mut proxy_tls = tls::custom_roots_client_config(root_store, &proxy_tls)
+                .map_err(|e| HttpError::Tls(Box::new(e)))?;
+            proxy_tls.alpn_protocols = vec![b"http/1.1".to_vec()];
+            let user_agent = http::HeaderValue::from_str(&config.user_agent)?;
+            ProxyConnector::with_proxy(http, matcher, proxy_tls, user_agent)
+        }
+    };
 
     let builder = hyper_rustls::HttpsConnectorBuilder::new().with_tls_config(client_config);
     let connector = if allow_http {
-        builder.https_or_http().enable_all_versions().build()
+        builder
+            .https_or_http()
+            .enable_all_versions()
+            .wrap_connector(tcp)
     } else {
-        builder.https_only().enable_all_versions().build()
+        builder
+            .https_only()
+            .enable_all_versions()
+            .wrap_connector(tcp)
     };
-    Ok(connector)
+    Ok(ConnectTimeout::new(connector, config.connect_timeout))
 }
 
 #[cfg(test)]
@@ -976,8 +1116,6 @@ mod tests {
     /// which sets up ALPN to negotiate h2 or http/1.1 during TLS handshake.
     /// The hyper client uses `http2_only(false)` to allow both protocols.
     ///
-    /// The `AllowInsecureHttp` sub-cases are skipped under `--features fips`
-    /// because the FIPS guard in `build()` rejects insecure transport.
     #[tokio::test]
     async fn test_http2_enabled_for_all_configurations() {
         // Test WebPki with default transport (AllowInsecureHttp without fips, TlsOnly under fips)
@@ -996,20 +1134,17 @@ mod tests {
             "WebPki + TlsOnly should build with HTTP/2 enabled"
         );
 
-        // Test Native roots with AllowInsecureHttp (non-fips only)
-        #[cfg(not(feature = "fips"))]
-        {
-            let config = HttpClientConfig {
-                tls_roots: TlsRootConfig::Native,
-                transport: TransportSecurity::AllowInsecureHttp,
-                ..Default::default()
-            };
-            let client = HttpClientBuilder::with_config(config).build();
-            assert!(
-                client.is_ok(),
-                "Native + AllowInsecureHttp should build with HTTP/2 enabled"
-            );
-        }
+        // Test Native roots with AllowInsecureHttp
+        let config = HttpClientConfig {
+            tls_roots: TlsRootConfig::Native,
+            transport: TransportSecurity::AllowInsecureHttp,
+            ..Default::default()
+        };
+        let client = HttpClientBuilder::with_config(config).build();
+        assert!(
+            client.is_ok(),
+            "Native + AllowInsecureHttp should build with HTTP/2 enabled"
+        );
 
         // Test Native roots with TlsOnly (HTTPS only)
         let config = HttpClientConfig {

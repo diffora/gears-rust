@@ -104,8 +104,8 @@ pub trait DeliveryService: Send + Sync {
     /// comment.
     async fn leave(&self, ctx: &SecurityContext, subscription_id: Uuid) -> Result<(), DomainError>;
 
-    /// Unfiltered/unpaginated - the REST handler applies `$filter`/pagination
-    /// (`api/rest/pagination.rs`).
+    /// Unfiltered/unpaginated - the REST handler applies `$filter`, then pages
+    /// the result with the domain pager (`domain/paging.rs`).
     async fn list_subscriptions(
         &self,
         ctx: &SecurityContext,
@@ -159,7 +159,8 @@ pub trait DeliveryService: Send + Sync {
     ) -> Result<crate::domain::model::ConsumerGroup, DomainError>;
 
     /// Unfiltered/unpaginated beyond tenant scoping - the REST handler
-    /// applies `$filter`/pagination (`api/rest/pagination.rs`), matching
+    /// applies `$filter` and `LocalBroker` its typed filter, and both page the
+    /// result with the domain pager (`domain/paging.rs`), matching
     /// `list_topics`/`list_event_types`. `Anonymous` groups are filtered to
     /// `ctx`'s authorized tenant(s); `Named` groups are returned unfiltered
     /// (`eb-tenant-isolation-fix`).
@@ -443,6 +444,10 @@ where
                     None,
                     &AccessRequest::new()
                         .resource_property("topic_id", interest.topic.as_ref())
+                        .resource_property(
+                            toolkit_security::pep_properties::OWNER_TENANT_ID,
+                            interest.tenant_id,
+                        )
                         .require_constraints(false),
                 )
                 .await
@@ -459,6 +464,10 @@ where
                         None,
                         &AccessRequest::new()
                             .resource_property("event_type_id", pattern_str)
+                            .resource_property(
+                                toolkit_security::pep_properties::OWNER_TENANT_ID,
+                                interest.tenant_id,
+                            )
                             .require_constraints(false),
                     )
                     .await
@@ -483,7 +492,7 @@ where
             let topic = self
                 .spec_manager
                 .get_topic(&interest.topic)
-                .await
+                .await?
                 .ok_or_else(|| DomainError::NotFound {
                     code: ErrorCode::TopicNotFound,
                     message: format!("topic '{}' is not registered", interest.topic),
@@ -696,7 +705,7 @@ where
             let topic = self
                 .spec_manager
                 .get_topic(&target.topic)
-                .await
+                .await?
                 .ok_or_else(|| DomainError::NotFound {
                     code: ErrorCode::TopicNotFound,
                     message: format!("topic '{}' is not registered", target.topic),

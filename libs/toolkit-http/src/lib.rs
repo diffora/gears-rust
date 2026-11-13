@@ -6,7 +6,8 @@
 //! This crate provides a hyper-based HTTP client with:
 //! - Automatic TLS via rustls; transport security is configurable via
 //!   [`TransportSecurity`] — defaults to
-//!   `TlsOnly` (HTTPS-only) under `--features fips`, `AllowInsecureHttp` otherwise
+//!   `TlsOnly` (HTTPS-only) under `--features fips`, `AllowInsecureHttp` otherwise;
+//!   under `fips`, plaintext is an explicit opt-in that logs a warning
 //! - Connection pooling
 //! - Configurable timeouts
 //! - Automatic retries with exponential backoff
@@ -51,6 +52,7 @@ mod builder;
 mod client;
 /// Client configuration types.
 mod config;
+mod connector;
 /// Error types returned by the HTTP client.
 mod error;
 mod layers;
@@ -69,11 +71,11 @@ pub use client::HttpClient;
 /// provider selection and FIPS hardening.
 pub use config::{ClientAuthConfig, TlsConfig, TlsVersion};
 pub use config::{
-    DEFAULT_USER_AGENT, ExponentialBackoff, HttpClientConfig, IDEMPOTENCY_KEY_HEADER,
-    RateLimitConfig, RedirectConfig, RetryConfig, RetryTrigger, TlsRootConfig, TransportSecurity,
-    is_idempotent_method,
+    DEFAULT_USER_AGENT, ExplicitProxy, ExponentialBackoff, HttpClientConfig,
+    IDEMPOTENCY_KEY_HEADER, OutboundProxy, RateLimitConfig, RedirectConfig, RetryConfig,
+    RetryTrigger, TlsRootConfig, TransportSecurity, is_idempotent_method,
 };
-pub use error::{HttpError, InvalidUriKind};
+pub use error::{HttpError, InvalidUriKind, ProxyErrorKind};
 #[cfg(feature = "otel")]
 pub use layers::{ClassifyFn, MetricsLayer, MetricsService, default_classify};
 pub use layers::{

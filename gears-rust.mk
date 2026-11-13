@@ -38,7 +38,16 @@ GEARS_JUNIT_ENRICH := tools/scripts/junit_enrich.py
 # Keep in sync with the `Install cargo-shear` step in shear-nightly.yml.
 SHEAR_VERSION ?= 1.13.1
 
+# shellcheck-py version installed into the venv by `make setup` (ships the shellcheck binary).
+# Keep in sync with the `Install shellcheck` step in githooks.yml.
+SHELLCHECK_PY_VERSION ?= 0.11.0.1
+
 CI := 1
+
+# Auto-install git hooks on any make run (idempotent, silent unless it installs something;
+# skipped in CI or with GEARS_NO_HOOKS=1; see .githooks/install.sh).
+_HOOKS_MSG := $(shell sh $(dir $(lastword $(MAKEFILE_LIST))).githooks/install.sh --quiet 2>/dev/null)
+$(if $(_HOOKS_MSG),$(info $(_HOOKS_MSG)))
 
 # Python helper scripts must run inside a repository-managed virtual environment.
 # PYTHON_BOOTSTRAP (gears.mk) is used only to create that environment;
@@ -46,16 +55,42 @@ CI := 1
 PY_ENV_DIR ?= .venv
 ifeq ($(OS),Windows_NT)
 PYTHON ?= $(PY_ENV_DIR)/Scripts/python
+SHELLCHECK ?= $(PY_ENV_DIR)/Scripts/shellcheck
 else
 PYTHON ?= $(PY_ENV_DIR)/bin/python
+SHELLCHECK ?= $(PY_ENV_DIR)/bin/shellcheck
 endif
-PY_ENV_STAMP := $(PY_ENV_DIR)/.requirements-stamp
+# The stamp name carries the shellcheck pin, so bumping SHELLCHECK_PY_VERSION re-runs py-env.
+PY_ENV_STAMP := $(PY_ENV_DIR)/.requirements-stamp-shellcheck-$(SHELLCHECK_PY_VERSION)
 PY_REQUIREMENTS := testing/requirements.txt testing/e2e/requirements.txt
 
 OPENAPI_PORT ?= 8087
 OPENAPI_URL ?= http://127.0.0.1:$(OPENAPI_PORT)/openapi.json
+# Bootstrap can serve a partial document before application routes are attached.
+OPENAPI_READY_URL ?= $(patsubst %/openapi.json,%/readyz,$(OPENAPI_URL))
 OPENAPI_OUT ?= docs/api/api.json
 OPENAPI_CONFIG ?= config/e2e-local.yaml
+# Gears that keep their data in graph storage need PostgreSQL 16+ with pgvector to start.
+# `make openapi GEAR=<one of them>` runs a throwaway pgvector container on a free local port
+# and points the `pg_graph` server of OPENAPI_CONFIG at it (host, port, user and password), so no
+# config edit is needed. The container's database is `graph_storage`, the one the config names.
+# An EXIT trap removes the container however the recipe ends, including Ctrl-C under dash.
+OPENAPI_PG_GEARS ?= graph-storage construct
+OPENAPI_PG_IMAGE ?= pgvector/pgvector:0.8.7-pg18
+OPENAPI_GEAR_NEEDS_PG := $(filter $(GEAR),$(OPENAPI_PG_GEARS))
+OPENAPI_PG_UP = command -v docker >/dev/null || { echo "docker is required: GEAR=$(GEAR) needs PostgreSQL with pgvector"; exit 1; }; \
+	PG_CID=$$(docker run -d --rm -e POSTGRES_PASSWORD=graph -e POSTGRES_DB=graph_storage -p 127.0.0.1::5432 $(OPENAPI_PG_IMAGE)) && \
+	trap 'docker rm -f "$$PG_CID" >/dev/null 2>&1' EXIT && trap 'exit 130' INT TERM && \
+	echo "Started $(OPENAPI_PG_IMAGE) for GEAR=$(GEAR)" && \
+	for i in $$(seq 1 60); do \
+		docker exec $$PG_CID pg_isready -q -h 127.0.0.1 -U postgres -d graph_storage && break; \
+		sleep 1; \
+	done && \
+	docker exec $$PG_CID pg_isready -q -h 127.0.0.1 -U postgres -d graph_storage || { echo "PostgreSQL did not become ready"; exit 1; }; \
+	export APP__DATABASE__SERVERS__PG_GRAPH__HOST=127.0.0.1 \
+		APP__DATABASE__SERVERS__PG_GRAPH__PORT=$$(docker port $$PG_CID 5432/tcp | head -n1 | sed 's/.*://') \
+		APP__DATABASE__SERVERS__PG_GRAPH__USER=postgres \
+		APP__DATABASE__SERVERS__PG_GRAPH__PASSWORD=graph
 
 EMPTY :=
 SPACE := $(EMPTY) $(EMPTY)
@@ -64,7 +99,7 @@ COMMA := ,
 EXAMPLE_SERVER_BIN ?= cf-gears-example-server
 EXAMPLE_SERVER_DEBUG_BINARY ?= target/debug/$(EXAMPLE_SERVER_BIN)
 EXAMPLE_SERVER_MANIFEST ?= apps/cf-gears-example-server/Cargo.toml
-EXAMPLE_SERVER_FEATURE_EXCLUDES ?= default fips k8s otel oop-example timescaledb-usage-collector clickhouse-usage-collector magika graph-storage quota-enforcement
+EXAMPLE_SERVER_FEATURE_EXCLUDES ?= default fips k8s otel oop-example timescaledb-usage-collector clickhouse-usage-collector magika graph-storage construct quota-enforcement
 EXAMPLE_SERVER_ALL_FEATURES := $(strip $(shell cargo gears ls features --manifest $(EXAMPLE_SERVER_MANIFEST) 2>/dev/null))
 EXAMPLE_SERVER_FEATURES ?= $(subst $(SPACE),$(COMMA),$(filter-out $(EXAMPLE_SERVER_FEATURE_EXCLUDES),$(EXAMPLE_SERVER_ALL_FEATURES)))
 EXAMPLE_SERVER_FEATURE_ARGS ?= $(if $(EXAMPLE_SERVER_FEATURES),--features $(EXAMPLE_SERVER_FEATURES),)
@@ -78,7 +113,7 @@ GTS_VALIDATOR_MIN_VERSION ?= 0.16.1
 
 # -------- Set up --------
 
-.PHONY: setup py-env
+.PHONY: setup py-env shellcheck install-hooks uninstall-hooks
 
 py-env: $(PY_ENV_STAMP)
 	$(call print_target_banner)
@@ -88,11 +123,27 @@ $(PY_ENV_STAMP): $(PY_REQUIREMENTS)
 	$(PYTHON_BOOTSTRAP) -m venv $(PY_ENV_DIR)
 	$(PYTHON) -m pip install --upgrade pip
 	$(PYTHON) -m pip install -r testing/requirements.txt -r testing/e2e/requirements.txt
+	$(PYTHON) -m pip install shellcheck-py==$(SHELLCHECK_PY_VERSION)
 	@mkdir -p $(dir $(PY_ENV_STAMP))
 	@cat $(PY_REQUIREMENTS) > $(PY_ENV_STAMP)
 
+## Lint the git hook scripts with the pinned shellcheck (installed by setup)
+shellcheck: py-env
+	$(call print_target_banner)
+	@$(SHELLCHECK) -s sh -x .githooks/install.sh .githooks/lib.sh .githooks/pre-commit .githooks/pre-push .githooks/tests/run.sh
+
+## Install git hooks (pre-commit, pre-push) as symlinks into the git hooks dir
+install-hooks:
+	$(call print_target_banner)
+	@sh .githooks/install.sh
+
+## Remove the git hooks installed by install-hooks (only symlinks into .githooks)
+uninstall-hooks:
+	$(call print_target_banner)
+	@sh .githooks/install.sh --uninstall
+
 ## Install all required development tools
-setup: .setup-stamp py-env
+setup: .setup-stamp py-env install-hooks
 	$(call print_target_banner)
 
 # Re-run setup when a makefile changes (prerequisites are set at the end of this file),
@@ -137,7 +188,7 @@ setup: .setup-stamp py-env
 dylint: dylint-oagw-cluster
 dylint-oagw-cluster:
 	$(call print_target_banner)
-	$(call check_tool,cargo-gears)
+	$(call check_tool_version,cargo-gears,>=$(CARGO_GEARS_VERSION))
 	cargo gears lint --dylint -P cf-gears-oagw -F cluster
 
 .PHONY: ensure-submodules lychee web-docs-check geiger gts-docs docker-pins validate-gear-names pr-review-lint pr-review-test check-packaging-metadata check-release-config check-release-resolver
@@ -271,6 +322,8 @@ GEAR_SERVER_OPTIONAL_FEATURES := $(if $(GEAR_HAS_SERVER_FEATURE),$(filter-out $(
 # Extra local-dev plugins a gear needs to start (GEAR_SERVER_EXTRA_FEATURES_<gear>).
 # mini-chat registers OAGW upstreams whose secret_ref OAGW checks in credstore.
 GEAR_SERVER_EXTRA_FEATURES_mini-chat ?= static-credstore
+# construct stores its facts in graph storage, which needs PostgreSQL (see gears/construct/QUICKSTART.md).
+GEAR_SERVER_EXTRA_FEATURES_construct ?= graph-storage
 GEAR_SERVER_EXTRA_FEATURES := $(GEAR_SERVER_EXTRA_FEATURES_$(GEAR))
 GEAR_SERVER_FEATURES ?= $(GEAR_SERVER_OPTIONAL_FEATURES)$(if $(GEAR_SERVER_OPTIONAL_FEATURES),$(COMMA),)$(GEAR_SERVER_BASE_FEATURES)$(if $(GEAR_SERVER_EXTRA_FEATURES),$(COMMA)$(GEAR_SERVER_EXTRA_FEATURES),)
 GEAR_SERVER_FEATURE_ARGS := $(if $(GEAR),$(if $(GEAR_HAS_SERVER_FEATURE),--no-default-features --features $(GEAR_SERVER_FEATURES),),$(EXAMPLE_SERVER_FEATURE_ARGS))
@@ -320,23 +373,23 @@ ifeq ($(GEAR_HAS_SERVER_FEATURE),)
 else
 	@command -v curl >/dev/null || (echo "curl is required to generate OpenAPI spec" && exit 1)
 	@echo "Starting cf-gears-example-server to generate OpenAPI spec..."
-	@mkdir -p $$(dirname "$(if $(GEAR),$(GEAR_OPENAPI_TMP),$(OPENAPI_OUT))") && \
-	$(call start_server_and_wait,$(EXAMPLE_SERVER_DEBUG_BINARY) --config $(OPENAPI_CONFIG) --port $(OPENAPI_PORT),$(OPENAPI_URL),300) && \
+	@$(if $(OPENAPI_GEAR_NEEDS_PG),$(OPENAPI_PG_UP) && )( \
+	mkdir -p $$(dirname "$(GEAR_OPENAPI_TMP)") && \
+	$(call start_server_and_wait,$(EXAMPLE_SERVER_DEBUG_BINARY) --config $(OPENAPI_CONFIG) --port $(OPENAPI_PORT),$(OPENAPI_READY_URL),300) && \
 	echo "Fetching OpenAPI spec..." && \
-	curl -fsS "$(OPENAPI_URL)" -o "$(if $(GEAR),$(GEAR_OPENAPI_TMP),$(OPENAPI_OUT))" && \
-	if [ -n "$(GEAR)" ]; then \
-		echo "Merging $(GEAR) OpenAPI into $(OPENAPI_OUT)..." && \
-		$(PYTHON) tools/scripts/merge_openapi_json.py "$(OPENAPI_OUT)" "$(GEAR_OPENAPI_TMP)"; \
-	fi && \
+	curl -fsS "$(OPENAPI_URL)" -o "$(GEAR_OPENAPI_TMP)" && \
+	echo "Merging $(GEAR) OpenAPI into $(OPENAPI_OUT)..." && \
+	$(PYTHON) tools/scripts/merge_openapi_json.py "$(OPENAPI_OUT)" "$(GEAR_OPENAPI_TMP)" && \
 	echo "Sorting OpenAPI JSON for deterministic ordering..." && \
 	$(PYTHON) tools/scripts/sort_openapi_json.py "$(OPENAPI_OUT)" && \
-	echo "OpenAPI spec saved to $(OPENAPI_OUT)"
+	echo "OpenAPI spec saved to $(OPENAPI_OUT)" \
+	)
 endif
 else
 	@command -v curl >/dev/null || (echo "curl is required to generate OpenAPI spec" && exit 1)
 	@echo "Starting cf-gears-example-server to generate OpenAPI spec..."
 	@mkdir -p $$(dirname "$(OPENAPI_OUT)") && \
-	$(call start_server_and_wait,$(EXAMPLE_SERVER_DEBUG_BINARY) --config $(OPENAPI_CONFIG) --port $(OPENAPI_PORT),$(OPENAPI_URL),300) && \
+	$(call start_server_and_wait,$(EXAMPLE_SERVER_DEBUG_BINARY) --config $(OPENAPI_CONFIG) --port $(OPENAPI_PORT),$(OPENAPI_READY_URL),300) && \
 	echo "Fetching OpenAPI spec..." && \
 	curl -fsS "$(OPENAPI_URL)" -o "$(OPENAPI_OUT)" && \
 	echo "Sorting OpenAPI JSON for deterministic ordering..." && \
@@ -368,7 +421,7 @@ arch_status_svg_update: py-env
 
 # -------- Tests --------
 
-.PHONY: test-no-macros test-macros test-db test-integration test-graph-storage test-graph-storage-pg test-cluster-k8s coverage-cluster-k8s test-durable-execution-pg coverage-durable-execution-pg test-eb-pg test-eb-sqlite test-eb-mysql test-eb-mariadb test-eb-kafka test-github-mirror-db test-github-mirror-scale test-fips
+.PHONY: test-no-macros test-macros test-db test-integration test-graph-storage test-graph-storage-pg test-cluster-k8s coverage-cluster-k8s test-durable-execution-pg coverage-durable-execution-pg test-eb-pg test-eb-sqlite test-eb-mysql test-eb-mariadb test-eb-kafka test-github-mirror-db test-fips
 
 # Run the workspace tests except the macro test crates (CI test job)
 test-no-macros: install-tools
@@ -380,6 +433,7 @@ test-macros: install-tools
 	$(call print_target_banner)
 	$(call nextest_run,macros-db,-p cf-gears-toolkit-db-macros)
 	$(call nextest_run,macros-toolkit,-p cf-gears-toolkit-macros-tests)
+	$(call nextest_run,macros-gts-lto,-p cf-gears-toolkit-gts-macros --test release_lto --run-ignored ignored-only)
 
 ## Run the graph-storage gear's database-free suites
 ## Unit tests, the in-memory conformance lane, the domain-service and REST
@@ -458,8 +512,8 @@ test-eb-kafka: install-tools
 
 TOOLKIT_DB_LANES := toolkit-db-sqlite toolkit-db-pg toolkit-db-pgq toolkit-db-mysql
 INTEGRATION_LANES := $(TOOLKIT_DB_LANES) users-info-pg usage-collector-pg usage-collector-ch \
-	types-registry-db oagw-db oagw-cluster cluster-pg cluster-redis rg-pg settings-service-pg \
-	pricing-pg coord-pg products-pg ledger-pg orders-pg eb-gear-db
+	types-registry-db oagw-db oagw-cluster cluster-pg cluster-redis rg-pg settings-service-pg credstore-pg \
+	pricing-pg coord-pg products-pg ledger-pg orders-pg eb-gear-db quota-enforcement-pg
 
 ## toolkit-db on SQLite; the examples must still build after the tests.
 lane_args_toolkit-db-sqlite = -p cf-gears-toolkit-db --features sqlite,integration
@@ -568,6 +622,17 @@ lane_args_rg-pg = -p cf-gears-resource-group --features integration
 ## runs, on the backend it runs it on.
 lane_args_settings-service-pg = -p cf-gears-settings-service --features integration --test pg_migrations_test --test pg_category_delete_test --test pg_declaration_purge_test
 
+## The credstore v2 gear's PostgreSQL migration suite (Docker required; spins up
+## its own postgres container via testcontainers -- see
+## gears/credstore/v2/credstore/tests/pg_migrations_test.rs). The SQLite suite
+## beside `m0002_value_versions` runs a table rebuild; PostgreSQL gets in-place
+## DDL (`DO` blocks, `pg_constraint` look-ups) that suite never executes; this
+## lane runs the migration on the backend it ships on.
+## CREDSTORE_PG_REQUIRE_DOCKER=1 turns an unreachable Docker into a failure;
+## otherwise the test skips silently.
+lane_args_credstore-pg = -p cf-gears-credstore-v2 --features integration --test pg_migrations_test
+lane_env_credstore-pg = CREDSTORE_PG_REQUIRE_DOCKER=1
+
 ## bss-pricing's Postgres tier (Docker required; each suite spins up its own
 ## postgres container via testcontainers).
 ##
@@ -656,6 +721,11 @@ lane_args_ledger-pg = -p cf-gears-bss-ledger --run-ignored ignored-only -E 'not 
 ## lib tests. The unit tier (`make test`) keeps the tests that need neither.
 ## `--no-fail-fast` for the reason the pricing lane gives.
 lane_args_orders-pg = -p cf-gears-bss-orders --features gate-dev-stubs --run-ignored all --no-fail-fast
+
+## The Quota Enforcement storage plugin's PostgreSQL suites (Docker required;
+## each test spins up its own postgres container via testcontainers): the row
+## locks, NOWAIT stripes and idempotency races SQLite cannot show.
+lane_args_quota-enforcement-pg = -p cf-gears-quota-enforcement-storage-plugin --features postgres
 
 # run_lane(lane): the lane's nextest run, then its post command if it has one.
 run_lane = $(call nextest_run,$(1),$(lane_args_$(1)),$(lane_env_$(1)))$(if $(lane_post_$(1)),$(newline)$(lane_post_$(1)))
@@ -788,6 +858,7 @@ test-fips: install-tools
 	$(call print_target_banner)
 	cargo test -p cf-gears-toolkit-security --features fips,jwt,internal-auth-cache --lib --test jwt_no_backend_fallback
 	cargo test -p cf-gears-toolkit-auth --features toolkit-security/fips --lib providers::jwks
+	cargo test -p cf-gears-toolkit-contract --features fips,rest-client,rest-server,grpc-client,otel,canonical-errors
 	cargo nextest run -p cf-gears-toolkit -p cf-gears-toolkit-http -p cf-gears-toolkit-http-proxy -p cf-gears-oagw -p cf-gears-clickhouse-usage-collector-plugin \
 		--features cf-gears-toolkit/bootstrap,cf-gears-toolkit/fips,cf-gears-toolkit-http/fips,cf-gears-toolkit-http-proxy/fips,cf-gears-oagw/fips
 
@@ -810,11 +881,6 @@ test-github-mirror-db: install-tools
 	GM_TEST_DATABASE_URL=$(GM_MARIADB_URL) cargo nextest run -p cf-gears-github-mirror --features integration --no-fail-fast; maria=$$?; \
 	docker rm -f gm-test-postgres gm-test-mariadb >/dev/null; \
 	test $$pg -eq 0 && test $$maria -eq 0
-
-## Run the github-mirror gear's 110,000-entity interrupt-and-resume test (SQLite, minutes)
-test-github-mirror-scale: install-tools
-	$(call print_target_banner)
-	cargo nextest run -p cf-gears-github-mirror --test scale_resume_test --run-ignored ignored-only
 
 ## Cross-compile gate for the Windows+FIPS path (Windows handshake
 ## verification is the manual runbook in cf-gears-fips-probe/README.md). Catches
@@ -1064,7 +1130,7 @@ e2e-orders: py-env
 ## Run event-broker E2E tests (its own standalone binary, not a cf-gears-example-server feature)
 e2e-event-broker: py-env
 	$(call print_target_banner)
-	cargo build -p cf-gears-event-broker --bin cf-gears-event-broker-server
+	cargo build -p cf-gears-event-broker-server --bin cf-gears-event-broker-server
 	E2E_BINARY=target/debug/cf-gears-event-broker-server \
 		$(PYTHON) -m pytest testing/e2e/suites/event_broker/ -vv
 
@@ -1072,7 +1138,7 @@ e2e-event-broker: py-env
 ## The backend-sensitive tests of e2e-event-broker, with a PostgreSQL sidecar.
 e2e-event-broker-pg: py-env
 	$(call print_target_banner)
-	cargo build -p cf-gears-event-broker --bin cf-gears-event-broker-server
+	cargo build -p cf-gears-event-broker-server --bin cf-gears-event-broker-server
 	EB_E2E_BACKEND=postgres E2E_BINARY=target/debug/cf-gears-event-broker-server \
 		$(PYTHON) -m pytest testing/e2e/suites/event_broker/ -vv -m backend_sensitive
 
@@ -1080,7 +1146,7 @@ e2e-event-broker-pg: py-env
 ## The backend-sensitive tests of e2e-event-broker, the events in a file under the server's home.
 e2e-event-broker-sqlite: py-env
 	$(call print_target_banner)
-	cargo build -p cf-gears-event-broker --bin cf-gears-event-broker-server
+	cargo build -p cf-gears-event-broker-server --bin cf-gears-event-broker-server
 	EB_E2E_BACKEND=sqlite E2E_BINARY=target/debug/cf-gears-event-broker-server \
 		$(PYTHON) -m pytest testing/e2e/suites/event_broker/ -vv -m backend_sensitive
 
@@ -1088,7 +1154,7 @@ e2e-event-broker-sqlite: py-env
 ## The backend-sensitive tests of e2e-event-broker, with a MySQL sidecar.
 e2e-event-broker-mysql: py-env
 	$(call print_target_banner)
-	cargo build -p cf-gears-event-broker --bin cf-gears-event-broker-server
+	cargo build -p cf-gears-event-broker-server --bin cf-gears-event-broker-server
 	EB_E2E_BACKEND=mysql E2E_BINARY=target/debug/cf-gears-event-broker-server \
 		$(PYTHON) -m pytest testing/e2e/suites/event_broker/ -vv -m backend_sensitive
 
@@ -1096,7 +1162,7 @@ e2e-event-broker-mysql: py-env
 ## The backend-sensitive tests of e2e-event-broker, with a MariaDB sidecar.
 e2e-event-broker-mariadb: py-env
 	$(call print_target_banner)
-	cargo build -p cf-gears-event-broker --bin cf-gears-event-broker-server
+	cargo build -p cf-gears-event-broker-server --bin cf-gears-event-broker-server
 	EB_E2E_BACKEND=mariadb E2E_BINARY=target/debug/cf-gears-event-broker-server \
 		$(PYTHON) -m pytest testing/e2e/suites/event_broker/ -vv -m backend_sensitive
 
@@ -1104,7 +1170,7 @@ e2e-event-broker-mariadb: py-env
 ## The backend-sensitive tests of e2e-event-broker, with a single-node Kafka sidecar.
 e2e-event-broker-kafka: py-env
 	$(call print_target_banner)
-	cargo build -p cf-gears-event-broker --bin cf-gears-event-broker-server
+	cargo build -p cf-gears-event-broker-server --bin cf-gears-event-broker-server
 	EB_E2E_BACKEND=kafka E2E_BINARY=target/debug/cf-gears-event-broker-server \
 		$(PYTHON) -m pytest testing/e2e/suites/event_broker/ -vv -m backend_sensitive
 
@@ -1120,8 +1186,9 @@ e2e-oop: py-env
 	$(call print_target_banner)
 	cargo build -p cf-gears-flight-control --bin flight-control
 	cargo build -p hello --features oop_module --bin hello-oop
-	cargo build -p cf-api-contracts --features oop_module --bin api-contracts-oop
+	cargo build -p cf-api-contracts --features oop_module,grpc-server --bin api-contracts-oop
 	cargo build -p cf-api-contracts-consumer --features oop_module --bin api-contracts-consumer-oop
+	cargo build -p cf-api-contracts-grpc-consumer --features oop_module --bin api-contracts-grpc-consumer-oop
 	OOP_E2E=1 $(PYTHON) -m pytest testing/e2e/suites/oop \
 		-o timeout_func_only=true --timeout=30 -vv
 

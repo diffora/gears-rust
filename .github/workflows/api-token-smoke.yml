@@ -1,0 +1,122 @@
+name: API token smoke check
+
+# Manual smoke check (Phase 3 of the API limits plan): verifies that each GitHub App
+# family (gears-rust-ci / -nightly / -release) is configured and has a budget of its
+# own, separate from the shared GITHUB_TOKEN pool. Run it with:
+#   gh workflow run api-token-smoke.yml -R constructorfabric/gears-rust
+# GitHub drops frequent cron runs, so there is no schedule here; the time series comes
+# from the RATE-APP line every minting job prints. GET /rate_limit is free.
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: api-token-smoke
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    if: github.repository == 'constructorfabric/gears-rust'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    strategy:
+      fail-fast: false
+      matrix:
+        family: [ci, nightly]
+    steps:
+      # Own App budget, separate from the shared GITHUB_TOKEN pool (GitHub App per workflow family)
+      # Secrets cannot be indexed dynamically, so each family has its own guarded mint step.
+      - name: Mint gears-rust-ci app token
+        id: app_ci
+        if: >-
+          matrix.family == 'ci' &&
+          vars.GEARS_CI_APP_CLIENT_ID != '' &&
+          github.actor != 'dependabot[bot]' &&
+          !github.event.pull_request.head.repo.fork
+        continue-on-error: true  # a bad key or missing install must never fail the job
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.GEARS_CI_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GEARS_CI_APP_PRIVATE_KEY }}
+          permission-contents: read
+      - name: Mint gears-rust-nightly app token
+        id: app_nightly
+        if: >-
+          matrix.family == 'nightly' &&
+          vars.GEARS_NIGHTLY_APP_CLIENT_ID != '' &&
+          github.actor != 'dependabot[bot]' &&
+          !github.event.pull_request.head.repo.fork
+        continue-on-error: true  # a bad key or missing install must never fail the job
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.GEARS_NIGHTLY_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GEARS_NIGHTLY_APP_PRIVATE_KEY }}
+          permission-contents: read
+      - name: Read App rate limit
+        env:
+          FAMILY: ${{ matrix.family }}
+          APP_TOKEN: ${{ steps.app_ci.outputs.token || steps.app_nightly.outputs.token }}
+          MINT_OUTCOME: ${{ matrix.family == 'ci' && steps.app_ci.outcome || steps.app_nightly.outcome }}
+        run: |
+          if [ -z "$APP_TOKEN" ]; then
+            [ "$MINT_OUTCOME" = failure ] && echo "::warning::gears-rust-$FAMILY app token mint failed"
+            line="RATE-APP ts=$(date -u +%Y-%m-%dT%H:%M:%SZ) token=$FAMILY status=not-configured"
+            echo "$line"
+            echo "$line" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if ! json=$(curl -fsS -H "Authorization: Bearer $APP_TOKEN" \
+            -H "Accept: application/vnd.github+json" https://api.github.com/rate_limit); then
+            echo "::warning::rate_limit request failed for token=$FAMILY"
+            exit 0
+          fi
+          line=$(jq -r --arg app "$FAMILY" '.resources.core | "RATE-APP ts=\(now|todate) token=\($app) limit=\(.limit) used=\(.used) remaining=\(.remaining) reset=\(.reset|todate)"' <<<"$json")
+          echo "$line"
+          echo "$line" >> "$GITHUB_STEP_SUMMARY"
+
+  probe-release:
+    if: github.repository == 'constructorfabric/gears-rust'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    # The release key is an environment secret (limited to main); a matrix leg cannot select an environment.
+    # The release App key lives in `ci-trusted` (main only); deployment: false keeps the
+    # smoke runs from creating a deployment record.
+    environment:
+      name: ${{ github.ref == 'refs/heads/main' && 'ci-trusted' || '' }}
+      deployment: false
+    steps:
+      - name: Mint gears-rust-release app token
+        id: app
+        if: >-
+          vars.GEARS_RELEASE_APP_CLIENT_ID != '' &&
+          github.actor != 'dependabot[bot]' &&
+          !github.event.pull_request.head.repo.fork
+        continue-on-error: true  # a bad key or missing install must never fail the job
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.GEARS_RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GEARS_RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: read
+      - name: Read App rate limit
+        env:
+          FAMILY: release
+          APP_TOKEN: ${{ steps.app.outputs.token }}
+          MINT_OUTCOME: ${{ steps.app.outcome }}
+        run: |
+          if [ -z "$APP_TOKEN" ]; then
+            [ "$MINT_OUTCOME" = failure ] && echo "::warning::gears-rust-$FAMILY app token mint failed"
+            line="RATE-APP ts=$(date -u +%Y-%m-%dT%H:%M:%SZ) token=$FAMILY status=not-configured"
+            echo "$line"
+            echo "$line" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if ! json=$(curl -fsS -H "Authorization: Bearer $APP_TOKEN" \
+            -H "Accept: application/vnd.github+json" https://api.github.com/rate_limit); then
+            echo "::warning::rate_limit request failed for token=$FAMILY"
+            exit 0
+          fi
+          line=$(jq -r --arg app "$FAMILY" '.resources.core | "RATE-APP ts=\(now|todate) token=\($app) limit=\(.limit) used=\(.used) remaining=\(.remaining) reset=\(.reset|todate)"' <<<"$json")
+          echo "$line"
+          echo "$line" >> "$GITHUB_STEP_SUMMARY"

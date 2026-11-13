@@ -33,8 +33,7 @@ use account_management_sdk::{
 use serde_json::json;
 use time::OffsetDateTime;
 use toolkit_security::SecurityContext;
-use types_registry_sdk::testing::MockTypesRegistryClient;
-use types_registry_sdk::{GtsTypeId, GtsTypeSchema};
+use types_registry_sdk::testing_platform::{MockTypesRegistry, Seed};
 use uuid::Uuid;
 
 use crate::domain::error::DomainError;
@@ -45,11 +44,37 @@ use crate::domain::user::test_support::{FakeIdpUserProvisioner, FakeUserOutcome}
 
 const USER_SCHEMA: &str = gts_id!("cf.core.am.user.v1~");
 
+#[tokio::test]
+async fn mandatory_tenant_type_read_preserves_caller_refusals_before_user_creation() {
+    use crate::infra::types_registry::test_helpers::{at_the_boundary, refusals};
+    use types_registry_sdk::testing_platform::{Call, Fault};
+
+    for (refusal, status) in refusals() {
+        let tenants = Arc::new(FakeTenantRepo::new());
+        let tenant_id = Uuid::from_u128(0x1);
+        seed_tenant(&tenants, tenant_id, None, TenantStatus::Active, "acme");
+        let registry = Arc::new(registry_with_test_tenant_type());
+        seed_user_schema(&registry);
+        registry.inject(Fault::on(Call::BatchGet).fail(refusal));
+        let idp = Arc::new(FakeIdpUserProvisioner::new());
+        let service = UserService::new(tenants, idp.clone(), registry.clone(), mock_enforcer());
+
+        let error = service
+            .create_user(&ctx(), tenant_id, payload("alice"))
+            .await
+            .expect_err("the caller cannot resolve the tenant type");
+
+        assert_eq!(at_the_boundary(error).1, Some(status));
+        assert_eq!(idp.create_call_count(), 0);
+        assert_eq!(registry.platform_calls(Call::BatchGet), 0);
+    }
+}
+
 /// Canonical chained `tenant_type` every seeded tenant carries. The
-/// matching `GtsTypeSchema` is pre-registered in [`make_service`]'s
-/// `MockTypesRegistryClient` so `UserService::resolve_active_tenant`
+/// matching Type Schema is pre-registered in [`make_service`]'s
+/// `MockTypesRegistry` so `UserService::resolve_active_tenant`
 /// can resolve the typed `GtsTypeId` via
-/// `get_type_schema_by_uuid` (mandatory after the IdP-metadata
+/// `resolve_type_id` (mandatory after the IdP-metadata
 /// isolation refactor — a missing schema now surfaces as
 /// `ServiceUnavailable` instead of `Option::None`). Tests that need
 /// a specific failure shape override the registry stub.
@@ -61,19 +86,12 @@ fn test_tenant_type_uuid() -> Uuid {
         .to_uuid()
 }
 
-/// Minimal `GtsTypeSchema` matching [`TEST_TENANT_TYPE_ID`]. The body
-/// is an empty object — `resolve_active_tenant` only reads `type_id`
-/// off the result, so the schema content does not affect any tests.
-/// Derived chains require a parent reference; we build one
-/// recursively up to the base.
-fn test_tenant_type_schema() -> GtsTypeSchema {
-    fn build(type_id: &str) -> GtsTypeSchema {
-        let parent = GtsTypeSchema::derive_parent_type_id(type_id)
-            .map(|p| std::sync::Arc::new(build(p.as_ref())));
-        GtsTypeSchema::try_new(GtsTypeId::new(type_id), json!({}), None, parent)
-            .expect("synthetic tenant_type schema is valid")
-    }
-    build(TEST_TENANT_TYPE_ID)
+/// A registry holding [`TEST_TENANT_TYPE_ID`]. `resolve_active_tenant`
+/// only reads the identifier, so the content does not affect any tests.
+fn registry_with_test_tenant_type() -> MockTypesRegistry {
+    let registry = MockTypesRegistry::new();
+    registry.seed(TEST_TENANT_TYPE_ID, json!({ "type": "object" }));
+    registry
 }
 
 // ---- helpers -------------------------------------------------------
@@ -111,54 +129,21 @@ fn ctx_for(root: Uuid) -> SecurityContext {
         .expect("ctx")
 }
 
-fn user_schema() -> GtsTypeSchema {
-    let body = json!({
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["id", "username"],
-        "properties": {
-            "id": { "type": "string", "format": "uuid" },
-            "username": { "type": "string", "minLength": 1, "maxLength": 255 },
-            "email": { "type": "string", "format": "email" },
-            "display_name": { "type": "string", "minLength": 1, "maxLength": 255 },
-        },
-    });
-    GtsTypeSchema::try_new(GtsTypeId::new(USER_SCHEMA), body, None, None)
-        .expect("synthetic user schema is valid")
+fn seed_user_schema(registry: &MockTypesRegistry) {
+    registry.seed(
+        USER_SCHEMA,
+        <account_management_sdk::gts::UserV1 as gts::GtsSchema>::gts_schema_with_refs(),
+    );
 }
 
 fn make_service(tenants: Arc<FakeTenantRepo>, idp: Arc<FakeIdpUserProvisioner>) -> UserService {
-    // Registry pre-loaded with [`TEST_TENANT_TYPE_ID`] so
-    // `resolve_active_tenant` (which now treats `tenant_type` as
-    // mandatory) can resolve the seeded tenants' chained type, AND
-    // with the `gts.cf.core.am.user.v1~` user-projection schema so
-    // `validate_new_user_payload_via_gts` reaches the registered-
-    // schema path. `create_user` is fail-closed on a missing user
-    // schema (see `validate_new_user_payload_via_gts` doc), so any
-    // happy-path test would otherwise short-circuit to
-    // `ServiceUnavailable` before reaching the IdP. A dedicated test
-    // (`create_user_without_registered_user_schema_returns_service_unavailable`)
-    // pins the fail-closed behaviour with a registry that omits the
-    // user schema.
-    let types_registry = Arc::new(
-        MockTypesRegistryClient::new()
-            .with_type_schemas([test_tenant_type_schema(), user_schema()]),
-    );
-    UserService::new(tenants, idp, types_registry, mock_enforcer())
-}
-
-fn make_service_without_user_schema(
-    tenants: Arc<FakeTenantRepo>,
-    idp: Arc<FakeIdpUserProvisioner>,
-) -> UserService {
-    // Mirrors `make_service` but omits the `gts.cf.core.am.user.v1~`
-    // schema so `validate_new_user_payload_via_gts` exercises its
-    // fail-closed arm. Drives the
-    // `create_user_without_registered_user_schema_returns_service_unavailable`
-    // service-layer contract test.
-    let types_registry =
-        Arc::new(MockTypesRegistryClient::new().with_type_schemas([test_tenant_type_schema()]));
-    UserService::new(tenants, idp, types_registry, mock_enforcer())
+    // Only the mandatory tenant type is needed; User command validation is local.
+    UserService::new(
+        tenants,
+        idp,
+        Arc::new(registry_with_test_tenant_type()),
+        mock_enforcer(),
+    )
 }
 
 fn seed_tenant(
@@ -237,6 +222,28 @@ async fn create_user_happy_path_returns_projection() {
     assert_eq!(calls[0].1, "alice");
 }
 
+/// A tenant whose type was deleted keeps its identifier: the request
+/// read resolves the tombstone and the `IdP` is called as usual.
+#[tokio::test]
+async fn create_user_under_a_tenant_of_a_deleted_type_resolves_its_type() {
+    let tenants = Arc::new(FakeTenantRepo::new());
+    let tenant_id = Uuid::from_u128(0x1);
+    seed_tenant(&tenants, tenant_id, None, TenantStatus::Active, "acme");
+    let types_registry = Arc::new(MockTypesRegistry::new());
+    types_registry
+        .seed_entity(Seed::new(TEST_TENANT_TYPE_ID, json!({ "type": "object" })).deleted());
+    seed_user_schema(&types_registry);
+    let idp = Arc::new(FakeIdpUserProvisioner::new());
+    idp.set_create_projection(IdpUser::new(Uuid::from_u128(0xABCD), "alice"));
+    let svc = UserService::new(tenants, idp.clone(), types_registry, mock_enforcer());
+
+    svc.create_user(&ctx(), tenant_id, payload("alice"))
+        .await
+        .expect("a deleted tenant type still resolves");
+
+    assert_eq!(idp.create_call_count(), 1);
+}
+
 /// Mirror of [`create_user_happy_path_returns_projection`] with
 /// the `gts.cf.core.am.user.v1~` user-projection schema actually
 /// registered in the types registry. Pins that the service-layer
@@ -256,7 +263,9 @@ async fn create_user_happy_path_with_registered_user_schema_returns_projection()
             .with_email("alice@example.com")
             .with_display_name("Alice"),
     );
-    let svc = make_service(tenants, idp.clone());
+    let registry = Arc::new(registry_with_test_tenant_type());
+    seed_user_schema(&registry);
+    let svc = UserService::new(tenants, idp.clone(), registry, mock_enforcer());
 
     let projection = svc
         .create_user(&ctx(), tenant_id, payload("alice"))
@@ -270,50 +279,102 @@ async fn create_user_happy_path_with_registered_user_schema_returns_projection()
     assert_eq!(
         idp.create_call_count(),
         1,
-        "IdP must be called once when the registered schema admits the payload"
+        "registered resource metadata does not replace the command contract"
     );
 }
 
-/// Service-layer contract test for the fail-closed
-/// `validate_new_user_payload_via_gts` arm: when the registry has no
-/// `gts.cf.core.am.user.v1~` entry, `create_user` MUST surface
-/// `ServiceUnavailable` rather than degrading to length-only checks.
-/// Pins that the deployment cliff (`format: email` and future
-/// `pattern` rules silently disabled before catalog seed) cannot
-/// recur.
+/// Fixed command validation does not depend on the User resource catalogue.
 #[tokio::test]
-async fn create_user_without_registered_user_schema_returns_service_unavailable() {
+async fn create_user_validation_does_not_require_a_user_resource_schema() {
     let tenants = Arc::new(FakeTenantRepo::new());
     let tenant_id = Uuid::from_u128(0x1);
     seed_tenant(&tenants, tenant_id, None, TenantStatus::Active, "acme");
-
     let idp = Arc::new(FakeIdpUserProvisioner::new());
-    let svc = make_service_without_user_schema(tenants, idp.clone());
-
-    let err = svc
+    let user_id = Uuid::from_u128(0xABCF);
+    idp.set_create_projection(IdpUser::new(user_id, "alice"));
+    let svc = make_service(tenants, idp.clone());
+    let result = svc
         .create_user(&ctx(), tenant_id, payload("alice"))
         .await
-        .expect_err(
-            "user schema unregistered MUST fail closed -- no AM-side fallback gate \
-             exists for users, so degrading to length-only would silently disable \
-             format/pattern rules until the catalog is seeded",
-        );
+        .expect("a valid command needs no User resource schema");
+    assert_eq!(result.id, user_id);
+    assert_eq!(idp.create_call_count(), 1);
+}
 
-    match err {
-        DomainError::ServiceUnavailable { detail, .. } => {
-            assert!(
-                detail.contains(USER_SCHEMA) && detail.contains("catalog"),
-                "ServiceUnavailable.detail must name the missing schema and the \
-                 catalog-seed remediation; got: {detail}"
-            );
+#[tokio::test]
+async fn invalid_email_is_rejected_locally_without_a_user_resource_schema() {
+    let tenants = Arc::new(FakeTenantRepo::new());
+    let tenant_id = Uuid::from_u128(0x1);
+    seed_tenant(&tenants, tenant_id, None, TenantStatus::Active, "acme");
+    let idp = Arc::new(FakeIdpUserProvisioner::new());
+    let svc = make_service(tenants, idp.clone());
+    let error = svc
+        .create_user(
+            &ctx(),
+            tenant_id,
+            IdpNewUser::new("alice").with_email("not-an-email"),
+        )
+        .await
+        .expect_err("invalid DTO");
+    assert!(matches!(error, DomainError::Validation { .. }), "{error:?}");
+    assert_eq!(idp.create_call_count(), 0);
+}
+
+#[tokio::test]
+async fn update_user_validation_does_not_require_a_user_resource_schema() {
+    let tenants = Arc::new(FakeTenantRepo::new());
+    let tenant_id = Uuid::from_u128(0x1);
+    seed_tenant(&tenants, tenant_id, None, TenantStatus::Active, "acme");
+    let idp = Arc::new(FakeIdpUserProvisioner::new());
+    let user_id = Uuid::from_u128(0xABCF);
+    idp.set_update_projection(IdpUser::new(user_id, "alice"));
+    let svc = make_service(tenants, idp.clone());
+    svc.update_user(
+        &ctx(),
+        tenant_id,
+        user_id,
+        IdpUserPatch::new()
+            .with_first_name(None)
+            .with_last_name(None)
+            .with_email(None),
+    )
+    .await
+    .expect("a clear-only command needs no User resource schema");
+    assert_eq!(idp.update_call_count(), 1);
+}
+
+#[tokio::test]
+async fn given_and_family_name_bounds_precede_create_and_update_provider_calls() {
+    for first_name in [true, false] {
+        for invalid in [String::new(), "x".repeat(256)] {
+            let tenants = Arc::new(FakeTenantRepo::new());
+            let tenant_id = Uuid::from_u128(0x1);
+            seed_tenant(&tenants, tenant_id, None, TenantStatus::Active, "acme");
+            let idp = Arc::new(FakeIdpUserProvisioner::new());
+            let svc = make_service(tenants, idp.clone());
+            let mut create = payload("alice");
+            let mut patch = IdpUserPatch::new();
+            if first_name {
+                create.first_name = Some(invalid.clone());
+                patch.first_name = Some(Some(invalid));
+            } else {
+                create.last_name = Some(invalid.clone());
+                patch.last_name = Some(Some(invalid));
+            }
+            let error = svc
+                .create_user(&ctx(), tenant_id, create)
+                .await
+                .expect_err("profile bound");
+            assert!(matches!(error, DomainError::Validation { .. }), "{error:?}");
+            let error = svc
+                .update_user(&ctx(), tenant_id, Uuid::from_u128(0xABC), patch)
+                .await
+                .expect_err("set-value profile bound");
+            assert!(matches!(error, DomainError::Validation { .. }), "{error:?}");
+            assert_eq!(idp.create_call_count(), 0);
+            assert_eq!(idp.update_call_count(), 0);
         }
-        other => panic!("expected ServiceUnavailable, got {other:?}"),
     }
-    assert_eq!(
-        idp.create_call_count(),
-        0,
-        "fail-closed validation MUST run before any IdP call"
-    );
 }
 
 #[tokio::test]
@@ -1547,8 +1608,7 @@ mod cleanup {
         // through `delete_user` fails with the fixed
         // `ServiceUnavailable { detail: "tenant type resolution is temporarily
         // unavailable" }` before the RG-cleanup path ever runs.
-        let types_registry =
-            Arc::new(MockTypesRegistryClient::new().with_type_schemas([test_tenant_type_schema()]));
+        let types_registry = Arc::new(registry_with_test_tenant_type());
         let rg: Arc<dyn ResourceGroupClient + Send + Sync> = rg;
         UserService::new(tenants, idp, types_registry, mock_enforcer())
             .with_rg_membership_cleanup(rg)
@@ -1774,4 +1834,49 @@ mod cleanup {
             other => panic!("expected ServiceUnavailable, got {other:?}"),
         }
     }
+}
+
+// ---- who registry reads are made for --------------------------
+
+/// Two callers through one shared service: the tenant guard's
+/// `tenant_type` reads are made for
+/// exactly the caller of each flow, and none reaches the platform API.
+#[tokio::test]
+async fn every_registry_read_names_the_requests_caller() {
+    use crate::infra::types_registry::test_helpers::{CallerSpy, assert_only_caller, caller_in};
+
+    let tenants = Arc::new(FakeTenantRepo::new());
+    let tenant_id = Uuid::from_u128(0x70);
+    seed_tenant(&tenants, tenant_id, None, TenantStatus::Active, "acme");
+    let idp = Arc::new(FakeIdpUserProvisioner::new());
+    let user_id = Uuid::from_u128(0xF00D);
+    idp.set_create_projection(IdpUser::new(user_id, "alice"));
+    idp.set_update_projection(IdpUser::new(user_id, "alice"));
+    idp.set_list_items(vec![IdpUser::new(user_id, "alice")]);
+    let registry = Arc::new(registry_with_test_tenant_type());
+    seed_user_schema(&registry);
+    let spy = CallerSpy::for_requests(registry);
+    let svc = UserService::new(tenants, idp, spy.clone(), mock_enforcer());
+
+    for n in [1, 2] {
+        let ctx = caller_in(n, ctx_subject_root());
+        svc.create_user(&ctx, tenant_id, payload("alice"))
+            .await
+            .expect("create");
+        svc.update_user(&ctx, tenant_id, user_id, email_patch("new@example.com"))
+            .await
+            .expect("update");
+        svc.list_users(&ctx, tenant_id, ListUsersQuery::new(pagination()))
+            .await
+            .expect("list");
+        svc.get_user(&ctx, tenant_id, user_id).await.expect("get");
+        svc.delete_user(&ctx, tenant_id, user_id)
+            .await
+            .expect("delete");
+        // Every operation reads only the tenant type; DTO validation is local.
+        assert_eq!(spy.callers().len(), 5);
+        assert_only_caller(&spy.callers(), &ctx);
+        spy.clear();
+    }
+    assert_eq!(spy.platform_reads(), 0);
 }

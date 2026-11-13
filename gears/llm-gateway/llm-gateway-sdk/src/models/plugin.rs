@@ -25,13 +25,12 @@ use tokio_util::sync::CancellationToken;
 #[non_exhaustive]
 pub struct ProviderCallCtx {
     /// The resolved model info the core fetched from Model Registry, carried
-    /// unchanged as the GTS-typed [`ModelInfoV1`] envelope (default
-    /// `serde_json::Value` provider settings). Its `gts_type` is the
-    /// authoritative provider routing key and equals the resolving plugin's
-    /// declared `provider_type`. The plugin narrows it to its typed view (e.g.
-    /// `ModelInfoV1<OpenAiSettingsV1>`) via [`ProviderCallCtx::typed_info`] and
-    /// reads `provider_model_id`, the endpoint, generic and provider-specific
-    /// settings, and pricing from there.
+    /// unchanged. Its `gts_type` is the provider type, the authoritative
+    /// provider routing key, and equals the resolving plugin's declared
+    /// `provider_type`. The plugin reads `provider_model_id`, `base_url`,
+    /// generic settings, and the `cost` rates from it, and narrows the opaque
+    /// `provider_settings` to its own settings type via
+    /// [`ProviderCallCtx::provider_settings`].
     pub model_info: ModelInfoV1,
 
     /// Gateway request correlation id (the response `id`), propagated for
@@ -42,7 +41,8 @@ pub struct ProviderCallCtx {
     /// Provider API key the core fetched from `CredStore` by the model's secret
     /// reference (`cpt-cf-llm-gateway-fr-provider-credentials-v1`). The plugin
     /// sets it on the outbound provider request, which goes only through OAGW,
-    /// over HTTPS, to the model's upstream alias (`provider_settings.oagw_alias`).
+    /// over HTTPS, to the model's destination (`base_url`, or the provider's
+    /// default URL).
     /// `None` for models without a secret reference (authentication handled by
     /// OAGW, local provider). The
     /// key is redacted in `Debug`, zeroed on drop, and must never be logged or
@@ -87,22 +87,24 @@ impl ProviderCallCtx {
         self
     }
 
-    /// Narrow [`Self::model_info`] to a concrete provider view `Q`, validating
-    /// its `gts_type` against `Q`'s GTS type id. Delegates to Model Registry's
-    /// `ModelInfoV1::try_into_typed`.
+    /// Narrow `model_info.provider_settings` to the plugin's settings type `S`,
+    /// validating `model_info.gts_type` against `S`'s GTS type id.
     ///
     /// # Errors
     ///
     /// - [`gts::NarrowError::SchemaId`] when `model_info.gts_type` does not match
-    ///   `Q`'s GTS type id (the plugin was handed a payload for another provider).
-    /// - [`gts::NarrowError::Deserialize`] when the payload can't be
-    ///   deserialized into `Q`.
-    pub fn typed_info<Q>(&self) -> Result<ModelInfoV1<Q>, gts::NarrowError>
+    ///   `S`'s GTS type id (the plugin was handed a model of another provider).
+    /// - [`gts::NarrowError::Deserialize`] when `provider_settings` can't be
+    ///   deserialized into `S`.
+    pub fn provider_settings<S>(&self) -> Result<S, gts::NarrowError>
     where
-        Q: gts::GtsSchema,
-        for<'de> Q: gts::GtsDeserialize<'de>,
+        S: gts::GtsSchema,
+        for<'de> S: gts::GtsDeserialize<'de>,
     {
-        self.model_info.clone().try_into_typed::<Q>()
+        gts::try_narrow::<S>(
+            self.model_info.gts_type.as_ref(),
+            self.model_info.provider_settings.clone(),
+        )
     }
 }
 
@@ -165,5 +167,54 @@ impl ProviderPluginCapabilities {
     pub fn with_web_search(mut self) -> Self {
         self.web_search = true;
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use model_registry_sdk::models::{ContextWindow, ModelInfoV1, ProviderTypeV1};
+    use tokio_util::sync::CancellationToken;
+    use toolkit_gts::gts_id;
+
+    use super::ProviderCallCtx;
+
+    #[derive(Debug)]
+    #[toolkit_gts::gts_type_schema(
+        dir_path = "schemas",
+        base = ProviderTypeV1,
+        type_id = gts_id!("cf.genai.model.provider.v1~cf.genai._.test.v1~"),
+        description = "Test provider settings",
+        properties = "oagw_alias"
+    )]
+    pub struct TestProviderSettingsV1 {
+        pub oagw_alias: String,
+    }
+
+    fn ctx(gts_type: &str) -> ProviderCallCtx {
+        let mut info = ModelInfoV1::new(
+            gts::GtsTypeId::new(gts_type),
+            "test-model",
+            "Test model",
+            ContextWindow::new(8_192),
+        );
+        info.provider_settings = serde_json::json!({ "oagw_alias": "test-upstream" });
+        ProviderCallCtx::new(info, "req-1", CancellationToken::new())
+    }
+
+    #[test]
+    fn provider_settings_narrows_to_the_plugin_type() {
+        let settings: TestProviderSettingsV1 =
+            ctx(gts_id!("cf.genai.model.provider.v1~cf.genai._.test.v1~"))
+                .provider_settings()
+                .expect("narrows");
+        assert_eq!(settings.oagw_alias, "test-upstream");
+    }
+
+    #[test]
+    fn provider_settings_rejects_another_provider_type() {
+        let err = ctx(gts_id!("cf.genai.model.provider.v1~cf.genai._.other.v1~"))
+            .provider_settings::<TestProviderSettingsV1>()
+            .expect_err("type mismatch");
+        assert!(matches!(err, gts::NarrowError::SchemaId { .. }), "{err}");
     }
 }

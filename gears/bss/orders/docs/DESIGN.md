@@ -1445,7 +1445,7 @@ The interfaces each slice owns are defined here and specified normatively in [§
 | `authz-resolver-sdk` | Shared `PolicyEnforcer` adapter | PDP decisions and compiled AccessScopes for reads, transitions and service-owned operations |
 | `event-broker-sdk` | `EventBrokerApi`, `DbProducer`, `ProducerOutboxQueue` (`outbox` feature) | Typed event validation, managed chained producer registration, broker partitioning and asynchronous publication |
 | `toolkit-db` advisory locks | `Db::lock` / `Db::try_lock`, `DbLockGuard` | Session-bound coordination for the authoritative worker roster in [Foundation contract §3.8](DESIGN.md#contract-01-3-8); toolkit owns outbox coordination |
-| `types-registry` | SDK client | Register and resolve event, subject, refusal-reason and category types before readiness; registration failure prevents startup |
+| `types-registry` | SDK client | Register subject, refusal-reason and category types before readiness and resolve the event types, whose contract the registry seeds from the GTS inventory; registration failure prevents startup |
 | `orders-workflow` | SDK client and published events | Bidirectional seam: Workflow calls transition operations and consumes state notifications. This gear makes no call to Workflow |
 
 **Dependency Rules** (per project conventions):
@@ -3179,7 +3179,7 @@ refused by `04`'s `administrative-edit-unchanged` (D-149), not by this reason.
 |-------------------|----------------|----------|
 | `toolkit-db` | Runtime-scoped database access plus `outbox` | The one transaction per transition, append-only stores, toolkit outbox migrations and the managed producer queue |
 | `event-broker-sdk` | `EventBrokerApi`, `DbProducer`, `ProducerOutboxQueue` (`outbox` feature) | Typed validation, managed chained producer registration, broker partitioning and asynchronous publication |
-| `types-registry` | SDK client | Resolving and registering the GTS event, subject, error and category types of §4.7; a type that fails to register fails the boot |
+| `types-registry` | SDK client | Resolving the GTS event types of §4.7, which the registry seeds from the GTS inventory, and registering the subject, error and category types; a type that fails to register fails the boot |
 | `toolkit-db` advisory locks | `Db::lock` / `Db::try_lock`, `DbLockGuard` | Session-bound coordination for the Orders worker roster in §3.8; toolkit manages its own outbox workers |
 
 **Dependency Rules** (per project conventions):
@@ -3495,7 +3495,7 @@ which is the key the projection and the totals depend on.
 | selected_items | jsonb | Item IDs, optional choices, positive exact-decimal quantities and selected dimension values under §4.3 |
 | currency | char(3) | The line's currency; the single-currency predicate reads it |
 | order_pin | jsonb | Versioned `OrderPin` under [03 §4.3](#contract-03-4-3), schema 2 complete immutable Pricing receipt/query/bindings plus assessment and exact issued deadline (D-192); NULL only on the draft version |
-| overlap_scope_key | text | Subscriptions' registry-owned `catalogSubscriptionProductKey` (SUB-G1) for this accepted line, stored as received from its owner and never computed here; the PriceBook derivation proposed to that owner is the SKU of the line's paid recurring item(s). Persisted and reused by claims and activation; D-153, D-163. |
+| overlap_scope_key | text | Subscriptions' versioned-policy `overlapScopeKey` for this accepted line (historically SUB-G1's `catalogSubscriptionProductKey`), stored with the owner's policy provenance and never computed here. Persisted and reused by claims and activation; the earlier SKU derivation proposal in D-153/D-163 does not fix the current owner's policy. |
 | contract_effective_date | date | Mandatory |
 | service_activation_date | date | Requested activation; retained even when deferred. Never NULL on an admitted line: the authored value or, where the snapshot does not require it, the contract-effective default (D-60, D-208) |
 | acceptance_due_date | date | A calendar field; never recorded assent. Never NULL on an admitted line: the authored value or, where the snapshot does not require it, the contract-effective default (D-60, D-208) |
@@ -3523,7 +3523,7 @@ without one.
 | claim_id | uuid | Claim identity |
 | payer_tenant_id | uuid | Billing party that owns the overlap scope |
 | resource_tenant_id | uuid | The order's resource recipient, copied from `orders_order.resource_tenant_id`; immutable once the order is `submitted`, so a claim's value never changes. Scopes the claim to one customer so a partner paying for several customers does not collide across them (D-179) |
-| overlap_scope_key | text | Subscriptions' registry-owned `catalogSubscriptionProductKey` (SUB-G1) for this accepted line, stored as received from its owner and never computed here; the PriceBook derivation proposed to that owner is the SKU of the line's paid recurring item(s). Persisted and reused by claims and activation; D-153, D-163. |
+| overlap_scope_key | text | Subscriptions' versioned-policy `overlapScopeKey` for this accepted line (historically SUB-G1's `catalogSubscriptionProductKey`), stored with the owner's policy provenance and never computed here. Persisted and reused by claims and activation; the earlier SKU derivation proposal in D-153/D-163 does not fix the current owner's policy. |
 | order_id, version | uuid, integer | Order and proposed version of the reservation attempt; a refused attempt's version may never materialize and is not proof of admission |
 | claimed_at | timestamptz | Server-recorded reservation instant inside the transaction, not an admission or commit timestamp |
 | released_at | timestamptz, nullable | Server-recorded release instant; also set on provisional reservations released before committing a refusal |
@@ -4911,10 +4911,11 @@ serializes the standard producer envelope into toolkit-db's opaque payload. Orde
 index or query event payloads in its database; Event Broker is the event query and replay surface.
 
 **Subject type.** Orders owns and registers `gts.cf.bss.orders.order.v1~` as the GTS entity type
-of an order before registering its event schemas. This is a type identifier, not an event type
-or an instance ID; it does not publish order state as a separate event or change the REST model.
-All eleven event types use it as `SUBJECT_TYPE` and in `allowed_subject_types`. This registration
-is required implementation work, not a claim that the type already exists in the registry.
+of an order at init. This is a type identifier, not an event type or an instance ID; it does not
+publish order state as a separate event or change the REST model.
+All eleven event types use it as `SUBJECT_TYPE` and in `allowed_subject_types`. The event contract
+itself (topic, abstract base, eleven final types) is a set of GTS inventory entries that
+`types-registry` seeds at its own init, before the `init` of any gear that depends on it.
 
 **Event tenancy and routing (D-95).** All eleven internal lifecycle event types **MUST** explicitly
 return the canonical platform-root tenant UUID from `TypedEvent::tenant_id()`. The Event Broker
@@ -5182,14 +5183,16 @@ precedence; `request-invalid` is the fallback, never a second name for them. An 
 optional here and compared only at §3.6 *Attempt Transition* step 12 (D-147).
 
 The **registry** is the platform `types-registry`, reached as an SDK client (`§3.4`). Consumers
-resolve event schemas and reason types there; this gear registers its types at startup, and a
-type that fails to register fails the boot rather than a request.
+resolve event schemas and reason types there; this gear registers its resource and reason types
+at startup, and one that fails to register fails the boot rather than a request; its event
+contract is a set of GTS inventory entries, so a bad event-contract document fails the registry's
+startup in every host that links `cf-gears-bss-orders`.
 
 <a id="contract-01-traits-and-versioning"></a>
 
 #### Traits, and versioning
 
-The SDK's `EventTraits` rejects unknown keys. The abstract Orders event declares the following
+The SDK's `EventV1Traits` rejects unknown keys. The abstract Orders event declares the following
 traits, and each concrete type's resolved schema **MUST** retain these values:
 
 ```json
@@ -5221,8 +5224,9 @@ know. A **major** bump is a breaking change and follows `§4.6`'s dual-publicati
 adds is that compatibility is *checked* at registration by the registry rather than asserted in
 prose.
 
-**Required implementation verification (not yet implemented).** Register the topic, subject
-type, abstract event and all eleven concrete schemas against the deployed registry/broker.
+**Required implementation verification (not yet implemented).** Verify against the deployed
+registry/broker that the topic, abstract event and all eleven concrete schemas are present (GTS
+inventory entries the registry seeds) and that the subject type Orders registers at init is present.
 Verify the resolved common and concrete `data` constraints, required members, supported traits
 and `/subject` pointer; reject unknown traits and invalid/missing business fields. Serialize
 each type through the SDK producer and verify the seven publish-required fields in §4.4,
@@ -8998,10 +9002,10 @@ migration seeds the five permanent platform rows of §3.7 with `draft` **90 days
 **14 days**, `pending_approval` **14 days**, `approved` **30 days** and `on_hold` **30 days**, at
 `policy_revision` 1 with `provisional = true`. Product refines any of them under Q-06 or Q-07(b) by
 promoting a new revision through the policy channel, which sets `provisional = false`; no code or
-design change follows. This is the Subscriptions posture for its own draft TTL — a 90-day platform
-default shipped while Product's value is TBD (`gears/bss/subscriptions/docs/PRD.md` §15, SUB-D-11
-amendment) — and the Orders posture for unset elections, which read as their safe value
-([05 §3.7](DESIGN.md#contract-05-3-7)). The values are deliberately long so that a
+design change follows. These are Orders-owned provisional values. Subscriptions separately
+resolves its draft housekeeping TTL from versioned policy; it defines no 90-day default
+([Subscriptions decisions](../../subscriptions/docs/DECISIONS.md), SUB-D-11). Orders unset elections
+read as their safe value ([05 §3.7](DESIGN.md#contract-05-3-7)). The values are deliberately long so that a
 provisional bound expires only orders that are genuinely abandoned: `submitted` and
 `pending_approval` at 14 days exceed the sibling gear's 72-hour default approval escalation
 (`gears/bss/orders-workflow/docs/PRD.md` §6.2 *Escalation Timer*) several times over, and `approved` and `on_hold` at
@@ -9457,7 +9461,7 @@ platform rows at `policy_revision` 1 with `provisional = true`, not code constan
 | `approved` TTL | row 7 | **30 days** | The **ordinary** exit for a declined payment instrument, per [05-preconditions — What this design cannot express (normative statement of limitation)](DESIGN.md#contract-05-4-4). Because it is never unset in production, that order always has its automatic exit; the caps below stop a hold/resume or amendment cycle restarting it without limit, and [05 §4.4](DESIGN.md#contract-05-4-4) states it from the other side |
 | `on_hold` TTL | row 7 | **30 days** | The PRD names this the worst case, being deliberately open-ended in intent; does not apply to holds taken from `in_fulfillment` (§4.3) |
 | Override scope | row 7 | off | Whether seller scope may override platform scope per state. The mechanism is specified (§3.6, §3.7) and ready; it ships behind `ttl_seller_override_enabled`, default **off**, so the open choice is answered by turning the flag on or leaving it off ([DECISIONS.md](DECISIONS.md) D-137, Q-06) |
-| `draft` auto-void TTL | row 5 | **90 days** | Bounds basket accumulation; matches the Subscriptions draft auto-void platform default (SUB-D-11 amendment). The same row carries the program retention period, tracked as [DECISIONS.md](DECISIONS.md) Q-07, which stays open |
+| `draft` auto-void TTL | row 5 | **90 days** | Bounds basket accumulation under Orders' own provisional policy (D-181), independently of Subscriptions housekeeping TTL. The same row carries the program retention period, tracked as [DECISIONS.md](DECISIONS.md) Q-07, which stays open |
 
 Rows 5 and 7 are the two §15 questions this slice waits on for **confirmation**, no longer for a
 bound. Nothing else here is open: the

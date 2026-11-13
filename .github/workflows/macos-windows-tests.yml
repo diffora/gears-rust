@@ -38,15 +38,14 @@ jobs:
     uses: ./.github/workflows/test-suite.yml
     with:
       os: ${{ matrix.os }}
-    secrets:
-      S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
-      S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+    # test-suite.yml wires the shared build cache itself; see its header.
+    secrets: inherit
 
   issue:
     name: Update tracking issue
     needs: test
     if: ${{ !cancelled() && github.event_name == 'schedule' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.GEARS_FORCE_GITHUB_HOSTED == 'true' || github.repository != 'constructorfabric/gears-rust' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || 'gears-small' }}
     timeout-minutes: 10
     permissions:
       actions: read   # to read this run's jobs and reports
@@ -61,6 +60,37 @@ jobs:
           persist-credentials: false
           sparse-checkout: .github/actions
 
+      # Own App budget, separate from the shared GITHUB_TOKEN pool (GitHub App per workflow family)
+      - name: Mint gears-rust-nightly app token
+        id: app
+        # Unset variable, or a fork/Dependabot run without secrets: skip and fall back to GITHUB_TOKEN.
+        if: >-
+          vars.GEARS_NIGHTLY_APP_CLIENT_ID != '' &&
+          github.actor != 'dependabot[bot]' &&
+          !github.event.pull_request.head.repo.fork
+        continue-on-error: true  # a bad key or missing install must never fail the job
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.GEARS_NIGHTLY_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GEARS_NIGHTLY_APP_PRIVATE_KEY }}
+          permission-actions: read
+          permission-contents: read
+          permission-issues: write
+      - name: Report API token source
+        if: always()
+        env:
+          APP_TOKEN_SET: ${{ steps.app.outputs.token != '' }}
+          MINT_OUTCOME: ${{ steps.app.outcome }}
+          API_TOKEN: ${{ steps.app.outputs.token || github.token }}
+        run: |
+          if [ "$APP_TOKEN_SET" = true ]; then src=gears-rust-nightly; echo "::notice::GitHub API token: gears-rust-nightly app"
+          elif [ "$MINT_OUTCOME" = failure ]; then src=github-token; echo "::warning::gears-rust-nightly app token mint failed; using GITHUB_TOKEN"
+          else src=github-token; echo "::notice::GitHub API token: GITHUB_TOKEN (gears-rust-nightly app not configured or fork run)"; fi
+          # GET /rate_limit is free; one sample per job gives a per-token time series (see the API limits plan).
+          core=$(curl -fsS -m 10 -H "Authorization: Bearer $API_TOKEN" -H "Accept: application/vnd.github+json" \
+            https://api.github.com/rate_limit 2>/dev/null | tr -d ' \n' | sed -n 's/.*"core":{\([^}]*\)}.*/\1/p' | tr -d '"' | tr ',' ' ' | sed 's/:/=/g') || true
+          echo "RATE-APP ts=$(date -u +%Y-%m-%dT%H:%M:%SZ) token=$src workflow=$GITHUB_WORKFLOW job=$GITHUB_JOB ${core:-unavailable}"
+
       # Each OS report goes to its own folder, like reports/Windows. A re-run
       # keeps the old attempt's artifacts, so a name can appear twice. We take
       # the newest of each by ID and download it once.
@@ -68,7 +98,7 @@ jobs:
         if: needs.test.result == 'failure'
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app.outputs.token || github.token }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
         run: |
@@ -77,27 +107,69 @@ jobs:
           sort -k1,1nr | awk -F '\t' '!seen[$2]++' |
           while IFS=$'\t' read -r id artifact; do
             gh api "repos/$REPO/actions/artifacts/$id/zip" > "$RUNNER_TEMP/report.zip"
+            mkdir -p "reports/${artifact#rust-tests-}"
             unzip -q "$RUNNER_TEMP/report.zip" -d "reports/${artifact#rust-tests-}"
           done
           gh api --paginate "repos/$REPO/actions/runs/$RUN_ID/jobs" \
             --jq '.jobs[] | select(.name | startswith("Test Suite (")) | [.name, (.conclusion // "")] | @tsv' \
             > jobs.tsv
 
+      # The macOS runner sometimes returns I/O errors from its data disk
+      # (actions/runner-images#15265). test-suite.yml uploads the kernel log on a
+      # macOS failure. We fetch the newest one so the summary can say so. A run
+      # without that artifact is fine, and this step never fails the job.
+      - name: Download macOS kernel log
+        if: needs.test.result == 'failure'
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token || github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          id=$(gh api --paginate "repos/$REPO/actions/runs/$RUN_ID/artifacts" \
+            --jq '.artifacts[] | select(.name=="macos-kernel-log") | .id' | sort -nr | head -1)
+          if [ -z "$id" ]; then
+            exit 0
+          fi
+          gh api "repos/$REPO/actions/artifacts/$id/zip" > "$RUNNER_TEMP/kernel-log.zip"
+          mkdir -p infra/macOS
+          unzip -q "$RUNNER_TEMP/kernel-log.zip" -d infra/macOS
+
       # These tests often flake on macOS and Windows. Listing the failed tests
       # helps tell a flake from a real break.
       - name: Summarize failures
         if: needs.test.result == 'failure'
-        shell: python
+        shell: python3 {0}
         run: |
-          import glob, os
+          import glob, os, re
           import xml.etree.ElementTree as ET
 
           MAX = 20
+          # Fewer matches than this is noise, not a failing disk.
+          INFRA_EIO_MIN = 10
           lines = []
+          macos_failed = False
           for row in open("jobs.tsv"):
               job, conclusion = row.rstrip("\n").split("\t")
               lines.append(f"- {job}: **{conclusion or 'unknown'}**")
+              if "macos" in job.lower() and conclusion == "failure":
+                  macos_failed = True
           lines.append("")
+          eio = 0
+          try:
+              with open("infra/macOS/kernel-storage.log", errors="replace") as f:
+                  eio = sum(1 for l in f if re.search(r"disk\d+s\d+: I/O error", l))
+          except OSError:
+              pass
+          infra = macos_failed and eio >= INFRA_EIO_MIN
+          if infra:
+              lines += [
+                  f"**macOS: runner storage fault detected.** The kernel log shows {eio} `I/O error` lines on the runner's data disk. "
+                  "The macOS failures in this run are probably the hosted runner's disk, not a code regression "
+                  "(tracked in actions/runner-images#15265). This says nothing about Windows.",
+                  "",
+              ]
           for report in sorted(glob.glob("reports/*")):
               failed = []
               for path in glob.glob(f"{report}/*.xml"):
@@ -106,7 +178,9 @@ jobs:
                           failed.append(f"- `{case.get('name')}` ({case.get('classname', '')})")
               if failed:
                   more = [f"- ...and {len(failed) - MAX} more"] if len(failed) > MAX else []
-                  lines += [f"Failed on {os.path.basename(report)}:", ""] + failed[:MAX] + more + [""]
+                  name = os.path.basename(report)
+                  suffix = " (likely infra, see above)" if infra and name == "macOS" else ""
+                  lines += [f"Failed on {name}{suffix}:", ""] + failed[:MAX] + more + [""]
           if not any(l.startswith("Failed on") for l in lines):
               lines.append("No failed tests in the reports, so the build or setup failed. Check the run log.")
           lines += [
@@ -127,6 +201,7 @@ jobs:
           result: failure
           details-file: ${{ runner.temp }}/failures.md
           mention: ${{ env.ISSUE_MENTION }}
+          github-token: ${{ steps.app.outputs.token || github.token }}
 
       - name: Close nightly issue on success
         if: needs.test.result == 'success'
@@ -135,3 +210,4 @@ jobs:
           title: ${{ env.ISSUE_TITLE }}
           subject: The macOS and Windows tests
           result: success
+          github-token: ${{ steps.app.outputs.token || github.token }}

@@ -47,10 +47,23 @@ paths:
         storage backend and is never returned inline.
 
         Synchronous persistence - holding the response until the backend confirms
-        the event is persisted - is requested with the standard `Prefer: wait`
-        header (RFC 7240). It is not implemented yet and is answered
-        `501 Not Implemented`. `Prefer: respond-async` names the default (async)
-        behaviour and is accepted as a no-op (still `202`).
+        the event is persisted - is requested with the standard `Prefer: wait=N`
+        header (RFC 7240, N capped by configuration): `201 Created` once the event
+        is stored, `202 Accepted` if N elapses first (the event stays enqueued and
+        is stored later), `200 OK` when the event is a duplicate. `Prefer:
+        respond-async` names the default (async) behaviour and is accepted as a
+        no-op (still `202`).
+      parameters:
+        - name: Prefer
+          in: header
+          required: false
+          description: >-
+            RFC 7240 preference selecting synchronous persistence. `wait=N` asks
+            the broker to hold the response until the event is stored, N seconds
+            capped by configuration; a bare `wait` uses the cap and a non-numeric
+            value is rejected (`400`). `respond-async` is the default (no-op).
+          schema:
+            type: string
       requestBody:
         required: true
         content:
@@ -58,15 +71,36 @@ paths:
             schema:
               $ref: "./schemas/gts.cf.core.events.event.v1~.schema.json"
       responses:
+        "201":
+          description: >-
+            Stored - `Prefer: wait=N` was satisfied: the backend has the event.
+            No body.
+          headers:
+            Preference-Applied:
+              $ref: "#/components/headers/PreferenceApplied"
         "202":
-          description: Accepted, durably enqueued in the outbox
+          description: >-
+            Accepted, durably enqueued in the outbox (or `Prefer: wait=N` elapsed
+            before the backend stored the event).
+          headers:
+            Preference-Applied:
+              $ref: "#/components/headers/PreferenceApplied"
         "200":
           description: >-
             Idempotent duplicate - a lost-ack retry of the producer chain's current
             head. The event is already durable; nothing is written and the response
             carries no body.
+          headers:
+            Preference-Applied:
+              $ref: "#/components/headers/PreferenceApplied"
         "400":
-          description: Validation error (read-only/unknown field, unknown producer, etc.)
+          description: >-
+            Validation error (read-only/unknown field, malformed `trace_parent`,
+            a chained/monotonic mode invariant violated, etc.), the event's
+            resolved partition key over 1024 bytes in its JSON string form
+            (reason `partition_key_too_long`, field `events[0].partition_key`;
+            the key itself is not echoed), or a malformed `Prefer: wait` value
+            (not a non-negative whole number of seconds).
           content:
             application/problem+json:
               schema:
@@ -78,17 +112,30 @@ paths:
               schema:
                 $ref: "#/components/schemas/Problem"
         "404":
-          description: Topic or event type not registered.
+          description: Topic, event type or producer not registered.
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
         "412":
           description: >-
-            SequenceViolation - the producer chain does not advance by exactly one
-            from the broker's stored `last_sequence`. `context.resource_name` names
-            the resolved topic; the violation carries `expected_previous=<n>` so the
-            producer can resync (re-read `GET /v1/producers/{id}/cursors`).
+            SequenceViolation - the event neither advances nor duplicates the
+            producer chain's committed `last_sequence`. `context.resource_name`
+            names the resolved topic; the `sequence_mismatch` violation's
+            `description` reads `index=0 producer_id=<id> topic=<topic>
+            last_sequence=<n>`, the committed head last, so the producer can resync
+            (re-read `GET /v1/producers/{id}/cursors`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "413":
+          description: >-
+            EventTooLarge - the event's encoding is over the 60 KiB (61,440-byte)
+            per-event limit, checked after the envelope field checks (`source`,
+            `subject`, `trace_parent`, `type`) and before the event type is
+            resolved. An `event_too_large` field violation on `events[0]`, whose
+            description gives the measured bytes and the limit. Nothing is written.
           content:
             application/problem+json:
               schema:
@@ -103,9 +150,12 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
-        "501":
+        "503":
           description: >-
-            Synchronous publish (`Prefer: wait`) is not implemented yet.
+            ServiceUnavailable, retryable - the topic is not yet provisioned, the
+            broker's database or ingest pipeline is unavailable (including a
+            producer-chain write that exhausted its contention retries), or no ingest
+            instance is reachable.
           content:
             application/problem+json:
               schema:
@@ -119,6 +169,32 @@ paths:
         Atomic per-topic batch of up to 100 events. All-or-nothing per topic.
         Each event's owning topic is resolved from the `topic` trait on its `type`;
         a batch whose event types resolve to more than one topic is rejected.
+
+        Events may carry several producer ids, and stateless events. The chained
+        and monotonic events are split into runs, one per `(producer_id, topic)`,
+        each keeping request order, and each run is checked against its chain's
+        committed `last_sequence`: a chained run advances when its first event
+        links to the head, is a duplicate prefix through the event whose
+        `sequence` equals the head, and is otherwise a `412`; a monotonic run
+        skips its leading events with `sequence <= last_sequence`. Duplicates are
+        not enqueued; the rest of the batch is. Every answer is status only.
+
+        `Prefer: wait=N` (RFC 7240, N capped by configuration) applies to the
+        batch as a whole, with the status codes of a single publish: `201` once
+        every admitted event is stored, `202` if N elapses first, `200` when every
+        event is a duplicate.
+      parameters:
+        - name: Prefer
+          in: header
+          required: false
+          description: >-
+            RFC 7240 preference selecting synchronous persistence. `wait=N` asks
+            the broker to hold the response until every admitted event is stored,
+            N seconds capped by configuration; a bare `wait` uses the cap and a
+            non-numeric value is rejected (`400`). `respond-async` is the default
+            (no-op).
+          schema:
+            type: string
       requestBody:
         required: true
         content:
@@ -134,10 +210,46 @@ paths:
                   minItems: 1
                   maxItems: 100
       responses:
+        "201":
+          description: >-
+            Stored - `Prefer: wait=N` was satisfied: the backend has every event.
+            No body.
+          headers:
+            Preference-Applied:
+              $ref: "#/components/headers/PreferenceApplied"
         "202":
-          description: Accepted (async; the whole batch durably enqueued)
+          description: >-
+            Accepted (async; every event that is not a duplicate durably
+            enqueued, or `Prefer: wait=N` elapsed before they were stored). A batch
+            carrying any stateless event is never a duplicate.
+          headers:
+            Preference-Applied:
+              $ref: "#/components/headers/PreferenceApplied"
+        "200":
+          description: >-
+            Every event of the batch is a duplicate - a lost-ack resend. Nothing
+            is written and the response carries no body.
+          headers:
+            Preference-Applied:
+              $ref: "#/components/headers/PreferenceApplied"
         "400":
-          description: Validation error
+          description: >-
+            Validation error, or a batch run rule broken. An envelope field
+            violation (for example a malformed `trace_parent`) names the bare
+            field, as on `POST /v1/events`, and rejects the whole batch. A run
+            rule violation is a `field_violations` entry:
+            `empty_batch` (no events; field `events`), `duplicate_event_id` (an
+            `id` repeated within the batch; field `events[<index>].id`, the
+            repeat), `malformed_run` (a chained run's events do not link - every
+            event has `sequence > previous` and each after the first has
+            `previous` equal to the prior event's `sequence` - or a monotonic
+            run's sequences do not strictly increase; field
+            `events[<index>].meta`, the first offending event). The run rules are
+            checked before any chain state is read. An event whose resolved
+            partition key is over 1024 bytes in its JSON string form is a
+            `partition_key_too_long` field violation on
+            `events[<index>].partition_key`. A malformed `Prefer: wait` value
+            (not a non-negative whole number of seconds) is also `400`.
           content:
             application/problem+json:
               schema:
@@ -149,19 +261,30 @@ paths:
               schema:
                 $ref: "#/components/schemas/Problem"
         "404":
-          description: Topic or event type not registered.
+          description: Topic, event type or producer not registered.
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
         "412":
-          description: SequenceViolation - atomic batch rejection when any event in the batch fails the chain check
+          description: >-
+            SequenceViolation - atomic batch rejection: a run neither advances nor
+            duplicates its chain's committed `last_sequence`. Nothing is enqueued.
+            `context.resource_name` names the topic; the `sequence_mismatch`
+            violation's `description` reads `index=<n> producer_id=<id>
+            topic=<topic> last_sequence=<n>` - the position of the run's first
+            event, its producer and topic, and the committed head, last.
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
         "413":
-          description: BatchTooLarge (more events than the configured max) or BatchPayloadTooLarge (total payload over the configured byte ceiling)
+          description: >-
+            A `batch_too_large` field violation on `batch.count` (more events than
+            the configured max) or `batch.bytes` (total payload over the
+            configured byte ceiling), or an `event_too_large` field violation on
+            `events[<index>]` (an event's encoding over the 60 KiB per-event
+            limit). Nothing is enqueued.
           content:
             application/problem+json:
               schema:
@@ -172,9 +295,12 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
-        "501":
+        "503":
           description: >-
-            Synchronous publish (`Prefer: wait`) is not implemented yet.
+            ServiceUnavailable, retryable - the batch's topic is not yet provisioned,
+            the broker's database or ingest pipeline is unavailable (including a
+            producer-chain write that exhausted its contention retries), or no ingest
+            instance is reachable. Nothing is enqueued.
           content:
             application/problem+json:
               schema:
@@ -452,7 +578,7 @@ paths:
       tags: [producers]
       summary: Reset the ingest-side chain state for a producer
       description: |
-        Operator-driven chain reset. Clears `evbk_producer_state` rows and emits an audit
+        Operator-driven chain reset. Clears `event_broker_producer_sequence` rows and emits an audit
         record. When the request body is absent or empty, the producer's chain on every
         topic is cleared. When `topic` is present, only that topic's chain is cleared.
         Principal-bound — only the registering principal may call this.
@@ -566,8 +692,12 @@ paths:
                   partition: { type: integer }
                   start_sequence: { type: integer, format: int64 }
                   end_sequence: { type: integer, format: int64 }
-                  start_time: { type: string, format: date-time }
-                  end_time: { type: string, format: date-time }
+                  start_time:
+                    type: ["string", "null"]
+                    format: date-time
+                  end_time:
+                    type: ["string", "null"]
+                    format: date-time
                   segments:
                     type: array
                     items: { type: object, additionalProperties: true }
@@ -626,6 +756,14 @@ paths:
                     $ref: "#/components/schemas/PageInfo"
         "400":
           description: Invalid $filter expression or cursor mismatch
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "503":
+          description: >-
+            ServiceUnavailable, retryable - the specification store is unavailable, or
+            no ingest instance is reachable.
           content:
             application/problem+json:
               schema:
@@ -852,7 +990,7 @@ paths:
           description: |
             `ConsumerGroupNotFound` (anonymous: must POST /v1/consumer-groups first; named:
             must register via types_registry),
-            `TopicNotFound` (an `interest.topic` is not registered in `evbk_topic`).
+            `TopicNotFound` (an `interest.topic` is not a registered topic).
           content:
             application/problem+json:
               schema:
@@ -1195,11 +1333,15 @@ components:
             Per-category structured context. Common fields include
             `retry_after_seconds` (ServiceUnavailable) and, for a `NotFound` or any
             resource-scoped error, `resource_type` / `resource_name` naming the
-            addressed resource. Every publish-path error names the targeted stream
-            (`resource_type: "gts.cf.core.events.topic.v1~"`, `resource_name`: the
-            resolved topic id); the specific fault lives in the `field_violations`
-            or `violations` entry (e.g. SequenceViolation's violation carries
-            `expected_previous=<n>`). Error bodies never echo submitted values.
+            addressed resource. A publish-path error about the stream names the
+            targeted stream (`resource_type: "gts.cf.core.events.topic.v1~"`,
+            `resource_name`: the resolved topic id); a request-level `400` names
+            the request (`resource_type: "gts.cf.core.events.request.v1~"`). The
+            specific fault lives in the `field_violations` or `violations` entry
+            (e.g. SequenceViolation's violation carries `last_sequence=<n>`).
+            Error bodies never echo submitted content - payloads or field values;
+            identifiers the broker issued (a `producer_id`, a resolved topic id)
+            and request positions (an event `index`) may appear.
 
   responses:
     Problem:
@@ -1208,3 +1350,11 @@ components:
         application/problem+json:
           schema:
             $ref: "#/components/schemas/Problem"
+
+  headers:
+    PreferenceApplied:
+      description: >-
+        Present on a synchronous publish: the applied wait as `wait=<seconds>`
+        (RFC 7240 §3) - the requested `wait` capped by configuration.
+      schema:
+        type: string

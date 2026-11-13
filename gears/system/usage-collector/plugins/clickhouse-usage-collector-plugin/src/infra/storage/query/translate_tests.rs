@@ -2,8 +2,8 @@ use toolkit_odata::filter::{FilterField, FilterNode, FilterOp, ODataValue};
 use usage_collector_sdk::UsageRecordFilterField;
 
 use super::{
-    SqlBind, SqlCtx, record_column, translate_record_filter, translate_usage_type_filter,
-    usage_type_column,
+    SqlBind, SqlCtx, and_conjuncts, record_column, translate_record_filter,
+    translate_usage_type_filter, usage_type_column,
 };
 
 fn record_node_status_eq_active() -> FilterNode<UsageRecordFilterField> {
@@ -285,4 +285,136 @@ fn not_wraps_inner_fragment() {
 fn default_ctx_starts_empty() {
     let ctx = SqlCtx::default();
     assert!(ctx.binds.is_empty());
+}
+
+// ── and_conjuncts ────────────────────────────────────────────────────────────
+
+/// A record filter field by name.
+fn field(name: &str) -> UsageRecordFilterField {
+    UsageRecordFilterField::from_name(name).expect("field must be on the record filter schema")
+}
+
+/// `<name> eq 'x'` — the value is irrelevant to the flattening.
+fn eq(name: &str) -> FilterNode<UsageRecordFilterField> {
+    FilterNode::binary(
+        field(name),
+        FilterOp::Eq,
+        ODataValue::String("x".to_owned()),
+    )
+}
+
+/// The field each conjunct names, or a marker for a subtree kept whole.
+fn names(nodes: &[&FilterNode<UsageRecordFilterField>]) -> Vec<&'static str> {
+    nodes
+        .iter()
+        .map(|node| match node {
+            FilterNode::Binary { field, .. } | FilterNode::InList { field, .. } => field.name(),
+            FilterNode::Composite { .. } => "<composite>",
+            FilterNode::Not(_) => "<not>",
+        })
+        .collect()
+}
+
+/// The shape the gateway actually sends: the authorization scope, the
+/// `[from, to)` window and a status filter, all as top-level conjuncts. Each
+/// becomes its own `WHERE` clause in the caller's order.
+#[test]
+fn gateway_filter_is_flattened_into_its_conjuncts_in_order() {
+    let node = FilterNode::and(vec![
+        eq("tenant_id"),
+        FilterNode::binary(
+            field("created_at"),
+            FilterOp::Ge,
+            ODataValue::String("2026-01-01T00:00:00Z".to_owned()),
+        ),
+        FilterNode::binary(
+            field("created_at"),
+            FilterOp::Lt,
+            ODataValue::String("2026-02-01T00:00:00Z".to_owned()),
+        ),
+        eq("status"),
+    ]);
+    assert_eq!(
+        names(&and_conjuncts(&node)),
+        vec!["tenant_id", "created_at", "created_at", "status"]
+    );
+}
+
+#[test]
+fn nested_and_spine_is_flattened() {
+    let node = FilterNode::and(vec![
+        eq("tenant_id"),
+        FilterNode::and(vec![eq("resource_id"), FilterNode::and(vec![eq("status")])]),
+    ]);
+    assert_eq!(
+        names(&and_conjuncts(&node)),
+        vec!["tenant_id", "resource_id", "status"]
+    );
+}
+
+/// `OR` and `NOT` are not conjunctions: they stay whole, so `AND`-joining the
+/// conjuncts is exactly the caller's filter.
+#[test]
+fn or_and_not_subtrees_stay_whole() {
+    let node = FilterNode::and(vec![
+        FilterNode::or(vec![eq("status"), eq("resource_id")]),
+        FilterNode::not(eq("tenant_id")),
+    ]);
+    assert_eq!(names(&and_conjuncts(&node)), vec!["<composite>", "<not>"]);
+
+    let bare_or = FilterNode::or(vec![eq("tenant_id"), eq("resource_id")]);
+    assert_eq!(names(&and_conjuncts(&bare_or)), vec!["<composite>"]);
+}
+
+/// An empty `AND` spine yields no conjuncts at all, so a caller emits no clause
+/// for it. Translating it whole would render a bare `()`, which `ClickHouse`
+/// rejects as a syntax error.
+#[test]
+fn empty_and_yields_no_conjuncts() {
+    let node: FilterNode<UsageRecordFilterField> = FilterNode::and(Vec::new());
+    assert!(and_conjuncts(&node).is_empty());
+}
+
+#[test]
+fn empty_authorization_set_preserves_live_or_branch_and_bind_order() {
+    use toolkit_odata::{ast, filter::convert_expr_to_filter_node};
+    let tenant = uuid::Uuid::from_u128(42);
+    let tenant_eq = |id| {
+        ast::Expr::Compare(
+            Box::new(ast::Expr::Identifier("tenant_id".into())),
+            ast::CompareOperator::Eq,
+            Box::new(ast::Expr::Value(ast::Value::Uuid(id))),
+        )
+    };
+    let eq = tenant_eq(uuid::Uuid::nil());
+    let contradiction = eq.clone().and(ast::Expr::Not(Box::new(eq)));
+    for with_alternative in [false, true] {
+        let expr = if with_alternative {
+            contradiction.clone().or(tenant_eq(tenant))
+        } else {
+            contradiction.clone()
+        };
+        let node = convert_expr_to_filter_node::<UsageRecordFilterField>(&expr).unwrap();
+        let mut ctx = SqlCtx::new();
+        let sql = translate_record_filter(&node, &mut ctx).unwrap();
+        let expected = if with_alternative {
+            "((tenant_id = ? AND NOT (tenant_id = ?)) OR tenant_id = ?)"
+        } else {
+            "(tenant_id = ? AND NOT (tenant_id = ?))"
+        };
+        assert_eq!(sql, expected);
+        let ids: Vec<_> = ctx
+            .binds
+            .iter()
+            .map(|bind| match bind {
+                SqlBind::Uuid(id) => *id,
+                other => panic!("expected UUID bind, got {other:?}"),
+            })
+            .collect();
+        let mut expected_ids = vec![uuid::Uuid::nil(), uuid::Uuid::nil()];
+        if with_alternative {
+            expected_ids.push(tenant);
+        }
+        assert_eq!(ids, expected_ids);
+    }
 }

@@ -47,6 +47,26 @@ impl Default for StaticAuthNPluginConfig {
     }
 }
 
+/// The GTS publication's view of [`StaticAuthNPluginConfig`]: the instance's vendor
+/// and priority, with the same defaults. It expands no variable, so a publishing
+/// process without the server's secret environment builds the manifest; `init`
+/// still expands and validates the full configuration.
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+pub struct StaticAuthNPluginInstanceProbe {
+    pub vendor: String,
+    pub priority: i16,
+}
+
+impl Default for StaticAuthNPluginInstanceProbe {
+    fn default() -> Self {
+        let StaticAuthNPluginConfig {
+            vendor, priority, ..
+        } = StaticAuthNPluginConfig::default();
+        Self { vendor, priority }
+    }
+}
+
 /// Authentication mode.
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]

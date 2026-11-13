@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use super::current_otel_trace_id;
 use crate::domain::repos::Wake;
-use authz_resolver_sdk::{EnforcerError, PolicyEnforcer};
+use authz_resolver_sdk::{AccessDenial, EnforcerError, PolicyEnforcer};
 use toolkit_macros::domain_model;
 use toolkit_security::{AccessScope, SecurityContext};
 use tracing::info;
@@ -92,8 +92,12 @@ impl From<EnforcerError> for MutationError {
     #[allow(clippy::cognitive_complexity)]
     fn from(e: EnforcerError) -> Self {
         match e {
-            EnforcerError::Denied { ref deny_reason } => {
-                tracing::warn!(deny_reason = ?deny_reason, "AuthZ denied access");
+            EnforcerError::AccessDenied(AccessDenial::Pdp { ref reason }) => {
+                tracing::warn!(deny_reason = ?reason, "AuthZ denied access");
+                Self::Forbidden
+            }
+            EnforcerError::AccessDenied(ref local) => {
+                tracing::warn!(denial = %local, "AuthZ refused: PEP-local denial");
                 Self::Forbidden
             }
             EnforcerError::CompileFailed(ref err) => {
@@ -104,6 +108,13 @@ impl From<EnforcerError> for MutationError {
             EnforcerError::EvaluationFailed(ref err) => {
                 tracing::error!(error = %err, "AuthZ evaluation failed - request refused");
                 Self::AuthzUnavailable
+            }
+            // An unknown outcome class is an internal failure, never a denial.
+            ref unknown => {
+                tracing::error!(error = %unknown, "AuthZ failed with an unknown outcome");
+                Self::Internal {
+                    message: "authorization failed with an unknown outcome".to_owned(),
+                }
             }
         }
     }
@@ -480,16 +491,35 @@ impl<
         )
         .await?;
 
-        let original_msg = self
+        let found = self
             .message_repo
             .find_user_message_by_request_id(&conn, &scope, chat_id, request_id)
             .await
             .map_err(|e| MutationError::Internal {
                 message: e.to_string(),
-            })?
-            .ok_or_else(|| MutationError::Internal {
-                message: format!("User message not found for turn {request_id}"),
             })?;
+        let Some(original_msg) = found else {
+            // The preview runs outside the mutation transaction. A
+            // concurrent retry/edit/delete can commit between the
+            // validation above and this lookup, soft-deleting the
+            // messages. Re-validate to report the real cause (e.g.
+            // `NotLatestTurn` -> 409) instead of a spurious 500; only a
+            // turn that still validates but has no user message is a
+            // genuine inconsistency.
+            validate_mutation(
+                &*self.chat_repo,
+                &*self.turn_repo,
+                &chat_scope,
+                ctx,
+                &conn,
+                chat_id,
+                request_id,
+            )
+            .await?;
+            return Err(MutationError::Internal {
+                message: format!("User message not found for turn {request_id}"),
+            });
+        };
 
         Ok(MutationPreview {
             chat_scope,

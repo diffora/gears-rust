@@ -3,7 +3,7 @@
 // @cpt-dod:cpt-cf-resource-group-dod-testing-error-conversions:p2
 //! Domain error types for the resource-group gear.
 
-use authz_resolver_sdk::pep::{ConstraintCompileError, EnforcerError};
+use authz_resolver_sdk::pep::{AccessDenial, ConstraintCompileError, EnforcerError};
 use thiserror::Error;
 
 /// Domain-specific errors for the resource-group gear.
@@ -55,8 +55,8 @@ pub enum DomainError {
     /// Second tenant-type root rejected.
     ///
     /// Raised when a `create_group`/`update_group` would leave the RG forest
-    /// with more than one root group whose GTS type code starts with
-    /// `TENANT_RG_TYPE_PATH`. Enforces
+    /// with more than one root group whose GTS type code starts with a
+    /// configured tenant-type prefix (default `TENANT_RG_TYPE_PATH`). Enforces
     /// `cpt-cf-resource-group-fr-enforce-tenant-root-uniqueness`. Maps to
     /// canonical `already_exists` (HTTP 409) with `existing_root_id` as the
     /// `resource_name`.
@@ -253,11 +253,17 @@ impl From<toolkit_db::DbError> for DomainError {
 impl From<EnforcerError> for DomainError {
     fn from(e: EnforcerError) -> Self {
         match e {
-            EnforcerError::Denied { deny_reason } => DomainError::AccessDenied {
-                message: deny_reason.map_or_else(
-                    || "access denied by PDP".to_owned(),
-                    |reason| format!("access denied by PDP: {reason:?}"),
-                ),
+            EnforcerError::AccessDenied(AccessDenial::Pdp { reason }) => {
+                DomainError::AccessDenied {
+                    message: reason.map_or_else(
+                        || "access denied by PDP".to_owned(),
+                        |reason| format!("access denied by PDP: {reason:?}"),
+                    ),
+                }
+            }
+            // PEP-local refusal; it carries no PDP reason.
+            EnforcerError::AccessDenied(local) => DomainError::AccessDenied {
+                message: local.to_string(),
             },
             // A PDP that emits a native predicate whose capability this gear
             // never advertised (e.g. `in_tenant_subtree` — RG has no
@@ -279,6 +285,11 @@ impl From<EnforcerError> for DomainError {
             // infrastructure problems, not authorization denials — surface as
             // internal errors.
             EnforcerError::EvaluationFailed(_) | EnforcerError::CompileFailed(_) => {
+                DomainError::InternalError
+            }
+            // An unknown outcome class is an internal failure, never a denial.
+            unknown => {
+                tracing::error!(error = %unknown, "authz failed with an unknown outcome");
                 DomainError::InternalError
             }
         }

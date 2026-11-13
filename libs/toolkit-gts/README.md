@@ -7,7 +7,35 @@ ToolKit integration with the [Global Type System](https://github.com/hypernetix/
 - **Link-time inventory** — any `#[gts_type_schema(...)]`-annotated struct or `gts_instance!` declaration, in any crate linked into the process, lands in a shared `inventory`-based collector. `types-registry::init()` reads the collector and registers everything before publishing its client. No per-gear registration code is required for entries known at compile time.
 - **Platform base types** — this crate also ships the handful of shipped base Type Schemas that many gears need directly: `PluginV1<P>` (base of every toolkit plugin instance) and `AuthzPermissionV1` (base of every authorization permission).
 
-Gear-specific Type Schemas (e.g. plugin specs or gear-local permission extensions) can use either the wrapped `#[gts_type_schema(...)]` macro from this crate (and join the inventory automatically) or the raw upstream `#[gts_macros::struct_to_gts_schema(...)]` macro plus runtime registration in the gear's `init()`. Both paths end up in `types-registry`; the first has zero boilerplate.
+Gear-specific declarations use the inventory macros below, or the crate-local
+macros when their gear owns publication. Configured-only schemas use
+`gts_type_schema_template` to generate their document without joining either
+inventory; the caller includes the configured document in its startup manifest.
+
+## Schema templates without registration
+
+`gts_type_schema_template` forwards to the same upstream schema generator as
+`gts_type_schema`, preserving its attributes and generated accessors. It emits no
+inventory entry or declaration provenance and needs no `declare_gts_inventory!()`.
+The type ID in the attribute is still a compile-time literal. Applying runtime
+configuration and publishing the resulting document remain the caller's work.
+Consumers depend on `toolkit-gts`, not directly on `gts-macros`.
+
+```rust
+#[toolkit_gts::gts_type_schema_template(
+    dir_path = "schemas",
+    type_id = gts_id!("example.core.app.configured.v1~"),
+    description = "Configured-only schema template",
+    properties = "id,payload",
+    base = true
+)]
+pub struct ConfiguredV1<P> {
+    pub id: toolkit_gts::GtsInstanceId,
+    pub payload: P,
+}
+
+let schema = ConfiguredV1::<()>::gts_schema_with_refs_as_string();
+```
 
 ## Adding a platform base Type Schema (inside this crate)
 
@@ -97,6 +125,34 @@ No compile-time field checking — validation happens at `types-registry::switch
 ### Generic base types
 
 Some base types (e.g. `PluginV1<P>`) are generic over a derived-spec `P: GtsSchema`. Spell such instances with turbofish — `PluginV1::<DerivedSpec> { …, properties: DerivedSpec }`. The derived spec is declared with `#[gts_macros::struct_to_gts_schema(base = PluginV1, ...)]` in the owning gear and, when its `properties` depend on config, registered with `types-registry` at gear `init()` (in-process: it already has a reference to itself; OoP: via an SDK-level publish helper).
+
+## Crate-local collectors (publishing your own declarations)
+
+A gear that publishes its declarations to a remote `types-registry` needs to know which are
+its own. Such a crate opts in, without changing any other crate:
+
+```rust
+// lib.rs
+toolkit_gts::declare_gts_inventory!();
+
+// anywhere in the crate: the same input as the crate-root macros
+#[toolkit_gts::local::gts_type_schema(/* ... */)]
+pub struct MySpecV1;
+toolkit_gts::local::gts_instance_raw!({ "id": "...", /* ... */ });
+```
+
+The `local` macros submit each declaration to the crate's own collector and to the
+process-wide inventory, so an embedded registry still seeds it. The crate then exports
+`gts_declarations() -> Vec<(String, String)>` — `(GTS id, JSON text)`, std types only. A gear
+merges its crates' declarations with `toolkit_gts::local::merge_declarations`, which sorts them,
+keeps one of canonically equal duplicates (`same_canonical_content`: key order aside, number
+spelling kept, so `-0.0` ≠ `0.0`) and reports every conflicting id with both origins. The
+crate-root macros keep their process-wide-only behaviour; crates that do not opt in need no
+change. A `local` macro without the declaration fails to compile ("could not find
+`__toolkit_gts_inventory` in the crate root").
+
+Published crates must use `local` macros throughout. Otherwise `gts_declarations()` panics
+with the omitted IDs and migration hint. Other crates' global declarations are unaffected.
 
 ## Boundary with `types-registry`
 
