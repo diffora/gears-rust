@@ -1264,8 +1264,8 @@ mod tests {
 
     #[test]
     fn forbidden_carries_pep_error_code_as_reason() {
-        // m2: when EnforcerError::Denied carries a deny_reason.error_code,
-        // it lands on the wire as `permission_denied.reason` — the structured
+        // m2: when EnforcerError::AccessDenied(AccessDenial::Pdp { reason })
+        // carries a reason.error_code, it lands on the wire as `permission_denied.reason` — the structured
         // PEP code is no longer collapsed into the prose detail.
         let err = DomainError::forbidden_with_reason(
             reason::permission::TENANT_BOUNDARY_VIOLATION,

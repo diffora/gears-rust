@@ -51,7 +51,9 @@ fn sea_value_to_scope_value(v: &sea_orm::Value) -> Option<toolkit_security::Scop
 ///   that constraint to pass.
 /// - A filter whose property resolves to a column where the `ActiveModel` value
 ///   is `NotSet` is **skipped** (the column is not being inserted, so there's
-///   nothing to validate).
+///   nothing to validate). An empty-set constraint never matches, even when
+///   its column is `NotSet`: `AccessScope` normalizes such branches out of
+///   `constraints()`, and a scope left with none is deny-all.
 /// - A filter whose property does **not** resolve (unknown property) causes
 ///   that constraint to fail (fail-closed), consistent with the query-path
 ///   behavior in `build_scope_condition`.
@@ -1468,6 +1470,35 @@ mod tests {
     }
 
     #[test]
+    fn tenant_validation_ignores_empty_branches() {
+        use toolkit_security::{AccessScope, ScopeConstraint, ScopeFilter, pep_properties};
+        let tenant = Uuid::from_u128(1);
+        let other = Uuid::from_u128(2);
+        let dead = ScopeConstraint::new(vec![
+            ScopeFilter::eq(pep_properties::OWNER_TENANT_ID, tenant),
+            ScopeFilter::in_uuids(pep_properties::RESOURCE_ID, vec![]),
+        ]);
+        for live_tenant in [None, Some(tenant), Some(other)] {
+            let mut constraints = vec![dead.clone()];
+            if let Some(id) = live_tenant {
+                constraints.push(ScopeConstraint::new(vec![ScopeFilter::eq(
+                    pep_properties::OWNER_TENANT_ID,
+                    id,
+                )]));
+            }
+            let scope = AccessScope::from_constraints(constraints);
+            assert_eq!(
+                validate_tenant_in_scope(tenant, &scope).is_ok(),
+                live_tenant == Some(tenant)
+            );
+            assert_eq!(
+                validate_tenant_in_scope(other, &scope).is_ok(),
+                live_tenant == Some(other)
+            );
+        }
+    }
+
+    #[test]
     fn test_validate_tenant_in_scope() {
         let tenant_id = uuid::Uuid::new_v4();
         let scope = crate::secure::AccessScope::for_tenants(vec![tenant_id]);
@@ -1661,6 +1692,47 @@ mod tests {
         pub enum Relation {}
 
         impl ActiveModelBehavior for ActiveModel {}
+    }
+
+    #[test]
+    fn empty_insert_filter_rejects_not_set_but_preserves_or_alternative() {
+        use owner_entity::ActiveModel;
+        use sea_orm::{NotSet, Set};
+        use toolkit_security::pep_properties;
+        let tenant = Uuid::from_u128(1);
+        let am = ActiveModel {
+            id: NotSet,
+            tenant_id: Set(tenant),
+            user_id: NotSet,
+            city_id: NotSet,
+        };
+        for empty_filter in [
+            crate::secure::ScopeFilter::in_uuids(pep_properties::RESOURCE_ID, vec![]),
+            crate::secure::ScopeFilter::in_group_typed(
+                pep_properties::RESOURCE_ID,
+                toolkit_gts::gts_id!("cf.core.test.entity.v1~"),
+                vec![],
+            ),
+            crate::secure::ScopeFilter::in_group_subtree_typed(
+                pep_properties::RESOURCE_ID,
+                toolkit_gts::gts_id!("cf.core.test.entity.v1~"),
+                vec![],
+            ),
+        ] {
+            let empty = crate::secure::ScopeConstraint::new(vec![
+                crate::secure::ScopeFilter::eq(pep_properties::OWNER_TENANT_ID, tenant),
+                empty_filter,
+            ]);
+            let scope = crate::secure::AccessScope::from_constraints(vec![empty.clone()]);
+            assert!(validate_insert_scope(&am, &scope).is_err());
+            let alternative =
+                crate::secure::ScopeConstraint::new(vec![crate::secure::ScopeFilter::eq(
+                    pep_properties::OWNER_TENANT_ID,
+                    tenant,
+                )]);
+            let scope = crate::secure::AccessScope::from_constraints(vec![empty, alternative]);
+            assert!(validate_insert_scope(&am, &scope).is_ok());
+        }
     }
 
     #[test]
