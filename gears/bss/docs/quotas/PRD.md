@@ -150,7 +150,7 @@ Without a common contract, importing a technical limit could accidentally create
 
 ## 3. Operational Concept & Environment
 
-The platform follows the [ToolKit architecture](../../../../docs/toolkit_unified_system/README.md) and [project guidelines](../../../../guidelines/README.md). This specification allocates responsibilities across BSS and OSS owner contracts; it introduces no separate quota-management runtime unit. Named contract extensions are required target capabilities, with qualification prerequisites in [DESIGN §4.2](DESIGN.md#42-integration-qualification-gates).
+The platform follows the [ToolKit architecture](../../../../docs/toolkit_unified_system/README.md) and [project guidelines](../../../../guidelines/README.md). This specification allocates responsibilities across BSS and OSS owner contracts; whether a separate Quota Manager gear is needed remains an open architecture question. Named contract extensions are required target capabilities, with qualification prerequisites in [DESIGN §4.2](DESIGN.md#42-integration-qualification-gates).
 
 A deployment can enforce the same allowance in several OSS systems. The selected adapter owns their coordinated application and exposes one application result to BSS. Its profile must cover every enabled resource-access path. Physical resource availability is separate from quota permission: buying 10 vCPU does not by itself reserve ten physical CPUs.
 
@@ -290,7 +290,7 @@ Every enabled profile MUST declare finite request timeouts, concurrency/queue li
 
 ### 6.2 NFR Exclusions
 
-No separate availability or latency promise is introduced for a new quota gear because this package introduces no such gear. Per-profile delivery SLOs require deployment evidence; this document does not invent vendor performance guarantees. Project security, audit and runtime baselines continue to apply.
+Component-specific availability and latency commitments depend on the final component boundaries, including the open decision on a separate Quota Manager gear. Per-profile delivery SLOs require deployment evidence; this document does not invent vendor performance guarantees. Project security, audit and runtime baselines continue to apply.
 
 ## 7. Public Library Interfaces
 

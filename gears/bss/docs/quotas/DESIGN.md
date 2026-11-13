@@ -39,7 +39,7 @@ description: "Target architecture of quota onboarding, plan rules, purchases and
 
 ### 1.1 Architectural Vision
 
-Quota management spans Products, Pricing, Subscriptions, Entitlements and the enforcement providers. Products describes resources; Pricing stores quota rules on plans and freezes accepted terms; Subscriptions commits purchased posture; Entitlements derives, applies and reconciles limits. QE and resource providers own enforcement state. No separate Quota Manager gear, catalog, purchase ledger or counter store is required.
+Quota management spans Products, Pricing, Subscriptions, Entitlements and the enforcement providers. Products describes resources; Pricing stores quota rules on plans and freezes accepted terms; Subscriptions commits purchased posture; Entitlements derives, applies and reconciles limits. QE and resource providers own enforcement state. Whether a separate Quota Manager gear is needed remains an open architecture question; this design does not settle that decision.
 
 A provider capability is technical evidence; a plan rule is an offer; a receipt preserves accepted terms; and a correlated adapter result proves the required application outcome. None of these alone substitutes for the next owner's authorization or readiness decision. The BSS-selected adapter may maintain several internal limits, but they represent one purchased allowance.
 
