@@ -1201,6 +1201,7 @@ impl Service {
                 actions::LIST,
                 None,
                 &AccessRequest::new()
+                    .allow_empty_scope(true)
                     .resource_property(pep_properties::OWNER_TENANT_ID, ctx.subject_tenant_id()),
             )
             .await?;
@@ -1226,6 +1227,7 @@ impl Service {
                 actions::LIST,
                 None,
                 &AccessRequest::new()
+                    .allow_empty_scope(true)
                     .resource_property(pep_properties::OWNER_TENANT_ID, ctx.subject_tenant_id()),
             )
             .await?;
