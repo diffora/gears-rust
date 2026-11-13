@@ -243,6 +243,102 @@ All three can produce the same desired OSS cap of 20. Allocating a 4-vCPU VM occ
 
 The plan form shows the allocation ceiling and charging terms separately, including what usage is included. It resolves quota capability data through Products and charge details through the Pricing/usage owner contracts. Quota acceptance retains the association with the frozen charging terms but creates no competing billing meter or included-usage ledger. Usage pricing does not authorize allocations beyond the hard cap, and charging for usage beyond a billing inclusion is not permission to exceed that cap.
 
+##### 3.3.1.1 Catalog reads for plan authoring
+
+The discovery plugin is a provider-facing input. The plan editor reads the approved Products catalog through the proposed `ProductsQuotaCatalogClientV1` in `products-sdk`. These are target contracts to implement under G02, not existing SDK methods. Products owns their authenticated REST projection. Neither the editor nor Pricing calls the discovery plugin or browses all types-registry records to decide what may be sold.
+
+| Proposed SDK method | REST projection | Request and result |
+| --- | --- | --- |
+| `list_quota_definitions(ctx, request)` | `GET /bss-products/v1/quota-definitions` | Required `sku_id` and exact `sku_version`; optional `subject_type_ref`, `resource_type_ref`, `profile_id`, locale and availability filter; bounded page size and opaque cursor. Returns approved definition versions applicable to that SKU and authorized catalog scope. Default availability is `enabled`; authorized `all` includes disabled/withdrawn definitions with reasons. |
+| `get_quota_definition(ctx, definition_id, version, locale)` | `GET /bss-products/v1/quota-definitions/{id}/versions/{version}` | Returns the exact immutable definition plus its separately identified current availability observation. Disabled historical versions remain readable within the caller's scope. There is no implicit upgrade to the latest version. |
+| `validate_quota_set(ctx, request)` | Internal Products SDK operation, called by Pricing | Receives exact definition references, amounts/units, logical bindings, selected SKU versions and validation purpose (`authoring` or `acceptance`) for one complete applicable set. Acceptance also supplies effective committed/purchased quantity as appropriate; validate the resulting Fixed/PerPlanUnit limits, not only their coefficients. Returns per-rule and cross-rule checks, qualification evidence and availability observations. It validates commercial compatibility; it neither reserves capacity nor applies quota. |
+
+A `QuotaDefinitionVersion` is a Products catalog record, identified by UUID `definition_id` and positive decimal-string `version`. It assembles an approved SKU/version, metric semantics, enforcement mapping and qualified profile for selection in a plan. It references the registered GTS metric/unit records; it does not register a second metric identity. A new mapping or changed semantics creates a new definition version. Availability changes do not mutate that immutable content.
+
+Each definition response contains:
+
+| Field | Meaning |
+| --- | --- |
+| `definition_id`, `version`, `definition_digest` | Exact catalog identity and content digest, including the pinned definition dependencies |
+| `sku_id`, `sku_version` | Product applicability; Pricing verifies these against the selected plan item |
+| `metric_ref`, `metric_digest`, `quota_kind` | Registered metric instance, retained content digest and `allocation` kind |
+| `display_name`, `description`, `locale` | Resolved reviewed text with the English fallback from §3.3.1; identity is independent of localization |
+| `canonical_unit_ref`, `allowed_units` | Canonical unit and allowed plan units; each includes `unit_ref`, content digest, symbol, exact conversion and `min`/`step`/optional `max` in that unit |
+| `subject_type_ref`, `resource_type_refs` | Supported ownership and resource types, validated through registry ancestry |
+| `mapping_ref`, `profile_ref`, `qualification_ref` | Opaque immutable owner references, each `{id, version, digest}`; profile fixes aggregation, lifecycle and required operations |
+| `profile_conditions`, `supported_bases` | Reviewed localized accounting conditions and supported `Fixed`/`PerPlanUnit` bases |
+| `availability` | Current `{state, revision, observed_at, reason_code}`; state is `enabled`, `disabled` or `withdrawn`, reason is nullable when enabled |
+
+SDK list results use `{items, next_cursor}`. REST uses the Products browse envelope `{rows, page_info: {next_cursor}}`. Page size defaults to 50 and is limited to 200. The REST names are `limit` and `cursor`, with `$top`/`$skiptoken` aliases; typed equality filters use `$filter` and the fields listed above. Conflicting aliases and unsupported filters are invalid. Order is ascending `(definition_id, version)` with numeric version comparison. Cursors bind authorized catalog scope, filters and order; changing them requires a fresh list. Reauthorize every page. Availability is observed at read time, so pagination is not a sale reservation or a frozen eligibility decision. Dependency failure returns an error, never an empty successful catalog.
+
+The list supplies all fields needed to render the picker without per-row registry calls. An editor adding a rule selects an exact definition version and allowed unit, enters the commercial amount and basis, and selects its plan item/logical binding. It must show the profile conditions and disabled reason. Pricing independently resolves and validates those references; UI filtering is not authorization or publication validation.
+
+Illustrative catalog response (UUIDs and 64-character lowercase hexadecimal SHA-256 digests are placeholders; referenced records require real registration and validation): [quota-catalog-list.example.json](schemas/quota-catalog-list.example.json).
+
+##### 3.3.1.2 Pricing objects and authoring methods
+
+Quota rules are a versioned extension of `PlanRevision`. They describe what a selected service grants, independently of the charge configuration.
+
+| Pricing object | Quota extension |
+| --- | --- |
+| `Plan` | Stable plan identity; quota content belongs to its revisions. No mutable plan-wide cap overrides a published revision. |
+| `PlanRevision` / `PricingPlanRevisionReadDto` | `quota_rules` collection and `quota_rules_digest`, included in the revision's content/version and approval evidence. Initial limit: 200 rules per revision. Empty means no quota declaration. |
+| `PlanItem` | Referenced by `item_id` in each quota rule; supplies the selected SKU and existing dimension selection. It does not store a second copy of the cap. |
+| `PriceBookEntry` / `Price` | Continue to describe charges. Quota amounts are not price quantities, rates, `included_qty` or usage-meter inclusions. |
+| `PricingPlanChecksDto` | Existing checks include quota reference, numeric, applicability, qualification and complete-set checks. Check subjects gain optional `quota_rule_id` and `field` alongside the existing item/SKU references. |
+| `ResolvedBindings` | Versioned read extension with the selected `quota_terms` and `selected_quota_digest`, resolved alongside the requested item/dimension bindings. It is a preview, not acceptance or authority to grant. |
+| `AcceptanceReceipt` / `AcceptedQuotaSnapshot` | Exact selected rules, definition/dependency evidence, rule-set digest, binding selections and original quantity, frozen atomically with accepted charging terms. A receipt is purchase evidence, not a live plan lookup. |
+
+The proposed `PricingQuotaAuthoringClientV1` in `pricing-sdk` exposes the following operations. Its implementation shares the existing Pricing plan authoring service and authorization; it is not another plan store. Existing plan routes and DTOs are extended where indicated.
+
+| Method / operation | REST contract | Behavior |
+| --- | --- | --- |
+| `get_quota_rules(ctx, revision_id)` | New `GET /bss-pricing/v1/plan-revisions/{id}/quota-rules` | Returns `{revision_id, quota_rules, quota_rules_digest}` with the same revision ETag as the full revision read. The bounded collection is returned whole. Full `GET /plan-revisions/{id}` also includes the quota fields. |
+| `replace_quota_rules(ctx, revision_id, expected_version, operation_id, rules)` | New `PUT /bss-pricing/v1/plan-revisions/{id}/quota-rules`; required `If-Match` and `Idempotency-Key` | Body: `{quota_rules: [...]}`. Atomically replaces the draft's complete collection. Add by including a new rule, edit by retaining its `rule_id` with changed content, and remove by omitting it. An empty array explicitly removes all rules. Returns the normalized collection/digest and new revision ETag, HTTP 200. |
+| `check_plan_revision(ctx, revision_id)` | Extend existing `GET /bss-pricing/v1/plan-revisions/{id}/checks` and batch `/plan-revisions/checks` | Checks the complete saved revision, including quotas; preserves the existing `checks`, `ready`, `sale_date` and quorum result. Reports the evaluated revision version and quota digest so the editor can detect stale results. |
+| Submit / approve / publish | Extend existing `POST /plan-revisions/{id}/submit`, approval-unit operations and price-book publication/scheduled application | Quota content participates in the existing approval unit and immutable revision. No separate quota approval or publication endpoint. Recheck required quota evidence at each existing effect boundary; a stale green preview cannot authorize publication. |
+| Copy revision / clone plan | Extend existing `POST /plans/{id}/revisions` and `POST /plans/{id}/clone` | Copy quota terms and exact definition versions with the items. Remap item references to the copied items, retain logical binding identity within a copied plan, and recompute revision-specific evidence. Approval and current availability are rechecked, never copied as authorization. |
+
+All REST paths in the last three rows have the `/bss-pricing/v1` prefix. Editing is restricted to an unlocked draft under the existing author/plan-write policy. Published, scheduled and pending content cannot be changed through the quota endpoint. Changes to a published plan use a new draft revision and the usual approval flow. A successful save has no effect on an existing purchase or OSS. Existing non-quota PATCH operations preserve the quota collection when the extension is absent; only the explicit quota replacement with an empty array clears it. Legacy reads may omit the extension, but legacy write paths cannot erase it or bypass its checks.
+
+`PlanQuotaRuleV1` has the following input fields. All UUIDs are opaque; all owner versions are positive decimal strings. Decimal amounts are finite nonnegative strings with no exponent, bounded by the approved numeric profile; normalization is exact and part of the versioned digest contract.
+
+| Field | Meaning and validation |
+| --- | --- |
+| `rule_id` | Client-generated UUID, unique within a revision and retained on retry/edit. It is not a tenant quota assignment ID. |
+| `definition_ref` | `{id, version, digest}` selecting one exact Products quota definition. Pricing resolves it and verifies the digest. |
+| `item_id` | Item in this same revision whose SKU matches the definition; foreign or missing items are refused. |
+| `dimension_value` | Nullable requested dimension value: null only for a dimensionless item; otherwise an exact registered value for that item's dimension. Matching follows the requested selection, even when price resolution uses a default chain. No wildcard/fallback rule is inferred. |
+| `logical_binding_key` | Stable service/resource slot within this plan, 1–64 ASCII letters, digits, `_`, `-` or `.`. Rules for CPU and RAM in the same slot target the same eventual assignment scope. This key neither resolves a provider scope nor grants tenant authority. |
+| `subject_selector` | Closed v1 value `resource_owner`; the actual authorized tenant/scope is supplied by purchase and attribution contracts, not hard-coded into the reusable plan. |
+| `amount`, `unit_ref`, `basis` | Commercial cap/coefficient, exact allowed GTS unit reference and `Fixed` or `PerPlanUnit`; no `paid` flag or billing rate. |
+
+Metric, unit digests, mapping, qualification/profile and lifecycle behavior come from the resolved definition and are retained in server-owned evidence. Callers cannot override them through request metadata. Each selected `(logical_binding_key, metric)` has at most one applicable rule, regardless of item or rule IDs; alternative dimension selections may have distinct rules but must never both apply to the same selection. Changing a metric creates a new rule; changing its version, amount or profile still changes the revision's accepted semantics. All jointly applicable rules for a binding must share a supported profile and have complete-set qualification. The v1 profile requires one coherent profile per logical binding across dimension alternatives. Publication must establish compatibility for all sellable selections; if that cannot be established within the qualified validation bounds, refuse the combination rather than validating only the default selection. Partial editor rows remain client-side until their required fields are present.
+
+The editor's flow is: read the draft and items → list Products definitions for the item SKU/version → select exact definitions and enter amounts → PUT the complete rule set → read revision checks → submit through Pricing. For a 10-vCPU/20-GB plan, both rules reference the same resource binding and compatible profile, while each retains its own metric, unit and amount. The author can subsequently replace the set with 20 vCPU/40 GB in a new revision; existing accepted purchases keep the earlier terms.
+
+Illustrative PUT body: [plan-quota-rules.replace.example.json](schemas/plan-quota-rules.replace.example.json). The example headers carry the revision ETag and one stable operation UUID; neither belongs in the JSON body.
+
+**Mutation consistency and validation.** Authorize the revision and every referenced catalog scope. Parse/resolve the complete replacement, reject duplicates, invalid references, unit conversions, bounds and incompatible sets before changing saved rules. Obtain external evidence outside the Pricing transaction; then recheck draft state, expected revision version and item bindings inside the transaction. Canonicalize rules by `rule_id` and exact normalized decimals before hashing; array order has no grant semantics. Reject unknown input fields, null collections and more than 200 rules. Write the rules, pinned evidence, digest, revision-version increment, audit and idempotency result together. Every edit to quota-relevant items, book/dimension bindings and approval state must participate in this revision fence. A racing item deletion or approval cannot leave orphaned rules. Deleting an item with attached rules returns `ITEM_HAS_QUOTA_RULES`; remove its rules first. Changing an item's mapping cannot silently retarget a quota; checks must refuse incompatible bindings.
+
+A recognized idempotent retry with the same scoped operation identity and content returns the original result without reapplying it, even if its original `If-Match` is now old. Reusing that identity with different content conflicts. An unrecognized operation requires the current ETag; stale writes never merge or replace another author's changes. After an uncertain response, recover by the same operation identity and read the current revision before further edits. Replay remains subject to authorization and the owner's idempotency retention contract.
+
+Saving and checking record qualification/availability evidence with its observation revision/time. These observations do not serialize all catalog changes with Pricing. Submit, approval/publication (including scheduled publication), and new purchase acceptance independently revalidate eligibility through the owner contracts. A withdrawal invalidates new use when observed; historical references remain readable. Dependency uncertainty prevents the guarded action, while leaving saved drafts and previously accepted purchases intact. Existing draft rules whose qualification was withdrawn can be read and removed; they cannot be resubmitted as an eligible replacement. Complete-set validation returns all determinable failures without silently dropping a rule.
+
+**Errors and permissions.** SDK methods return canonical errors; REST projects RFC 9457 problems. Catalog reads require Products' scoped catalog-read authority, and history reads do not imply sale eligibility. Pricing reads/writes/checks use the existing plan permissions and draft-author rules; indirect Products calls preserve delegated catalog authority. Tenant/catalog query fields only narrow authorized scope. Proposed quota error codes are:
+
+| HTTP | Condition / stable reason |
+| --- | --- |
+| 400 | Invalid/missing input or precondition header; `QUOTA_RULE_INVALID`, `QUOTA_AMOUNT_INVALID`, `QUOTA_UNIT_INEXACT`, `QUOTA_SCOPE_UNSUPPORTED`, `QUOTA_SET_INCOMPATIBLE`, invalid cursor/filter. Include safe rule/item ID and field path for validation failures. |
+| 401 / 403 / 404 | Existing unauthenticated/forbidden/not-found policy; `NOT_DRAFT_AUTHOR` where applicable. Foreign objects use the owner's concealment policy; errors must not expose foreign catalog contents. |
+| 409 | `STALE_REVISION`, `REVISION_NOT_DRAFT`, `ITEM_HAS_QUOTA_RULES`, `QUOTA_RULE_DUPLICATE`, `QUOTA_DEFINITION_CHANGED`, `QUOTA_QUALIFICATION_UNAVAILABLE`, or conflicting idempotency content. The existing Pricing convention maps stale `If-Match` to 409. |
+| 503 | Required registry, catalog or authorization evidence unavailable; do not report an empty catalog or `ready=true`. |
+
+Checks on a readable revision return HTTP 200 with failed check rows and `ready=false` for known invalid content; transport/dependency failures remain errors. A batch check uses the same quota logic as a single check. Saving rules does not bypass existing price coverage, SKU reference, quorum or sale-date checks.
+
+**Publication and purchase projection.** Quota edits change the revision content and approval digest even if prices do not change. Reference retention and copy/delete handling cover the pinned definition dependencies as well as existing SKU references, through the owners' recoverable reference contracts. A plan read can therefore display its historical quota definition after catalog withdrawal. Accepted-sale resolution selects rules by the same item/requested-dimension selections as the accepted commercial bindings, validates each applicable set and freezes a canonical `AcceptedQuotaSnapshot` with its digest. The digest domains are explicit: `quota_rules_digest` covers the whole revision's rule collection; `selected_quota_digest` covers only the applicable normalized rules and pinned dependency evidence returned by a versioned extension of `PricingReadV1::resolve`; `quota_snapshot_digest` additionally binds the accepted original quantity, tenant axes and purchase provenance. Presentation text/locale and transient availability observations are excluded from selected-rule arithmetic identity, while their pinned source evidence is retained. The accepted receipt's `terms_digest` includes the quota snapshot digest alongside charging terms. The buyer sends `expected_quota_digest = selected_quota_digest` from that preview; equal prices cannot hide changed caps. `NewSaleQuery`/acceptance preview contracts must carry the expected quota digest, with a versioned compatibility path: legacy callers may accept quota-free plans, but cannot silently omit quotas on a quota-bearing plan. Acceptance atomically retains price and quota evidence, including original quantity and tenant axes; Entitlements later uses Subscriptions' effective quantity. No authoring method provisions quotas or creates a runtime reservation.
+
+
 #### 3.3.2 Acceptance, quantity and distribution
 
 Pricing freezes the quota snapshot atomically with the price receipt. Orders preserves the receipt, accepted line and original quantity. Subscriptions supplies effective quantity from its committed compatible lots; Entitlements does not independently sum those lots. It multiplies each distinct applicable PerPlanUnit binding once by the effective quantity and applies Fixed once. For a 10-vCPU-per-unit rule, an original purchase of one unit followed by one compatible additional unit yields effective quantity two and a replacement cap of 20, retaining occupied allocations. The first receipt still records one; Entitlements neither reuses it as the current total nor sums the lots independently. A Fixed(10 vCPU) rule remains 10 after the same quantity increase. These are allocation calculations, independent of whether the service uses package or usage charges. A reused plan item ID alone is not semantic equivalence: descriptor, coefficient, unit, scope, window, lifecycle and mapping digests must agree.
@@ -437,20 +533,60 @@ Start with empty verified scopes. Adoption of existing resources requires author
 
 ```mermaid
 sequenceDiagram
-    participant P as Pricing / Orders
+    participant P as Pricing
+    participant O as Orders / Workflow
     participant S as Subscriptions
     participant E as Entitlements
     participant A as Quota application adapter
-    P->>P: Preserve accepted price and quota terms
-    Note over P,S: Purchase and lifecycle follow owner contracts
-    S->>E: Authorized committed posture with accepted provenance
+    O->>P: resolve: selected price and quota terms
+    P-->>O: Preview with selected quota digest
+    O->>P: check: accepted selections, quantity, tenant axes and expected digest
+    P-->>O: AcceptanceReceipt with frozen AcceptedQuotaSnapshot
+    O->>S: Existing acquisition/change contract and AcceptanceRef
+    S->>P: acceptance: recover and verify exact receipt
+    P-->>S: Immutable accepted evidence
+    Note over O,S: Purchase and lifecycle follow owner contracts
+    S->>E: Outbox: CommercialPostureV1 with effective quantity and provenance
     E->>E: Derive complete quota set; persist operation and binding
-    E->>A: Apply quota set with scope, revision, digest and authority
+    E->>A: apply_source_state: scope, complete limits, revision, digest and authority
     Note over A: OSS application belongs to adapter design
     A-->>E: Correlated application result and effective-limit evidence
-    E->>E: Record quota readiness only for the complete available set
-    Note over S,E: Readiness aggregation and activation follow owner contracts
+    E->>E: Record quota outcome for readiness aggregation
+    E-->>S: ReadinessObservationV1 under the owner contract
+    Note over S,E: Aggregate readiness and activation follow owner contracts
 ```
+
+**Pricing-to-adapter handoffs.** The table defines the quota payload at each boundary. Pricing's existing `SellabilityV1` and `PricingAcceptanceV1` contracts are extended through compatible versioned contracts; adding these fields is not a claim that their current SDKs already carry quotas. Lifecycle admission, activation and financial decisions remain with their owners.
+
+| From → to | Operation / transport | Quota data and receiver obligation |
+| --- | --- | --- |
+| Plan editor → Pricing | Authoring operations in §3.3.1.2, then existing revision submit/approval/publication | Persist the complete revision's quota rules and immutable content digest. Publication does not create tenant quota. |
+| Buyer / Orders → Pricing | Extend `PricingReadV1::resolve(ctx, ResolveQuery)` | Return price bindings and selected quota terms/digest for the exact plan revision and requested selections. Display both to the buyer; this read grants no quota and creates no receipt. |
+| Orders → Pricing | `SellabilityV1::check(ctx, NewSaleQuery, CommandMeta)` | Supply exact plan revision, requested item/dimension selections, original quantity, seller/payer/resource tenant axes, order/version/line and expected quota digest. Pricing independently selects and validates the matching rules and returns `AcceptanceReceipt` containing `AcceptedQuotaSnapshot`; it never accepts caller-supplied caps. Retry retains the same order identity and command key. |
+| Orders / Workflow → Subscriptions | Existing create/change acquisition contract, carrying `AcceptanceRef {acceptance_id, terms_digest}` and exact order/version/line provenance | Subscriptions checks the receipt's tenant axes, selection, quantity and acquisition identity. Resolve the immutable receipt through `PricingAcceptanceV1::acceptance`; the snapshot or a durable immutable reference plus digest must remain available. Neither an unverified embedded payload nor a current plan read substitutes for accepted evidence. Compatible additions retain their own receipts/lot provenance. |
+| Subscriptions → Entitlements | Transactional outbox `EntitlementPostureChanged`, payload `CommercialPostureV1` | The complete posture carries ordering namespace, subscription/revision/digest, operation and acquisition identity, authorized resource owner, lifecycle action/access posture, effective boundary/window, effective quantity, accepted snapshot references/digests and contributing lot IDs. Each logical binding identifies the accepted quota rules to use. Snapshot data may be embedded or fetched by exact authorized receipt reference; missing evidence leaves intake unresolved. |
+| Entitlements → Entitlements | Durable posture intake and quota derivation | Deduplicate by authorized producer aggregate/revision, verify its digest, retain superseded outcomes, and derive `DesiredQuotaSet` from accepted rules plus current committed quantity/posture. Persist the assignment, saved adapter binding, source revision, desired digest, operation and outbox atomically. A receipt alone cannot trigger derivation or dispatch. |
+| Entitlements → selected adapter | `apply_source_state(operation_id, source_key, source_revision, desired_digest, complete_target, effective_boundary, authority)` from §3.3.4 | Send the complete desired limits for one assignment with exact metric/unit/profile references, verified scope/generation and current authorized access posture. Include no prices, payer details, plan or subscription IDs. The adapter translates the pinned mappings and applies through OSS under its own design. |
+| Adapter → Entitlements | Apply response; proposed `read_source_state(ctx, source_key)` and `recover_operation(ctx, source_key, operation_id)` | Return correlated `pending`/`applied`/`refused`/`unknown`, accepted and applied heads where appropriate, per-set effect evidence, ordered observation identity and reason. Recovery cannot create a new application attempt. All reads use the same saved binding and delegated authority. |
+| Entitlements → Subscriptions | Existing `ReadinessObservationV1` owner contract | Feed verified quota assignment outcomes into the required-assignment manifest. Only Entitlements can publish aggregate readiness under its existing contract; one adapter's `applied` is not whole-service readiness or activation. Failed/unknown quota application remains visible and recoverable. |
+
+The existing event identity is `gts.cf.core.events.event.v1~cf.bss.subscriptions.event.v1~cf.bss.subscriptions.entitlement_posture_changed.v1~`, with payload type `gts.cf.bss.subscriptions.commercial_posture.v1~`. Quota provenance extends that owner contract under its schema compatibility rules; it is not a parallel quota event or a direct Pricing-to-OSS command. The [Subscriptions consumer contract](../../subscriptions/docs/features/05-entitlements.md) defines publication and readiness semantics; the quota additions here must be adopted by that contract before G03 can close.
+
+**Identity and quantity through the path.** `plan_revision_id` identifies offered terms; `acceptance_id` identifies frozen purchase evidence; acquisition/lot identities identify commercial ownership and quantity contributions; `assignmentId` identifies one applied resource binding. These are different identities. Entitlements retains the mapping; the adapter sees only its authorized source/scope and operation identities. An original receipt with quantity one remains unchanged after an increase. Subscriptions supplies effective quantity two with both accepted provenances; Entitlements does not sum purchase messages itself. Commercial posture revision, Entitlements source revision and adapter observation version are also separate sequences, correlated in durable records rather than assumed numerically equal.
+
+For a plan with `PerPlanUnit(10 vCPU)` and `PerPlanUnit(20 GB)` on one binding:
+
+| Stage | Data / result |
+| --- | --- |
+| Published revision | Two rules, exact definition/unit/profile references, common logical binding and quota digest |
+| Initial accepted purchase | Quantity `1`, selected rules and charging terms frozen in one receipt |
+| Authorized committed posture | Effective quantity `1`, resource-owner binding and accepted snapshot provenance |
+| Entitlements desired set | One assignment containing limits `10 vCPU` and `20 GB`, one saved adapter operation |
+| Adapter confirmation | Both required limits effective and available for that scope, correlated to the desired digest; no VM creation is required |
+| Compatible quantity increase | New accepted provenance; Subscriptions commits effective quantity `2`; Entitlements sends a replacement `20 vCPU`/`40 GB` set on the same assignment with a higher source revision; occupancy remains counted |
+
+An uncertain adapter result is recovered using its original operation. A definitive refusal retains the purchased obligation and reason; retry after remediation follows the higher-revision rules in §3.3.4. Neither Pricing nor Orders retries by creating another purchase, changes the frozen cap or issues an implicit refund. General recovery/escalation remains with Entitlements and lifecycle/financial owners.
+
 
 The quota confirmation identifies the saved adapter operation, assignment, source revision and desired digest. A queued, partial, unknown or mismatched result cannot establish quota readiness. The adapter contract in §3.3.4 provides application and recovery evidence; §3.3.5 defines consistent application.
 
@@ -526,12 +662,12 @@ The suffixes below identify the requirements declared in [PRD](PRD.md).
 
 | PRD requirement suffix | Design sections | Acceptance cases |
 | --- | --- | --- |
-| fr-catalog | 3.1, 3.3.1, 3.5 | Q-C37, Q-C38, Q-C21 |
-| fr-plan-rules | 3.3.1–3.3.2 | Q-C01, Q-C02, Q-C14, Q-C22, Q-C39, Q-C55 |
+| fr-catalog | 3.1, 3.3.1, 3.5 | Q-C37, Q-C38, Q-C21, Q-C57 |
+| fr-plan-rules | 3.3.1–3.3.2 | Q-C01, Q-C02, Q-C14, Q-C22, Q-C39, Q-C55, Q-C58, Q-C59, Q-C60, Q-C61 |
 | fr-quantity | 3.3.2 | Q-C03, Q-C05, Q-C06, Q-C07, Q-C22, Q-C39, Q-C55 |
-| fr-acceptance | 3.1, 3.3.1–3.3.2, 3.7 | Q-C01, Q-C05, Q-C40, Q-C55 |
+| fr-acceptance | 3.1, 3.3.1–3.3.2, 3.6.1, 3.7 | Q-C01, Q-C05, Q-C40, Q-C55, Q-C61, Q-C62 |
 | fr-attribution | 3.3.3, 3.3.6, 3.5 | Q-C10, Q-C11, Q-C44, Q-C45, Q-C48 |
-| fr-readiness | 3.3.5, 3.6.1 | Q-C04, Q-C23, Q-C24, Q-C25, Q-C26, Q-C29, Q-C41 |
+| fr-readiness | 3.3.5, 3.6.1 | Q-C04, Q-C23, Q-C24, Q-C25, Q-C26, Q-C29, Q-C41, Q-C62 |
 | fr-application-state | 3.3.4–3.3.5 | Q-C09, Q-C17, Q-C41, Q-C42, Q-C43, Q-C51, Q-C56 |
 | fr-accounting | 3.3.6, 3.6.2 | Q-C12, Q-C15, Q-C18, Q-C24, Q-C30, Q-C31, Q-C32, Q-C33, Q-C34, Q-C35, Q-C36, Q-C44, Q-C46, Q-C47, Q-C49, Q-C50 |
 | fr-provider-paths | 3.3.5–3.3.6, 3.5.3 | Q-C44, Q-C45, Q-C53 |

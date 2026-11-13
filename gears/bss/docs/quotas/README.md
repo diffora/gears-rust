@@ -48,3 +48,5 @@ The specification spans several gears and is organized under `gears/bss/docs/quo
 **Read boundary:** BSS exposes purchased limits, application status and adapter-reported fulfillment discrepancies. OSS owns effective limits, usage, reservations, remaining capacity and admission decisions. A portal can combine the two sources; Entitlements does not maintain or serve an operational usage projection.
 
 **Application boundary:** Entitlements submits desired quota state through the BSS-selected adapter contract and reads its correlated result. The receiving OSS component and the mechanism used to set the limits are defined by the adapter design.
+
+**Plan authoring:** [DESIGN §3.3.1.1–3.3.1.2](DESIGN.md#3311-catalog-reads-for-plan-authoring) specifies Products catalog listing/detail reads, `PlanRevision.quota_rules`, atomic draft replacement, existing Pricing checks/publication and frozen purchase evidence. [The purchase-to-adapter path](DESIGN.md#361-from-purchase-to-quota-readiness) names each handoff, payload and recovery boundary from Pricing through Orders, Subscriptions and Entitlements to the selected adapter.
