@@ -966,7 +966,8 @@ Quota management spans the BSS and enforcement gears. Products and Pricing own r
 #### More details
 - [PRD](../gears/bss/docs/quotas/PRD.md)
 - [Design and owner SDK contracts](../gears/bss/docs/quotas/DESIGN.md)
-- [Acceptance and delivery gates](../gears/bss/docs/quotas/ACCEPTANCE.md)
+- [Business acceptance criteria](../gears/bss/docs/quotas/PRD.md#9-acceptance-criteria)
+- [Integration qualification](../gears/bss/docs/quotas/DESIGN.md#42-integration-qualification-gates)
 
 ### Marketplace
 #### Responsibility

@@ -27,10 +27,6 @@ reason = "Ignore the BSS documentation grouping as a module candidate. The cross
 patterns = ["gears/bss/docs"]
 
 [[ignore]]
-reason = "Quota README and acceptance scenarios supplement the registered cross-gear PRD/DESIGN; they are not standalone SDLC artifacts."
-patterns = ["gears/bss/docs/quotas/README.md", "gears/bss/docs/quotas/ACCEPTANCE.md"]
-
-[[ignore]]
 reason = "Ignore 'coord' shared utility library (distributed-lease primitive; infrastructure crate, not an SDLC-documented product module — no PRD/DESIGN required, README-documented)."
 patterns = ["gears/bss/libs/coord/*"]
 

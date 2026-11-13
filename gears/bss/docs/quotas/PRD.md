@@ -45,12 +45,14 @@ description: "Product requirements for the complete quota lifecycle across BSS, 
 
 <!-- /toc -->
 
-**Status: proposed.** Allocation quotas are the initial delivery profile. The requirements describe target behavior; [acceptance gates](ACCEPTANCE.md) distinguish it from delivered capability. Numbers in examples are illustrative offers, not platform defaults.
+**Status: proposed.** Allocation quotas are the initial delivery profile. The requirements describe target behavior; [qualification gates](DESIGN.md#42-integration-qualification-gates) distinguish it from delivered capability. Numbers in examples are illustrative offers, not platform defaults.
 ## 1. Overview
 
 ### 1.1 Purpose
 
 Define the complete path from a provider's resource capabilities to a sellable plan, a customer's accepted purchase, live tenant limits, resource consumption and eventual release. A customer and an operator must be able to explain every applied limit by its purchase or an explicitly separate administrative restriction.
+
+This PRD defines the commercial outcomes and acceptance criteria. [DESIGN](DESIGN.md) specifies owners, contracts, the Pricing-to-adapter path and integration qualification. JSON contract examples are stored in `schemas/`.
 
 ### 1.2 Background / Problem Statement
 
@@ -148,7 +150,7 @@ Without a common contract, importing a technical limit could accidentally create
 
 ## 3. Operational Concept & Environment
 
-The platform follows the [ToolKit architecture](../../../../docs/toolkit_unified_system/README.md) and [project guidelines](../../../../guidelines/README.md). This specification allocates responsibilities across BSS and OSS owner contracts; it introduces no separate quota-management runtime unit. Named contract extensions are required target capabilities, with delivery tracked in ACCEPTANCE.
+The platform follows the [ToolKit architecture](../../../../docs/toolkit_unified_system/README.md) and [project guidelines](../../../../guidelines/README.md). This specification allocates responsibilities across BSS and OSS owner contracts; it introduces no separate quota-management runtime unit. Named contract extensions are required target capabilities, with qualification prerequisites in [DESIGN §4.2](DESIGN.md#42-integration-qualification-gates).
 
 A deployment can enforce the same allowance in several OSS systems. The selected adapter owns their coordinated application and exposes one application result to BSS. Its profile must cover every enabled resource-access path. Physical resource availability is separate from quota permission: buying 10 vCPU does not by itself reserve ten physical CPUs.
 
@@ -341,10 +343,30 @@ Subscriptions commits a restriction or terminal posture. The adapter applies the
 
 ## 9. Acceptance Criteria
 
-- A reviewer can trace a tenant cap from the approved descriptor through the plan, receipt, committed posture and the adapter's correlated application evidence.
-- The 10 vCPU / 20 GB journey, shared-user concurrency, partial adapter application, downgrade, suspend, revoke, restart and lost-response scenarios pass on each enabled provider profile.
-- All applicable cases in [ACCEPTANCE](ACCEPTANCE.md) have executed evidence for the enabled profile. Unsupported cases cannot be silently claimed supported.
-- Unsupported offers fail before purchase; transient delivery failure preserves accepted purchase and explicit recovery state.
+These business criteria validate the requirements in §5–6. Their `Q-C` labels are local verification references, not additional product requirements. Technical contract guarantees and per-profile evidence are specified in [DESIGN §4.2–4.4](DESIGN.md#42-integration-qualification-gates).
+
+Each enabled offer must satisfy the applicable criteria and have a complete trace from approved catalog terms through the accepted purchase to confirmed quota application. Unsupported offers are refused before commitment; transient delivery failure preserves the purchased obligation and a visible recovery state.
+
+| Criterion | Business acceptance outcome |
+| --- | --- |
+| Q-C01 Accepted evidence | Purchased rules, units and original quantity remain those accepted by the customer after the catalog or plan changes. Recovery preserves that evidence; missing history never becomes unlimited access. |
+| Q-C03 Quantity basis | A per-plan-unit allowance is multiplied once by the accepted/effective plan quantity; a fixed allowance applies once. Selecting several items does not create independent component quantities or duplicate the same allowance. |
+| Q-C04 Quota readiness | A purchase of resource limits becomes quota-ready when the complete allowance is confirmed usable, without requiring a VM to be created. Partial or uncertain fulfillment is not readiness. Any authorized preparation usage remains counted through activation: a 100 GiB allowance with 20 GiB allocated has 80 GiB remaining. A draft grants no access; resource readiness and activation remain separate owner decisions. |
+| Q-C05 Purchase replay | Repeating the same purchase recovers the same purchased quantity and accepted terms without another allowance, even through another transport attempt. A changed request cannot replace the original purchase silently. |
+| Q-C06 Compatible increase | Adding a second compatible plan unit changes a 10-vCPU-per-unit allowance from 10 to 20 vCPU while retaining occupied capacity. Fixed(10 vCPU) remains 10. The original purchase still records one unit and both purchases remain traceable. Repetition adds no extra capacity; unsupported combinations are refused. |
+| Q-C07 Suspended purchase and race | A suspended service cannot accept a new addition/increase or queue it for automatic execution. Suspension before purchase commitment prevents new quantity and fulfillment effects. Separately authorized resume is required; an already committed purchase remains in history but cannot override a newer restriction. |
+| Q-C11 Tenant isolation | Purchased capacity belongs to the authorized resource owner. Being a seller, payer or acting user does not authorize another tenant's resources or disclose that tenant's quota state during recovery. |
+| Q-C12 Allocation lifecycle continuity | Renewal and suspension/resume preserve occupied allocation capacity. A 20-vCPU allowance with 8 vCPU allocated still has 12 available after an authorized resume, absent another restriction; renewal does not refill or duplicate it. Consumption-window behavior is available only under a separately qualified profile. |
+| Q-C13 Expiry geometry | An offer's validity is start-inclusive and end-exclusive: access is not extended by a delayed expiry process. A provider that cannot honor that boundary cannot sell the timed profile. |
+| Q-C14 Mixed grants | Unsupported combinations of periods, units, expiry or commercial terms are refused before purchase/change. The system does not silently sum limits, choose a maximum or extend validity. |
+| Q-C15 Below used | When an authorized restriction reduces capacity below existing allocations, those allocations remain accounted and new prohibited allocations stop. The quota change does not itself evict resources, issue refunds or erase usage. |
+| Q-C20 Financial separation | Monetary minimums and exhausted trial credit do not directly change numerical quota amounts. Access restrictions follow separately authorized commercial posture and the provider's supported enforcement behavior. |
+| Q-C22 Binding equivalence | Reusing a plan item identifier does not make changed quota terms equivalent. Combining purchased quantities requires compatible quota meaning and applicability, not only matching item names or IDs. |
+| Q-C27 Purchased limit and fulfillment discrepancy | The customer retains the purchased limit when a provider restriction prevents full delivery, and sees an explicit fulfillment discrepancy. Ordinary consumption does not change that purchased limit or become a delivery discrepancy: 40 GiB used under a usable 100 GiB allowance is normal consumption, while an external 60 GiB ceiling prevents fulfillment of the purchased 100 GiB. BSS does not need its own usage ledger. |
+| Q-C39 Plan packaging | The same product can be offered with different limits in different plans. The accepted plan determines the cap, with one quantity scaling for per-unit rules and one application for fixed rules. Duplicate selections add no allowance; unsupported CPU-only add-ons and voluntary decreases are refused. |
+| Q-C44 Shared users | All authorized users in the same resource-owning tenant share the purchased allowance, including concurrent allocations. User-level policies cannot replace or bypass that aggregate tenant limit. |
+| Q-C49 Reduction below use | A voluntary downgrade remains unavailable in the initial profile. An externally authorized reduction below allocated capacity preserves that occupancy and blocks prohibited growth without automatically evicting, refilling or refunding. |
+| Q-C55 Quota and charging independence | Package, usage-priced and mixed offers can carry the same 20-vCPU allocation ceiling; allocating 4 vCPU occupies the same capacity in each. Accepted charging terms separately identify what is included and chargeable. No usage produces no usage charge for a purely usage-priced component. Exhausting a billing inclusion does not increase the cap or permit bypass; quantity scaling still follows Fixed/PerPlanUnit. Quota application carries no price or paid flag. |
 
 ## 10. Dependencies
 
@@ -375,8 +397,8 @@ The initial offer uses one commercial source per resolved quota scope and a boun
 
 Scope resolution through the selected adapter is a working integration model. The responsible OSS component for resolving and creating a tenant scope remains to be agreed; BSS requires an authorized stable binding and replay safety regardless of that ownership.
 
-The architecture is defined in [DESIGN](DESIGN.md). Deployment qualification must establish exact provider versions and API mappings, multi-metric admission and stale-write fencing, operational bounds, and provider readiness/activation continuity. Each has a delivery gate in [ACCEPTANCE](ACCEPTANCE.md); an unresolved capability prevents enabling the affected offer.
+The architecture is defined in [DESIGN](DESIGN.md). Deployment qualification must establish exact provider versions and API mappings, multi-metric admission and stale-write fencing, operational bounds, and provider readiness/activation continuity. Each has a qualification gate in [DESIGN §4.2](DESIGN.md#42-integration-qualification-gates); an unresolved capability prevents enabling the affected offer.
 
 ## 14. Traceability
 
-[DESIGN §5](DESIGN.md#5-traceability) maps every functional and non-functional requirement to its architectural treatment and [acceptance cases](ACCEPTANCE.md).
+[DESIGN §5](DESIGN.md#5-traceability) maps every functional and non-functional requirement to its architectural treatment and the business criteria in [§9](#9-acceptance-criteria) and technical guarantees in [DESIGN §4.3](DESIGN.md#43-contract-conformance-criteria).
