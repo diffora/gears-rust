@@ -949,10 +949,9 @@ fn requires_finite_ids(identities: &ActorIdentities, caller: &Caller, action: Ac
 /// Shape check only — never a local permission decision.
 #[must_use]
 pub fn finite_order_ids(scope: &AccessScope) -> bool {
-    let mut paths = scope.constraints().iter().peekable();
     !scope.is_unconstrained()
-        && paths.peek().is_some()
-        && paths.all(|path| {
+        && !scope.constraints().is_empty()
+        && scope.constraints().iter().all(|path| {
             path.filters().iter().any(|filter| match filter {
                 ScopeFilter::Eq(eq) => {
                     eq.property() == properties::ID && matches!(eq.value(), ScopeValue::Uuid(_))

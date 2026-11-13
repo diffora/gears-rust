@@ -344,7 +344,7 @@ impl<TR: TypeRepositoryTrait> TypeService<TR> {
                 CompareOperator::Eq,
                 Box::new(Expr::Value(Value::String(String::new()))),
             );
-            let empty = eq.clone().and(Expr::Not(Box::new(eq)));
+            let empty = eq.contradiction();
             let filter = match query.filter().cloned() {
                 Some(user) => user.and(empty),
                 None => empty,

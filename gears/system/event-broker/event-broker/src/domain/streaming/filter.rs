@@ -110,12 +110,9 @@ impl EventFilter for AuthorizedInterestFilter {
                 }
                 // An outage must terminate the batch without advancing progress;
                 // treating it as a denial would silently skip unread events.
-                Err(
-                    error @ (EnforcerError::EvaluationFailed(_) | EnforcerError::CompileFailed(_)),
-                ) => return Err(error.into()),
-                // An unknown outcome class is an internal failure: it also
-                // terminates the batch and never skips the event.
-                Err(unknown) => return Err(unknown.into()),
+                // Unknown outcome classes also terminate the batch; conversion
+                // classifies them as internal failures.
+                Err(error) => return Err(error.into()),
             }
         }
         Ok(true)

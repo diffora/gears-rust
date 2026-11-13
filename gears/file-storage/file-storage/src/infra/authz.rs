@@ -41,6 +41,19 @@ impl PolicyEnforcerAuthorizer {
             enforcer: PolicyEnforcer::new(authz),
         }
     }
+
+    async fn authorize_with_request(
+        &self,
+        ctx: &SecurityContext,
+        action: &str,
+        file_id: Option<Uuid>,
+        request: AccessRequest,
+    ) -> Result<AccessScope, DomainError> {
+        self.enforcer
+            .access_scope_with(ctx, &FILE_RESOURCE, action, file_id, &request)
+            .await
+            .map_err(|e| map_enforcer_error(&e))
+    }
 }
 
 fn file_request(ctx: &SecurityContext, gts_file_type: &str) -> AccessRequest {
@@ -59,10 +72,8 @@ impl Authorizer for PolicyEnforcerAuthorizer {
         file_id: Option<Uuid>,
     ) -> Result<AccessScope, DomainError> {
         let request = file_request(ctx, gts_file_type);
-        self.enforcer
-            .access_scope_with(ctx, &FILE_RESOURCE, action, file_id, &request)
+        self.authorize_with_request(ctx, action, file_id, request)
             .await
-            .map_err(|e| map_enforcer_error(&e))
     }
 
     async fn authorize_allow_empty(
@@ -73,10 +84,8 @@ impl Authorizer for PolicyEnforcerAuthorizer {
         file_id: Option<Uuid>,
     ) -> Result<AccessScope, DomainError> {
         let request = file_request(ctx, gts_file_type).allow_empty_scope(true);
-        self.enforcer
-            .access_scope_with(ctx, &FILE_RESOURCE, action, file_id, &request)
+        self.authorize_with_request(ctx, action, file_id, request)
             .await
-            .map_err(|e| map_enforcer_error(&e))
     }
 }
 

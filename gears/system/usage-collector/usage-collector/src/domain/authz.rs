@@ -986,7 +986,7 @@ fn odata_contradiction() -> Result<ast::Expr, DomainError> {
         ast::CompareOperator::Eq,
         Box::new(ast::Expr::Value(value)),
     );
-    Ok(eq.clone().and(ast::Expr::Not(Box::new(eq))))
+    Ok(eq.contradiction())
 }
 
 /// Wire description of a PDP property's `OData` projection.
