@@ -2100,6 +2100,93 @@ pub async fn an_incompatible_change_is_refused_with_its_location(
     assert_eq!(stored.revision, 1);
 }
 
+/// The evolving requirement with a payload property that references the
+/// provenance attribute — a sibling family, never an ancestor.
+fn referencing_revision(
+    with_owner: bool,
+    without_priority: bool,
+    required: &[&str],
+) -> TypeRegistration {
+    let mut properties = requirement_properties(&["proposed", "approved"], with_owner, false);
+    properties["origin"] = serde_json::json!({
+        "$ref": format!("gts://{}", graph_storage_sdk::gts::PROVENANCE_ATTRIBUTE_TYPE)
+    });
+    if without_priority && let Some(map) = properties.as_object_mut() {
+        map.remove("priority");
+    }
+    requirement_revision(&properties, required, &["/payload/status"])
+}
+
+/// A `$ref` to a type outside the chain does not stop the comparison: adding an
+/// optional property to a closed payload is still proved compatible.
+pub async fn a_type_referencing_a_non_ancestor_gains_an_optional_property(
+    store: &dyn GraphStoreV1,
+    tenant: Uuid,
+) {
+    let scope = AccessScope::for_tenant(tenant);
+    let ctx = ctx(tenant, &scope, None);
+    let mut types = ontology_batch();
+    types.push(referencing_revision(false, false, &["key", "statement"]));
+    store
+        .register_types(&ctx, types)
+        .await
+        .expect("the type registers");
+
+    let registered = store
+        .register_types_with(
+            &ctx,
+            vec![referencing_revision(true, false, &["key", "statement"])],
+            update_options(),
+        )
+        .await
+        .expect("an optional property is admitted on a type with a non-ancestor reference");
+    let updated = registered
+        .iter()
+        .find(|item| item.record.type_id == EVOLVING)
+        .expect("the edited type is reported");
+    assert_eq!(
+        updated.basis,
+        Some(graph_storage_sdk::models::AdmissionBasis::SchemaProved)
+    );
+    assert_eq!(updated.record.revision, 2);
+}
+
+/// The same type still refuses what is not backward compatible: a removed
+/// property and a new required one.
+pub async fn a_type_referencing_a_non_ancestor_still_refuses_a_breaking_change(
+    store: &dyn GraphStoreV1,
+    tenant: Uuid,
+) {
+    let scope = AccessScope::for_tenant(tenant);
+    let ctx = ctx(tenant, &scope, None);
+    let mut types = ontology_batch();
+    types.push(referencing_revision(true, false, &["key", "statement"]));
+    store
+        .register_types(&ctx, types)
+        .await
+        .expect("the type registers");
+
+    let breaking = [
+        referencing_revision(true, true, &["key", "statement"]),
+        referencing_revision(true, false, &["key", "statement", "owner"]),
+    ];
+    for candidate in breaking {
+        let error = store
+            .register_types_with(&ctx, vec![candidate], update_options())
+            .await
+            .expect_err("a breaking change is refused");
+        assert!(
+            matches!(error, GraphStoreError::Conflict { .. }),
+            "a refused change is a conflict, not {error:?}"
+        );
+    }
+    let stored = store
+        .get_type(&ctx, &EVOLVING.to_owned())
+        .await
+        .expect("the type is untouched");
+    assert_eq!(stored.revision, 1);
+}
+
 /// Without `on_existing: update` the gear answers exactly what it always
 /// answered. A caller that does not ask for the new behaviour does not get it.
 pub async fn a_changed_schema_is_still_a_conflict_by_default(
