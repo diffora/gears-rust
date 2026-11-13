@@ -1,0 +1,28 @@
+{
+  "snapshot_id": "9144d0b7-3497-4db9-89e7-69c2c5d8f035",
+  "source_revision": "7",
+  "observed_at": "2026-11-13T12:00:00Z",
+  "items": [
+    {
+      "id": "22d9d2b8-9dad-46b3-93af-e6c2b53b41df",
+      "type_id": "gts.cf.bss.products.quota_capability.v1~",
+      "capability_key": "tenant-vcpu",
+      "metric_ref": "gts.cf.bss.products.quota_metric.v1~cf.bss.products.vcpu.v1",
+      "unit_ref": "gts.cf.bss.products.quota_unit.v1~cf.bss.products.vcpu.v1",
+      "subject_type_ref": "gts.cf.core.qe.subj.v1~cf.core.compute.tenant.v1~",
+      "resource_type_refs": ["gts.cf.core.qe.res.v1~cf.core.compute.vm.v1~"],
+      "limits": { "min": "0", "step": "1", "max": "1024" },
+      "operations": {
+        "apply": true,
+        "read_application": true,
+        "recover_operation": true,
+        "restrict": true,
+        "revoke": true,
+        "resume": true
+      },
+      "mapping_key": "tenant-vcpu-mapping-3",
+      "properties": {}
+    }
+  ],
+  "next_cursor": null
+}

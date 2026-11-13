@@ -957,16 +957,16 @@ Payment processing and lifecycle management with pluggable payment provider back
 
 ### Quota Manager
 #### Responsibility
-Manage quota definitions, allocations, and consumption tracking for tenant-level resource governance.
+Quota management spans the BSS and enforcement gears. Products and Pricing own resource semantics, plan rules and accepted purchases; Subscriptions owns commercial posture; Entitlements applies and reconciles limits; Quota Enforcement and providers own runtime accounting. The [commercial quota design](../gears/bss/docs/quotas/DESIGN.md) defines these boundaries without a separate Quota Manager gear.
 #### High Level Scenarios
-- [ ] p1 - define and allocate quotas per tenant and resource type
-- [ ] p2 - track quota consumption from Usage Collector
-- [ ] p3 - quota lifecycle with overage policies and alerts
+- [ ] p1 - define versioned resource semantics and plan quota rules, then freeze accepted purchases
+- [ ] p1 - apply and reconcile tenant limits through the selected quota application adapter
+- [ ] p1 - preserve runtime allocation accounting through lifecycle changes and recovery
+- [ ] p3 - separately scoped budget redistribution, pooling and overage policies
 #### More details
-- TODO: PRD link
-- TODO: Design link
-- TODO: API link
-- TODO: SDK link
+- [PRD](../gears/bss/docs/quotas/PRD.md)
+- [Design and owner SDK contracts](../gears/bss/docs/quotas/DESIGN.md)
+- [Acceptance and delivery gates](../gears/bss/docs/quotas/ACCEPTANCE.md)
 
 ### Marketplace
 #### Responsibility
