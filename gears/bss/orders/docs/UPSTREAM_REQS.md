@@ -986,7 +986,7 @@ concrete ask:
 3. **Distinguishable deny reasons.** A denial caused by proof carries a stable
    `DenyReason.error_code` that distinguishes *required proof absent* from *supplied proof invalid*
    (expired, revoked, wrong scope, bad signature), so Orders can map them to
-   `delegation-proof-required` and `delegation-proof-invalid`. `EnforcerError::Denied` already
+   `delegation-proof-required` and `delegation-proof-invalid`. `EnforcerError::AccessDenied` already
    surfaces `deny_reason`; only the codes need agreeing.
 4. **Accepted proof reference (desired).** An allow response that names the proof reference the
    policy accepted, so the audit and access-log entry records verified rather than supplied

@@ -15,13 +15,27 @@ use axum::extract::State;
 use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
 use axum::routing::get;
-use toolkit_contract::runtime::breaker::{EndpointFailureHook, SkipCircuitBreaker};
+use toolkit_contract::runtime::breaker::{
+    EndpointFailureHook, SkipCircuitBreaker, install_http_breaker,
+};
 use toolkit_contract::runtime::client::{
     StreamRequest, build_default_http_client, open_streaming, send_unary,
 };
 use toolkit_contract::runtime::config::ClientConfig;
 use toolkit_contract::runtime::transport_error::TransportError;
 use toolkit_resilience::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, State as Breaker};
+
+/// A FIPS build requires TLS by default and installs no crypto provider. The
+/// mock servers here are plaintext, so install one.
+fn install_crypto_provider() {
+    drop(toolkit_security::tls::configured_provider().install_default());
+}
+
+/// Config for a plaintext mock server, with plaintext opted in.
+fn plaintext_config(base_url: impl Into<String>) -> ClientConfig {
+    install_crypto_provider();
+    ClientConfig::new(base_url).with_require_tls(false)
+}
 
 #[derive(Clone, Default)]
 struct Hits(Arc<AtomicUsize>);
@@ -85,7 +99,7 @@ async fn call(config: &ClientConfig, url: &str) -> Result<serde_json::Value, Tra
 async fn gateway_errors_open_the_breaker_and_it_refuses_without_sending() {
     let (base, hits) = server().await;
     let b = breaker();
-    let config = ClientConfig::new(&base).with_circuit_breaker(Arc::clone(&b));
+    let config = plaintext_config(&base).with_circuit_breaker(Arc::clone(&b));
     let url = format!("{base}/bad-gateway");
 
     for _ in 0..2 {
@@ -109,7 +123,7 @@ async fn gateway_errors_open_the_breaker_and_it_refuses_without_sending() {
 async fn a_problem_503_from_the_backend_is_not_counted() {
     let (base, hits) = server().await;
     let b = breaker();
-    let config = ClientConfig::new(&base).with_circuit_breaker(Arc::clone(&b));
+    let config = plaintext_config(&base).with_circuit_breaker(Arc::clone(&b));
     let url = format!("{base}/problem");
 
     for _ in 0..5 {
@@ -133,7 +147,7 @@ async fn a_refused_connection_counts_and_runs_the_failure_hook() {
         })
     };
     let b = breaker();
-    let config = ClientConfig::new(format!("http://{addr}"))
+    let config = plaintext_config(format!("http://{addr}"))
         .with_circuit_breaker(Arc::clone(&b))
         .with_on_endpoint_failure(hook);
     let url = format!("http://{addr}/x");
@@ -155,7 +169,7 @@ async fn a_refused_connection_counts_and_runs_the_failure_hook() {
 async fn a_timed_out_attempt_reaches_the_breaker() {
     let (base, _hits) = server().await;
     let b = breaker();
-    let config = ClientConfig::new(&base)
+    let config = plaintext_config(&base)
         .with_timeout(Duration::from_millis(200))
         .with_circuit_breaker(Arc::clone(&b));
     let url = format!("{base}/slow");
@@ -174,9 +188,9 @@ async fn a_timed_out_attempt_reaches_the_breaker() {
 }
 
 /// The breaker sits below the auth layer, so an attempt whose token took a
-/// while starts its transport timer late. `send_unary`'s own timer, started
-/// before auth, must still leave the transport time to report the timeout:
-/// if it fired first, the dropped call would never be counted.
+/// while starts its transport timer late. `send_unary`'s own timer must still
+/// leave the transport time to report the timeout: if it fired first, the
+/// dropped call would never be counted.
 #[tokio::test]
 async fn a_timeout_after_slow_auth_still_reaches_the_breaker() {
     let (base, _hits) = server().await;
@@ -217,15 +231,17 @@ async fn a_stream_open_timeout_after_slow_auth_still_reaches_the_breaker() {
     assert_eq!(b.state(), Breaker::Open);
 }
 
-/// A client whose auth layer takes 20 ms, above the breaker and the
-/// transport timeout.
-fn slow_auth_client(b: &Arc<CircuitBreaker>, timeout: Duration) -> toolkit_http::HttpClient {
-    use toolkit_contract::runtime::breaker::HttpEndpointFailure;
-    use toolkit_resilience::circuit_breaker::{BoxError, CircuitBreakerLayer};
-    use tower::{Layer, ServiceExt};
+/// How long the auth layer of [`slow_auth_client`] takes: longer than the
+/// grace the caller's timer gives the transport's.
+const SLOW_AUTH: Duration = Duration::from_millis(100);
 
-    let layer = CircuitBreakerLayer::new(Arc::clone(b), HttpEndpointFailure);
-    toolkit_http::HttpClient::builder()
+/// A client whose auth layer takes [`SLOW_AUTH`], above the breaker and the
+/// transport timeout, wired as generated clients wire the breaker.
+fn slow_auth_client(b: &Arc<CircuitBreaker>, timeout: Duration) -> toolkit_http::HttpClient {
+    use tower::ServiceExt;
+
+    let config = plaintext_config("http://unused").with_circuit_breaker(Arc::clone(b));
+    let builder = toolkit_http::HttpClient::builder()
         .retry(None)
         .transport(toolkit_http::TransportSecurity::AllowInsecureHttp)
         .timeout(timeout)
@@ -233,31 +249,19 @@ fn slow_auth_client(b: &Arc<CircuitBreaker>, timeout: Duration) -> toolkit_http:
             tower::util::BoxCloneService::new(tower::service_fn(move |req| {
                 let inner = inner.clone();
                 async move {
-                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    tokio::time::sleep(SLOW_AUTH).await;
                     inner.oneshot(req).await
                 }
             }))
-        })
-        .with_attempt_layer(move |inner| {
-            layer
-                .layer(inner)
-                .map_err(
-                    |e: BoxError| match e.downcast::<toolkit_http::HttpError>() {
-                        Ok(http) => *http,
-                        Err(other) => toolkit_http::HttpError::Transport(other),
-                    },
-                )
-                .boxed_clone()
-        })
-        .build()
-        .unwrap()
+        });
+    install_http_breaker(builder, &config).build().unwrap()
 }
 
 #[tokio::test]
 async fn a_marked_request_bypasses_the_breaker() {
     let (base, hits) = server().await;
     let b = breaker();
-    let config = ClientConfig::new(&base).with_circuit_breaker(Arc::clone(&b));
+    let config = plaintext_config(&base).with_circuit_breaker(Arc::clone(&b));
     let client = build_default_http_client("breaker-test", &config).unwrap();
     let url = format!("{base}/bad-gateway");
 
